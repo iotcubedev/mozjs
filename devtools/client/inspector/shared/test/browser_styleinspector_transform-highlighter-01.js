@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -18,28 +17,37 @@ const TEST_URI = `
 
 const TYPE = "CssTransformHighlighter";
 
-add_task(function* () {
-  yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  let {inspector, view} = yield openRuleView();
+add_task(async function() {
+  await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
+  const { inspector, view } = await openRuleView();
 
   let overlay = view.highlighters;
 
   ok(!overlay.highlighters[TYPE], "No highlighter exists in the rule-view");
-  let h = yield overlay._getHighlighter(TYPE);
-  ok(overlay.highlighters[TYPE],
-    "The highlighter has been created in the rule-view");
+  const h = await overlay._getHighlighter(TYPE);
+  ok(
+    overlay.highlighters[TYPE],
+    "The highlighter has been created in the rule-view"
+  );
   is(h, overlay.highlighters[TYPE], "The right highlighter has been created");
-  let h2 = yield overlay._getHighlighter(TYPE);
-  is(h, h2,
-    "The same instance of highlighter is returned everytime in the rule-view");
+  const h2 = await overlay._getHighlighter(TYPE);
+  is(
+    h,
+    h2,
+    "The same instance of highlighter is returned everytime in the rule-view"
+  );
 
-  let onComputedViewReady = inspector.once("computed-view-refreshed");
-  let cView = selectComputedView(inspector);
-  yield onComputedViewReady;
+  const onComputedViewReady = inspector.once("computed-view-refreshed");
+  const cView = selectComputedView(inspector);
+  await onComputedViewReady;
   overlay = cView.highlighters;
 
   ok(overlay.highlighters[TYPE], "The highlighter exists in the computed-view");
-  let h3 = yield overlay._getHighlighter(TYPE);
-  is(h, h3, "The same instance of highlighter is returned everytime " +
-    "in the computed-view");
+  const h3 = await overlay._getHighlighter(TYPE);
+  is(
+    h,
+    h3,
+    "The same instance of highlighter is returned everytime " +
+      "in the computed-view"
+  );
 });

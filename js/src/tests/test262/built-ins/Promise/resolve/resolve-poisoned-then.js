@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -26,12 +27,12 @@ var poisonedThen = Object.defineProperty({}, 'then', {
 });
 
 Promise.resolve(poisonedThen).then(function() {
-    $DONE('The promise should not be fulfilled.');
-  }, function(val) {
-    if (val !== value) {
-      $DONE('The promise should be rejected with the provided value.');
-      return;
-    }
+  $DONE('The promise should not be fulfilled.');
+}, function(val) {
+  if (val !== value) {
+    $DONE('The promise should be rejected with the provided value.');
+    return;
+  }
 
-    $DONE();
-  });
+  $DONE();
+});

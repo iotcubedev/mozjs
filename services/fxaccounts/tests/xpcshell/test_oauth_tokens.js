@@ -3,12 +3,16 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/FxAccounts.jsm");
-ChromeUtils.import("resource://gre/modules/FxAccountsClient.jsm");
-ChromeUtils.import("resource://gre/modules/FxAccountsCommon.js");
-ChromeUtils.import("resource://gre/modules/FxAccountsOAuthGrantClient.jsm");
-ChromeUtils.import("resource://services-common/utils.js");
-var {AccountState} = ChromeUtils.import("resource://gre/modules/FxAccounts.jsm", {});
+const { FxAccounts } = ChromeUtils.import(
+  "resource://gre/modules/FxAccounts.jsm"
+);
+const { FxAccountsClient } = ChromeUtils.import(
+  "resource://gre/modules/FxAccountsClient.jsm"
+);
+var { AccountState } = ChromeUtils.import(
+  "resource://gre/modules/FxAccounts.jsm",
+  null
+);
 
 function promiseNotification(topic) {
   return new Promise(resolve => {
@@ -21,8 +25,7 @@ function promiseNotification(topic) {
 }
 
 // Just enough mocks so we can avoid hawk and storage.
-function MockStorageManager() {
-}
+function MockStorageManager() {}
 
 MockStorageManager.prototype = {
   promiseInitialized: Promise.resolve(),
@@ -53,7 +56,7 @@ MockStorageManager.prototype = {
   deleteAccountData() {
     this.accountData = null;
     return Promise.resolve();
-  }
+  },
 };
 
 function MockFxAccountsClient() {
@@ -61,20 +64,30 @@ function MockFxAccountsClient() {
   this._verified = false;
 
   this.accountStatus = function(uid) {
-    return Promise.resolve(!!uid && (!this._deletedOnServer));
+    return Promise.resolve(!!uid && !this._deletedOnServer);
   };
 
-  this.signOut = function() { return Promise.resolve(); };
-  this.registerDevice = function() { return Promise.resolve(); };
-  this.updateDevice = function() { return Promise.resolve(); };
-  this.signOutAndDestroyDevice = function() { return Promise.resolve(); };
-  this.getDeviceList = function() { return Promise.resolve(); };
+  this.signOut = function() {
+    return Promise.resolve();
+  };
+  this.registerDevice = function() {
+    return Promise.resolve();
+  };
+  this.updateDevice = function() {
+    return Promise.resolve();
+  };
+  this.signOutAndDestroyDevice = function() {
+    return Promise.resolve();
+  };
+  this.getDeviceList = function() {
+    return Promise.resolve();
+  };
 
   FxAccountsClient.apply(this);
 }
 
 MockFxAccountsClient.prototype = {
-  __proto__: FxAccountsClient.prototype
+  __proto__: FxAccountsClient.prototype,
 };
 
 function MockFxAccounts(mockGrantClient) {
@@ -89,7 +102,7 @@ function MockFxAccounts(mockGrantClient) {
     },
     _destroyOAuthToken(tokenData) {
       // somewhat sad duplication of _destroyOAuthToken, but hard to avoid.
-      return mockGrantClient.destroyToken(tokenData.token).then( () => {
+      return mockGrantClient.destroyToken(tokenData.token).then(() => {
         Services.obs.notifyObservers(null, "testhelper-fxa-revoke-complete");
       });
     },
@@ -98,9 +111,9 @@ function MockFxAccounts(mockGrantClient) {
     },
     fxaPushService: {
       registerPushEndpoint() {
-        return new Promise((resolve) => {
+        return new Promise(resolve => {
           resolve({
-            endpoint: "http://mochi.test:8888"
+            endpoint: "http://mochi.test:8888",
           });
         });
       },
@@ -119,7 +132,7 @@ async function createMockFxA(mockGrantClient) {
     kXCS: "cafe",
     kExtSync: "bacon",
     kExtKbHash: "cheese",
-    verified: true
+    verified: true,
   };
 
   await fxa.setSignedInUser(credentials);
@@ -133,13 +146,13 @@ function MockFxAccountsOAuthGrantClient() {
 }
 
 MockFxAccountsOAuthGrantClient.prototype = {
-  serverURL: {href: "http://localhost"},
+  serverURL: { href: "http://localhost" },
   getTokenFromAssertion(assertion, scope) {
     let token = "token" + this.numTokenFetches;
     this.numTokenFetches += 1;
     this.activeTokens.add(token);
     print("getTokenFromAssertion returning token", token);
-    return Promise.resolve({access_token: token});
+    return Promise.resolve({ access_token: token });
   },
   destroyToken(token) {
     ok(this.activeTokens.delete(token));
@@ -166,7 +179,7 @@ add_task(async function testRevoke() {
   // FxA fires an observer when the "background" revoke is complete.
   let revokeComplete = promiseNotification("testhelper-fxa-revoke-complete");
   // drop the new token from our cache.
-  await fxa.removeCachedOAuthToken({token: token1});
+  await fxa.removeCachedOAuthToken({ token: token1 });
   await revokeComplete;
 
   // the revoke should have been successful.
@@ -208,28 +221,20 @@ add_task(async function testSignOutDestroysTokens() {
 add_task(async function testTokenRaces() {
   // Here we do 2 concurrent fetches each for 2 different token scopes (ie,
   // 4 token fetches in total).
-  // This should provoke a potential race in the token fetching but we should
-  // handle and detect that leaving us with one of the fetch tokens being
-  // revoked and the same token value returned to both calls.
+  // This should provoke a potential race in the token fetching but we use
+  // a map of in-flight token fetches, so we should still only perform 2
+  // fetches, but each of the 4 calls should resolve with the correct values.
   let client = new MockFxAccountsOAuthGrantClient();
   let fxa = await createMockFxA(client);
 
-  // We should see 2 notifications as part of this - set up the listeners
-  // now (and wait on them later)
-  let notifications = Promise.all([
-    promiseNotification("testhelper-fxa-revoke-complete"),
-    promiseNotification("testhelper-fxa-revoke-complete"),
-  ]);
   let results = await Promise.all([
-    fxa.getOAuthToken({scope: "test-scope", client}),
-    fxa.getOAuthToken({scope: "test-scope", client}),
-    fxa.getOAuthToken({scope: "test-scope-2", client}),
-    fxa.getOAuthToken({scope: "test-scope-2", client}),
+    fxa.getOAuthToken({ scope: "test-scope", client }),
+    fxa.getOAuthToken({ scope: "test-scope", client }),
+    fxa.getOAuthToken({ scope: "test-scope-2", client }),
+    fxa.getOAuthToken({ scope: "test-scope-2", client }),
   ]);
 
-  equal(client.numTokenFetches, 4, "should have fetched 4 tokens.");
-  // We should see 2 of the 4 revoked due to the race.
-  await notifications;
+  equal(client.numTokenFetches, 2, "should have fetched 2 tokens.");
 
   // Should have 2 unique tokens
   results.sort();
@@ -237,14 +242,40 @@ add_task(async function testTokenRaces() {
   equal(results[2], results[3]);
   // should be 2 active.
   equal(client.activeTokens.size, 2);
-  // Which can each be revoked.
-  notifications = Promise.all([
+  // Which can each be revoked, which will trigger a notification.
+  let notifications = Promise.all([
     promiseNotification("testhelper-fxa-revoke-complete"),
     promiseNotification("testhelper-fxa-revoke-complete"),
   ]);
-  await fxa.removeCachedOAuthToken({token: results[0]});
+  await fxa.removeCachedOAuthToken({ token: results[0] });
   equal(client.activeTokens.size, 1);
-  await fxa.removeCachedOAuthToken({token: results[2]});
+  await fxa.removeCachedOAuthToken({ token: results[2] });
   equal(client.activeTokens.size, 0);
   await notifications;
+});
+
+add_task(async function testSignOutDuringFetch() {
+  let client = new MockFxAccountsOAuthGrantClient();
+  let fxa = await createMockFxA(client);
+
+  // We need a couple of promises to ensure things happen at the right time...
+  let resolveSignedOut;
+  let promiseSignedOut = new Promise(resolve => {
+    resolveSignedOut = resolve;
+  });
+  let resolveInGetTokenFromAssertion;
+  let promiseInGetTokenFromAssertion = new Promise(resolve => {
+    resolveInGetTokenFromAssertion = resolve;
+  });
+  client.getTokenFromAssertion = async function(assertion, scope) {
+    resolveInGetTokenFromAssertion();
+    await promiseSignedOut;
+    return { access_token: "token" };
+  };
+
+  let getTokenPromise = fxa.getOAuthToken({ scope: "test-scope", client });
+  await promiseInGetTokenFromAssertion;
+  await fxa.signOut();
+  resolveSignedOut();
+  await Assert.rejects(getTokenPromise, /Another user has signed in/);
 });

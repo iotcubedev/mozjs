@@ -10,8 +10,7 @@ import copy
 import os
 import sys
 
-from mozharness.base.log import FATAL, WARNING
-from mozharness.base.python import PostScriptRun, PreScriptAction
+from mozharness.base.python import PreScriptAction
 from mozharness.mozilla.structuredlog import StructuredOutputParser
 from mozharness.mozilla.testing.testbase import (
     TestingMixin,
@@ -30,24 +29,31 @@ firefox_ui_tests_config_options = [
         "action": "store_true",
         "dest": "allow_software_gl_layers",
         "default": False,
-        "help": "Permits a software GL implementation (such as LLVMPipe) to use the GL compositor.",
+        "help": "Permits a software GL implementation (such as LLVMPipe) to use the GL "
+        "compositor.",
     }],
     [["--enable-webrender"], {
         "action": "store_true",
         "dest": "enable_webrender",
         "default": False,
-        "help": "Tries to enable the WebRender compositor.",
+        "help": "Enable the WebRender compositor in Gecko.",
     }],
     [['--dry-run'], {
         'dest': 'dry_run',
         'default': False,
         'help': 'Only show what was going to be tested.',
     }],
-    [["--e10s"], {
+    [["--disable-e10s"], {
         'dest': 'e10s',
-        'action': 'store_true',
-        'default': False,
-        'help': 'Enable multi-process (e10s) mode when running tests.',
+        'action': 'store_false',
+        'default': True,
+        'help': 'Disable multi-process (e10s) mode when running tests.',
+    }],
+    [["--setpref"], {
+        'dest': 'extra_prefs',
+        'action': 'append',
+        'default': [],
+        'help': 'Extra user prefs.',
     }],
     [['--symbols-path=SYMBOLS_PATH'], {
         'dest': 'symbols_path',
@@ -125,7 +131,7 @@ class FirefoxUITests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             default_actions=default_actions or actions,
             *args, **kwargs)
 
-        # Code which doesn't run on buildbot has to include the following properties
+        # Code which runs in automation has to include the following properties
         self.binary_path = self.config.get('binary_path')
         self.installer_path = self.config.get('installer_path')
         self.installer_url = self.config.get('installer_url')
@@ -152,6 +158,7 @@ class FirefoxUITests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
                         'mozbase/*',
                         'tools/mozterm/*',
                         'tools/wptserve/*',
+                        'tools/wpt_third_party/*',
                         'mozpack/*',
                         'mozbuild/*',
                         ]
@@ -233,12 +240,16 @@ class FirefoxUITests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             '-vv',
         ]
 
+        if self.config['enable_webrender']:
+            cmd.append('--enable-webrender')
+
         # Collect all pass-through harness options to the script
         cmd.extend(self.query_harness_args())
 
-        # Translate deprecated --e10s flag
         if not self.config.get('e10s'):
             cmd.append('--disable-e10s')
+
+        cmd.extend(['--setpref={}'.format(p) for p in self.config.get('extra_prefs')])
 
         if self.symbols_url:
             cmd.extend(['--symbols-path', self.symbols_url])
@@ -261,16 +272,14 @@ class FirefoxUITests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             env.update({'MINIDUMP_STACKWALK': self.minidump_stackwalk_path})
         env['RUST_BACKTRACE'] = 'full'
 
-        # If code coverage is enabled, set GCOV_PREFIX and JS_CODE_COVERAGE_OUTPUT_DIR env variables
+        # If code coverage is enabled, set GCOV_PREFIX and JS_CODE_COVERAGE_OUTPUT_DIR
+        # env variables
         if self.config.get('code_coverage'):
             env['GCOV_PREFIX'] = self.gcov_dir
             env['JS_CODE_COVERAGE_OUTPUT_DIR'] = self.jsvm_dir
 
         if self.config['allow_software_gl_layers']:
             env['MOZ_LAYERS_ALLOW_SOFTWARE_GL'] = '1'
-        if self.config['enable_webrender']:
-            env['MOZ_WEBRENDER'] = '1'
-            env['MOZ_ACCELERATED'] = '1'
 
         return_code = self.run_command(cmd,
                                        cwd=dirs['abs_fxui_dir'],
@@ -278,8 +287,8 @@ class FirefoxUITests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
                                        output_parser=parser,
                                        env=env)
 
-        tbpl_status, log_level = parser.evaluate_parser(return_code)
-        self.buildbot_status(tbpl_status, level=log_level)
+        tbpl_status, log_level, summary = parser.evaluate_parser(return_code)
+        self.record_status(tbpl_status, level=log_level)
 
         return return_code
 

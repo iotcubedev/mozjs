@@ -4,14 +4,13 @@
 /*---
 info: "[[Get]], [[Delete]] from not an inherited property"
 esid: sec-array.prototype.pop
-es5id: 15.4.4.6_A4_T2
 description: >
     [[Prototype]] of Array instance is Array.prototype, [[Prototype]
     of Array.prototype is Object.prototype
 ---*/
 
 Array.prototype[1] = -1;
-var x = [0,1];
+var x = [0, 1];
 x.length = 2;
 
 //CHECK#1
@@ -28,7 +27,10 @@ if (x[1] !== -1) {
 Object.prototype[1] = -1;
 Object.prototype.length = 2;
 Object.prototype.pop = Array.prototype.pop;
-x = {0:0,1:1};
+x = {
+  0: 0,
+  1: 1
+};
 
 //CHECK#3
 var pop = x.pop();

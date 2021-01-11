@@ -6,29 +6,27 @@
 
 #include "nsMathMLmspaceFrame.h"
 #include "nsMathMLElement.h"
+#include "mozilla/PresShell.h"
 #include "mozilla/gfx/2D.h"
 #include <algorithm>
 
+using namespace mozilla;
 
 //
 // <mspace> -- space - implementation
 //
 
-nsIFrame*
-NS_NewMathMLmspaceFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
-{
-  return new (aPresShell) nsMathMLmspaceFrame(aContext);
+nsIFrame* NS_NewMathMLmspaceFrame(PresShell* aPresShell,
+                                  ComputedStyle* aStyle) {
+  return new (aPresShell)
+      nsMathMLmspaceFrame(aStyle, aPresShell->GetPresContext());
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsMathMLmspaceFrame)
 
-nsMathMLmspaceFrame::~nsMathMLmspaceFrame()
-{
-}
+nsMathMLmspaceFrame::~nsMathMLmspaceFrame() {}
 
-void
-nsMathMLmspaceFrame::ProcessAttributes(nsPresContext* aPresContext)
-{
+void nsMathMLmspaceFrame::ProcessAttributes(nsPresContext* aPresContext) {
   nsAutoString value;
   float fontSizeInflation = nsLayoutUtils::FontSizeInflationFor(this);
 
@@ -47,9 +45,8 @@ nsMathMLmspaceFrame::ProcessAttributes(nsPresContext* aPresContext)
   mWidth = 0;
   mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::width, value);
   if (!value.IsEmpty()) {
-    ParseNumericValue(value, &mWidth,
-                      nsMathMLElement::PARSE_ALLOW_NEGATIVE,
-                      aPresContext, mStyleContext, fontSizeInflation);
+    ParseNumericValue(value, &mWidth, nsMathMLElement::PARSE_ALLOW_NEGATIVE,
+                      aPresContext, mComputedStyle, fontSizeInflation);
   }
 
   // height
@@ -65,8 +62,8 @@ nsMathMLmspaceFrame::ProcessAttributes(nsPresContext* aPresContext)
   mHeight = 0;
   mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::height, value);
   if (!value.IsEmpty()) {
-    ParseNumericValue(value, &mHeight, 0,
-                      aPresContext, mStyleContext, fontSizeInflation);
+    ParseNumericValue(value, &mHeight, 0, aPresContext, mComputedStyle,
+                      fontSizeInflation);
   }
 
   // depth
@@ -82,17 +79,15 @@ nsMathMLmspaceFrame::ProcessAttributes(nsPresContext* aPresContext)
   mDepth = 0;
   mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::depth_, value);
   if (!value.IsEmpty()) {
-    ParseNumericValue(value, &mDepth, 0,
-                      aPresContext, mStyleContext, fontSizeInflation);
+    ParseNumericValue(value, &mDepth, 0, aPresContext, mComputedStyle,
+                      fontSizeInflation);
   }
 }
 
-void
-nsMathMLmspaceFrame::Reflow(nsPresContext*          aPresContext,
-                            ReflowOutput&     aDesiredSize,
-                            const ReflowInput& aReflowInput,
-                            nsReflowStatus&          aStatus)
-{
+void nsMathMLmspaceFrame::Reflow(nsPresContext* aPresContext,
+                                 ReflowOutput& aDesiredSize,
+                                 const ReflowInput& aReflowInput,
+                                 nsReflowStatus& aStatus) {
   MarkInReflow();
   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
 
@@ -115,10 +110,9 @@ nsMathMLmspaceFrame::Reflow(nsPresContext*          aPresContext,
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
-/* virtual */ nsresult
-nsMathMLmspaceFrame::MeasureForWidth(DrawTarget* aDrawTarget,
-                                     ReflowOutput& aDesiredSize)
-{
+/* virtual */
+nsresult nsMathMLmspaceFrame::MeasureForWidth(DrawTarget* aDrawTarget,
+                                              ReflowOutput& aDesiredSize) {
   ProcessAttributes(PresContext());
   mBoundingMetrics = nsBoundingMetrics();
   mBoundingMetrics.width = mWidth;

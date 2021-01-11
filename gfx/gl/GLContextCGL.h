@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* vim: set ts=8 sts=4 et sw=4 tw=80: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,57 +10,86 @@
 #include "GLContext.h"
 
 #include "OpenGL/OpenGL.h"
+#include <IOSurface/IOSurface.h>
 
 #ifdef __OBJC__
-#include <AppKit/NSOpenGL.h>
+#  include <AppKit/NSOpenGL.h>
 #else
 typedef void NSOpenGLContext;
 #endif
 
+#include <unordered_map>
+
+#include "mozilla/HashFunctions.h"
+#include "mozilla/UniquePtr.h"
+
+class nsIWidget;
+
 namespace mozilla {
 namespace gl {
 
-class GLContextCGL : public GLContext
-{
-    friend class GLContextProviderCGL;
+class MozFramebuffer;
 
-    NSOpenGLContext* mContext;
+class GLContextCGL : public GLContext {
+  friend class GLContextProviderCGL;
 
-public:
-    MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(GLContextCGL, override)
-    GLContextCGL(CreateContextFlags flags, const SurfaceCaps& caps,
-                 NSOpenGLContext* context, bool isOffscreen);
+  NSOpenGLContext* mContext;
+  GLuint mDefaultFramebuffer = 0;
 
-    ~GLContextCGL();
-
-    virtual GLContextType GetContextType() const override { return GLContextType::CGL; }
-
-    static GLContextCGL* Cast(GLContext* gl) {
-        MOZ_ASSERT(gl->GetContextType() == GLContextType::CGL);
-        return static_cast<GLContextCGL*>(gl);
+  struct IOSurfaceRefHasher {
+    std::size_t operator()(const IOSurfaceRef& aSurface) const {
+      return HashGeneric(reinterpret_cast<uintptr_t>(aSurface));
     }
+  };
 
-    bool Init() override;
+  std::unordered_map<IOSurfaceRef, UniquePtr<MozFramebuffer>,
+                     IOSurfaceRefHasher>
+      mRegisteredIOSurfaceFramebuffers;
 
-    NSOpenGLContext* GetNSOpenGLContext() const { return mContext; }
-    CGLContextObj GetCGLContext() const;
+ protected:
+  virtual void OnMarkDestroyed() override;
 
-    virtual bool MakeCurrentImpl() const override;
+ public:
+  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(GLContextCGL, override)
+  GLContextCGL(CreateContextFlags flags, const SurfaceCaps& caps,
+               NSOpenGLContext* context, bool isOffscreen);
 
-    virtual bool IsCurrentImpl() const override;
+  ~GLContextCGL();
 
-    virtual GLenum GetPreferredARGB32Format() const override;
+  virtual GLContextType GetContextType() const override {
+    return GLContextType::CGL;
+  }
 
-    virtual bool SetupLookupFunction() override;
+  static GLContextCGL* Cast(GLContext* gl) {
+    MOZ_ASSERT(gl->GetContextType() == GLContextType::CGL);
+    return static_cast<GLContextCGL*>(gl);
+  }
 
-    virtual bool IsDoubleBuffered() const override;
+  NSOpenGLContext* GetNSOpenGLContext() const { return mContext; }
+  CGLContextObj GetCGLContext() const;
 
-    virtual bool SwapBuffers() override;
+  virtual bool MakeCurrentImpl() const override;
 
-    virtual void GetWSIInfo(nsCString* const out) const override;
+  virtual bool IsCurrentImpl() const override;
+
+  virtual GLenum GetPreferredARGB32Format() const override;
+
+  virtual bool IsDoubleBuffered() const override;
+
+  virtual bool SwapBuffers() override;
+
+  virtual void GetWSIInfo(nsCString* const out) const override;
+
+  Maybe<SymbolLoader> GetSymbolLoader() const override;
+
+  virtual GLuint GetDefaultFramebuffer() override;
+
+  void RegisterIOSurface(IOSurfaceRef aSurface);
+  void UnregisterIOSurface(IOSurfaceRef aSurface);
+  void UseRegisteredIOSurfaceForDefaultFramebuffer(IOSurfaceRef aSurface);
 };
 
-} // namespace gl
-} // namespace mozilla
+}  // namespace gl
+}  // namespace mozilla
 
-#endif // GLCONTEXTCGL_H_
+#endif  // GLCONTEXTCGL_H_

@@ -2,15 +2,17 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function
 
 import glob
 import os
 import shutil
+import sys
+from io import StringIO
 
 from marionette_driver import Wait
 from marionette_driver.errors import (
-    MarionetteException,
+    InvalidSessionIdException,
     NoSuchWindowException,
     TimeoutException
 )
@@ -84,41 +86,49 @@ class BaseCrashTestCase(MarionetteTestCase):
 
         super(BaseCrashTestCase, self).tearDown()
 
-    def crash(self, chrome=True):
-        context = 'chrome' if chrome else 'content'
-        sandbox = None if chrome else 'system'
-
+    def crash(self, parent=True):
         socket_timeout = self.marionette.client.socket_timeout
         self.marionette.client.socket_timeout = self.socket_timeout
 
-        self.marionette.set_context(context)
+        self.marionette.set_context("content")
         try:
-            self.marionette.execute_script("""
-              // Copied from crash me simple
-              Components.utils.import("resource://gre/modules/ctypes.jsm");
-
-              // ctypes checks for NULL pointer derefs, so just go near-NULL.
-              var zero = new ctypes.intptr_t(8);
-              var badptr = ctypes.cast(zero, ctypes.PointerType(ctypes.int32_t));
-              var crash = badptr.contents;
-            """, sandbox=sandbox)
+            self.marionette.navigate("about:crash{}".format("parent" if parent else "content"))
         finally:
             self.marionette.client.socket_timeout = socket_timeout
 
 
 class TestCrash(BaseCrashTestCase):
 
+    def setUp(self):
+        if os.environ.get('MOZ_AUTOMATION'):
+            # Capture stdout, otherwise the Gecko output causes mozharness to fail
+            # the task due to "A content process has crashed" appearing in the log.
+            # To view stdout for debugging, use `print(self.new_out.getvalue())`
+            print("Suppressing GECKO output. To view, add `print(self.new_out.getvalue())` "
+                  "to the end of this test.")
+            self.new_out, self.new_err = StringIO(), StringIO()
+            self.old_out, self.old_err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = self.new_out, self.new_err
+
+        super(TestCrash, self).setUp()
+
+    def tearDown(self):
+        super(TestCrash, self).tearDown()
+
+        if os.environ.get('MOZ_AUTOMATION'):
+            sys.stdout, sys.stderr = self.old_out, self.old_err
+
     def test_crash_chrome_process(self):
         self.assertRaisesRegexp(IOError, "Process crashed",
-                                self.crash, chrome=True)
+                                self.crash, parent=True)
 
         # A crash results in a non zero exit code
         self.assertNotIn(self.marionette.instance.runner.returncode, (None, 0))
 
         self.assertEqual(self.marionette.crashed, 1)
         self.assertIsNone(self.marionette.session)
-        self.assertRaisesRegexp(MarionetteException, 'Please start a session',
-                                self.marionette.get_url)
+        with self.assertRaisesRegexp(InvalidSessionIdException, 'Please start a session'):
+            self.marionette.get_url()
 
         self.marionette.start_session()
         self.assertNotEqual(self.marionette.process_id, self.pid)
@@ -132,7 +142,7 @@ class TestCrash(BaseCrashTestCase):
         # has to be ignored. To check for the IOError, further commands have to
         # be executed until the process is gone.
         with self.assertRaisesRegexp(IOError, "Content process crashed"):
-            self.crash(chrome=False)
+            self.crash(parent=False)
             Wait(self.marionette, timeout=self.socket_timeout,
                  ignored_exceptions=NoSuchWindowException).until(
                 lambda _: self.marionette.get_url(),
@@ -145,8 +155,8 @@ class TestCrash(BaseCrashTestCase):
 
         self.assertEqual(self.marionette.crashed, 1)
         self.assertIsNone(self.marionette.session)
-        self.assertRaisesRegexp(MarionetteException, 'Please start a session',
-                                self.marionette.get_url)
+        with self.assertRaisesRegexp(InvalidSessionIdException, 'Please start a session'):
+            self.marionette.get_url()
 
         self.marionette.start_session()
         self.assertNotEqual(self.marionette.process_id, self.pid)
@@ -154,7 +164,7 @@ class TestCrash(BaseCrashTestCase):
 
     @expectedFailure
     def test_unexpected_crash(self):
-        self.crash(chrome=True)
+        self.crash(parent=True)
 
 
 class TestCrashInSetUp(BaseCrashTestCase):
@@ -163,7 +173,7 @@ class TestCrashInSetUp(BaseCrashTestCase):
         super(TestCrashInSetUp, self).setUp()
 
         self.assertRaisesRegexp(IOError, "Process crashed",
-                                self.crash, chrome=True)
+                                self.crash, parent=True)
 
         # A crash results in a non zero exit code
         self.assertNotIn(self.marionette.instance.runner.returncode, (None, 0))
@@ -181,7 +191,7 @@ class TestCrashInTearDown(BaseCrashTestCase):
     def tearDown(self):
         try:
             self.assertRaisesRegexp(IOError, "Process crashed",
-                                    self.crash, chrome=True)
+                                    self.crash, parent=True)
 
             # A crash results in a non zero exit code
             self.assertNotIn(self.marionette.instance.runner.returncode, (None, 0))

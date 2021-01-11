@@ -7,10 +7,13 @@
 #ifndef mozilla_dom_ScriptLoadRequest_h
 #define mozilla_dom_ScriptLoadRequest_h
 
+#include "mozilla/Assertions.h"
 #include "mozilla/CORSMode.h"
 #include "mozilla/dom/SRIMetadata.h"
 #include "mozilla/LinkedList.h"
-#include "mozilla/net/ReferrerPolicy.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Utf8.h"  // mozilla::Utf8Unit
+#include "mozilla/Variant.h"
 #include "mozilla/Vector.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
@@ -24,109 +27,110 @@ namespace dom {
 class ModuleLoadRequest;
 class ScriptLoadRequestList;
 
-enum class ScriptKind {
-  eClassic,
-  eModule
+enum class ScriptKind { eClassic, eModule };
+
+/*
+ * Some options used when fetching script resources. This only loosely
+ * corresponds to HTML's "script fetch options".
+ *
+ * These are common to all modules in a module graph, and hence a single
+ * instance is shared by all ModuleLoadRequest objects in a graph.
+ */
+
+class ScriptFetchOptions {
+  ~ScriptFetchOptions();
+
+ public:
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(ScriptFetchOptions)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(ScriptFetchOptions)
+
+  ScriptFetchOptions(mozilla::CORSMode aCORSMode,
+                     enum ReferrerPolicy aReferrerPolicy,
+                     nsIScriptElement* aElement,
+                     nsIPrincipal* aTriggeringPrincipal);
+
+  const mozilla::CORSMode mCORSMode;
+  const enum ReferrerPolicy mReferrerPolicy;
+  bool mIsPreload;
+  nsCOMPtr<nsIScriptElement> mElement;
+  nsCOMPtr<nsIPrincipal> mTriggeringPrincipal;
 };
 
 /*
  * A class that handles loading and evaluation of <script> elements.
  */
 
-class ScriptLoadRequest : public nsISupports,
-                          private mozilla::LinkedListElement<ScriptLoadRequest>
-{
+class ScriptLoadRequest
+    : public nsISupports,
+      private mozilla::LinkedListElement<ScriptLoadRequest> {
   typedef LinkedListElement<ScriptLoadRequest> super;
 
   // Allow LinkedListElement<ScriptLoadRequest> to cast us to itself as needed.
   friend class mozilla::LinkedListElement<ScriptLoadRequest>;
   friend class ScriptLoadRequestList;
 
-protected:
+ protected:
   virtual ~ScriptLoadRequest();
 
-public:
-  ScriptLoadRequest(ScriptKind aKind,
-                    nsIURI* aURI,
-                    nsIScriptElement* aElement,
-                    mozilla::CORSMode aCORSMode,
-                    const SRIMetadata &aIntegrity,
-                    nsIURI* aReferrer,
-                    mozilla::net::ReferrerPolicy aReferrerPolicy);
+ public:
+  ScriptLoadRequest(ScriptKind aKind, nsIURI* aURI,
+                    ScriptFetchOptions* aFetchOptions,
+                    const SRIMetadata& aIntegrity, nsIURI* aReferrer);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ScriptLoadRequest)
 
-  bool IsModuleRequest() const
-  {
-    return mKind == ScriptKind::eModule;
-  }
+  bool IsModuleRequest() const { return mKind == ScriptKind::eModule; }
 
   ModuleLoadRequest* AsModuleRequest();
 
-  void FireScriptAvailable(nsresult aResult)
-  {
+  void FireScriptAvailable(nsresult aResult) {
     bool isInlineClassicScript = mIsInline && !IsModuleRequest();
-    mElement->ScriptAvailable(aResult, mElement, isInlineClassicScript, mURI,
-                              mLineNo);
+    Element()->ScriptAvailable(aResult, Element(), isInlineClassicScript, mURI,
+                               mLineNo);
   }
-  void FireScriptEvaluated(nsresult aResult)
-  {
-    mElement->ScriptEvaluated(aResult, mElement, mIsInline);
+  void FireScriptEvaluated(nsresult aResult) {
+    Element()->ScriptEvaluated(aResult, Element(), mIsInline);
   }
 
-  bool IsPreload()
-  {
-    return mElement == nullptr;
+  bool IsPreload() const {
+    MOZ_ASSERT_IF(mFetchOptions->mIsPreload, !Element());
+    return mFetchOptions->mIsPreload;
   }
 
   virtual void Cancel();
 
-  bool IsCanceled() const
-  {
-    return mIsCanceled;
-  }
+  bool IsCanceled() const { return mIsCanceled; }
 
   virtual void SetReady();
 
-  void** OffThreadTokenPtr()
-  {
-    return mOffThreadToken ?  &mOffThreadToken : nullptr;
+  JS::OffThreadToken** OffThreadTokenPtr() {
+    return mOffThreadToken ? &mOffThreadToken : nullptr;
   }
 
-  bool IsTracking() const
-  {
-    return mIsTracking;
-  }
-  void SetIsTracking()
-  {
+  bool IsTracking() const { return mIsTracking; }
+  void SetIsTracking() {
     MOZ_ASSERT(!mIsTracking);
     mIsTracking = true;
   }
 
   enum class Progress : uint8_t {
-    eLoading,        // Request either source or bytecode
-    eLoading_Source, // Explicitly Request source stream
+    eLoading,         // Request either source or bytecode
+    eLoading_Source,  // Explicitly Request source stream
     eCompiling,
     eFetchingImports,
     eReady
   };
 
-  bool IsReadyToRun() const
-  {
-    return mProgress == Progress::eReady;
-  }
-  bool IsLoading() const
-  {
+  bool IsReadyToRun() const { return mProgress == Progress::eReady; }
+  bool IsLoading() const {
     return mProgress == Progress::eLoading ||
            mProgress == Progress::eLoading_Source;
   }
-  bool IsLoadingSource() const
-  {
+  bool IsLoadingSource() const {
     return mProgress == Progress::eLoading_Source;
   }
-  bool InCompilingStage() const
-  {
+  bool InCompilingStage() const {
     return mProgress == Progress::eCompiling ||
            (IsReadyToRun() && mWasCompiledOMT);
   }
@@ -134,52 +138,130 @@ public:
   // Type of data provided by the nsChannel.
   enum class DataType : uint8_t {
     eUnknown,
-    eSource,
+    eTextSource,
+    eBinASTSource,
     eBytecode
   };
 
-  bool IsUnknownDataType() const
-  {
-    return mDataType == DataType::eUnknown;
+  bool IsUnknownDataType() const { return mDataType == DataType::eUnknown; }
+  bool IsTextSource() const { return mDataType == DataType::eTextSource; }
+  bool IsBinASTSource() const {
+#ifdef JS_BUILD_BINAST
+    return mDataType == DataType::eBinASTSource;
+#else
+    return false;
+#endif
   }
-  bool IsSource() const
-  {
-    return mDataType == DataType::eSource;
+  bool IsSource() const { return IsTextSource() || IsBinASTSource(); }
+  bool IsBytecode() const { return mDataType == DataType::eBytecode; }
+
+  void SetUnknownDataType();
+  void SetTextSource();
+  void SetBinASTSource();
+  void SetBytecode();
+
+  // Use a vector backed by the JS allocator for script text so that contents
+  // can be transferred in constant time to the JS engine, not copied in linear
+  // time.
+  template <typename Unit>
+  using ScriptTextBuffer = Vector<Unit, 0, JSMallocAllocPolicy>;
+
+  // BinAST data isn't transferred to the JS engine, so it doesn't need to use
+  // the JS allocator.
+  using BinASTSourceBuffer = Vector<uint8_t>;
+
+  bool IsUTF16Text() const {
+    return mScriptData->is<ScriptTextBuffer<char16_t>>();
   }
-  bool IsBytecode() const
-  {
-    return mDataType == DataType::eBytecode;
+  bool IsUTF8Text() const {
+    return mScriptData->is<ScriptTextBuffer<Utf8Unit>>();
   }
 
-  enum class ScriptMode : uint8_t {
-    eBlocking,
-    eDeferred,
-    eAsync
-  };
+  template <typename Unit>
+  const ScriptTextBuffer<Unit>& ScriptText() const {
+    MOZ_ASSERT(IsTextSource());
+    return mScriptData->as<ScriptTextBuffer<Unit>>();
+  }
+  template <typename Unit>
+  ScriptTextBuffer<Unit>& ScriptText() {
+    MOZ_ASSERT(IsTextSource());
+    return mScriptData->as<ScriptTextBuffer<Unit>>();
+  }
+
+  const BinASTSourceBuffer& ScriptBinASTData() const {
+    MOZ_ASSERT(IsBinASTSource());
+    return mScriptData->as<BinASTSourceBuffer>();
+  }
+  BinASTSourceBuffer& ScriptBinASTData() {
+    MOZ_ASSERT(IsBinASTSource());
+    return mScriptData->as<BinASTSourceBuffer>();
+  }
+
+  size_t ScriptTextLength() const {
+    MOZ_ASSERT(IsTextSource());
+    return IsUTF16Text() ? ScriptText<char16_t>().length()
+                         : ScriptText<Utf8Unit>().length();
+  }
+
+  void ClearScriptText() {
+    MOZ_ASSERT(IsTextSource());
+    return IsUTF16Text() ? ScriptText<char16_t>().clearAndFree()
+                         : ScriptText<Utf8Unit>().clearAndFree();
+  }
+
+  enum class ScriptMode : uint8_t { eBlocking, eDeferred, eAsync };
 
   void SetScriptMode(bool aDeferAttr, bool aAsyncAttr);
 
-  bool IsBlockingScript() const
-  {
-    return mScriptMode == ScriptMode::eBlocking;
-  }
+  bool IsBlockingScript() const { return mScriptMode == ScriptMode::eBlocking; }
 
-  bool IsDeferredScript() const
-  {
-    return mScriptMode == ScriptMode::eDeferred;
-  }
+  bool IsDeferredScript() const { return mScriptMode == ScriptMode::eDeferred; }
 
-  bool IsAsyncScript() const
-  {
-    return mScriptMode == ScriptMode::eAsync;
-  }
+  bool IsAsyncScript() const { return mScriptMode == ScriptMode::eAsync; }
 
-  virtual bool IsTopLevel() const
-  {
+  virtual bool IsTopLevel() const {
     // Classic scripts are always top level.
     return true;
   }
 
+  mozilla::CORSMode CORSMode() const { return mFetchOptions->mCORSMode; }
+  enum ReferrerPolicy ReferrerPolicy() const {
+    return mFetchOptions->mReferrerPolicy;
+  }
+  nsIScriptElement* Element() const { return mFetchOptions->mElement; }
+  nsIPrincipal* TriggeringPrincipal() const {
+    return mFetchOptions->mTriggeringPrincipal;
+  }
+
+  // Make this request a preload (speculative) request.
+  void SetIsPreloadRequest() {
+    MOZ_ASSERT(!Element());
+    MOZ_ASSERT(!IsPreload());
+    mFetchOptions->mIsPreload = true;
+  }
+
+  // Make a preload request into an actual load request for the given element.
+  void SetIsLoadRequest(nsIScriptElement* aElement) {
+    MOZ_ASSERT(aElement);
+    MOZ_ASSERT(!Element());
+    MOZ_ASSERT(IsPreload());
+    mFetchOptions->mElement = aElement;
+    mFetchOptions->mIsPreload = false;
+  }
+
+  FromParser GetParserCreated() const {
+    nsIScriptElement* element = Element();
+    if (!element) {
+      return NOT_FROM_PARSER;
+    }
+    return element->GetParserCreated();
+  }
+
+  bool ShouldAcceptBinASTEncoding() const;
+
+  void ClearScriptSource();
+
+  void SetScript(JSScript* aScript);
 
   void MaybeCancelOffThreadScript();
   void DropBytecodeCacheReferences();
@@ -187,106 +269,116 @@ public:
   using super::getNext;
   using super::isInList;
 
-  const ScriptKind mKind;
-  nsCOMPtr<nsIScriptElement> mElement;
-  bool mScriptFromHead;   // Synchronous head script block loading of other non js/css content.
-  Progress mProgress;     // Are we still waiting for a load to complete?
-  DataType mDataType;     // Does this contain Source or Bytecode?
-  ScriptMode mScriptMode; // Whether this is a blocking, defer or async script.
-  bool mIsInline;         // Is the script inline or loaded?
-  bool mHasSourceMapURL;  // Does the HTTP header have a source map url?
-  bool mInDeferList;      // True if we live in mDeferRequests.
-  bool mInAsyncList;      // True if we live in mLoadingAsyncRequests or mLoadedAsyncRequests.
-  bool mIsNonAsyncScriptInserted; // True if we live in mNonAsyncExternalScriptInsertedRequests
-  bool mIsXSLT;           // True if we live in mXSLTRequests.
-  bool mIsCanceled;       // True if we have been explicitly canceled.
-  bool mWasCompiledOMT;   // True if the script has been compiled off main thread.
-  bool mIsTracking;       // True if the script comes from a source on our tracking protection list.
-  void* mOffThreadToken;  // Off-thread parsing token.
-  nsString mSourceMapURL; // Holds source map url for loaded scripts
+  const ScriptKind mKind;  // Whether this is a classic script or a module
+                           // script.
+  ScriptMode mScriptMode;  // Whether this is a blocking, defer or async script.
+  Progress mProgress;      // Are we still waiting for a load to complete?
+  DataType mDataType;      // Does this contain Source or Bytecode?
+  bool mScriptFromHead;    // Synchronous head script block loading of other non
+                           // js/css content.
+  bool mIsInline;          // Is the script inline or loaded?
+  bool mHasSourceMapURL;   // Does the HTTP header have a source map url?
+  bool mInDeferList;       // True if we live in mDeferRequests.
+  bool mInAsyncList;       // True if we live in mLoadingAsyncRequests or
+                           // mLoadedAsyncRequests.
+  bool mIsNonAsyncScriptInserted;  // True if we live in
+                                   // mNonAsyncExternalScriptInsertedRequests
+  bool mIsXSLT;                    // True if we live in mXSLTRequests.
+  bool mIsCanceled;                // True if we have been explicitly canceled.
+  bool mWasCompiledOMT;  // True if the script has been compiled off main
+                         // thread.
+  bool mIsTracking;      // True if the script comes from a source on our
+                         // tracking protection list.
+
+  RefPtr<ScriptFetchOptions> mFetchOptions;
+
+  JS::OffThreadToken* mOffThreadToken;  // Off-thread parsing token.
+  nsString mSourceMapURL;  // Holds source map url for loaded scripts
 
   // Holds the top-level JSScript that corresponds to the current source, once
   // it is parsed, and planned to be saved in the bytecode cache.
   JS::Heap<JSScript*> mScript;
 
-  // Holds script text for non-inline scripts. Don't use nsString so we can give
-  // ownership to jsapi.
-  mozilla::Vector<char16_t> mScriptText;
+  // Holds script source data for non-inline scripts.
+  Maybe<Variant<ScriptTextBuffer<char16_t>, ScriptTextBuffer<Utf8Unit>,
+                BinASTSourceBuffer>>
+      mScriptData;
+
+  // The length of script source text, set when reading completes. This is used
+  // since mScriptData is cleared when the source is passed to the JS engine.
+  size_t mScriptTextLength;
 
   // Holds the SRI serialized hash and the script bytecode for non-inline
   // scripts.
   mozilla::Vector<uint8_t> mScriptBytecode;
-  uint32_t mBytecodeOffset; // Offset of the bytecode in mScriptBytecode
+  uint32_t mBytecodeOffset;  // Offset of the bytecode in mScriptBytecode
 
   const nsCOMPtr<nsIURI> mURI;
-  nsCOMPtr<nsIPrincipal> mTriggeringPrincipal;
   nsCOMPtr<nsIPrincipal> mOriginPrincipal;
-  nsAutoCString mURL;     // Keep the URI's filename alive during off thread parsing.
+  nsAutoCString
+      mURL;  // Keep the URI's filename alive during off thread parsing.
   int32_t mLineNo;
-  const mozilla::CORSMode mCORSMode;
   const SRIMetadata mIntegrity;
   const nsCOMPtr<nsIURI> mReferrer;
-  const mozilla::net::ReferrerPolicy mReferrerPolicy;
 
   // Holds the Cache information, which is used to register the bytecode
   // on the cache entry, such that we can load it the next time.
   nsCOMPtr<nsICacheInfoChannel> mCacheInfo;
+
+  // The base URL used for resolving relative module imports.
+  nsCOMPtr<nsIURI> mBaseURL;
+
+  // For preload requests, we defer reporting errors to the console until the
+  // request is used.
+  nsresult mUnreportedPreloadError;
 };
 
-class ScriptLoadRequestList : private mozilla::LinkedList<ScriptLoadRequest>
-{
+class ScriptLoadRequestList : private mozilla::LinkedList<ScriptLoadRequest> {
   typedef mozilla::LinkedList<ScriptLoadRequest> super;
 
-public:
+ public:
   ~ScriptLoadRequestList();
 
   void Clear();
 
 #ifdef DEBUG
   bool Contains(ScriptLoadRequest* aElem) const;
-#endif // DEBUG
+#endif  // DEBUG
 
   using super::getFirst;
   using super::isEmpty;
 
-  void AppendElement(ScriptLoadRequest* aElem)
-  {
+  void AppendElement(ScriptLoadRequest* aElem) {
     MOZ_ASSERT(!aElem->isInList());
     NS_ADDREF(aElem);
     insertBack(aElem);
   }
 
   MOZ_MUST_USE
-  already_AddRefed<ScriptLoadRequest> Steal(ScriptLoadRequest* aElem)
-  {
+  already_AddRefed<ScriptLoadRequest> Steal(ScriptLoadRequest* aElem) {
     aElem->removeFrom(*this);
     return dont_AddRef(aElem);
   }
 
   MOZ_MUST_USE
-  already_AddRefed<ScriptLoadRequest> StealFirst()
-  {
+  already_AddRefed<ScriptLoadRequest> StealFirst() {
     MOZ_ASSERT(!isEmpty());
     return Steal(getFirst());
   }
 
-  void Remove(ScriptLoadRequest* aElem)
-  {
+  void Remove(ScriptLoadRequest* aElem) {
     aElem->removeFrom(*this);
     NS_RELEASE(aElem);
   }
 };
 
-void
-ImplCycleCollectionUnlink(ScriptLoadRequestList& aField);
+void ImplCycleCollectionUnlink(ScriptLoadRequestList& aField);
 
-void
-ImplCycleCollectionTraverse(nsCycleCollectionTraversalCallback& aCallback,
-                            ScriptLoadRequestList& aField,
-                            const char* aName,
-                            uint32_t aFlags);
+void ImplCycleCollectionTraverse(nsCycleCollectionTraversalCallback& aCallback,
+                                 ScriptLoadRequestList& aField,
+                                 const char* aName, uint32_t aFlags);
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_dom_ScriptLoadRequest_h
+#endif  // mozilla_dom_ScriptLoadRequest_h

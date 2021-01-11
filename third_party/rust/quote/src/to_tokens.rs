@@ -1,31 +1,29 @@
-use super::Tokens;
+use super::TokenStreamExt;
 
 use std::borrow::Cow;
+use std::iter;
 
-use proc_macro2::{Literal, Span, Term, TokenNode, TokenTree, TokenStream};
-
-fn tt(kind: TokenNode) -> TokenTree {
-    TokenTree {
-        span: Span::def_site(),
-        kind: kind,
-    }
-}
+use proc_macro2::{Group, Ident, Literal, Punct, Span, TokenStream, TokenTree};
 
 /// Types that can be interpolated inside a [`quote!`] invocation.
 ///
 /// [`quote!`]: macro.quote.html
 pub trait ToTokens {
-    /// Write `self` to the given `Tokens`.
+    /// Write `self` to the given `TokenStream`.
+    ///
+    /// The token append methods provided by the [`TokenStreamExt`] extension
+    /// trait may be useful for implementing `ToTokens`.
+    ///
+    /// [`TokenStreamExt`]: trait.TokenStreamExt.html
+    ///
+    /// # Example
     ///
     /// Example implementation for a struct representing Rust paths like
     /// `std::cmp::PartialEq`:
     ///
-    /// ```
-    /// extern crate quote;
-    /// use quote::{Tokens, ToTokens};
-    ///
-    /// extern crate proc_macro2;
-    /// use proc_macro2::{TokenTree, TokenNode, Spacing, Span};
+    /// ```edition2018
+    /// use proc_macro2::{TokenTree, Spacing, Span, Punct, TokenStream};
+    /// use quote::{TokenStreamExt, ToTokens};
     ///
     /// pub struct Path {
     ///     pub global: bool,
@@ -33,18 +31,12 @@ pub trait ToTokens {
     /// }
     ///
     /// impl ToTokens for Path {
-    ///     fn to_tokens(&self, tokens: &mut Tokens) {
+    ///     fn to_tokens(&self, tokens: &mut TokenStream) {
     ///         for (i, segment) in self.segments.iter().enumerate() {
     ///             if i > 0 || self.global {
     ///                 // Double colon `::`
-    ///                 tokens.append(TokenTree {
-    ///                     span: Span::def_site(),
-    ///                     kind: TokenNode::Op(':', Spacing::Joint),
-    ///                 });
-    ///                 tokens.append(TokenTree {
-    ///                     span: Span::def_site(),
-    ///                     kind: TokenNode::Op(':', Spacing::Alone),
-    ///                 });
+    ///                 tokens.append(Punct::new(':', Spacing::Joint));
+    ///                 tokens.append(Punct::new(':', Spacing::Alone));
     ///             }
     ///             segment.to_tokens(tokens);
     ///         }
@@ -54,49 +46,53 @@ pub trait ToTokens {
     /// # pub struct PathSegment;
     /// #
     /// # impl ToTokens for PathSegment {
-    /// #     fn to_tokens(&self, tokens: &mut Tokens) {
+    /// #     fn to_tokens(&self, tokens: &mut TokenStream) {
     /// #         unimplemented!()
     /// #     }
     /// # }
-    /// #
-    /// # fn main() {}
     /// ```
-    fn to_tokens(&self, tokens: &mut Tokens);
+    fn to_tokens(&self, tokens: &mut TokenStream);
 
-    /// Convert `self` directly into a `Tokens` object.
+    /// Convert `self` directly into a `TokenStream` object.
     ///
     /// This method is implicitly implemented using `to_tokens`, and acts as a
     /// convenience method for consumers of the `ToTokens` trait.
-    fn into_tokens(self) -> Tokens
+    fn into_token_stream(self) -> TokenStream
     where
         Self: Sized,
     {
-        let mut tokens = Tokens::new();
+        let mut tokens = TokenStream::new();
         self.to_tokens(&mut tokens);
         tokens
     }
 }
 
 impl<'a, T: ?Sized + ToTokens> ToTokens for &'a T {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        (**self).to_tokens(tokens);
+    }
+}
+
+impl<'a, T: ?Sized + ToTokens> ToTokens for &'a mut T {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         (**self).to_tokens(tokens);
     }
 }
 
 impl<'a, T: ?Sized + ToOwned + ToTokens> ToTokens for Cow<'a, T> {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         (**self).to_tokens(tokens);
     }
 }
 
 impl<T: ?Sized + ToTokens> ToTokens for Box<T> {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         (**self).to_tokens(tokens);
     }
 }
 
 impl<T: ToTokens> ToTokens for Option<T> {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         if let Some(ref t) = *self {
             t.to_tokens(tokens);
         }
@@ -104,72 +100,99 @@ impl<T: ToTokens> ToTokens for Option<T> {
 }
 
 impl ToTokens for str {
-    fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.append(tt(TokenNode::Literal(Literal::string(self))));
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(Literal::string(self));
     }
 }
 
 impl ToTokens for String {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.as_str().to_tokens(tokens);
     }
 }
 
 macro_rules! primitive {
-    ($($t:ident)*) => ($(
+    ($($t:ident => $name:ident)*) => ($(
         impl ToTokens for $t {
-            fn to_tokens(&self, tokens: &mut Tokens) {
-                tokens.append(tt(TokenNode::Literal(Literal::$t(*self))));
+            fn to_tokens(&self, tokens: &mut TokenStream) {
+                tokens.append(Literal::$name(*self));
             }
         }
     )*)
 }
 
 primitive! {
-    i8 i16 i32 i64 isize
-    u8 u16 u32 u64 usize
-    f32 f64
+    i8 => i8_suffixed
+    i16 => i16_suffixed
+    i32 => i32_suffixed
+    i64 => i64_suffixed
+    isize => isize_suffixed
+
+    u8 => u8_suffixed
+    u16 => u16_suffixed
+    u32 => u32_suffixed
+    u64 => u64_suffixed
+    usize => usize_suffixed
+
+    f32 => f32_suffixed
+    f64 => f64_suffixed
+}
+
+#[cfg(integer128)]
+primitive! {
+    i128 => i128_suffixed
+    u128 => u128_suffixed
 }
 
 impl ToTokens for char {
-    fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.append(tt(TokenNode::Literal(Literal::character(*self))));
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(Literal::character(*self));
     }
 }
 
 impl ToTokens for bool {
-    fn to_tokens(&self, tokens: &mut Tokens) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let word = if *self { "true" } else { "false" };
-        tokens.append(tt(TokenNode::Term(Term::intern(word))));
+        tokens.append(Ident::new(word, Span::call_site()));
     }
 }
 
-impl ToTokens for Term {
-    fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.append(tt(TokenNode::Term(*self)));
+impl ToTokens for Group {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(self.clone());
+    }
+}
+
+impl ToTokens for Ident {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(self.clone());
+    }
+}
+
+impl ToTokens for Punct {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(self.clone());
     }
 }
 
 impl ToTokens for Literal {
-    fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.append(tt(TokenNode::Literal(self.clone())));
-    }
-}
-
-impl ToTokens for TokenNode {
-    fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.append(tt(self.clone()));
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append(self.clone());
     }
 }
 
 impl ToTokens for TokenTree {
-    fn to_tokens(&self, dst: &mut Tokens) {
+    fn to_tokens(&self, dst: &mut TokenStream) {
         dst.append(self.clone());
     }
 }
 
 impl ToTokens for TokenStream {
-    fn to_tokens(&self, dst: &mut Tokens) {
-        dst.append_all(self.clone().into_iter());
+    fn to_tokens(&self, dst: &mut TokenStream) {
+        dst.extend(iter::once(self.clone()));
+    }
+
+    fn into_token_stream(self) -> TokenStream {
+        self
     }
 }

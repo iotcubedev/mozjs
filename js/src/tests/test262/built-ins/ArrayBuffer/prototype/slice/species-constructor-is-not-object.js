@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-arraybuffer.prototype.slice
-es6id: 24.1.4.3
 description: >
   Throws TypeError if `constructor` property is not an object.
 info: |
@@ -26,7 +25,9 @@ features: [Symbol]
 
 var arrayBuffer = new ArrayBuffer(8);
 
-function callSlice() { arrayBuffer.slice(); }
+function callSlice() {
+  arrayBuffer.slice();
+}
 
 arrayBuffer.constructor = null;
 assert.throws(TypeError, callSlice, "`constructor` value is null");

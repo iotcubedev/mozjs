@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -13,11 +14,11 @@ flags: [async]
 
 var p = Promise.all([]);
 
-p.then(function (result) {
-    if (!(result instanceof Array)) {
-        $ERROR("Expected Promise.all([]) to be Array, actually " + result);
-    }
-    if (result.length !== 0) {
-        $ERROR("Expected Promise.all([]) to be empty Array, actually " + result);
-    }
+p.then(function(result) {
+  if (!(result instanceof Array)) {
+    $ERROR("Expected Promise.all([]) to be Array, actually " + result);
+  }
+  if (result.length !== 0) {
+    $ERROR("Expected Promise.all([]) to be empty Array, actually " + result);
+  }
 }).then($DONE, $DONE);

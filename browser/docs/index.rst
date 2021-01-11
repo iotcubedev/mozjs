@@ -5,7 +5,13 @@ Firefox
 This is the nascent documentation of the Firefox front-end code.
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
 
-   UITelemetry
+   browser/urlbar/index
    BrowserUsageTelemetry
+   extensions/formautofill/docs/index
+   components/newtab/docs/index
+   installer/windows/installer/index
+   base/sslerrorreport/index
+   base/tabbrowser/index
+   components/payments/docs/index

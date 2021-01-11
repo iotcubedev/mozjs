@@ -8,18 +8,18 @@
 // except according to those terms.
 //! A one-dimensional length, tagged with its units.
 
-use scale::TypedScale;
+use scale::Scale;
 use num::Zero;
 
 use num_traits::{NumCast, Saturating};
 use num::One;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::cmp::Ordering;
-use std::ops::{Add, Div, Mul, Neg, Sub};
-use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
-use std::marker::PhantomData;
-use std::fmt;
+use core::cmp::Ordering;
+use core::ops::{Add, Div, Mul, Neg, Sub};
+use core::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
+use core::marker::PhantomData;
+use core::fmt;
 
 /// A one-dimensional distance, with value represented by `T` and unit of measurement `Unit`.
 ///
@@ -30,10 +30,12 @@ use std::fmt;
 /// expression that requires a different unit.  It may be a type without values, such as an empty
 /// enum.
 ///
-/// You can multiply a `Length` by a `scale::TypedScale` to convert it from one unit to
-/// another. See the `TypedScale` docs for an example.
+/// You can multiply a `Length` by a `scale::Scale` to convert it from one unit to
+/// another. See the [`Scale`] docs for an example.
+///
+/// [`Scale`]: struct.Scale.html
 #[repr(C)]
-pub struct Length<T, Unit>(pub T, PhantomData<Unit>);
+pub struct Length<T, Unit>(pub T, #[doc(hidden)] pub PhantomData<Unit>);
 
 impl<T: Clone, Unit> Clone for Length<T, Unit> {
     fn clone(&self) -> Self {
@@ -139,10 +141,10 @@ impl<U, T: Clone + Saturating> Saturating for Length<T, U> {
 
 // length / length
 impl<Src, Dst, T: Clone + Div<T, Output = T>> Div<Length<T, Src>> for Length<T, Dst> {
-    type Output = TypedScale<T, Src, Dst>;
+    type Output = Scale<T, Src, Dst>;
     #[inline]
-    fn div(self, other: Length<T, Src>) -> TypedScale<T, Src, Dst> {
-        TypedScale::new(self.get() / other.get())
+    fn div(self, other: Length<T, Src>) -> Scale<T, Src, Dst> {
+        Scale::new(self.get() / other.get())
     }
 }
 
@@ -181,19 +183,19 @@ impl<T: Copy + Div<T, Output = T>, U> DivAssign<T> for Length<T, U> {
 }
 
 // length * scaleFactor
-impl<Src, Dst, T: Clone + Mul<T, Output = T>> Mul<TypedScale<T, Src, Dst>> for Length<T, Src> {
+impl<Src, Dst, T: Clone + Mul<T, Output = T>> Mul<Scale<T, Src, Dst>> for Length<T, Src> {
     type Output = Length<T, Dst>;
     #[inline]
-    fn mul(self, scale: TypedScale<T, Src, Dst>) -> Length<T, Dst> {
+    fn mul(self, scale: Scale<T, Src, Dst>) -> Length<T, Dst> {
         Length::new(self.get() * scale.get())
     }
 }
 
 // length / scaleFactor
-impl<Src, Dst, T: Clone + Div<T, Output = T>> Div<TypedScale<T, Src, Dst>> for Length<T, Dst> {
+impl<Src, Dst, T: Clone + Div<T, Output = T>> Div<Scale<T, Src, Dst>> for Length<T, Dst> {
     type Output = Length<T, Src>;
     #[inline]
-    fn div(self, scale: TypedScale<T, Src, Dst>) -> Length<T, Src> {
+    fn div(self, scale: Scale<T, Src, Dst>) -> Length<T, Src> {
         Length::new(self.get() / scale.get())
     }
 }
@@ -209,7 +211,12 @@ impl<U, T: Clone + Neg<Output = T>> Neg for Length<T, U> {
 
 impl<Unit, T0: NumCast + Clone> Length<T0, Unit> {
     /// Cast from one numeric representation to another, preserving the units.
-    pub fn cast<T1: NumCast + Clone>(&self) -> Option<Length<T1, Unit>> {
+    pub fn cast<T1: NumCast + Clone>(&self) -> Length<T1, Unit> {
+        self.try_cast().unwrap()
+    }
+
+    /// Fallible cast from one numeric representation to another, preserving the units.
+    pub fn try_cast<T1: NumCast + Clone>(&self) -> Option<Length<T1, Unit>> {
         NumCast::from(self.get()).map(Length::new)
     }
 }
@@ -260,8 +267,8 @@ mod tests {
     use num::Zero;
 
     use num_traits::Saturating;
-    use scale::TypedScale;
-    use std::f32::INFINITY;
+    use scale::Scale;
+    use core::f32::INFINITY;
 
     enum Inch {}
     enum Mm {}
@@ -372,21 +379,21 @@ mod tests {
 
     #[test]
     fn test_division_by_length() {
-        // Division results in a TypedScale from denominator units
+        // Division results in a Scale from denominator units
         // to numerator units.
         let length: Length<f32, Cm> = Length::new(5.0);
         let duration: Length<f32, Second> = Length::new(10.0);
 
         let result = length / duration;
 
-        let expected: TypedScale<f32, Second, Cm> = TypedScale::new(0.5);
+        let expected: Scale<f32, Second, Cm> = Scale::new(0.5);
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_multiplication() {
         let length_mm: Length<f32, Mm> = Length::new(10.0);
-        let cm_per_mm: TypedScale<f32, Mm, Cm> = TypedScale::new(0.1);
+        let cm_per_mm: Scale<f32, Mm, Cm> = Scale::new(0.1);
 
         let result = length_mm * cm_per_mm;
 
@@ -417,7 +424,7 @@ mod tests {
     #[test]
     fn test_division_by_scalefactor() {
         let length: Length<f32, Cm> = Length::new(5.0);
-        let cm_per_second: TypedScale<f32, Second, Cm> = TypedScale::new(10.0);
+        let cm_per_second: Scale<f32, Second, Cm> = Scale::new(10.0);
 
         let result = length / cm_per_second;
 
@@ -459,7 +466,7 @@ mod tests {
     fn test_cast() {
         let length_as_i32: Length<i32, Cm> = Length::new(5);
 
-        let result: Length<f32, Cm> = length_as_i32.cast().unwrap();
+        let result: Length<f32, Cm> = length_as_i32.cast();
 
         let length_as_f32: Length<f32, Cm> = Length::new(5.0);
         assert_eq!(result, length_as_f32);
@@ -507,7 +514,7 @@ mod tests {
 
         let result = length / length_zero;
 
-        let expected: TypedScale<f32, Cm, Cm> = TypedScale::new(INFINITY);
+        let expected: Scale<f32, Cm, Cm> = Scale::new(INFINITY);
         assert_eq!(result, expected);
     }
 }

@@ -80,7 +80,7 @@ function resolveCollatorInternals(lazyCollatorData) {
  */
 function getCollatorInternals(obj) {
     assert(IsObject(obj), "getCollatorInternals called with non-object");
-    assert(IsCollator(obj), "getCollatorInternals called with non-Collator");
+    assert(GuardToCollator(obj) !== null, "getCollatorInternals called with non-Collator");
 
     var internals = getIntlObjectInternals(obj);
     assert(internals.type === "Collator", "bad type escaped getIntlObjectInternals");
@@ -109,7 +109,7 @@ function getCollatorInternals(obj) {
  */
 function InitializeCollator(collator, locales, options) {
     assert(IsObject(collator), "InitializeCollator called with non-object");
-    assert(IsCollator(collator), "InitializeCollator called with non-Collator");
+    assert(GuardToCollator(collator) != null, "InitializeCollator called with non-Collator");
 
     // Lazy Collator data has the following structure:
     //
@@ -225,7 +225,7 @@ var collatorInternalProperties = {
         addSpecialMissingLanguageTags(locales);
         return (this._availableLocales = locales);
     },
-    relevantExtensionKeys: ["co", "kn", "kf"]
+    relevantExtensionKeys: ["co", "kf", "kn"],
 };
 
 /**
@@ -286,7 +286,7 @@ function collatorSortLocaleData() {
                 return "false";
             },
             kf: collatorSortCaseFirstDefault,
-        }
+        },
     };
     /* eslint-enable object-shorthand */
 }
@@ -313,30 +313,33 @@ function collatorSearchLocaleData() {
             kf: function() {
                 return "false";
             },
-        }
+        },
     };
     /* eslint-enable object-shorthand */
 }
 
 /**
- * Function to be bound and returned by Intl.Collator.prototype.compare.
+ * Create function to be cached and returned by Intl.Collator.prototype.compare.
  *
  * Spec: ECMAScript Internationalization API Specification, 10.3.3.1.
  */
-function collatorCompareToBind(x, y) {
-    // Step 1.
-    var collator = this;
+function createCollatorCompare(collator) {
+    // This function is not inlined in $Intl_Collator_compare_get to avoid
+    // creating a call-object on each call to $Intl_Collator_compare_get.
+    return function(x, y) {
+        // Step 1 (implicit).
 
-    // Step 2.
-    assert(IsObject(collator), "collatorCompareToBind called with non-object");
-    assert(IsCollator(collator), "collatorCompareToBind called with non-Collator");
+        // Step 2.
+        assert(IsObject(collator), "collatorCompareToBind called with non-object");
+        assert(GuardToCollator(collator) !== null, "collatorCompareToBind called with non-Collator");
 
-    // Steps 3-6
-    var X = ToString(x);
-    var Y = ToString(y);
+        // Steps 3-6
+        var X = ToString(x);
+        var Y = ToString(y);
 
-    // Step 7.
-    return intl_CompareStrings(collator, X, Y);
+        // Step 7.
+        return intl_CompareStrings(collator, X, Y);
+    };
 }
 
 /**
@@ -348,29 +351,28 @@ function collatorCompareToBind(x, y) {
  *
  * Spec: ECMAScript Internationalization API Specification, 10.3.3.
  */
-function Intl_Collator_compare_get() {
+// Uncloned functions with `$` prefix are allocated as extended function
+// to store the original name in `_SetCanonicalName`.
+function $Intl_Collator_compare_get() {
     // Step 1.
     var collator = this;
 
     // Steps 2-3.
-    if (!IsObject(collator) || !IsCollator(collator))
-        ThrowTypeError(JSMSG_INTL_OBJECT_NOT_INITED, "Collator", "compare", "Collator");
+    if (!IsObject(collator) || (collator = GuardToCollator(collator)) === null)
+        return callFunction(CallCollatorMethodIfWrapped, this, "$Intl_Collator_compare_get");
 
     var internals = getCollatorInternals(collator);
 
     // Step 4.
     if (internals.boundCompare === undefined) {
-        // Steps 4.a-b.
-        var F = callFunction(FunctionBind, collatorCompareToBind, collator);
-
-        // Step 4.c.
-        internals.boundCompare = F;
+        // Steps 4.a-c.
+        internals.boundCompare = createCollatorCompare(collator);
     }
 
     // Step 5.
     return internals.boundCompare;
 }
-_SetCanonicalName(Intl_Collator_compare_get, "get compare");
+_SetCanonicalName($Intl_Collator_compare_get, "get compare");
 
 /**
  * Returns the resolved options for a Collator object.
@@ -382,8 +384,8 @@ function Intl_Collator_resolvedOptions() {
     var collator = this;
 
     // Steps 2-3.
-    if (!IsObject(collator) || !IsCollator(collator))
-        ThrowTypeError(JSMSG_INTL_OBJECT_NOT_INITED, "Collator", "resolvedOptions", "Collator");
+    if (!IsObject(collator) || (collator = GuardToCollator(collator)) === null)
+        return callFunction(CallCollatorMethodIfWrapped, this, "Intl_Collator_resolvedOptions");
 
     var internals = getCollatorInternals(collator);
 

@@ -8,21 +8,18 @@
 
 #include "jsapi.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/dom/StructuredCloneTags.h"
 
 namespace mozilla {
 namespace dom {
 
-struct WorkerPrincipal final : public JSPrincipals
-{
+struct WorkerPrincipal final : public JSPrincipals {
   bool write(JSContext* aCx, JSStructuredCloneWriter* aWriter) override {
-    MOZ_CRASH("WorkerPrincipal::write not implemented");
-    return false;
+    return JS_WriteUint32Pair(aWriter, SCTAG_DOM_WORKER_PRINCIPAL, 0);
   }
 };
 
-JSPrincipals*
-GetWorkerPrincipal()
-{
+JSPrincipals* GetWorkerPrincipal() {
   static WorkerPrincipal sPrincipal;
 
   /*
@@ -43,11 +40,10 @@ GetWorkerPrincipal()
   return &sPrincipal;
 }
 
-void
-DestroyWorkerPrincipals(JSPrincipals* aPrincipals)
-{
-  MOZ_ASSERT_UNREACHABLE("Worker principals refcount should never fall below one");
+void DestroyWorkerPrincipals(JSPrincipals* aPrincipals) {
+  MOZ_ASSERT_UNREACHABLE(
+      "Worker principals refcount should never fall below one");
 }
 
-} // dom namespace
-} // mozilla namespace
+}  // namespace dom
+}  // namespace mozilla

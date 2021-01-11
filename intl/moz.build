@@ -26,11 +26,14 @@ DIRS += [
 
 EXPORTS.mozilla += [
     'Encoding.h',
+    'JapaneseDetector.h',
 ]
 
 EXPORTS += [
     '../third_party/rust/encoding_c/include/encoding_rs.h',
     '../third_party/rust/encoding_c/include/encoding_rs_statics.h',
+    '../third_party/rust/encoding_c_mem/include/encoding_rs_mem.h',
+    '../third_party/rust/shift_or_euc_c/include/shift_or_euc.h',
 ]
 
 with Files("**"):
@@ -49,4 +52,6 @@ with Files("update*"):
     BUG_COMPONENT = ("Core", "JavaScript: Internationalization API")
 
 with Files("icu_sources_data.py"):
-    BUG_COMPONENT = ("Core", "Build Config")
+    BUG_COMPONENT = ("Firefox Build System", "General")
+
+SPHINX_TREES['/intl'] = 'docs'

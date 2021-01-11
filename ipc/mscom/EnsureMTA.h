@@ -11,7 +11,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Unused.h"
-#include "mozilla/mscom/COMApartmentRegion.h"
 #include "mozilla/mscom/Utils.h"
 #include "nsCOMPtr.h"
 #include "nsIThread.h"
@@ -36,33 +35,34 @@ struct MTAReleaseInChildProcess;
 
 struct PreservedStreamDeleter;
 
-}
+}  // namespace detail
 
 // This class is OK to use as a temporary on the stack.
-class MOZ_STACK_CLASS EnsureMTA final
-{
-public:
+class MOZ_STACK_CLASS EnsureMTA final {
+ public:
   /**
    * This constructor just ensures that the MTA thread is up and running.
    */
-  EnsureMTA()
-  {
-    MOZ_ASSERT(NS_IsMainThread());
+  EnsureMTA() {
     nsCOMPtr<nsIThread> thread = GetMTAThread();
     MOZ_ASSERT(thread);
     Unused << thread;
   }
 
+  enum class Option {
+    Default,
+    // Forcibly dispatch to the thread returned by GetMTAThread(), even if the
+    // current thread is already inside a MTA.
+    ForceDispatch,
+  };
+
   template <typename FuncT>
-  explicit EnsureMTA(const FuncT& aClosure)
-  {
-    if (IsCurrentThreadMTA()) {
+  explicit EnsureMTA(const FuncT& aClosure, Option aOpt = Option::Default) {
+    if (aOpt != Option::ForceDispatch && IsCurrentThreadMTA()) {
       // We're already on the MTA, we can run aClosure directly
       aClosure();
       return;
     }
-
-    MOZ_ASSERT(NS_IsMainThread());
 
     // In this case we need to run aClosure on a background thread in the MTA
     nsCOMPtr<nsIThread> thread = GetMTAThread();
@@ -87,8 +87,8 @@ public:
       ::SetEvent(eventHandle);
     };
 
-    nsresult rv =
-      thread->Dispatch(NS_NewRunnableFunction("EnsureMTA", eventSetter), NS_DISPATCH_NORMAL);
+    nsresult rv = thread->Dispatch(
+        NS_NewRunnableFunction("EnsureMTA", eventSetter), NS_DISPATCH_NORMAL);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
     if (NS_FAILED(rv)) {
       return;
@@ -101,7 +101,7 @@ public:
     MOZ_ASSERT(waitResult == WAIT_OBJECT_0);
   }
 
-private:
+ private:
   static nsCOMPtr<nsIThread> GetMTAThread();
 
   // The following function is private in order to force any consumers to be
@@ -109,8 +109,7 @@ private:
   // AsyncOperation from becoming some kind of free-for-all mechanism for
   // asynchronously executing work on a background thread.
   template <typename FuncT>
-  static void AsyncOperation(const FuncT& aClosure)
-  {
+  static void AsyncOperation(const FuncT& aClosure) {
     if (IsCurrentThreadMTA()) {
       aClosure();
       return;
@@ -123,8 +122,8 @@ private:
     }
 
     DebugOnly<nsresult> rv = thread->Dispatch(
-      NS_NewRunnableFunction("mscom::EnsureMTA::AsyncOperation",
-                             aClosure), NS_DISPATCH_NORMAL);
+        NS_NewRunnableFunction("mscom::EnsureMTA::AsyncOperation", aClosure),
+        NS_DISPATCH_NORMAL);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 
@@ -140,8 +139,7 @@ private:
   friend struct mozilla::mscom::detail::PreservedStreamDeleter;
 };
 
-} // namespace mscom
-} // namespace mozilla
+}  // namespace mscom
+}  // namespace mozilla
 
-#endif // mozilla_mscom_EnsureMTA_h
-
+#endif  // mozilla_mscom_EnsureMTA_h

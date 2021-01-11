@@ -7,12 +7,18 @@
 
 #include "mozilla/net/PStunAddrsRequestParent.h"
 
+#include "nsICancelable.h"
+#include "nsIDNSServiceDiscovery.h"
+
+struct MDNSService;
+
 namespace mozilla {
 namespace net {
 
-class StunAddrsRequestParent : public PStunAddrsRequestParent
-{
-public:
+class StunAddrsRequestParent : public PStunAddrsRequestParent {
+  friend class PStunAddrsRequestParent;
+
+ public:
   StunAddrsRequestParent();
 
   NS_IMETHOD_(MozExternalRefCountType) AddRef();
@@ -20,10 +26,14 @@ public:
 
   mozilla::ipc::IPCResult Recv__delete__() override;
 
-protected:
-  virtual ~StunAddrsRequestParent() {}
+ protected:
+  virtual ~StunAddrsRequestParent();
 
   virtual mozilla::ipc::IPCResult RecvGetStunAddrs() override;
+  virtual mozilla::ipc::IPCResult RecvRegisterMDNSHostname(
+      const nsCString& hostname, const nsCString& address) override;
+  virtual mozilla::ipc::IPCResult RecvUnregisterMDNSHostname(
+      const nsCString& hostname) override;
   virtual void ActorDestroy(ActorDestroyReason why) override;
 
   nsCOMPtr<nsIThread> mMainThread;
@@ -35,11 +45,34 @@ protected:
   ThreadSafeAutoRefCnt mRefCnt;
   NS_DECL_OWNINGTHREAD
 
-private:
+ private:
   bool mIPCClosed;  // true if IPDL channel has been closed (child crash)
+
+  class MDNSServiceWrapper {
+   public:
+    explicit MDNSServiceWrapper(const std::string& ifaddr);
+    void RegisterHostname(const char* hostname, const char* address);
+    void UnregisterHostname(const char* hostname);
+
+    NS_IMETHOD_(MozExternalRefCountType) AddRef();
+    NS_IMETHOD_(MozExternalRefCountType) Release();
+
+   protected:
+    ThreadSafeAutoRefCnt mRefCnt;
+    NS_DECL_OWNINGTHREAD
+
+   private:
+    virtual ~MDNSServiceWrapper();
+    void StartIfRequired();
+
+    std::string ifaddr;
+    MDNSService* mMDNSService = nullptr;
+  };
+
+  static StaticRefPtr<MDNSServiceWrapper> mSharedMDNSService;
 };
 
-} // namespace net
-} // namespace mozilla
+}  // namespace net
+}  // namespace mozilla
 
-#endif // mozilla_net_StunAddrsRequestParent_h
+#endif  // mozilla_net_StunAddrsRequestParent_h

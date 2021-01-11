@@ -5,7 +5,7 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 from ..cli import BaseTryParser
-from ..vcs import VCSHelper
+from ..push import push_to_try, generate_try_task_config
 
 
 class EmptyParser(BaseTryParser):
@@ -13,8 +13,8 @@ class EmptyParser(BaseTryParser):
     common_groups = ['push']
 
 
-def run_empty_try(message='{msg}', push=True, **kwargs):
-    vcs = VCSHelper.create()
+def run(message='{msg}', push=True, closed_tree=False):
     msg = 'No try selector specified, use "Add New Jobs" to select tasks.'
-    return vcs.push_to_try('empty', message.format(msg=msg), [], push=push,
-                           closed_tree=kwargs["closed_tree"])
+    return push_to_try('empty', message.format(msg=msg),
+                       try_task_config=generate_try_task_config('empty', []),
+                       push=push, closed_tree=closed_tree)

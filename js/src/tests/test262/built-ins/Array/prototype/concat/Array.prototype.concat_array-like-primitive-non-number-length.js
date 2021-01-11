@@ -4,7 +4,6 @@
 
 /*---
 esid: sec-array.prototype.concat
-es6id: 22.1.3.1_3
 description: Array.prototype.concat array like primitive non number length
 includes: [compareArray.js]
 features: [Symbol.isConcatSpreadable]
@@ -15,9 +14,19 @@ var obj = {
   "5": "C"
 };
 obj[Symbol.isConcatSpreadable] = true;
-obj.length = {toString: function() { return "SIX"; }, valueOf: null };
+obj.length = {
+  toString: function() {
+    return "SIX";
+  },
+  valueOf: null
+};
 assert(compareArray([].concat(obj), []));
-obj.length = {toString: null, valueOf: function() { return "SIX"; } };
+obj.length = {
+  toString: null,
+  valueOf: function() {
+    return "SIX";
+  }
+};
 assert(compareArray([].concat(obj), []));
 
 reportCompare(0, 0);

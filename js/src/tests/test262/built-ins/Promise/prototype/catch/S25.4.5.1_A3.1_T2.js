@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -14,11 +15,10 @@ var obj = {};
 
 var p = Promise.reject(obj);
 
-p.then(function () {
-    $ERROR("Should not be called: did not expect promise to be fulfilled");
-}).catch(function (arg) {
-    if (arg !== obj) {
-        $ERROR("Should have been rejected with reason obj, got " + arg);
-    }
+p.then(function() {
+  $ERROR("Should not be called: did not expect promise to be fulfilled");
+}).catch(function(arg) {
+  if (arg !== obj) {
+    $ERROR("Should have been rejected with reason obj, got " + arg);
+  }
 }).then($DONE, $DONE);
-

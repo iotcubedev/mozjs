@@ -2,7 +2,7 @@
 <meta charset=utf-8>
 <head>
   <title>Full-run test for MakeCredential/GetAssertion for W3C Web Authentication</title>
-  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
   <script type="text/javascript" src="u2futil.js"></script>
   <script type="text/javascript" src="pkijs/common.js"></script>
   <script type="text/javascript" src="pkijs/asn1.js"></script>
@@ -25,6 +25,7 @@ SimpleTest.waitForExplicitFinish();
 SpecialPowers.pushPrefEnv({"set": [["security.webauth.webauthn", true],
                                    ["security.webauth.webauthn_enable_softtoken", true],
                                    ["security.webauth.webauthn_enable_usbtoken", false],
+                                   ["security.webauth.webauthn_enable_android_fido2", false],
                                    ["security.webauth.webauthn_testing_allow_direct_attestation", true]]},
 function() {
   is(navigator.authentication, undefined, "navigator.authentication does not exist any longer");
@@ -116,9 +117,7 @@ function() {
     ok(aAssertion.response.authenticatorData instanceof ArrayBuffer, "AuthenticatorAssertionResponse.AuthenticatorData is an ArrayBuffer");
     ok(aAssertion.response.signature === aAssertion.response.signature, "AuthenticatorAssertionResponse.Signature is SameObject");
     ok(aAssertion.response.signature instanceof ArrayBuffer, "AuthenticatorAssertionResponse.Signature is an ArrayBuffer");
-    ok(aAssertion.response.userHandle === aAssertion.response.userHandle, "AuthenticatorAssertionResponse.UserHandle is SameObject");
-    ok(aAssertion.response.userHandle instanceof ArrayBuffer, "AuthenticatorAssertionResponse.UserHandle is an ArrayBuffer");
-    is(aAssertion.response.userHandle.byteLength, 0, "AuthenticatorAssertionResponse.UserHandle is emtpy");
+    ok(aAssertion.response.userHandle === null, "AuthenticatorAssertionResponse.UserHandle is null for u2f authenticators");
 
     ok(aAssertion.response.authenticatorData.byteLength > 0, "Authenticator data exists");
     let clientData = JSON.parse(buffer2string(aAssertion.response.clientDataJSON));
@@ -185,7 +184,7 @@ function() {
       SimpleTest.finish();
     })
     .catch(function(aReason) {
-      ok(aReason.toString().startsWith("NotAllowedError"), "Expect NotAllowedError, got " + aReason);
+      ok(aReason.toString().startsWith("InvalidStateError"), "Expect InvalidStateError, got " + aReason);
       testAssertion(aCredInfo);
     });
   }

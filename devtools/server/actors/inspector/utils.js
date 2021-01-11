@@ -4,15 +4,71 @@
 
 "use strict";
 
-const {Ci, Cu} = require("chrome");
+const { Cu } = require("chrome");
 
+loader.lazyRequireGetter(this, "colorUtils", "devtools/shared/css/color", true);
 loader.lazyRequireGetter(this, "AsyncUtils", "devtools/shared/async-utils");
 loader.lazyRequireGetter(this, "flags", "devtools/shared/flags");
-loader.lazyRequireGetter(this, "DevToolsUtils", "devtools/shared/DevToolsUtils");
-loader.lazyRequireGetter(this, "nodeFilterConstants", "devtools/shared/dom-node-filter-constants");
+loader.lazyRequireGetter(
+  this,
+  "DevToolsUtils",
+  "devtools/shared/DevToolsUtils"
+);
+loader.lazyRequireGetter(
+  this,
+  "nodeFilterConstants",
+  "devtools/shared/dom-node-filter-constants"
+);
 
-loader.lazyRequireGetter(this, "isNativeAnonymous", "devtools/shared/layout/utils", true);
-loader.lazyRequireGetter(this, "isXBLAnonymous", "devtools/shared/layout/utils", true);
+loader.lazyRequireGetter(
+  this,
+  "isNativeAnonymous",
+  "devtools/shared/layout/utils",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "isXBLAnonymous",
+  "devtools/shared/layout/utils",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "CssLogic",
+  "devtools/server/actors/inspector/css-logic",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "getBackgroundFor",
+  "devtools/server/actors/accessibility/audit/contrast",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "loadSheetForBackgroundCalculation",
+  "devtools/server/actors/utils/accessibility",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "removeSheetForBackgroundCalculation",
+  "devtools/server/actors/utils/accessibility",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "getAdjustedQuads",
+  "devtools/shared/layout/utils",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "getTextProperties",
+  "devtools/shared/accessibility",
+  true
+);
 
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
@@ -27,7 +83,7 @@ const IMAGE_FETCHING_TIMEOUT = 500;
  * @return {String}
  *         Properly cased version of the node tag name
  */
-const getNodeDisplayName = function (rawNode) {
+const getNodeDisplayName = function(rawNode) {
   if (rawNode.nodeName && !rawNode.localName) {
     // The localName & prefix APIs have been moved from the Node interface to the Element
     // interface. Use Node.nodeName as a fallback.
@@ -36,12 +92,43 @@ const getNodeDisplayName = function (rawNode) {
   return (rawNode.prefix ? rawNode.prefix + ":" : "") + rawNode.localName;
 };
 
+/**
+ * Returns flex and grid information about a DOM node.
+ * In particular is it a grid flex/container and/or item?
+ *
+ * @param  {DOMNode} node
+ *         The node for which then information is required
+ * @return {Object}
+ *         An object like { grid: { isContainer, isItem }, flex: { isContainer, isItem } }
+ */
+function getNodeGridFlexType(node) {
+  return {
+    grid: getNodeGridType(node),
+    flex: getNodeFlexType(node),
+  };
+}
+
+function getNodeFlexType(node) {
+  return {
+    isContainer: node.getAsFlexContainer && !!node.getAsFlexContainer(),
+    isItem: !!node.parentFlexElement,
+  };
+}
+
+function getNodeGridType(node) {
+  return {
+    isContainer: node.getGridFragments && node.getGridFragments().length,
+    isItem: !!findGridParentContainerForNode(node),
+  };
+}
+
 function nodeDocument(node) {
   if (Cu.isDeadWrapper(node)) {
     return null;
   }
-  return node.ownerDocument ||
-         (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
+  return (
+    node.ownerDocument || (node.nodeType == Node.DOCUMENT_NODE ? node : null)
+  );
 }
 
 function isNodeDead(node) {
@@ -49,37 +136,42 @@ function isNodeDead(node) {
 }
 
 function isInXULDocument(el) {
-  let doc = nodeDocument(el);
-  return doc &&
-         doc.documentElement &&
-         doc.documentElement.namespaceURI === XUL_NS;
+  const doc = nodeDocument(el);
+  return (
+    doc && doc.documentElement && doc.documentElement.namespaceURI === XUL_NS
+  );
 }
 
 /**
  * This DeepTreeWalker filter skips whitespace text nodes and anonymous
- * content with the exception of ::before and ::after and anonymous content
- * in XUL document (needed to show all elements in the browser toolbox).
+ * content with the exception of ::marker, ::before, and ::after, plus anonymous
+ * content in XUL document (needed to show all elements in the browser toolbox).
  */
 function standardTreeWalkerFilter(node) {
-  // ::before and ::after are native anonymous content, but we always
+  // ::marker, ::before, and ::after are native anonymous content, but we always
   // want to show them
-  if (node.nodeName === "_moz_generated_content_before" ||
-      node.nodeName === "_moz_generated_content_after") {
+  if (
+    node.nodeName === "_moz_generated_content_marker" ||
+    node.nodeName === "_moz_generated_content_before" ||
+    node.nodeName === "_moz_generated_content_after"
+  ) {
     return nodeFilterConstants.FILTER_ACCEPT;
   }
 
   // Ignore empty whitespace text nodes that do not impact the layout.
   if (isWhitespaceTextNode(node)) {
     return nodeHasSize(node)
-           ? nodeFilterConstants.FILTER_ACCEPT
-           : nodeFilterConstants.FILTER_SKIP;
+      ? nodeFilterConstants.FILTER_ACCEPT
+      : nodeFilterConstants.FILTER_SKIP;
   }
 
   // Ignore all native and XBL anonymous content inside a non-XUL document.
   // We need to do this to skip things like form controls, scrollbars,
   // video controls, etc (see bug 1187482).
-  if (!isInXULDocument(node) && (isXBLAnonymous(node) ||
-                                  isNativeAnonymous(node))) {
+  if (
+    !isInXULDocument(node) &&
+    (isXBLAnonymous(node) || isNativeAnonymous(node))
+  ) {
     return nodeFilterConstants.FILTER_SKIP;
   }
 
@@ -94,10 +186,21 @@ function allAnonymousContentTreeWalkerFilter(node) {
   // Ignore empty whitespace text nodes that do not impact the layout.
   if (isWhitespaceTextNode(node)) {
     return nodeHasSize(node)
-           ? nodeFilterConstants.FILTER_ACCEPT
-           : nodeFilterConstants.FILTER_SKIP;
+      ? nodeFilterConstants.FILTER_ACCEPT
+      : nodeFilterConstants.FILTER_SKIP;
   }
   return nodeFilterConstants.FILTER_ACCEPT;
+}
+
+/**
+ * This DeepTreeWalker filter only accepts <scrollbar> anonymous content.
+ */
+function scrollbarTreeWalkerFilter(node) {
+  if (node.nodeName === "scrollbar" && nodeHasSize(node)) {
+    return nodeFilterConstants.FILTER_ACCEPT;
+  }
+
+  return nodeFilterConstants.FILTER_SKIP;
 }
 
 /**
@@ -106,7 +209,7 @@ function allAnonymousContentTreeWalkerFilter(node) {
  * @return {Boolean}
  */
 function isWhitespaceTextNode(node) {
-  return node.nodeType == Ci.nsIDOMNode.TEXT_NODE && !/[^\s]/.exec(node.nodeValue);
+  return node.nodeType == Node.TEXT_NODE && !/[^\s]/.exec(node.nodeValue);
 }
 
 /**
@@ -119,8 +222,11 @@ function nodeHasSize(node) {
     return false;
   }
 
-  let quads = node.getBoxQuads();
-  return quads.length && quads.some(quad => quad.bounds.width && quad.bounds.height);
+  const quads = node.getBoxQuads();
+  return quads.some(quad => {
+    const bounds = quad.getBounds();
+    return bounds.width && bounds.height;
+  });
 }
 
 /**
@@ -135,7 +241,7 @@ function nodeHasSize(node) {
  * fails to load or the load takes too long, the promise is rejected.
  */
 function ensureImageLoaded(image, timeout) {
-  let { HTMLImageElement } = image.ownerGlobal;
+  const { HTMLImageElement } = image.ownerGlobal;
   if (!(image instanceof HTMLImageElement)) {
     return Promise.reject("image must be an HTMLImageELement");
   }
@@ -146,10 +252,10 @@ function ensureImageLoaded(image, timeout) {
   }
 
   // This image is still loading.
-  let onLoad = AsyncUtils.listenOnce(image, "load");
+  const onLoad = AsyncUtils.listenOnce(image, "load");
 
   // Reject if loading fails.
-  let onError = AsyncUtils.listenOnce(image, "error").then(() => {
+  const onError = AsyncUtils.listenOnce(image, "error").then(() => {
     return Promise.reject("Image '" + image.src + "' failed to load.");
   });
 
@@ -189,11 +295,11 @@ function ensureImageLoaded(image, timeout) {
  *
  * If something goes wrong, the promise is rejected.
  */
-const imageToImageData = async function (node, maxDim) {
-  let { HTMLCanvasElement, HTMLImageElement } = node.ownerGlobal;
+const imageToImageData = async function(node, maxDim) {
+  const { HTMLCanvasElement, HTMLImageElement } = node.ownerGlobal;
 
-  let isImg = node instanceof HTMLImageElement;
-  let isCanvas = node instanceof HTMLCanvasElement;
+  const isImg = node instanceof HTMLImageElement;
+  const isCanvas = node instanceof HTMLCanvasElement;
 
   if (!isImg && !isCanvas) {
     throw new Error("node is not a <canvas> or <img> element.");
@@ -206,9 +312,9 @@ const imageToImageData = async function (node, maxDim) {
 
   // Get the image resize ratio if a maxDim was provided
   let resizeRatio = 1;
-  let imgWidth = node.naturalWidth || node.width;
-  let imgHeight = node.naturalHeight || node.height;
-  let imgMax = Math.max(imgWidth, imgHeight);
+  const imgWidth = node.naturalWidth || node.width;
+  const imgHeight = node.naturalHeight || node.height;
+  const imgMax = Math.max(imgWidth, imgHeight);
   if (maxDim && imgMax > maxDim) {
     resizeRatio = maxDim / imgMax;
   }
@@ -222,10 +328,10 @@ const imageToImageData = async function (node, maxDim) {
     imageData = node.src;
   } else {
     // Create a canvas to copy the rawNode into and get the imageData from
-    let canvas = node.ownerDocument.createElementNS(XHTML_NS, "canvas");
+    const canvas = node.ownerDocument.createElementNS(XHTML_NS, "canvas");
     canvas.width = imgWidth * resizeRatio;
     canvas.height = imgHeight * resizeRatio;
-    let ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d");
 
     // Copy the rawNode image or canvas in the new canvas and extract data
     ctx.drawImage(node, 0, 0, canvas.width, canvas.height);
@@ -237,16 +343,223 @@ const imageToImageData = async function (node, maxDim) {
     size: {
       naturalWidth: imgWidth,
       naturalHeight: imgHeight,
-      resized: resizeRatio !== 1
-    }
+      resized: resizeRatio !== 1,
+    },
   };
 };
 
+/**
+ * Finds the computed background color of the closest parent with a set background color.
+ *
+ * @param  {DOMNode}  node
+ *         Node for which we want to find closest background color.
+ * @return {String}
+ *         String with the background color of the form rgba(r, g, b, a). Defaults to
+ *         rgba(255, 255, 255, 1) if no background color is found.
+ */
+function getClosestBackgroundColor(node) {
+  let current = node;
+
+  while (current) {
+    const computedStyle = CssLogic.getComputedStyle(current);
+    if (computedStyle) {
+      const currentStyle = computedStyle.getPropertyValue("background-color");
+      if (colorUtils.isValidCSSColor(currentStyle)) {
+        const currentCssColor = new colorUtils.CssColor(currentStyle);
+        if (!currentCssColor.isTransparent()) {
+          return currentCssColor.rgba;
+        }
+      }
+    }
+
+    current = current.parentNode;
+  }
+
+  return "rgba(255, 255, 255, 1)";
+}
+
+/**
+ * Finds the background image of the closest parent where it is set.
+ *
+ * @param  {DOMNode}  node
+ *         Node for which we want to find the background image.
+ * @return {String}
+ *         String with the value of the background iamge property. Defaults to "none" if
+ *         no background image is found.
+ */
+function getClosestBackgroundImage(node) {
+  let current = node;
+
+  while (current) {
+    const computedStyle = CssLogic.getComputedStyle(current);
+    if (computedStyle) {
+      const currentBackgroundImage = computedStyle.getPropertyValue(
+        "background-image"
+      );
+      if (currentBackgroundImage !== "none") {
+        return currentBackgroundImage;
+      }
+    }
+
+    current = current.parentNode;
+  }
+
+  return "none";
+}
+
+/**
+ * If the provided node is a grid item, then return its parent grid.
+ *
+ * @param  {DOMNode} node
+ *         The node that is supposedly a grid item.
+ * @return {DOMNode|null}
+ *         The parent grid if found, null otherwise.
+ */
+function findGridParentContainerForNode(node) {
+  try {
+    while ((node = node.parentNode)) {
+      const display = node.ownerGlobal.getComputedStyle(node).display;
+
+      if (display.includes("grid")) {
+        return node;
+      } else if (display === "contents") {
+        // Continue walking up the tree since the parent node is a content element.
+        continue;
+      }
+
+      break;
+    }
+  } catch (e) {
+    // Getting the parentNode can fail when the supplied node is in shadow DOM.
+  }
+
+  return null;
+}
+
+/**
+ * Finds the background color range for the parent of a single text node
+ * (i.e. for multi-colored backgrounds with gradients, images) or a single
+ * background color for single-colored backgrounds. Defaults to the closest
+ * background color if an error is encountered.
+ *
+ * @param  {Object}
+ *         Node actor containing the following properties:
+ *         {DOMNode} rawNode
+ *         Node for which we want to calculate the color contrast.
+ *         {WalkerActor} walker
+ *         Walker actor used to check whether the node is the parent elm of a single text node.
+ * @return {Object}
+ *         Object with one or more of the following properties:
+ *         {Array|null} value
+ *         RGBA array for single-colored background. Null for multi-colored backgrounds.
+ *         {Array|null} min
+ *         RGBA array for the min luminance color in a multi-colored background.
+ *         Null for single-colored backgrounds.
+ *         {Array|null} max
+ *         RGBA array for the max luminance color in a multi-colored background.
+ *         Null for single-colored backgrounds.
+ */
+async function getBackgroundColor({ rawNode: node, walker }) {
+  // Fall back to calculating contrast against closest bg if:
+  // - not element node
+  // - more than one child
+  // Avoid calculating bounds and creating doc walker by returning early.
+  if (node.nodeType != Node.ELEMENT_NODE || node.children.length > 0) {
+    return {
+      value: colorUtils.colorToRGBA(
+        getClosestBackgroundColor(node),
+        true,
+        true
+      ),
+    };
+  }
+
+  const bounds = getAdjustedQuads(
+    node.ownerGlobal,
+    node.firstChild,
+    "content"
+  )[0].bounds;
+
+  // Fall back to calculating contrast against closest bg if there are no bounds for text node.
+  // Avoid creating doc walker by returning early.
+  if (!bounds) {
+    return {
+      value: colorUtils.colorToRGBA(
+        getClosestBackgroundColor(node),
+        true,
+        true
+      ),
+    };
+  }
+
+  const docWalker = walker.getDocumentWalker(node);
+  const firstChild = docWalker.firstChild();
+
+  // Fall back to calculating contrast against closest bg if:
+  // - more than one child
+  // - unique child is not a text node
+  if (
+    !firstChild ||
+    docWalker.nextSibling() ||
+    firstChild.nodeType !== Node.TEXT_NODE
+  ) {
+    return {
+      value: colorUtils.colorToRGBA(
+        getClosestBackgroundColor(node),
+        true,
+        true
+      ),
+    };
+  }
+
+  // Try calculating complex backgrounds for node
+  const win = node.ownerGlobal;
+  loadSheetForBackgroundCalculation(win);
+  const computedStyle = CssLogic.getComputedStyle(node);
+  const props = computedStyle ? getTextProperties(computedStyle) : null;
+
+  // Fall back to calculating contrast against closest bg if there are no text props.
+  if (!props) {
+    return {
+      value: colorUtils.colorToRGBA(
+        getClosestBackgroundColor(node),
+        true,
+        true
+      ),
+    };
+  }
+
+  const bgColor = await getBackgroundFor(node, {
+    bounds,
+    win,
+    convertBoundsRelativeToViewport: false,
+    size: props.size,
+    isBoldText: props.isBoldText,
+  });
+  removeSheetForBackgroundCalculation(win);
+
+  return (
+    bgColor || {
+      value: colorUtils.colorToRGBA(
+        getClosestBackgroundColor(node),
+        true,
+        true
+      ),
+    }
+  );
+}
+
 module.exports = {
   allAnonymousContentTreeWalkerFilter,
+  findGridParentContainerForNode,
+  getBackgroundColor,
+  getClosestBackgroundColor,
+  getClosestBackgroundImage,
   getNodeDisplayName,
+  getNodeGridFlexType,
   imageToImageData,
   isNodeDead,
   nodeDocument,
+  scrollbarTreeWalkerFilter,
   standardTreeWalkerFilter,
 };

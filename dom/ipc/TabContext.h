@@ -20,16 +20,15 @@ class IPCTabContext;
 /**
  * TabContext encapsulates information about an iframe that may be a mozbrowser.
  *
- * TabParent and TabChild both inherit from TabContext, and you can also have
- * standalone TabContext objects.
+ * BrowserParent and BrowserChild both inherit from TabContext, and you can also
+ * have standalone TabContext objects.
  *
  * This class is immutable except by calling one of the protected
  * SetTabContext*() methods (and those methods can only be called once).  See
  * also MutableTabContext.
  */
-class TabContext
-{
-public:
+class TabContext {
+ public:
   TabContext();
 
   /* (The implicit copy-constructor and operator= are fine.) */
@@ -48,15 +47,6 @@ public:
   bool IsMozBrowserElement() const;
 
   /**
-   * Does this TabContext correspond to an isolated mozbrowser?
-   *
-   * <iframe mozbrowser> is a mozbrowser element, but <xul:browser> is not.
-   * <iframe mozbrowser noisolation> does not count as isolated since isolation
-   * is disabled.  Isolation can only be disabled by chrome pages.
-   */
-  bool IsIsolatedMozBrowserElement() const;
-
-  /**
    * Does this TabContext correspond to a mozbrowser?  This is equivalent to
    * IsMozBrowserElement().  Returns false for <xul:browser>, which isn't a
    * mozbrowser.
@@ -65,6 +55,8 @@ public:
 
   bool IsJSPlugin() const;
   int32_t JSPluginId() const;
+
+  uint64_t ChromeOuterWindowID() const;
 
   /**
    * OriginAttributesRef() returns the OriginAttributes of this frame to
@@ -79,10 +71,11 @@ public:
    */
   const nsAString& PresentationURL() const;
 
-  UIStateChangeType ShowAccelerators() const;
   UIStateChangeType ShowFocusRings() const;
 
-protected:
+  uint32_t MaxTouchPoints() const { return mMaxTouchPoints; }
+
+ protected:
   friend class MaybeInvalidTabContext;
 
   /**
@@ -104,11 +97,11 @@ protected:
    */
   void SetPrivateBrowsingAttributes(bool aIsPrivateBrowsing);
 
-  bool SetTabContext(bool aIsMozBrowserElement,
-                     UIStateChangeType aShowAccelerators,
+  bool SetTabContext(bool aIsMozBrowserElement, uint64_t aChromeOuterWindowID,
                      UIStateChangeType aShowFocusRings,
                      const OriginAttributes& aOriginAttributes,
-                     const nsAString& aPresentationURL);
+                     const nsAString& aPresentationURL,
+                     uint32_t aMaxTouchPoints);
 
   /**
    * Modify this TabContext to match the given TabContext.  This is a special
@@ -122,14 +115,20 @@ protected:
   bool UpdateTabContextAfterSwap(const TabContext& aContext);
 
   /**
-   * Set this TabContext to be for a JS plugin. aPluginID is the id of the JS plugin
+   * Set this TabContext to be for a JS plugin. aPluginID is the id of the JS
+   * plugin
    * (@see nsFakePlugin::mId).
-   * As with the other protected mutator methods, this lets you modify a TabContext once.
+   * As with the other protected mutator methods, this lets you modify a
+   * TabContext once.
    * (@see TabContext::SetTabContext above for more details).
    */
   bool SetTabContextForJSPluginFrame(int32_t aJSPluginID);
 
-private:
+  void SetMaxTouchPoints(uint32_t aMaxTouchPoints) {
+    mMaxTouchPoints = aMaxTouchPoints;
+  }
+
+ private:
   /**
    * Has this TabContext been initialized?  If so, mutator methods will fail.
    */
@@ -142,6 +141,11 @@ private:
    * mozbrowser elements.
    */
   bool mIsMozBrowserElement;
+
+  /**
+   * The outerWindowID of the window hosting the remote frameloader.
+   */
+  uint64_t mChromeOuterWindowID;
 
   int32_t mJSPluginID;
 
@@ -156,10 +160,14 @@ private:
   nsString mPresentationURL;
 
   /**
-   * Keyboard indicator state (focus rings, accelerators).
+   * Keyboard indicator state (focus rings).
    */
-  UIStateChangeType mShowAccelerators;
   UIStateChangeType mShowFocusRings;
+
+  /**
+   * Maximum number of touch points.
+   */
+  uint32_t mMaxTouchPoints;
 };
 
 /**
@@ -167,33 +175,25 @@ private:
  * methods are public instead of protected.  You can still only call these
  * mutation methods once on a given object.
  */
-class MutableTabContext : public TabContext
-{
-public:
-  bool SetTabContext(const TabContext& aContext)
-  {
+class MutableTabContext : public TabContext {
+ public:
+  bool SetTabContext(const TabContext& aContext) {
     return TabContext::SetTabContext(aContext);
   }
 
-  bool
-  SetTabContext(bool aIsMozBrowserElement,
-                UIStateChangeType aShowAccelerators,
-                UIStateChangeType aShowFocusRings,
-                const OriginAttributes& aOriginAttributes,
-                const nsAString& aPresentationURL = EmptyString())
-  {
-    return TabContext::SetTabContext(aIsMozBrowserElement,
-                                     aShowAccelerators,
-                                     aShowFocusRings,
-                                     aOriginAttributes,
-                                     aPresentationURL);
+  bool SetTabContext(bool aIsMozBrowserElement, uint64_t aChromeOuterWindowID,
+                     UIStateChangeType aShowFocusRings,
+                     const OriginAttributes& aOriginAttributes,
+                     const nsAString& aPresentationURL,
+                     uint32_t aMaxTouchPoints) {
+    return TabContext::SetTabContext(aIsMozBrowserElement, aChromeOuterWindowID,
+                                     aShowFocusRings, aOriginAttributes,
+                                     aPresentationURL, aMaxTouchPoints);
   }
 
-  bool SetTabContextForJSPluginFrame(uint32_t aJSPluginID)
-  {
+  bool SetTabContextForJSPluginFrame(uint32_t aJSPluginID) {
     return TabContext::SetTabContextForJSPluginFrame(aJSPluginID);
   }
-
 };
 
 /**
@@ -218,9 +218,8 @@ public:
  *     UseTabContext(tc.GetTabContext());
  *   }
  */
-class MaybeInvalidTabContext
-{
-public:
+class MaybeInvalidTabContext {
+ public:
   /**
    * This constructor copies the information in aContext and sets IsValid() as
    * appropriate.
@@ -246,7 +245,7 @@ public:
    */
   const TabContext& GetTabContext();
 
-private:
+ private:
   MaybeInvalidTabContext(const MaybeInvalidTabContext&) = delete;
   MaybeInvalidTabContext& operator=(const MaybeInvalidTabContext&) = delete;
 
@@ -254,7 +253,7 @@ private:
   MutableTabContext mTabContext;
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
 #endif

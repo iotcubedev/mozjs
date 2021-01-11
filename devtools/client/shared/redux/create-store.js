@@ -3,13 +3,29 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { createStore, applyMiddleware } = require("devtools/client/shared/vendor/redux");
+const {
+  combineReducers,
+  createStore,
+  applyMiddleware,
+} = require("devtools/client/shared/vendor/redux");
 const { thunk } = require("./middleware/thunk");
 const { waitUntilService } = require("./middleware/wait-service");
 const { task } = require("./middleware/task");
-const { log } = require("./middleware/log");
 const { promise } = require("./middleware/promise");
-const { history } = require("./middleware/history");
+const flags = require("devtools/shared/flags");
+
+loader.lazyRequireGetter(
+  this,
+  "history",
+  "devtools/client/shared/redux/middleware/history",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "log",
+  "devtools/client/shared/redux/middleware/log",
+  true
+);
 
 /**
  * This creates a dispatcher with all the standard middleware in place
@@ -22,7 +38,7 @@ const { history } = require("./middleware/history");
  *                   used in tests.
  *        - middleware: array of middleware to be included in the redux store
  */
-module.exports = (opts = {}) => {
+const createStoreWithMiddleware = (opts = {}) => {
   const middleware = [
     task,
     thunk,
@@ -32,7 +48,7 @@ module.exports = (opts = {}) => {
     // operate on "already transformed" actions. Actions going through
     // them shouldn't have any special fields like promises, they
     // should just be normal JSON objects.
-    waitUntilService
+    waitUntilService,
   ];
 
   if (opts.history) {
@@ -48,4 +64,31 @@ module.exports = (opts = {}) => {
   }
 
   return applyMiddleware(...middleware)(createStore);
+};
+
+module.exports = (
+  reducers,
+  { shouldLog = false, initialState = undefined } = {}
+) => {
+  const reducer =
+    typeof reducers === "function" ? reducers : combineReducers(reducers);
+
+  let historyEntries;
+
+  // If testing, store the action history in an array
+  // we'll later attach to the store
+  if (flags.testing) {
+    historyEntries = [];
+  }
+
+  const store = createStoreWithMiddleware({
+    log: flags.testing && shouldLog,
+    history: historyEntries,
+  })(reducer, initialState);
+
+  if (history) {
+    store.history = historyEntries;
+  }
+
+  return store;
 };

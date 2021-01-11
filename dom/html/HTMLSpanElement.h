@@ -12,31 +12,25 @@
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
 #include "nsAtom.h"
-#ifdef MOZ_OLD_STYLE
-#include "nsRuleData.h"
-#endif
 
 namespace mozilla {
 namespace dom {
 
-class HTMLSpanElement final : public nsGenericHTMLElement
-{
-public:
-  explicit HTMLSpanElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
-    : nsGenericHTMLElement(aNodeInfo)
-  {
-  }
+class HTMLSpanElement final : public nsGenericHTMLElement {
+ public:
+  explicit HTMLSpanElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+      : nsGenericHTMLElement(std::move(aNodeInfo)) {}
 
-  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult,
-                         bool aPreallocateChildren) const override;
+  virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-protected:
+ protected:
   virtual ~HTMLSpanElement();
 
-  virtual JSObject* WrapNode(JSContext *aCx, JS::Handle<JSObject*> aGivenProto) override;
+  virtual JSObject* WrapNode(JSContext* aCx,
+                             JS::Handle<JSObject*> aGivenProto) override;
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_dom_HTMLSpanElement_h
+#endif  // mozilla_dom_HTMLSpanElement_h

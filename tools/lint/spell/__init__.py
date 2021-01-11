@@ -6,25 +6,34 @@ from __future__ import absolute_import, print_function
 
 import os
 import signal
-import which
 import re
 
-# Py3/Py2 compatibility.
+# py2-compat
 try:
     from json.decoder import JSONDecodeError
 except ImportError:
     JSONDecodeError = ValueError
 
+from mozfile import which
 from mozlint import result
+from mozlint.util import pip
 from mozprocess import ProcessHandlerMixin
 
+here = os.path.abspath(os.path.dirname(__file__))
+CODESPELL_REQUIREMENTS_PATH = os.path.join(here, 'codespell_requirements.txt')
 
 CODESPELL_NOT_FOUND = """
-Unable to locate codespell, please ensure it is installed and in
-your PATH or set the CODESPELL environment variable.
+Could not find codespell! Install codespell and try again.
 
-https://github.com/lucasdemarchi/codespell or your system's package manager.
-""".strip()
+    $ pip install -U --require-hashes -r {}
+""".strip().format(CODESPELL_REQUIREMENTS_PATH)
+
+
+CODESPELL_INSTALL_ERROR = """
+Unable to install correct version of codespell
+Try to install it manually with:
+    $ pip install -U --require-hashes -r {}
+""".strip().format(CODESPELL_REQUIREMENTS_PATH)
 
 results = []
 
@@ -50,9 +59,9 @@ class CodespellProcess(ProcessHandlerMixin):
         m = re.match(r'^[a-z][A-Z][a-z]*', typo)
         if m:
             return
-        res = {'path': os.path.relpath(abspath, self.config['root']),
+        res = {'path': abspath,
                'message': typo + " ==> " + correct,
-               'level': "warning",
+               'level': 'error',
                'lineno': line,
                }
         results.append(result.from_config(self.config, **res))
@@ -81,13 +90,14 @@ def get_codespell_binary():
     if binary:
         return binary
 
-    try:
-        return which.which('codespell')
-    except which.WhichError:
-        return None
+    return which('codespell')
 
 
 def lint(paths, config, fix=None, **lintargs):
+
+    if not pip.reinstall_program(CODESPELL_REQUIREMENTS_PATH):
+        print(CODESPELL_INSTALL_ERROR)
+        return 1
 
     binary = get_codespell_binary()
 
@@ -98,18 +108,22 @@ def lint(paths, config, fix=None, **lintargs):
         return []
 
     config['root'] = lintargs['root']
+    exclude_list = os.path.join(here, 'exclude-list.txt')
     cmd_args = [binary,
                 '--disable-colors',
                 # Silence some warnings:
                 # 1: disable warnings about wrong encoding
                 # 2: disable warnings about binary file
-                '--quiet-level=3',
+                # 4: shut down warnings about automatic fixes
+                #    that were disabled in dictionary.
+                '--quiet-level=7',
+                '--ignore-words=' + exclude_list,
+                # Ignore dictonnaries
+                '--skip=*.dic',
                 ]
 
-# Disabled for now because of
-# https://github.com/lucasdemarchi/codespell/issues/314
-#    if fix:
-#        cmd_args.append('--write-changes')
+    if fix:
+        cmd_args.append('--write-changes')
 
     base_command = cmd_args + paths
 

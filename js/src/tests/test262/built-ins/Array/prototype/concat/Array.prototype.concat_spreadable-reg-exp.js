@@ -5,7 +5,6 @@
 
 /*---
 esid: sec-array.prototype.concat
-es6id: 22.1.3.1_3
 description: Array.prototype.concat Symbol.isConcatSpreadable reg exp
 includes: [compareArray.js]
 features: [Symbol.isConcatSpreadable]
@@ -27,7 +26,7 @@ assert(compareArray([].concat(/abc/), [void 0, void 0, void 0]));
 RegExp.prototype[0] = 1;
 RegExp.prototype[1] = 2;
 RegExp.prototype[2] = 3;
-assert(compareArray([].concat(/abc/), [1,2,3]));
+assert(compareArray([].concat(/abc/), [1, 2, 3]));
 
 delete RegExp.prototype[Symbol.isConcatSpreadable];
 delete RegExp.prototype[0];

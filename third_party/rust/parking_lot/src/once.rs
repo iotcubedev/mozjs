@@ -5,17 +5,21 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-#[cfg(feature = "nightly")]
-use std::sync::atomic::{AtomicU8, ATOMIC_U8_INIT, Ordering, fence};
-#[cfg(feature = "nightly")]
-type U8 = u8;
-#[cfg(not(feature = "nightly"))]
-use stable::{AtomicU8, ATOMIC_U8_INIT, Ordering, fence};
-#[cfg(not(feature = "nightly"))]
-type U8 = usize;
-use std::mem;
+use crate::util::UncheckedOptionExt;
+#[cfg(has_sized_atomics)]
+use core::sync::atomic::AtomicU8;
+#[cfg(not(has_sized_atomics))]
+use core::sync::atomic::AtomicUsize as AtomicU8;
+use core::{
+    fmt, mem,
+    sync::atomic::{fence, Ordering},
+};
 use parking_lot_core::{self, SpinWait, DEFAULT_PARK_TOKEN, DEFAULT_UNPARK_TOKEN};
-use util::UncheckedOptionExt;
+
+#[cfg(has_sized_atomics)]
+type U8 = u8;
+#[cfg(not(has_sized_atomics))]
+type U8 = usize;
 
 const DONE_BIT: U8 = 1;
 const POISON_BIT: U8 = 2;
@@ -34,14 +38,14 @@ pub enum OnceState {
     /// A thread is currently executing a closure.
     InProgress,
 
-    /// A closure has completed sucessfully.
+    /// A closure has completed successfully.
     Done,
 }
 
 impl OnceState {
     /// Returns whether the associated `Once` has been poisoned.
     ///
-    /// Once an initalization routine for a `Once` has panicked it will forever
+    /// Once an initialization routine for a `Once` has panicked it will forever
     /// indicate to future forced initialization routines that it is poisoned.
     #[inline]
     pub fn poisoned(&self) -> bool {
@@ -51,7 +55,7 @@ impl OnceState {
         }
     }
 
-    /// Returns whether the associated `Once` has successfullly executed a
+    /// Returns whether the associated `Once` has successfully executed a
     /// closure.
     #[inline]
     pub fn done(&self) -> bool {
@@ -77,9 +81,9 @@ impl OnceState {
 /// # Examples
 ///
 /// ```
-/// use parking_lot::{Once, ONCE_INIT};
+/// use parking_lot::Once;
 ///
-/// static START: Once = ONCE_INIT;
+/// static START: Once = Once::new();
 ///
 /// START.call_once(|| {
 ///     // run initialization here
@@ -87,21 +91,10 @@ impl OnceState {
 /// ```
 pub struct Once(AtomicU8);
 
-/// Initialization value for static `Once` values.
-pub const ONCE_INIT: Once = Once(ATOMIC_U8_INIT);
-
 impl Once {
     /// Creates a new `Once` value.
-    #[cfg(feature = "nightly")]
     #[inline]
     pub const fn new() -> Once {
-        Once(AtomicU8::new(0))
-    }
-
-    /// Creates a new `Once` value.
-    #[cfg(not(feature = "nightly"))]
-    #[inline]
-    pub fn new() -> Once {
         Once(AtomicU8::new(0))
     }
 
@@ -137,10 +130,10 @@ impl Once {
     /// # Examples
     ///
     /// ```
-    /// use parking_lot::{Once, ONCE_INIT};
+    /// use parking_lot::Once;
     ///
     /// static mut VAL: usize = 0;
-    /// static INIT: Once = ONCE_INIT;
+    /// static INIT: Once = Once::new();
     ///
     /// // Accessing a `static mut` is unsafe much of the time, but if we do so
     /// // in a synchronized fashion (e.g. write once or read all) then we're
@@ -171,7 +164,8 @@ impl Once {
     /// `call_once` to also panic.
     #[inline]
     pub fn call_once<F>(&self, f: F)
-        where F: FnOnce()
+    where
+        F: FnOnce(),
     {
         if self.0.load(Ordering::Acquire) == DONE_BIT {
             return;
@@ -192,15 +186,15 @@ impl Once {
     /// not).
     #[inline]
     pub fn call_once_force<F>(&self, f: F)
-        where F: FnOnce(OnceState)
+    where
+        F: FnOnce(OnceState),
     {
         if self.0.load(Ordering::Acquire) == DONE_BIT {
             return;
         }
 
         let mut f = Some(f);
-        self.call_once_slow(true,
-                            &mut |state| unsafe { f.take().unchecked_unwrap()(state) });
+        self.call_once_slow(true, &mut |state| unsafe { f.take().unchecked_unwrap()(state) });
     }
 
     // This is a non-generic function to reduce the monomorphization cost of
@@ -215,8 +209,7 @@ impl Once {
     // currently no way to take an `FnOnce` and call it via virtual dispatch
     // without some allocation overhead.
     #[cold]
-    #[inline(never)]
-    fn call_once_slow(&self, ignore_poison: bool, f: &mut FnMut(OnceState)) {
+    fn call_once_slow(&self, ignore_poison: bool, f: &mut dyn FnMut(OnceState)) {
         let mut spinwait = SpinWait::new();
         let mut state = self.0.load(Ordering::Relaxed);
         loop {
@@ -239,11 +232,12 @@ impl Once {
             // We also clear the poison bit since we are going to try running
             // the closure again.
             if state & LOCKED_BIT == 0 {
-                match self.0
-                    .compare_exchange_weak(state,
-                                           (state | LOCKED_BIT) & !POISON_BIT,
-                                           Ordering::Acquire,
-                                           Ordering::Relaxed) {
+                match self.0.compare_exchange_weak(
+                    state,
+                    (state | LOCKED_BIT) & !POISON_BIT,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
                     Ok(_) => break,
                     Err(x) => state = x,
                 }
@@ -258,10 +252,12 @@ impl Once {
 
             // Set the parked bit
             if state & PARKED_BIT == 0 {
-                if let Err(x) = self.0.compare_exchange_weak(state,
-                                                             state | PARKED_BIT,
-                                                             Ordering::Relaxed,
-                                                             Ordering::Relaxed) {
+                if let Err(x) = self.0.compare_exchange_weak(
+                    state,
+                    state | PARKED_BIT,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
                     state = x;
                     continue;
                 }
@@ -274,12 +270,14 @@ impl Once {
                 let validate = || self.0.load(Ordering::Relaxed) == LOCKED_BIT | PARKED_BIT;
                 let before_sleep = || {};
                 let timed_out = |_, _| unreachable!();
-                parking_lot_core::park(addr,
-                                       validate,
-                                       before_sleep,
-                                       timed_out,
-                                       DEFAULT_PARK_TOKEN,
-                                       None);
+                parking_lot_core::park(
+                    addr,
+                    validate,
+                    before_sleep,
+                    timed_out,
+                    DEFAULT_PARK_TOKEN,
+                    None,
+                );
             }
 
             // Loop back and check if the done bit was set
@@ -305,11 +303,7 @@ impl Once {
         // At this point we have the lock, so run the closure. Make sure we
         // properly clean up if the closure panicks.
         let guard = PanicGuard(self);
-        let once_state = if state & POISON_BIT != 0 {
-            OnceState::Poisoned
-        } else {
-            OnceState::New
-        };
+        let once_state = if state & POISON_BIT != 0 { OnceState::Poisoned } else { OnceState::New };
         f(once_state);
         mem::forget(guard);
 
@@ -331,17 +325,22 @@ impl Default for Once {
     }
 }
 
+impl fmt::Debug for Once {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Once").field("state", &self.state()).finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "nightly")]
+    use crate::Once;
     use std::panic;
     use std::sync::mpsc::channel;
     use std::thread;
-    use {Once, ONCE_INIT};
 
     #[test]
     fn smoke_once() {
-        static O: Once = ONCE_INIT;
+        static O: Once = Once::new();
         let mut a = 0;
         O.call_once(|| a += 1);
         assert_eq!(a, 1);
@@ -351,7 +350,7 @@ mod tests {
 
     #[test]
     fn stampede_once() {
-        static O: Once = ONCE_INIT;
+        static O: Once = Once::new();
         static mut RUN: bool = false;
 
         let (tx, rx) = channel();
@@ -385,17 +384,20 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "nightly")]
     #[test]
     fn poison_bad() {
-        static O: Once = ONCE_INIT;
+        static O: Once = Once::new();
 
         // poison the once
-        let t = panic::catch_unwind(|| { O.call_once(|| panic!()); });
+        let t = panic::catch_unwind(|| {
+            O.call_once(|| panic!());
+        });
         assert!(t.is_err());
 
         // poisoning propagates
-        let t = panic::catch_unwind(|| { O.call_once(|| {}); });
+        let t = panic::catch_unwind(|| {
+            O.call_once(|| {});
+        });
         assert!(t.is_err());
 
         // we can subvert poisoning, however
@@ -410,13 +412,14 @@ mod tests {
         O.call_once(|| {});
     }
 
-    #[cfg(feature = "nightly")]
     #[test]
     fn wait_for_force_to_finish() {
-        static O: Once = ONCE_INIT;
+        static O: Once = Once::new();
 
         // poison the once
-        let t = panic::catch_unwind(|| { O.call_once(|| panic!()); });
+        let t = panic::catch_unwind(|| {
+            O.call_once(|| panic!());
+        });
         assert!(t.is_err());
 
         // make sure someone's waiting inside the once via a force
@@ -435,7 +438,9 @@ mod tests {
         // put another waiter on the once
         let t2 = thread::spawn(|| {
             let mut called = false;
-            O.call_once(|| { called = true; });
+            O.call_once(|| {
+                called = true;
+            });
             assert!(!called);
         });
 
@@ -443,6 +448,12 @@ mod tests {
 
         assert!(t1.join().is_ok());
         assert!(t2.join().is_ok());
+    }
 
+    #[test]
+    fn test_once_debug() {
+        static O: Once = Once::new();
+
+        assert_eq!(format!("{:?}", O), "Once { state: New }");
     }
 }

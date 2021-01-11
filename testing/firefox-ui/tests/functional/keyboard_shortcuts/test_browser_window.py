@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
 from firefox_puppeteer import PuppeteerMixin
 from marionette_driver import Wait
 from marionette_harness import MarionetteTestCase
@@ -45,7 +46,7 @@ class TestBrowserWindowShortcuts(PuppeteerMixin, MarionetteTestCase):
                                    accel=True)
 
         # TODO: Check that the right input box is focused
-        # Located below searchbar as class="autocomplete-textbox textbox-input"
+        # Located below searchbar as class="textbox-input"
         # Anon locator has not been released yet (bug 1080764)
         def has_input_selected(mn):
             selection_name = mn.execute_script("""

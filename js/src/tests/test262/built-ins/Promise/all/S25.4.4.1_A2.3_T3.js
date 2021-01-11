@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -11,8 +12,8 @@ flags: [async]
 
 var arg = [];
 
-Promise.all(arg).then(function (result) {
-    if(result === arg) {
-        $ERROR("expected a new array from Promise.all but argument was re-used");
-    }
+Promise.all(arg).then(function(result) {
+  if (result === arg) {
+    $ERROR("expected a new array from Promise.all but argument was re-used");
+  }
 }).then($DONE, $DONE);

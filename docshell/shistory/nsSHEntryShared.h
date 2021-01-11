@@ -12,21 +12,26 @@
 #include "nsCOMPtr.h"
 #include "nsExpirationTracker.h"
 #include "nsIBFCacheEntry.h"
-#include "nsIMutationObserver.h"
+#include "nsIWeakReferenceUtils.h"
 #include "nsRect.h"
 #include "nsString.h"
-#include "nsWeakPtr.h"
+#include "nsStubMutationObserver.h"
 
 #include "mozilla/Attributes.h"
 
 class nsSHEntry;
 class nsISHEntry;
-class nsIDocument;
 class nsIContentViewer;
 class nsIDocShellTreeItem;
 class nsILayoutHistoryState;
 class nsDocShellEditorData;
 class nsIMutableArray;
+
+namespace mozilla {
+namespace dom {
+class Document;
+}
+}  // namespace mozilla
 
 // A document may have multiple SHEntries, either due to hash navigations or
 // calls to history.pushState.  SHEntries corresponding to the same document
@@ -34,23 +39,27 @@ class nsIMutableArray;
 // back/forward cache.
 //
 // nsSHEntryShared is the vehicle for this sharing.
-class nsSHEntryShared final
-  : public nsIBFCacheEntry
-  , public nsIMutationObserver
-{
-public:
+class nsSHEntryShared final : public nsIBFCacheEntry,
+                              public nsStubMutationObserver {
+ public:
   static void EnsureHistoryTracker();
   static void Shutdown();
 
   nsSHEntryShared();
 
   NS_DECL_ISUPPORTS
-  NS_DECL_NSIMUTATIONOBSERVER
   NS_DECL_NSIBFCACHEENTRY
 
-  nsExpirationState *GetExpirationState() { return &mExpirationState; }
+  // The nsIMutationObserver bits we actually care about.
+  NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATACHANGED
+  NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
+  NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
+  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
+  NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
-private:
+  nsExpirationState* GetExpirationState() { return &mExpirationState; }
+
+ private:
   ~nsSHEntryShared();
 
   friend class nsSHEntry;
@@ -58,7 +67,7 @@ private:
   static already_AddRefed<nsSHEntryShared> Duplicate(nsSHEntryShared* aEntry);
 
   void RemoveFromExpirationTracker();
-  nsresult SyncPresentationState();
+  void SyncPresentationState();
   void DropPresentationState();
 
   nsresult SetContentViewer(nsIContentViewer* aViewer);
@@ -71,16 +80,18 @@ private:
   nsCOMArray<nsIDocShellTreeItem> mChildShells;
   nsCOMPtr<nsIPrincipal> mTriggeringPrincipal;
   nsCOMPtr<nsIPrincipal> mPrincipalToInherit;
+  nsCOMPtr<nsIPrincipal> mStoragePrincipalToInherit;
+  nsCOMPtr<nsIContentSecurityPolicy> mCsp;
   nsCString mContentType;
 
-  nsCOMPtr<nsISupports> mCacheKey;
+  uint32_t mCacheKey;
   uint32_t mLastTouched;
 
   // These members aren't copied by nsSHEntryShared::Duplicate() because
   // they're specific to a particular content viewer.
   uint64_t mID;
   nsCOMPtr<nsIContentViewer> mContentViewer;
-  nsCOMPtr<nsIDocument> mDocument;
+  RefPtr<mozilla::dom::Document> mDocument;
   nsCOMPtr<nsILayoutHistoryState> mLayoutHistoryState;
   nsCOMPtr<nsISupports> mWindowState;
   nsIntRect mViewerBounds;

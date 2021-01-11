@@ -17,22 +17,18 @@ using namespace gfx;
 namespace layers {
 
 PaintedLayerMLGPU::PaintedLayerMLGPU(LayerManagerMLGPU* aManager)
- : PaintedLayer(aManager, static_cast<HostLayer*>(this)),
-   LayerMLGPU(aManager)
-{
+    : PaintedLayer(aManager, static_cast<HostLayer*>(this)),
+      LayerMLGPU(aManager) {
   MOZ_COUNT_CTOR(PaintedLayerMLGPU);
 }
 
-PaintedLayerMLGPU::~PaintedLayerMLGPU()
-{
+PaintedLayerMLGPU::~PaintedLayerMLGPU() {
   MOZ_COUNT_DTOR(PaintedLayerMLGPU);
 
   CleanupResources();
 }
 
-bool
-PaintedLayerMLGPU::OnPrepareToRender(FrameBuilder* aBuilder)
-{
+bool PaintedLayerMLGPU::OnPrepareToRender(FrameBuilder* aBuilder) {
   // Reset our cached texture pointers. The next call to AssignToView will
   // populate them again.
   mTexture = nullptr;
@@ -40,19 +36,15 @@ PaintedLayerMLGPU::OnPrepareToRender(FrameBuilder* aBuilder)
   return !!mHost;
 }
 
-void
-PaintedLayerMLGPU::SetRenderRegion(LayerIntRegion&& aRegion)
-{
-  mRenderRegion = Move(aRegion);
+void PaintedLayerMLGPU::SetRenderRegion(LayerIntRegion&& aRegion) {
+  mRenderRegion = std::move(aRegion);
 
   LayerIntRect bounds(mRenderRegion.GetBounds().TopLeft(),
                       ViewAs<LayerPixel>(mTexture->GetSize()));
   mRenderRegion.AndWith(bounds);
 }
 
-const LayerIntRegion&
-PaintedLayerMLGPU::GetDrawRects()
-{
+const LayerIntRegion& PaintedLayerMLGPU::GetDrawRects() {
 #ifndef MOZ_IGNORE_PAINT_WILL_RESAMPLE
   // Note: we don't set PaintWillResample on our ContentTextureHost. The old
   // compositor must do this since ContentHost is responsible for issuing
@@ -69,40 +61,32 @@ PaintedLayerMLGPU::GetDrawRects()
   return mRenderRegion;
 }
 
-bool
-PaintedLayerMLGPU::SetCompositableHost(CompositableHost* aHost)
-{
+bool PaintedLayerMLGPU::SetCompositableHost(CompositableHost* aHost) {
   switch (aHost->GetType()) {
     case CompositableType::CONTENT_TILED:
     case CompositableType::CONTENT_SINGLE:
-    case CompositableType::CONTENT_DOUBLE:
+    case CompositableType::CONTENT_DOUBLE: {
+      if (mHost && mHost != aHost->AsContentHost()) {
+        mHost->Detach(this);
+      }
       mHost = aHost->AsContentHost();
       if (!mHost) {
         gfxWarning() << "ContentHostBase is not a ContentHostTexture";
       }
       return true;
+    }
     default:
       return false;
   }
 }
 
-CompositableHost*
-PaintedLayerMLGPU::GetCompositableHost()
-{
-  return mHost;
-}
+CompositableHost* PaintedLayerMLGPU::GetCompositableHost() { return mHost; }
 
-gfx::Point
-PaintedLayerMLGPU::GetDestOrigin() const
-{
-  return mDestOrigin;
-}
+gfx::Point PaintedLayerMLGPU::GetDestOrigin() const { return mDestOrigin; }
 
-void
-PaintedLayerMLGPU::AssignToView(FrameBuilder* aBuilder,
-                                RenderViewMLGPU* aView,
-                                Maybe<Polygon>&& aGeometry)
-{
+void PaintedLayerMLGPU::AssignToView(FrameBuilder* aBuilder,
+                                     RenderViewMLGPU* aView,
+                                     Maybe<Polygon>&& aGeometry) {
   if (TiledContentHost* tiles = mHost->AsTiledContentHost()) {
     // Note: we do not support the low-res buffer yet.
     MOZ_ASSERT(tiles->GetLowResBuffer().GetTileCount() == 0);
@@ -126,15 +110,12 @@ PaintedLayerMLGPU::AssignToView(FrameBuilder* aBuilder,
   }
 
   // Fall through to the single texture case.
-  LayerMLGPU::AssignToView(aBuilder, aView, Move(aGeometry));
+  LayerMLGPU::AssignToView(aBuilder, aView, std::move(aGeometry));
 }
 
-void
-PaintedLayerMLGPU::AssignHighResTilesToView(FrameBuilder* aBuilder,
-                                            RenderViewMLGPU* aView,
-                                            TiledContentHost* aTileHost,
-                                            const Maybe<Polygon>& aGeometry)
-{
+void PaintedLayerMLGPU::AssignHighResTilesToView(
+    FrameBuilder* aBuilder, RenderViewMLGPU* aView, TiledContentHost* aTileHost,
+    const Maybe<Polygon>& aGeometry) {
   TiledLayerBufferComposite& tiles = aTileHost->GetHighResBuffer();
 
   LayerIntRegion compositeRegion = ViewAs<LayerPixel>(tiles.GetValidRegion());
@@ -146,13 +127,10 @@ PaintedLayerMLGPU::AssignHighResTilesToView(FrameBuilder* aBuilder,
   AssignTileBufferToView(aBuilder, aView, tiles, compositeRegion, aGeometry);
 }
 
-void
-PaintedLayerMLGPU::AssignTileBufferToView(FrameBuilder* aBuilder,
-                                          RenderViewMLGPU* aView,
-                                          TiledLayerBufferComposite& aTiles,
-                                          const LayerIntRegion& aCompositeRegion,
-                                          const Maybe<Polygon>& aGeometry)
-{
+void PaintedLayerMLGPU::AssignTileBufferToView(
+    FrameBuilder* aBuilder, RenderViewMLGPU* aView,
+    TiledLayerBufferComposite& aTiles, const LayerIntRegion& aCompositeRegion,
+    const Maybe<Polygon>& aGeometry) {
   float resolution = aTiles.GetResolution();
 
   // Save these so they can be restored at the end.
@@ -165,11 +143,11 @@ PaintedLayerMLGPU::AssignTileBufferToView(FrameBuilder* aBuilder,
       continue;
     }
 
-    TileIntPoint pos =  aTiles.GetPlacement().TilePosition(i);
+    TileCoordIntPoint coord = aTiles.GetPlacement().TileCoord(i);
     // A sanity check that catches a lot of mistakes.
-    MOZ_ASSERT(pos.x == tile.mTilePosition.x && pos.y == tile.mTilePosition.y);
+    MOZ_ASSERT(coord.x == tile.mTileCoord.x && coord.y == tile.mTileCoord.y);
 
-    IntPoint offset = aTiles.GetTileOffset(pos);
+    IntPoint offset = aTiles.GetTileOffset(coord);
 
     // Use LayerIntRect here so we don't have to keep re-allocating the region
     // to change the unit type.
@@ -201,17 +179,15 @@ PaintedLayerMLGPU::AssignTileBufferToView(FrameBuilder* aBuilder,
     // tile, and we restore these properties after we've finished processing
     // all tiles.
     Maybe<Polygon> geometry = aGeometry;
-    LayerMLGPU::AssignToView(aBuilder, aView, Move(geometry));
+    LayerMLGPU::AssignToView(aBuilder, aView, std::move(geometry));
   }
 
   // Restore the computed opacity and visible region.
   mComputedOpacity = baseOpacity;
-  SetShadowVisibleRegion(Move(visible));
+  SetShadowVisibleRegion(std::move(visible));
 }
 
-void
-PaintedLayerMLGPU::CleanupResources()
-{
+void PaintedLayerMLGPU::CleanupResources() {
   if (mHost) {
     mHost->Detach(this);
   }
@@ -220,9 +196,8 @@ PaintedLayerMLGPU::CleanupResources()
   mHost = nullptr;
 }
 
-void
-PaintedLayerMLGPU::PrintInfo(std::stringstream& aStream, const char* aPrefix)
-{
+void PaintedLayerMLGPU::PrintInfo(std::stringstream& aStream,
+                                  const char* aPrefix) {
   PaintedLayer::PrintInfo(aStream, aPrefix);
   if (mHost && mHost->IsAttached()) {
     aStream << "\n";
@@ -232,23 +207,13 @@ PaintedLayerMLGPU::PrintInfo(std::stringstream& aStream, const char* aPrefix)
   }
 }
 
-void
-PaintedLayerMLGPU::Disconnect()
-{
-  CleanupResources();
-}
+void PaintedLayerMLGPU::Disconnect() { CleanupResources(); }
 
-bool
-PaintedLayerMLGPU::IsContentOpaque()
-{
+bool PaintedLayerMLGPU::IsContentOpaque() {
   return !!(GetContentFlags() & CONTENT_OPAQUE);
 }
 
-void
-PaintedLayerMLGPU::CleanupCachedResources()
-{
-  CleanupResources();
-}
+void PaintedLayerMLGPU::CleanupCachedResources() { CleanupResources(); }
 
-} // namespace layers
-} // namespace mozilla
+}  // namespace layers
+}  // namespace mozilla

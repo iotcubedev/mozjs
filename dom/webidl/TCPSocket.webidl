@@ -33,15 +33,15 @@ interface LegacyMozTCPSocket {
    * Legacy constructor for API compatibility.
    */
   [Throws]
-  TCPSocket open(DOMString host, unsigned short port, optional SocketOptions options);
+  TCPSocket open(DOMString host, unsigned short port, optional SocketOptions options = {});
 
   [Throws]
-  TCPServerSocket listen(unsigned short port, optional ServerSocketOptions options, optional unsigned short backlog = 0);
+  TCPServerSocket listen(unsigned short port, optional ServerSocketOptions options = {}, optional unsigned short backlog = 0);
 };
 
-[Constructor(DOMString host, unsigned short port, optional SocketOptions options),
+[Constructor(DOMString host, unsigned short port, optional SocketOptions options = {}),
  Func="mozilla::dom::TCPSocket::ShouldTCPSocketExist",
- Exposed=(Window,System)]
+ Exposed=Window]
 interface TCPSocket : EventTarget {
   /**
    * Upgrade an insecure connection to use TLS. Throws if the ready state is not OPEN.

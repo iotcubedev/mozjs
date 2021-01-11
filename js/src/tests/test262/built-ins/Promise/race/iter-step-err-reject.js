@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -5,7 +6,6 @@
 description: >
   Error when advancing the provided iterable (rejecting promise)
 esid: sec-promise.race
-es6id: 25.4.4.3
 info: |
     [...]
     11. Let result be PerformPromiseRace(iteratorRecord, promiseCapability, C).
@@ -46,7 +46,7 @@ iterStepThrows[Symbol.iterator] = function() {
 };
 
 Promise.race(iterStepThrows).then(function() {
-  $ERROR('The promise should be rejected.');
+  $DONE('The promise should be rejected.');
 }, function(reason) {
   assert.sameValue(reason, error);
 }).then($DONE, $DONE);

@@ -15,35 +15,35 @@
 
 namespace mozilla {
 
-class ServoStyleRule;
-class ServoStyleSheet;
+namespace dom {
+class CSSStyleRule;
+}  // namespace dom
+class StyleSheet;
 namespace css {
 class GroupRule;
 class Rule;
-} // namespace css
+}  // namespace css
 
-class ServoCSSRuleList final : public dom::CSSRuleList
-{
-public:
-  // @param aDirectOwnerStyleSheet should be set to the owner stylesheet
-  // if this rule list is owned directly by a stylesheet, which means it
-  // is a top level CSSRuleList. If it's owned by a group rule, nullptr.
-  // If this param is set, the caller doesn't need to call SetStyleSheet.
+class ServoCSSRuleList final : public dom::CSSRuleList {
+ public:
   ServoCSSRuleList(already_AddRefed<ServoCssRules> aRawRules,
-                   ServoStyleSheet* aDirectOwnerStyleSheet);
+                   StyleSheet* aSheet, css::GroupRule* aParentRule);
   css::GroupRule* GetParentRule() const { return mParentRule; }
-  void SetParentRule(css::GroupRule* aParentRule);
-  void SetStyleSheet(StyleSheet* aSheet);
+  void DropSheetReference();
+  void DropParentRuleReference();
+
+  void DropReferences() {
+    DropSheetReference();
+    DropParentRuleReference();
+  }
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(ServoCSSRuleList, dom::CSSRuleList)
 
-  ServoStyleSheet* GetParentObject() final { return mStyleSheet; }
+  StyleSheet* GetParentObject() final { return mStyleSheet; }
 
   css::Rule* IndexedGetter(uint32_t aIndex, bool& aFound) final;
   uint32_t Length() final { return mRules.Length(); }
-
-  void DropReference();
 
   css::Rule* GetRule(uint32_t aIndex);
   nsresult InsertRule(const nsAString& aRule, uint32_t aIndex);
@@ -51,7 +51,7 @@ public:
 
   uint16_t GetDOMCSSRuleType(uint32_t aIndex) const;
 
-private:
+ private:
   virtual ~ServoCSSRuleList();
 
   // XXX Is it possible to have an address lower than or equal to 255?
@@ -66,13 +66,15 @@ private:
     return reinterpret_cast<css::Rule*>(aInt);
   }
 
-  template<typename Func>
+  template <typename Func>
   void EnumerateInstantiatedRules(Func aCallback);
 
   void DropAllRules();
 
+  bool IsReadOnly() const;
+
   // mStyleSheet may be nullptr when it drops the reference to us.
-  ServoStyleSheet* mStyleSheet = nullptr;
+  StyleSheet* mStyleSheet = nullptr;
   // mParentRule is nullptr if it isn't a nested rule list.
   css::GroupRule* mParentRule = nullptr;
   RefPtr<ServoCssRules> mRawRules;
@@ -83,6 +85,6 @@ private:
   nsTArray<uintptr_t> mRules;
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // mozilla_ServoCSSRuleList_h
+#endif  // mozilla_ServoCSSRuleList_h

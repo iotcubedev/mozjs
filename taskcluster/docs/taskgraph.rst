@@ -65,6 +65,18 @@ For example, a test task must depend on the build task creating the artifact it
 tests, and this dependency edge is named 'build'.  The task graph generation
 process later resolves these dependencies to specific taskIds.
 
+Dependencies are typically used to ensure that prerequisites to a task, such as
+creation of binary artifacts, are completed before that task runs. But
+dependencies can also be used to schedule follow-up work such as summarizing
+test results. In the latter case, the summarization task will "pull in" all of
+the tasks it depends on, even if those tasks might otherwise be optimized away.
+The fix for this situation is "soft dependencies".
+To add a task depending only on tasks remaining after the optimization process
+completed, you can use `soft-dependencies`, as a list of optimized tasks labels.
+This is useful for tasks that should not pull other tasks into the graph, but do
+need to run after them, if they are in the graph (signing task after an optional
+build or reporting on tasks outputs).
+
 Decision Task
 -------------
 
@@ -97,7 +109,7 @@ Graph generation, as run via ``mach taskgraph decision``, proceeds as follows:
    The result is the "target task graph".
 #. Optimize the target task graph using task-specific optimization methods.
    The result is the "optimized task graph" with fewer nodes than the target
-   task graph.  See :ref:`optimization`.
+   task graph.  See :doc:`optimization`.
 #. Morph the graph. Morphs are like syntactic sugar: they keep the same meaning,
    but express it in a lower-level way. These generally work around limitations
    in the TaskCluster platform, such as number of dependencies or routes in
@@ -137,7 +149,7 @@ Action Tasks are tasks which help you to schedule new jobs via Treeherder's
 task ID of the push and a comma separated list of task labels which need to be
 scheduled.
 
-This task invokes ``mach taskgraph action-task`` which builds up a task graph of
+This task invokes ``mach taskgraph action-callback`` which builds up a task graph of
 the requested tasks. This graph is optimized using the tasks running initially in
 the same push, due to the decision task.
 
@@ -176,6 +188,11 @@ using simple parameterized values, as follows:
     Multiple labels may be substituted in a single string, and ``<<>`` can be
     used to escape a literal ``<``.
 
+``{"artifact-reference": "..<dep-name/artifact/name>.."}``
+    Similar to a ``task-reference``, but this substitutes a URL to the queue's
+    ``getLatestArtifact`` API method (for which a GET will redirect to the
+    artifact itself).
+
 .. _taskgraph-graph-config:
 
 Graph Configuration
@@ -183,7 +200,7 @@ Graph Configuration
 
 There are several configuration settings that are pertain to the entire
 taskgraph. These are specified in :file:`config.yml` at the root of the
-taskgraph configuration (typically :file:`taskcluster/ci`). The available
+taskgraph configuration (typically :file:`taskcluster/ci/`). The available
 settings are documented inline in `taskcluster/taskgraph/config.py
 <https://dxr.mozilla.org/mozilla-central/source/taskcluster/taskgraph/config.py>`_.
 
@@ -194,7 +211,7 @@ Trust Domain
 
 When publishing and signing releases, that tasks verify their definition and
 all upstream tasks come from a decision task based on a trusted tree. (see
-`chain-of-trust verification <http://scriptworker.readthedocs.io/en/latest/chain_of_trust.html>`_).
+`chain-of-trust verification <https://scriptworker.readthedocs.io/en/latest/chain_of_trust.html>`_).
 Firefox and Thunderbird share the taskgraph code and in particular, they have
 separate taskgraph configurations and in particular distinct decision tasks.
 Although they use identical docker images and toolchains, in order to track the

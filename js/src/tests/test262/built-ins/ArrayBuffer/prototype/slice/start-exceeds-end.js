@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-arraybuffer.prototype.slice
-es6id: 24.1.4.3
 description: >
   Returns zero-length buffer if `start` index exceeds `end` index.
 info: |
@@ -16,7 +15,8 @@ info: |
 
 var arrayBuffer = new ArrayBuffer(8);
 
-var start = 5, end = 4;
+var start = 5,
+  end = 4;
 var result = arrayBuffer.slice(start, end);
 assert.sameValue(result.byteLength, 0);
 

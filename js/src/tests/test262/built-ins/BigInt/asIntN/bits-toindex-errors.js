@@ -1,4 +1,3 @@
-// |reftest| skip -- BigInt is not supported
 // Copyright (C) 2017 Josh Wolfe. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -8,8 +7,10 @@ info: |
   BigInt.asIntN ( bits, bigint )
 
   1. Let bits be ? ToIndex(bits).
-features: [BigInt, Symbol, Symbol.toPrimitive, computed-property-names]
+features: [BigInt, computed-property-names, Symbol, Symbol.toPrimitive]
 ---*/
+assert.sameValue(typeof BigInt, 'function');
+assert.sameValue(typeof BigInt.asIntN, 'function');
 
 assert.throws(RangeError, function() {
   BigInt.asIntN(-1, 0n);

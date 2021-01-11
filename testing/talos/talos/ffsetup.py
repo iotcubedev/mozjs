@@ -7,6 +7,7 @@ Set up a browser environment before running a test.
 """
 from __future__ import absolute_import, print_function
 
+import json
 import os
 import shutil
 import tempfile
@@ -15,12 +16,13 @@ import mozfile
 import mozinfo
 import mozrunner
 from mozlog import get_proxy_logger
-from mozprocess import ProcessHandlerMixin
 from mozprofile.profile import Profile
 from talos import utils
 from talos.gecko_profile import GeckoProfile
 from talos.utils import TalosError, run_in_debug_mode
 from talos import heavy
+
+here = os.path.abspath(os.path.dirname(__file__))
 
 LOG = get_proxy_logger()
 
@@ -59,6 +61,12 @@ class FFSetup(object):
         self.gecko_profile = None
         self.debug_mode = run_in_debug_mode(browser_config)
 
+    @property
+    def profile_data_dir(self):
+        if 'MOZ_DEVELOPER_REPO_DIR' in os.environ:
+            return os.path.join(os.environ['MOZ_DEVELOPER_REPO_DIR'], 'testing', 'profiles')
+        return os.path.join(here, 'profile_data')
+
     def _init_env(self):
         self.env = dict(os.environ)
         for k, v in self.browser_config['env'].iteritems():
@@ -75,22 +83,6 @@ class FFSetup(object):
             os.path.dirname(self.browser_config['browser_path'])
 
     def _init_profile(self):
-        preferences = dict(self.browser_config['preferences'])
-        if self.test_config.get('preferences'):
-            test_prefs = dict(
-                [(i, utils.parse_pref(j))
-                 for i, j in self.test_config['preferences'].items()]
-            )
-            preferences.update(test_prefs)
-        # interpolate webserver value in prefs
-        webserver = self.browser_config['webserver']
-        if '://' not in webserver:
-            webserver = 'http://' + webserver
-        for name, value in preferences.items():
-            if type(value) is str:
-                value = utils.interpolate(value, webserver=webserver)
-                preferences[name] = value
-
         extensions = self.browser_config['extensions'][:]
         if self.test_config.get('extensions'):
             extensions.extend(self.test_config['extensions'])
@@ -120,21 +112,60 @@ class FFSetup(object):
                                 ignore=_feedback,
                                 restore=False)
 
+        # build pref interpolation context
+        webserver = self.browser_config['webserver']
+        if '://' not in webserver:
+            webserver = 'http://' + webserver
+
+        interpolation = {
+            'webserver': webserver,
+        }
+
+        # merge base profiles
+        with open(os.path.join(self.profile_data_dir, 'profiles.json'), 'r') as fh:
+            base_profiles = json.load(fh)['talos']
+
+        for name in base_profiles:
+            path = os.path.join(self.profile_data_dir, name)
+            LOG.info("Merging profile: {}".format(path))
+            profile.merge(path, interpolation=interpolation)
+
+        # set test preferences
+        preferences = self.browser_config.get('preferences', {}).copy()
+        if self.test_config.get('preferences'):
+            test_prefs = dict(
+                [(i, utils.parse_pref(j))
+                 for i, j in self.test_config['preferences'].items()]
+            )
+            preferences.update(test_prefs)
+
+        for name, value in preferences.items():
+            if type(value) is str:
+                value = utils.interpolate(value, **interpolation)
+                preferences[name] = value
         profile.set_preferences(preferences)
 
         # installing addons
         LOG.info("Installing Add-ons:")
         LOG.info(extensions)
-        profile.addon_manager.install_addons(extensions)
+        profile.addons.install(extensions)
 
         # installing webextensions
+        webextensions_to_install = []
+        webextensions_folder = self.test_config.get('webextensions_folder', None)
+        if isinstance(webextensions_folder, basestring):
+            folder = utils.interpolate(webextensions_folder)
+            for file in os.listdir(folder):
+                if file.endswith(".xpi"):
+                    webextensions_to_install.append(os.path.join(folder, file))
+
         webextensions = self.test_config.get('webextensions', None)
         if isinstance(webextensions, basestring):
-            webextensions = [webextensions]
+            webextensions_to_install.append(webextensions)
 
-        if webextensions is not None:
+        if webextensions_to_install is not None:
             LOG.info("Installing Webextensions:")
-            for webext in webextensions:
+            for webext in webextensions_to_install:
                 filename = utils.interpolate(webext)
                 if mozinfo.os == 'win':
                     filename = filename.replace('/', '\\')
@@ -143,7 +174,7 @@ class FFSetup(object):
                 if not os.path.exists(filename):
                     continue
                 LOG.info(filename)
-                profile.addon_manager.install_from_path(filename)
+                profile.addons.install(filename)
 
     def _run_profile(self):
         runner_cls = mozrunner.runners.get(
@@ -151,13 +182,14 @@ class FFSetup(object):
                 'appname',
                 'firefox'),
             mozrunner.Runner)
-        args = [self.browser_config["extra_args"], self.browser_config["init_url"]]
+
+        args = list(self.browser_config["extra_args"])
+        args.append(self.browser_config["init_url"])
+
         runner = runner_cls(profile=self.profile_dir,
                             binary=self.browser_config["browser_path"],
                             cmdargs=args,
-                            env=self.env,
-                            process_class=ProcessHandlerMixin,
-                            process_args={})
+                            env=self.env)
 
         runner.start(outputTimeout=30)
         proc = runner.process_handler
@@ -180,7 +212,8 @@ class FFSetup(object):
         if upload_dir and self.test_config.get('gecko_profile'):
             self.gecko_profile = GeckoProfile(upload_dir,
                                               self.browser_config,
-                                              self.test_config)
+                                              self.test_config,
+                                              str(os.getenv('MOZ_WEBRENDER')) == '1')
             self.gecko_profile.update_env(self.env)
 
     def clean(self):

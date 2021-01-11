@@ -2,26 +2,35 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* global __URI__ */
 /* exported Loader, resolveURI, Module, Require, unload */
 
 "use strict";
 
 this.EXPORTED_SYMBOLS = ["Loader", "resolveURI", "Module", "Require", "unload"];
 
-const { classes: Cc, Constructor: CC, interfaces: Ci, utils: Cu,
-        results: Cr, manager: Cm } = Components;
+const { Constructor: CC, manager: Cm } = Components;
 const systemPrincipal = CC("@mozilla.org/systemprincipal;1", "nsIPrincipal")();
 
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm", {});
-const { XPCOMUtils } = ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm", {});
-const { normalize, dirname } = ChromeUtils.import("resource://gre/modules/osfile/ospath_unix.jsm", {});
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
+);
+const { normalize, dirname } = ChromeUtils.import(
+  "resource://gre/modules/osfile/ospath_unix.jsm"
+);
 
-XPCOMUtils.defineLazyServiceGetter(this, "resProto",
-                                   "@mozilla.org/network/protocol;1?name=resource",
-                                   "nsIResProtocolHandler");
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "resProto",
+  "@mozilla.org/network/protocol;1?name=resource",
+  "nsIResProtocolHandler"
+);
 
-ChromeUtils.defineModuleGetter(this, "NetUtil", "resource://gre/modules/NetUtil.jsm");
+ChromeUtils.defineModuleGetter(
+  this,
+  "NetUtil",
+  "resource://gre/modules/NetUtil.jsm"
+);
 
 const { defineLazyGetter } = XPCOMUtils;
 
@@ -49,65 +58,21 @@ function isRelative(id) {
   return id.startsWith(".");
 }
 
-function sourceURI(uri) {
-  return String(uri).split(" -> ").pop();
-}
-
-function isntLoaderFrame(frame) {
-  return frame.fileName !== __URI__;
-}
-
-function parseURI(uri) {
-  return String(uri).split(" -> ").pop();
-}
-
-function parseStack(stack) {
-  let lines = String(stack).split("\n");
-  return lines.reduce(function (frames, line) {
-    if (line) {
-      let atIndex = line.indexOf("@");
-      let columnIndex = line.lastIndexOf(":");
-      let lineIndex = line.lastIndexOf(":", columnIndex - 1);
-      let fileName = parseURI(line.slice(atIndex + 1, lineIndex));
-      let lineNumber = parseInt(line.slice(lineIndex + 1, columnIndex), 10);
-      let columnNumber = parseInt(line.slice(columnIndex + 1), 10);
-      let name = line.slice(0, atIndex).split("(").shift();
-      frames.unshift({
-        fileName: fileName,
-        name: name,
-        lineNumber: lineNumber,
-        columnNumber: columnNumber
-      });
-    }
-    return frames;
-  }, []);
-}
-
-function serializeStack(frames) {
-  return frames.reduce(function (stack, frame) {
-    return frame.name + "@" +
-           frame.fileName + ":" +
-           frame.lineNumber + ":" +
-           frame.columnNumber + "\n" +
-           stack;
-  }, "");
-}
-
 function readURI(uri) {
-  let nsURI = NetUtil.newURI(uri);
+  const nsURI = NetUtil.newURI(uri);
   if (nsURI.scheme == "resource") {
     // Resolve to a real URI, this will catch any obvious bad paths without
     // logging assertions in debug builds, see bug 1135219
     uri = resProto.resolveURI(nsURI);
   }
 
-  let stream = NetUtil.newChannel({
+  const stream = NetUtil.newChannel({
     uri: NetUtil.newURI(uri, "UTF-8"),
-    loadUsingSystemPrincipal: true}
-  ).open2();
-  let count = stream.available();
-  let data = NetUtil.readInputStreamToString(stream, count, {
-    charset: "UTF-8"
+    loadUsingSystemPrincipal: true,
+  }).open();
+  const count = stream.available();
+  const data = NetUtil.readInputStreamToString(stream, count, {
+    charset: "UTF-8",
   });
 
   stream.close();
@@ -119,7 +84,9 @@ function readURI(uri) {
 function join(base, ...paths) {
   // If this is an absolute URL, we need to normalize only the path portion,
   // or we wind up stripping too many slashes and producing invalid URLs.
-  let match = /^((?:resource|file|chrome)\:\/\/[^\/]*|jar:[^!]+!)(.*)/.exec(base);
+  const match = /^((?:resource|file|chrome)\:\/\/[^\/]*|jar:[^!]+!)(.*)/.exec(
+    base
+  );
   if (match) {
     return match[1] + normalize([match[2], ...paths].join("/"));
   }
@@ -145,11 +112,12 @@ function Sandbox(options) {
     wantComponents: false,
     sandboxName: options.name,
     sandboxPrototype: "prototype" in options ? options.prototype : {},
-    invisibleToDebugger: "invisibleToDebugger" in options ?
-                         options.invisibleToDebugger : false,
+    invisibleToDebugger:
+      "invisibleToDebugger" in options ? options.invisibleToDebugger : false,
+    freshCompartment: options.freshCompartment || false,
   };
 
-  let sandbox = Cu.Sandbox(systemPrincipal, options);
+  const sandbox = Cu.Sandbox(systemPrincipal, options);
 
   delete sandbox.Components;
 
@@ -159,110 +127,89 @@ function Sandbox(options) {
 // Populates `exports` of the given CommonJS `module` object, in the context
 // of the given `loader` by evaluating code associated with it.
 function load(loader, module) {
-  let { sandboxes, globals } = loader;
-  let require = Require(loader, module);
+  const { sandboxes, globals } = loader;
+  const require = Require(loader, module);
 
   // We expose set of properties defined by `CommonJS` specification via
   // prototype of the sandbox. Also globals are deeper in the prototype
   // chain so that each module has access to them as well.
-  let descriptors = {
+  const descriptors = {
     require: {
       configurable: true,
       enumerable: true,
       writable: true,
-      value: require
+      value: require,
     },
     module: {
       configurable: true,
       enumerable: true,
       writable: true,
-      value: module
+      value: module,
     },
     exports: {
       configurable: true,
       enumerable: true,
       writable: true,
-      value: module.exports
+      value: module.exports,
     },
   };
 
-  let sandbox;
-  if (loader.useSharedGlobalSandbox) {
-    // Create a new object in this sandbox, that will be used as
-    // the scope object for this particular module
-    sandbox = new loader.sharedGlobalSandbox.Object();
-    descriptors.lazyRequire = {
-      configurable: true,
-      value: lazyRequire.bind(sandbox),
-    };
-    descriptors.lazyRequireModule = {
-      configurable: true,
-      value: lazyRequireModule.bind(sandbox),
-    };
+  // Create a new object in this sandbox, that will be used as
+  // the scope object for this particular module
+  const sandbox = new loader.sharedGlobalSandbox.Object();
+  descriptors.lazyRequire = {
+    configurable: true,
+    value: lazyRequire.bind(sandbox),
+  };
+  descriptors.lazyRequireModule = {
+    configurable: true,
+    value: lazyRequireModule.bind(sandbox),
+  };
 
-    if ("console" in globals) {
-      descriptors.console = {
-        configurable: true,
-        get() {
-          return globals.console;
-        },
-      };
-    }
-    let define = Object.getOwnPropertyDescriptor(globals, "define");
-    if (define && define.value) {
-      descriptors.define = define;
-    }
-    if ("DOMParser" in globals) {
-      descriptors.DOMParser = Object.getOwnPropertyDescriptor(globals, "DOMParser");
-    }
-    Object.defineProperties(sandbox, descriptors);
-  } else {
-    sandbox = Sandbox({
-      name: module.uri,
-      prototype: Object.create(globals, descriptors),
-      invisibleToDebugger: loader.invisibleToDebugger
-    });
+  if ("console" in globals) {
+    descriptors.console = {
+      configurable: true,
+      get() {
+        return globals.console;
+      },
+    };
   }
+  const define = Object.getOwnPropertyDescriptor(globals, "define");
+  if (define && define.value) {
+    descriptors.define = define;
+  }
+  if ("DOMParser" in globals) {
+    descriptors.DOMParser = Object.getOwnPropertyDescriptor(
+      globals,
+      "DOMParser"
+    );
+  }
+  Object.defineProperties(sandbox, descriptors);
   sandboxes[module.uri] = sandbox;
 
-  let originalExports = module.exports;
+  const originalExports = module.exports;
   try {
-    Services.scriptloader.loadSubScript(module.uri, sandbox, "UTF-8");
+    Services.scriptloader.loadSubScript(module.uri, sandbox);
   } catch (error) {
-    let { message, fileName, lineNumber } = error;
-    let stack = error.stack || Error().stack;
-    let frames = parseStack(stack).filter(isntLoaderFrame);
-    let toString = String(error);
-    let file = sourceURI(fileName);
-
-    // Note that `String(error)` where error is from subscript loader does
-    // not puts `:` after `"Error"` unlike regular errors thrown by JS code.
-    // If there is a JS stack then this error has already been handled by an
-    // inner module load.
-    if (/^Error opening input stream/.test(String(error))) {
-      let caller = frames.slice(0).pop();
-      fileName = caller.fileName;
-      lineNumber = caller.lineNumber;
-      message = "Module `" + module.id + "` is not found at " + module.uri;
-      toString = message;
-    } else if (frames[frames.length - 1].fileName !== file) {
-      // Workaround for a Bug 910653. Errors thrown by subscript loader
-      // do not include `stack` field and above created error won't have
-      // fileName or lineNumber of the module being loaded, so we ensure
-      // it does.
-      frames.push({ fileName: file, lineNumber: lineNumber, name: "" });
+    // loadSubScript sometime throws string errors, which includes no stack.
+    // At least provide the current stack by re-throwing a real Error object.
+    if (typeof error == "string") {
+      if (
+        error.startsWith("Error creating URI") ||
+        error.startsWith("Error opening input stream (invalid filename?)")
+      ) {
+        throw new Error(
+          `Module \`${module.id}\` is not found at ${module.uri}`
+        );
+      }
+      throw new Error(
+        `Error while loading module \`${module.id}\` at ${module.uri}:` +
+          "\n" +
+          error
+      );
     }
-
-    let prototype = typeof (error) === "object" ? error.constructor.prototype :
-                    Error.prototype;
-
-    throw Object.create(prototype, {
-      message: { value: message, writable: true, configurable: true },
-      fileName: { value: fileName, writable: true, configurable: true },
-      lineNumber: { value: lineNumber, writable: true, configurable: true },
-      stack: { value: serializeStack(frames), writable: true, configurable: true },
-      toString: { value: () => toString, writable: true, configurable: true },
-    });
+    // Otherwise just re-throw everything else which should have a stack
+    throw error;
   }
 
   // Only freeze the exports object if we created it ourselves. Modules
@@ -291,7 +238,7 @@ function resolve(id, base) {
     return id;
   }
 
-  let baseDir = dirname(base);
+  const baseDir = dirname(base);
 
   let resolved;
   if (baseDir.includes(":")) {
@@ -311,14 +258,14 @@ function resolve(id, base) {
 
 function compileMapping(paths) {
   // Make mapping array that is sorted from longest path to shortest path.
-  let mapping = Object.keys(paths)
-                      .sort((a, b) => b.length - a.length)
-                      .map(path => [path, paths[path]]);
+  const mapping = Object.keys(paths)
+    .sort((a, b) => b.length - a.length)
+    .map(path => [path, paths[path]]);
 
   const PATTERN = /([.\\?+*(){}[\]^$])/g;
   const escapeMeta = str => str.replace(PATTERN, "\\$1");
 
-  let patterns = [];
+  const patterns = [];
   paths = {};
 
   for (let [path, uri] of mapping) {
@@ -346,7 +293,7 @@ function compileMapping(paths) {
     }
   }
 
-  let pattern = new RegExp(`^(${patterns.join("|")})`);
+  const pattern = new RegExp(`^(${patterns.join("|")})`);
 
   // This will replace the longest matching path mapping at the start of
   // the ID string with its mapped value.
@@ -383,7 +330,7 @@ function resolveURI(id, mapping) {
  */
 function lazyRequire(obj, moduleId, ...args) {
   let module;
-  let getModule = () => {
+  const getModule = () => {
     if (!module) {
       module = this.require(moduleId);
     }
@@ -392,10 +339,10 @@ function lazyRequire(obj, moduleId, ...args) {
 
   for (let props of args) {
     if (typeof props !== "object") {
-      props = {[props]: props};
+      props = { [props]: props };
     }
 
-    for (let [fromName, toName] of Object.entries(props)) {
+    for (const [fromName, toName] of Object.entries(props)) {
       defineLazyGetter(obj, toName, () => getModule()[fromName]);
     }
   }
@@ -421,15 +368,16 @@ function lazyRequireModule(obj, moduleId, prop = moduleId) {
 // of `require` that is allowed to load only a modules that are associated
 // with it during link time.
 function Require(loader, requirer) {
-  let {
-    modules, mapping, mappingCache, requireHook
-  } = loader;
+  const { modules, mapping, mappingCache, requireHook } = loader;
 
   function require(id) {
     if (!id) {
       // Throw if `id` is not passed.
-      throw Error("You must provide a module name when calling require() from "
-                  + requirer.id, requirer.uri);
+      throw Error(
+        "You must provide a module name when calling require() from " +
+          requirer.id,
+        requirer.uri
+      );
     }
 
     if (requireHook) {
@@ -448,7 +396,7 @@ function Require(loader, requirer) {
       module = modules[uri];
     } else if (isJSMURI(uri)) {
       module = modules[uri] = Module(requirement, uri);
-      module.exports = ChromeUtils.import(uri, {});
+      module.exports = ChromeUtils.import(uri);
     } else if (isJSONURI(uri)) {
       let data;
 
@@ -498,8 +446,11 @@ function Require(loader, requirer) {
   function getRequirements(id) {
     if (!id) {
       // Throw if `id` is not passed.
-      throw Error("you must provide a module name when calling require() from "
-                  + requirer.id, requirer.uri);
+      throw Error(
+        "you must provide a module name when calling require() from " +
+          requirer.id,
+        requirer.uri
+      );
     }
 
     let requirement, uri;
@@ -525,16 +476,23 @@ function Require(loader, requirer) {
 
     // Throw if `uri` can not be resolved.
     if (!uri) {
-      throw Error("Module: Can not resolve '" + id + "' module required by " +
-                  requirer.id + " located at " + requirer.uri, requirer.uri);
+      throw Error(
+        "Module: Can not resolve '" +
+          id +
+          "' module required by " +
+          requirer.id +
+          " located at " +
+          requirer.uri,
+        requirer.uri
+      );
     }
 
     return { uri: uri, requirement: requirement };
   }
 
   // Expose the `resolve` function for this `Require` instance
-  require.resolve = _require.resolve = function (id) {
-    let { uri } = getRequirements(id);
+  require.resolve = _require.resolve = function(id) {
+    const { uri } = getRequirements(id);
     return uri;
   };
 
@@ -554,9 +512,13 @@ function Require(loader, requirer) {
 function Module(id, uri) {
   return Object.create(null, {
     id: { enumerable: true, value: id },
-    exports: { enumerable: true, writable: true, value: Object.create(null),
-               configurable: true },
-    uri: { value: uri }
+    exports: {
+      enumerable: true,
+      writable: true,
+      value: Object.create(null),
+      configurable: true,
+    },
+    uri: { value: uri },
   });
 }
 
@@ -570,8 +532,8 @@ function unload(loader, reason) {
   // Note: We don not destroy loader's module cache or sandboxes map as
   // some modules may do cleanup in subsequent turns of event loop. Destroying
   // cache may cause module identity problems in such cases.
-  let subject = { wrappedJSObject: loader.destructor };
-  Services.obs.notifyObservers(subject, "sdk:loader:destroy", reason);
+  const subject = { wrappedJSObject: loader.destructor };
+  Services.obs.notifyObservers(subject, "devtools:loader:destroy", reason);
 }
 
 // Function makes new loader that can be used to load CommonJS modules.
@@ -579,8 +541,6 @@ function unload(loader, reason) {
 // - `paths`: Mandatory dictionary of require path mapped to absolute URIs.
 //   Object keys are path prefix used in require(), values are URIs where each
 //   prefix should be mapped to.
-// - `sharedGlobal`: Boolean, if True, loads all module in a single, shared
-//   global in order to create only one global and compartment.
 // - `globals`: Optional map of globals, that all module scopes will inherit
 //   from. Map is also exposed under `globals` property of the returned loader
 //   so it can be extended further later. Defaults to `{}`.
@@ -593,7 +553,7 @@ function unload(loader, reason) {
 //   from loader. This function receive the module path as first argument,
 //   and native require method as second argument.
 function Loader(options) {
-  let { paths, sharedGlobal, globals } = options;
+  let { paths, globals } = options;
   if (!globals) {
     globals = {};
   }
@@ -603,34 +563,40 @@ function Loader(options) {
   // which loader is unloaded. Please note that we intentionally don"t
   // use `loader` as subject to prevent a loader access leakage through
   // observer notifications.
-  let destructor = Object.create(null);
+  const destructor = Object.create(null);
 
-  let mapping = compileMapping(paths);
+  const mapping = compileMapping(paths);
 
   // Define pseudo modules.
   let modules = {
     "@loader/unload": destructor,
     "@loader/options": options,
-    "chrome": { Cc, Ci, Cu, Cr, Cm,
-                CC: bind(CC, Components), components: Components,
-                ChromeWorker
-    }
+    chrome: {
+      Cc,
+      Ci,
+      Cu,
+      Cr,
+      Cm,
+      CC: bind(CC, Components),
+      components: Components,
+      ChromeWorker,
+    },
   };
 
   const builtinModuleExports = modules;
   modules = {};
-  for (let id of Object.keys(builtinModuleExports)) {
+  for (const id of Object.keys(builtinModuleExports)) {
     // We resolve `uri` from `id` since modules are cached by `uri`.
-    let uri = resolveURI(id, mapping);
-    let module = Module(id, uri);
+    const uri = resolveURI(id, mapping);
+    const module = Module(id, uri);
 
     // Lazily expose built-in modules in order to
     // allow them to be loaded lazily.
     Object.defineProperty(module, "exports", {
       enumerable: true,
-      get: function () {
+      get: function() {
         return builtinModuleExports[id];
-      }
+      },
     });
 
     modules[uri] = module;
@@ -640,40 +606,49 @@ function Loader(options) {
   // so that we prevent creating a new compartment per module.
   // The side effect is that all modules will share the same
   // global objects.
-  let sharedGlobalSandbox = Sandbox({
+  const sharedGlobalSandbox = Sandbox({
     name: options.sandboxName || "DevTools",
     invisibleToDebugger: options.invisibleToDebugger || false,
     prototype: options.sandboxPrototype || globals,
+    freshCompartment: options.freshCompartment,
   });
 
   if (options.sandboxPrototype) {
     // If we were given a sandboxPrototype, we have to define the globals on
     // the sandbox directly. Note that this will not work for callers who
     // depend on being able to add globals after the loader was created.
-    for (let name of getOwnIdentifiers(globals)) {
-      Object.defineProperty(sharedGlobalSandbox, name,
-                            Object.getOwnPropertyDescriptor(globals, name));
+    for (const name of getOwnIdentifiers(globals)) {
+      Object.defineProperty(
+        sharedGlobalSandbox,
+        name,
+        Object.getOwnPropertyDescriptor(globals, name)
+      );
     }
   }
 
   // Loader object is just a representation of a environment
   // state. We mark its properties non-enumerable
   // as they are pure implementation detail that no one should rely upon.
-  let returnObj = {
+  const returnObj = {
     destructor: { enumerable: false, value: destructor },
     globals: { enumerable: false, value: globals },
     mapping: { enumerable: false, value: mapping },
     mappingCache: { enumerable: false, value: new Map() },
     // Map of module objects indexed by module URIs.
     modules: { enumerable: false, value: modules },
-    useSharedGlobalSandbox: { enumerable: false, value: !!sharedGlobal },
     sharedGlobalSandbox: { enumerable: false, value: sharedGlobalSandbox },
     // Map of module sandboxes indexed by module URIs.
     sandboxes: { enumerable: false, value: {} },
     // Whether the modules loaded should be ignored by the debugger
-    invisibleToDebugger: { enumerable: false,
-                           value: options.invisibleToDebugger || false },
-    requireHook: { enumerable: false, value: options.requireHook },
+    invisibleToDebugger: {
+      enumerable: false,
+      value: options.invisibleToDebugger || false,
+    },
+    requireHook: {
+      enumerable: false,
+      writable: true,
+      value: options.requireHook,
+    },
   };
 
   return Object.create(null, returnObj);

@@ -15,8 +15,6 @@ const {
   getEndTime,
 } = require("../utils/request-utils");
 
-const { div } = dom;
-
 /**
  * This component represents a column displaying selected
  * timing value. There are following possible values this
@@ -31,25 +29,20 @@ class RequestListColumnTime extends Component {
   static get propTypes() {
     return {
       connector: PropTypes.object.isRequired,
-      firstRequestStartedMillis: PropTypes.number.isRequired,
+      firstRequestStartedMs: PropTypes.number.isRequired,
       item: PropTypes.object.isRequired,
-      type: PropTypes.oneOf([
-        "start",
-        "end",
-        "response",
-        "duration",
-        "latency",
-      ]).isRequired,
+      type: PropTypes.oneOf(["start", "end", "response", "duration", "latency"])
+        .isRequired,
     };
   }
 
   componentDidMount() {
-    let { item, connector } = this.props;
+    const { item, connector } = this.props;
     fetchNetworkUpdatePacket(connector.requestData, item, ["eventTimings"]);
   }
 
   componentWillReceiveProps(nextProps) {
-    let { item, connector } = nextProps;
+    const { item, connector } = nextProps;
     fetchNetworkUpdatePacket(connector.requestData, item, ["eventTimings"]);
   }
 
@@ -58,19 +51,15 @@ class RequestListColumnTime extends Component {
   }
 
   getTime(props) {
-    let {
-      firstRequestStartedMillis,
-      item,
-      type,
-    } = props;
+    const { firstRequestStartedMs, item, type } = props;
 
     switch (type) {
       case "start":
-        return getStartTime(item, firstRequestStartedMillis);
+        return getStartTime(item, firstRequestStartedMs);
       case "end":
-        return getEndTime(item, firstRequestStartedMillis);
+        return getEndTime(item, firstRequestStartedMs);
       case "response":
-        return getResponseTime(item, firstRequestStartedMillis);
+        return getResponseTime(item, firstRequestStartedMs);
       case "duration":
         return item.totalTime;
       case "latency":
@@ -81,16 +70,15 @@ class RequestListColumnTime extends Component {
   }
 
   render() {
-    let { type } = this.props;
-    let time = getFormattedTime(this.getTime(this.props));
+    const { type } = this.props;
+    const time = getFormattedTime(this.getTime(this.props));
 
-    return (
-      div({
+    return dom.td(
+      {
         className: "requests-list-column requests-list-" + type + "-time",
         title: time,
       },
-        time
-      )
+      time
     );
   }
 }

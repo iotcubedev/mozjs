@@ -18,13 +18,7 @@ class TestElementsChrome(WindowManagerMixin, MarionetteTestCase):
 
         self.marionette.set_context("chrome")
 
-        def open_window_with_js():
-            self.marionette.execute_script("""
-              window.open('chrome://marionette/content/test.xul',
-                          'foo', 'chrome,centerscreen');
-            """)
-
-        win = self.open_window(open_window_with_js)
+        win = self.open_chrome_window("chrome://marionette/content/test.xul")
         self.marionette.switch_to_window(win)
 
     def tearDown(self):
@@ -91,7 +85,7 @@ class TestElementsChrome(WindowManagerMixin, MarionetteTestCase):
         self.marionette.timeout.implicit = 4
         self.marionette.execute_script("""
             window.setTimeout(function () {
-              var b = window.document.createElement('button');
+              var b = window.document.createXULElement('button');
               b.id = 'myid';
               document.getElementById('things').appendChild(b);
             }, 1000); """)

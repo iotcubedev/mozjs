@@ -3,9 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# NB: IF YOU ADD ITEMS TO THIS FILE, PLEASE UPDATE THE WHITELIST IN
-# BrowserUITelemetry.jsm. SEE BUG 991757 FOR DETAILS.
-
       <menugroup id="context-navigation">
         <menuitem id="context-back"
                   class="menuitem-iconic"
@@ -25,7 +22,7 @@
                   class="menuitem-iconic"
                   tooltip="dynamic-shortcut-tooltip"
                   aria-label="&reloadCmd.label;"
-                  oncommand="gContextMenu.reload(event);"
+                  command="Browser:ReloadOrDuplicate"
                   accesskey="&reloadCmd.accesskey;"
                   onclick="checkForMiddleClick(this, event);"/>
         <menuitem id="context-stop"
@@ -36,7 +33,6 @@
                   command="Browser:Stop"/>
         <menuitem id="context-bookmarkpage"
                   class="menuitem-iconic"
-                  observes="bookmarkThisPageBroadcaster"
                   aria-label="&bookmarkPageCmd2.label;"
                   accesskey="&bookmarkPageCmd2.accesskey;"
                   oncommand="gContextMenu.bookmarkThisPage();"/>
@@ -94,6 +90,10 @@
                 label="&saveLinkCmd.label;"
                 accesskey="&saveLinkCmd.accesskey;"
                 oncommand="gContextMenu.saveLink();"/>
+      <menuitem id="context-savelinktopocket"
+                label="&saveLinkToPocketCmd.label;"
+                accesskey="&saveLinkToPocketCmd.accesskey;"
+                oncommand= "Pocket.savePage(gContextMenu.browser, gContextMenu.linkURL);"/>
       <menuitem id="context-copyemail"
                 label="&copyEmailCmd.label;"
                 accesskey="&copyEmailCmd.accesskey;"
@@ -175,6 +175,11 @@
                 accesskey="&leaveDOMFullScreen.accesskey;"
                 label="&leaveDOMFullScreen.label;"
                 oncommand="gContextMenu.leaveDOMFullScreen();"/>
+      <menuitem id="context-video-pictureinpicture"
+                accesskey="&pictureInPicture.accesskey;"
+                label="&pictureInPicture.label;"
+                type="checkbox"
+                oncommand="gContextMenu.mediaCommand('pictureinpicture');"/>
       <menuseparator id="context-media-sep-commands"/>
       <menuitem id="context-reloadimage"
                 label="&reloadImageCmd.label;"
@@ -263,6 +268,10 @@
                 label="&savePageCmd.label;"
                 accesskey="&savePageCmd.accesskey2;"
                 oncommand="gContextMenu.savePageAs();"/>
+      <menuitem id="context-pocket"
+                label="&saveToPocketCmd.label;"
+                accesskey="&saveToPocketCmd.accesskey;"
+                oncommand="Pocket.savePage(gContextMenu.browser, gContextMenu.browser.currentURI.spec, gContextMenu.browser.contentTitle);"/>
       <menuseparator id="context-sep-sendpagetodevice" class="sync-ui-item"
                      hidden="true"/>
       <menu id="context-sendpagetodevice"
@@ -271,7 +280,7 @@
             accesskey="&sendPageToDevice.accesskey;"
             hidden="true">
         <menupopup id="context-sendpagetodevice-popup"
-                   onpopupshowing="(() => { let browser = gBrowser || getPanelBrowser(); gSync.populateSendTabToDevicesMenu(event.target, browser.currentURI.spec, browser.contentTitle); })()"/>
+                   onpopupshowing="(() => { gSync.populateSendTabToDevicesMenu(event.target, gBrowser.currentURI.spec, gBrowser.contentTitle); })()"/>
       </menu>
       <menuseparator id="context-sep-viewbgimage"/>
       <menuitem id="context-viewbgimage"
@@ -311,7 +320,7 @@
                 accesskey="&keywordfield.accesskey;"
                 oncommand="AddKeywordForSearchField();"/>
       <menuitem id="context-searchselect"
-                oncommand="BrowserSearch.loadSearchFromContext(this.searchTerms);"/>
+                oncommand="BrowserSearch.loadSearchFromContext(this.searchTerms, this.usePrivate, this.principal, this.csp);"/>
       <menuseparator id="context-sep-sendlinktodevice" class="sync-ui-item"
                      hidden="true"/>
       <menu id="context-sendlinktodevice"
@@ -360,30 +369,27 @@
           <menuitem id="context-viewframesource"
                     label="&viewFrameSourceCmd.label;"
                     accesskey="&viewFrameSourceCmd.accesskey;"
-                    oncommand="gContextMenu.viewFrameSource();"
-                    observes="isFrameImage"/>
+                    oncommand="gContextMenu.viewFrameSource();"/>
           <menuitem id="context-viewframeinfo"
                     label="&viewFrameInfoCmd.label;"
                     accesskey="&viewFrameInfoCmd.accesskey;"
                     oncommand="gContextMenu.viewFrameInfo();"/>
+#ifdef NIGHTLY_BUILD
+          <menuitem id="context-frameOsPid"
+                    label="PID: Unknown"
+                    disabled="true"/>
+#endif
         </menupopup>
       </menu>
       <menuitem id="context-viewpartialsource-selection"
                 label="&viewPartialSourceForSelectionCmd.label;"
                 accesskey="&viewPartialSourceCmd.accesskey;"
-                oncommand="gContextMenu.viewPartialSource('selection');"
-                observes="isImage"/>
-      <menuitem id="context-viewpartialsource-mathml"
-                label="&viewPartialSourceForMathMLCmd.label;"
-                accesskey="&viewPartialSourceCmd.accesskey;"
-                oncommand="gContextMenu.viewPartialSource('mathml');"
-                observes="isImage"/>
+                oncommand="gContextMenu.viewPartialSource();"/>
       <menuseparator id="context-sep-viewsource"/>
       <menuitem id="context-viewsource"
                 label="&viewPageSourceCmd.label;"
                 accesskey="&viewPageSourceCmd.accesskey;"
-                oncommand="BrowserViewSource(gContextMenu.browser);"
-                observes="canViewSource"/>
+                oncommand="BrowserViewSource(gContextMenu.browser);"/>
       <menuitem id="context-viewinfo"
                 label="&viewPageInfoCmd.label;"
                 accesskey="&viewPageInfoCmd.accesskey;"
@@ -434,6 +440,12 @@
                     label="&noLoginSuggestions.label;"
                     disabled="true"
                     hidden="true"/>
+          <menuseparator id="generated-password-separator"/>
+          <menuitem id="fill-login-generated-password"
+                    label="&fillGeneratedPassword.label;"
+                    accesskey="&fillGeneratedPassword.accesskey;"
+                    hidden="true"
+                    oncommand="gContextMenu.fillGeneratedPassword();"/>
           <menuseparator id="saved-logins-separator"/>
           <menuitem id="fill-login-saved-passwords"
                     label="&viewSavedLogins.label;"
@@ -446,6 +458,10 @@
                 label="&inspectContextMenu.label;"
                 accesskey="&inspectContextMenu.accesskey;"
                 oncommand="gContextMenu.inspectNode();"/>
+      <menuitem id="context-inspect-a11y"
+                hidden="true"
+                label="&inspectA11YContextMenu.label;"
+                oncommand="gContextMenu.inspectA11Y();"/>
       <menuseparator id="context-media-eme-separator" hidden="true"/>
       <menuitem id="context-media-eme-learnmore"
                 class="menuitem-iconic"

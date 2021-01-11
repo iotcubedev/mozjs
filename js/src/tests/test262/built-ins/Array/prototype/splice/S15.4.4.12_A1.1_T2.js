@@ -6,12 +6,11 @@ info: |
     If start is positive, use min(start, length).
     If deleteCount is positive, use min(deleteCount, length - start)
 esid: sec-array.prototype.splice
-es5id: 15.4.4.12_A1.1_T2
 description: length > deleteCount > start = 0, itemCount > 0
 ---*/
 
-var x = [0,1,2,3];
-var arr = x.splice(0,3,4,5);
+var x = [0, 1, 2, 3];
+var arr = x.splice(0, 3, 4, 5);
 
 //CHECK#1
 arr.getClass = Object.prototype.toString;

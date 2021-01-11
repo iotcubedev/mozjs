@@ -11,33 +11,41 @@
 
 var gDebuggee;
 var gClient;
-var gThreadClient;
+var gThreadFront;
+
+Services.prefs.setBoolPref("security.allow_eval_with_system_principal", true);
+
+registerCleanupFunction(() => {
+  Services.prefs.clearUserPref("security.allow_eval_with_system_principal");
+});
 
 function run_test() {
   initTestDebuggerServer();
   gDebuggee = addTestGlobal("test-stack");
   gClient = new DebuggerClient(DebuggerServer.connectPipe());
-  gClient.connect().then(function () {
-    attachTestTabAndResume(gClient, "test-stack",
-                           function (response, tabClient, threadClient) {
-                             gThreadClient = threadClient;
-                             test_pause_frame();
-                           });
+  gClient.connect().then(function() {
+    attachTestTabAndResume(gClient, "test-stack", function(
+      response,
+      targetFront,
+      threadFront
+    ) {
+      gThreadFront = threadFront;
+      test_pause_frame();
+    });
   });
   do_test_pending();
 }
 
 function test_pause_frame() {
-  gThreadClient.addOneTimeListener("paused", function (event, packet) {
-    gThreadClient.addOneTimeListener("paused", function (event, packet) {
+  gThreadFront.once("paused", function(packet) {
+    gThreadFront.once("paused", function(packet) {
       Assert.equal(packet.why.type, "exception");
       Assert.equal(packet.why.exception, 42);
-      gThreadClient.resume(function () {
-        finishClient(gClient);
-      });
+      gThreadFront.resume().then(() => finishClient(gClient));
     });
-    gThreadClient.pauseOnExceptions(true);
-    gThreadClient.resume();
+
+    gThreadFront.pauseOnExceptions(true, false);
+    gThreadFront.resume();
   });
 
   /* eslint-disable */

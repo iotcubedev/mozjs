@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-array.from
-es6id: 22.1.2.1
 description: Setting property on result value (traversed via iterator)
 info: |
     [...]
@@ -16,9 +15,18 @@ features: [Symbol.iterator]
 ---*/
 
 var items = {};
-var firstIterResult = { done: false, value: {} };
-var secondIterResult = { done: false, value: {} };
-var thirdIterResult = { done: true, value: {} };
+var firstIterResult = {
+  done: false,
+  value: {}
+};
+var secondIterResult = {
+  done: false,
+  value: {}
+};
+var thirdIterResult = {
+  done: true,
+  value: {}
+};
 var nextIterResult = firstIterResult;
 var nextNextIterResult = secondIterResult;
 var result;

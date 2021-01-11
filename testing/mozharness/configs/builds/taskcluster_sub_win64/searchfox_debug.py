@@ -1,5 +1,4 @@
 config = {
-    'perfherder_extra_options': ['static-analysis'],
     'stage_platform': 'win64-st-an-debug',
     'debug_build': True,
     'env': {
@@ -9,5 +8,4 @@ config = {
         'SCCACHE_DISABLE': '1',
     },
     'mozconfig_variant': 'debug-searchfox',
-    'artifact_flag_build_variant_in_try': None,
 }

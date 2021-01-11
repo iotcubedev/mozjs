@@ -3,13 +3,12 @@
 
 /*---
 esid: sec-array.prototype.lastindexof
-es5id: 15.4.4.15-1-1
 description: Array.prototype.lastIndexOf applied to undefined throws a TypeError
 ---*/
 
 
 assert.throws(TypeError, function() {
-            Array.prototype.lastIndexOf.call(undefined);
+  Array.prototype.lastIndexOf.call(undefined);
 });
 
 reportCompare(0, 0);

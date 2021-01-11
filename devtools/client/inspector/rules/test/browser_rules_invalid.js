@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -20,11 +19,11 @@ const TEST_URI = `
  </body>
 `;
 
-add_task(function* () {
-  yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
+add_task(async function() {
+  await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
 
-  let {inspector, view} = yield openRuleView();
-  yield selectNode("#testid", inspector);
+  const { inspector, view } = await openRuleView();
+  await selectNode("#testid", inspector);
 
   is(view._elementStyle.rules.length, 2, "Should have 2 rules.");
   // Have to actually get the rule in order to ensure that the

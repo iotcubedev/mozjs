@@ -23,6 +23,7 @@
         '<(DEPTH)/lib/dev/dev.gyp:nssdev',
         '<(DEPTH)/lib/pki/pki.gyp:nsspki',
         '<(DEPTH)/lib/ssl/ssl.gyp:ssl',
+        '<(DEPTH)/lib/libpkix/libpkix.gyp:libpkix',
       ],
     },
     {
@@ -39,6 +40,13 @@
       'dependencies': [
         'freebl_gtest_deps',
         '<(DEPTH)/exports.gyp:nss_exports',
+      ],
+      'conditions': [
+      [ 'cc_is_gcc==1 and (target_arch=="ia32" or target_arch=="x64")', {
+         'cflags_cc': [
+          '-msse2',
+          ],
+        }],
       ],
     },
     {
@@ -78,7 +86,7 @@
     'defines': [
       'NSS_USE_STATIC_LIBS',
     ],
-    # For test builds we have to set MPI defines.
+    # For static builds we have to set MPI defines.
     'conditions': [
       [ 'ct_verif==1', {
         'defines': [

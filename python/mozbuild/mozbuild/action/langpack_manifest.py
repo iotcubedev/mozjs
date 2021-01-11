@@ -8,7 +8,7 @@
 # the locale directory, chrome registry entries and other information
 # necessary to produce the complete manifest file for a language pack.
 ###
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function
 
 import argparse
 import sys
@@ -24,6 +24,7 @@ from mozpack.chrome.manifest import (
     ManifestLocale,
     parse_manifest,
 )
+from mozbuild.configure.util import Version
 from mozbuild.preprocessor import Preprocessor
 
 
@@ -51,13 +52,13 @@ pushlog_api_url = "{0}/json-rev/{1}"
 ###
 def get_dt_from_hg(path):
     with mozversioncontrol.get_repository_object(path=path) as repo:
-        phase = repo._run_in_client(["log", "-r", ".", "-T" "{phase}"])
+        phase = repo._run("log", "-r", ".", "-T" "{phase}")
         if phase.strip() != "public":
             return datetime.datetime.utcnow()
-        repo_url = repo._run_in_client(["paths", "default"])
+        repo_url = repo._run("paths", "default")
         repo_url = repo_url.strip().replace("ssh://", "https://")
         repo_url = repo_url.replace("hg://", "https://")
-        cs = repo._run_in_client(["log", "-r", ".", "-T" "{node}"])
+        cs = repo._run("log", "-r", ".", "-T" "{node}")
 
     url = pushlog_api_url.format(repo_url, cs)
     session = requests.Session()
@@ -306,7 +307,7 @@ def get_version_maybe_buildid(min_version):
     version = str(min_version)
     buildid = os.environ.get('MOZ_BUILD_DATE')
     if buildid and len(buildid) != 14:
-        print >>sys.stderr, 'Ignoring invalid MOZ_BUILD_DATE: %s' % buildid
+        print('Ignoring invalid MOZ_BUILD_DATE: %s' % buildid, file=sys.stderr)
         buildid = None
     if buildid:
         version = version + "buildid" + buildid
@@ -378,7 +379,7 @@ def get_version_maybe_buildid(min_version):
 #    }
 ###
 def create_webmanifest(locstr, min_app_ver, max_app_ver, app_name,
-                       l10n_basedir, defines, chrome_entries):
+                       l10n_basedir, langpack_eid, defines, chrome_entries):
     locales = map(lambda loc: loc.strip(), locstr.split(','))
     main_locale = locales[0]
 
@@ -392,7 +393,7 @@ def create_webmanifest(locstr, min_app_ver, max_app_ver, app_name,
         'manifest_version': 2,
         'applications': {
             'gecko': {
-                'id': 'langpack-{0}@firefox.mozilla.org'.format(main_locale),
+                'id': langpack_eid,
                 'strict_min_version': min_app_ver,
                 'strict_max_version': max_app_ver,
             }
@@ -445,6 +446,8 @@ def main(args):
                         help='Name of the application the langpack is for')
     parser.add_argument('--l10n-basedir',
                         help='Base directory for locales used in the language pack')
+    parser.add_argument('--langpack-eid',
+                        help='Language pack id to use for this locale')
     parser.add_argument('--defines', default=[], nargs='+',
                         help='List of defines files to load data from')
     parser.add_argument('--input',
@@ -458,12 +461,24 @@ def main(args):
 
     defines = parse_defines(args.defines)
 
+    min_app_version = args.min_app_ver
+    if 'a' not in min_app_version:  # Don't mangle alpha versions
+        v = Version(min_app_version)
+        if args.app_name == "SeaMonkey":
+            # SeaMonkey is odd in that <major> hasn't changed for many years.
+            # So min is <major>.<minor>.0
+            min_app_version = "{}.{}.0".format(v.major, v.minor)
+        else:
+            # Language packs should be minversion of {major}.0
+            min_app_version = "{}.0".format(v.major)
+
     res = create_webmanifest(
         args.locales,
-        args.min_app_ver,
+        min_app_version,
         args.max_app_ver,
         args.app_name,
         args.l10n_basedir,
+        args.langpack_eid,
         defines,
         chrome_entries
     )

@@ -16,48 +16,52 @@
 #include "pk11func.h"
 #include "ScopedNSSTypes.h"
 
-class nsPK11Token : public nsIPK11Token
-{
-public:
+class nsPK11Token : public nsIPK11Token {
+ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPK11TOKEN
 
-  explicit nsPK11Token(PK11SlotInfo *slot);
+  explicit nsPK11Token(PK11SlotInfo* slot);
 
-protected:
+ protected:
   virtual ~nsPK11Token() {}
 
-private:
+ private:
   friend class nsPK11TokenDB;
   nsresult refreshTokenInfo();
 
   nsCString mTokenName;
-  nsCString mTokenLabel;
   nsCString mTokenManufacturerID;
   nsCString mTokenHWVersion;
   nsCString mTokenFWVersion;
   nsCString mTokenSerialNum;
   mozilla::UniquePK11SlotInfo mSlot;
+  // True if this is the "PKCS#11 token" that provides cryptographic functions.
+  bool mIsInternalCryptoToken;
+  // True if this is the "PKCS#11 token" where private keys are stored.
+  bool mIsInternalKeyToken;
   int mSeries;
   nsCOMPtr<nsIInterfaceRequestor> mUIContext;
   nsresult GetAttributeHelper(const nsACString& attribute,
-                      /*out*/ nsACString& xpcomOutParam);
+                              /*out*/ nsACString& xpcomOutParam);
 };
 
-class nsPK11TokenDB : public nsIPK11TokenDB
-{
-public:
+class nsPK11TokenDB : public nsIPK11TokenDB {
+ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPK11TOKENDB
 
   nsPK11TokenDB() {}
 
-protected:
+ protected:
   virtual ~nsPK11TokenDB() {}
 };
 
-#define NS_PK11TOKENDB_CID \
-{ 0xb084a2ce, 0x1dd1, 0x11b2, \
-  { 0xbf, 0x10, 0x83, 0x24, 0xf8, 0xe0, 0x65, 0xcc }}
+#define NS_PK11TOKENDB_CID                           \
+  {                                                  \
+    0xb084a2ce, 0x1dd1, 0x11b2, {                    \
+      0xbf, 0x10, 0x83, 0x24, 0xf8, 0xe0, 0x65, 0xcc \
+    }                                                \
+  }
 
-#endif // nsPK11TokenDB_h
+#endif  // nsPK11TokenDB_h

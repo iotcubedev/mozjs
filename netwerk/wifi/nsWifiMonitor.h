@@ -23,33 +23,29 @@
 #include "nsIInterfaceRequestor.h"
 
 #ifdef XP_WIN
-#include "win_wifiScanner.h"
+#  include "win_wifiScanner.h"
 #endif
 
 extern mozilla::LazyLogModule gWifiMonitorLog;
-#define LOG(args)     MOZ_LOG(gWifiMonitorLog, mozilla::LogLevel::Debug, args)
+#define LOG(args) MOZ_LOG(gWifiMonitorLog, mozilla::LogLevel::Debug, args)
 
 class nsWifiAccessPoint;
 
 #define kDefaultWifiScanInterval 5 /* seconds */
 
-class nsWifiListener
-{
+class nsWifiListener {
  public:
-
-  explicit nsWifiListener(nsMainThreadPtrHolder<nsIWifiListener>* aListener)
-  {
+  explicit nsWifiListener(nsMainThreadPtrHolder<nsIWifiListener>* aListener) {
     mListener = aListener;
     mHasSentData = false;
   }
-  ~nsWifiListener() {}
+  ~nsWifiListener() = default;
 
   nsMainThreadPtrHandle<nsIWifiListener> mListener;
   bool mHasSentData;
 };
 
-class nsWifiMonitor final : nsIRunnable, nsIWifiMonitor, nsIObserver
-{
+class nsWifiMonitor final : nsIRunnable, nsIWifiMonitor, nsIObserver {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIWIFIMONITOR
@@ -59,11 +55,11 @@ class nsWifiMonitor final : nsIRunnable, nsIWifiMonitor, nsIObserver
   nsWifiMonitor();
 
  private:
-  ~nsWifiMonitor();
+  ~nsWifiMonitor() = default;
 
   nsresult DoScan();
 
-  nsresult CallWifiListeners(const nsCOMArray<nsWifiAccessPoint> &aAccessPoints,
+  nsresult CallWifiListeners(const nsCOMArray<nsWifiAccessPoint>& aAccessPoints,
                              bool aAccessPointsChanged);
 
   mozilla::Atomic<bool> mKeepGoing;

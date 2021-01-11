@@ -7,73 +7,83 @@
 #include "mozilla/mscom/EnsureMTA.h"
 
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/StaticPtr.h"
+#include "mozilla/StaticLocalPtr.h"
+#include "mozilla/SystemGroup.h"
 #include "nsThreadUtils.h"
 
 #include "private/pprthred.h"
 
 namespace {
 
-class EnterMTARunnable : public mozilla::Runnable
-{
-public:
+class EnterMTARunnable : public mozilla::Runnable {
+ public:
   EnterMTARunnable() : mozilla::Runnable("EnterMTARunnable") {}
-  NS_IMETHOD Run() override
-  {
-    mozilla::DebugOnly<HRESULT> hr = ::CoInitializeEx(nullptr,
-                                                      COINIT_MULTITHREADED);
+  NS_IMETHOD Run() override {
+    mozilla::DebugOnly<HRESULT> hr =
+        ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MOZ_ASSERT(SUCCEEDED(hr));
     return NS_OK;
   }
 };
 
-class BackgroundMTAData
-{
-public:
-  BackgroundMTAData()
-  {
+class BackgroundMTAData {
+ public:
+  BackgroundMTAData() {
     nsCOMPtr<nsIRunnable> runnable = new EnterMTARunnable();
-    mozilla::DebugOnly<nsresult> rv = NS_NewNamedThread("COM MTA",
-                                    getter_AddRefs(mThread), runnable);
+    mozilla::DebugOnly<nsresult> rv =
+        NS_NewNamedThread("COM MTA", getter_AddRefs(mThread), runnable);
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "NS_NewNamedThread failed");
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 
-  ~BackgroundMTAData()
-  {
+  ~BackgroundMTAData() {
     if (mThread) {
-      mThread->Dispatch(NS_NewRunnableFunction("BackgroundMTAData::~BackgroundMTAData", &::CoUninitialize),
-                        NS_DISPATCH_NORMAL);
+      mThread->Dispatch(
+          NS_NewRunnableFunction("BackgroundMTAData::~BackgroundMTAData",
+                                 &::CoUninitialize),
+          NS_DISPATCH_NORMAL);
       mThread->Shutdown();
     }
   }
 
-  nsCOMPtr<nsIThread> GetThread() const
-  {
-    return mThread;
-  }
+  nsCOMPtr<nsIThread> GetThread() const { return mThread; }
 
-private:
+ private:
   nsCOMPtr<nsIThread> mThread;
 };
 
-} // anonymous namespace
-
-static mozilla::StaticAutoPtr<BackgroundMTAData> sMTAData;
+}  // anonymous namespace
 
 namespace mozilla {
 namespace mscom {
 
-/* static */ nsCOMPtr<nsIThread>
-EnsureMTA::GetMTAThread()
-{
-  if (!sMTAData) {
-    sMTAData = new BackgroundMTAData();
-    ClearOnShutdown(&sMTAData, ShutdownPhase::ShutdownThreads);
-  }
+/* static */
+nsCOMPtr<nsIThread> EnsureMTA::GetMTAThread() {
+  static StaticLocalAutoPtr<BackgroundMTAData> sMTAData(
+      []() -> BackgroundMTAData* {
+        BackgroundMTAData* bgData = new BackgroundMTAData();
+
+        auto setClearOnShutdown = [ptr = &sMTAData]() -> void {
+          ClearOnShutdown(ptr, ShutdownPhase::ShutdownThreads);
+        };
+
+        if (NS_IsMainThread()) {
+          setClearOnShutdown();
+          return bgData;
+        }
+
+        SystemGroup::Dispatch(
+            TaskCategory::Other,
+            NS_NewRunnableFunction("mscom::EnsureMTA::GetMTAThread",
+                                   setClearOnShutdown));
+
+        return bgData;
+      }());
+
+  MOZ_ASSERT(sMTAData);
+
   return sMTAData->GetThread();
 }
 
-} // namespace mscom
-} // namespace mozilla
-
+}  // namespace mscom
+}  // namespace mozilla

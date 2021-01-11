@@ -1,4 +1,3 @@
-// |reftest| skip -- BigInt is not supported
 // Copyright (C) 2017 Caio Lima. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -23,6 +22,5 @@ let o = {
 }
 
 assert.sameValue(BigInt(o), 44n);
-
 
 reportCompare(0, 0);

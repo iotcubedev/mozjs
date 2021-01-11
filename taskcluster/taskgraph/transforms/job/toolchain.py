@@ -8,24 +8,24 @@ Support for running toolchain-building jobs via dedicated scripts
 from __future__ import absolute_import, print_function, unicode_literals
 
 from mozbuild.shellutil import quote as shell_quote
+from mozpack import path
 
 from taskgraph.util.schema import Schema
 from voluptuous import Optional, Required, Any
 
-from taskgraph.transforms.job import run_job_using
+from taskgraph.transforms.job import (
+    configure_taskdesc_for_run,
+    run_job_using,
+)
 from taskgraph.transforms.job.common import (
-    docker_worker_add_gecko_vcs_env_vars,
     docker_worker_add_artifacts,
-    docker_worker_add_tooltool,
-    support_vcs_checkout,
 )
 from taskgraph.util.hash import hash_paths
 from taskgraph import GECKO
-from taskgraph.util.cached_tasks import add_optimization
 import taskgraph
 
 
-CACHE_TYPE = 'toolchains.v2'
+CACHE_TYPE = 'toolchains.v3'
 
 toolchain_run_schema = Schema({
     Required('using'): 'toolchain-script',
@@ -63,11 +63,14 @@ toolchain_run_schema = Schema({
     # An alias that can be used instead of the real toolchain job name in
     # the toolchains list for build jobs.
     Optional('toolchain-alias'): basestring,
+
+    # Base work directory used to set up the task.
+    Required('workdir'): basestring,
 })
 
 
 def get_digest_data(config, run, taskdesc):
-    files = list(run.get('resources', []))
+    files = list(run.pop('resources', []))
     # This file
     files.append('taskcluster/taskgraph/transforms/job/toolchain.py')
     # The script
@@ -80,14 +83,6 @@ def get_digest_data(config, run, taskdesc):
     # Accumulate dependency hashes for index generation.
     data = [hash_paths(GECKO, files)]
 
-    # If the task has dependencies, we need those dependencies to influence
-    # the index path. So take the digest from the files above, add the list
-    # of its dependencies, and hash the aggregate.
-    # If the task has no dependencies, just use the digest from above.
-    deps = taskdesc['dependencies']
-    if deps:
-        data.extend(sorted(deps.values()))
-
     # If the task uses an in-tree docker image, we want it to influence
     # the index path as well. Ideally, the content of the docker image itself
     # should have an influence, but at the moment, we can't get that
@@ -97,7 +92,7 @@ def get_digest_data(config, run, taskdesc):
     # accompanied with a docker image name change.
     image = taskdesc['worker'].get('docker-image', {}).get('in-tree')
     if image:
-        data.extend(image)
+        data.append(image)
 
     # Likewise script arguments should influence the index.
     args = run.get('arguments')
@@ -117,8 +112,11 @@ toolchain_defaults = {
 def docker_worker_toolchain(config, job, taskdesc):
     run = job['run']
 
-    worker = taskdesc['worker']
+    worker = taskdesc['worker'] = job['worker']
     worker['chain-of-trust'] = True
+
+    # If the task doesn't have a docker-image, set a default
+    worker.setdefault('docker-image', {'in-tree': 'toolchain-build'})
 
     # Allow the job to specify where artifacts come from, but add
     # public/build if it's not there already.
@@ -126,61 +124,45 @@ def docker_worker_toolchain(config, job, taskdesc):
     if not any(artifact.get('name') == 'public/build' for artifact in artifacts):
         docker_worker_add_artifacts(config, job, taskdesc)
 
-    docker_worker_add_gecko_vcs_env_vars(config, job, taskdesc)
-    support_vcs_checkout(config, job, taskdesc, sparse=True)
+    # Toolchain checkouts don't live under {workdir}/checkouts
+    workspace = '{workdir}/workspace/build'.format(**run)
+    gecko_path = '{}/src'.format(workspace)
 
     env = worker['env']
     env.update({
         'MOZ_BUILD_DATE': config.params['moz_build_date'],
         'MOZ_SCM_LEVEL': config.params['level'],
-        'TOOLS_DISABLE': 'true',
-        'MOZ_AUTOMATION': '1',
+        'GECKO_PATH': gecko_path,
     })
 
-    if run['tooltool-downloads']:
-        internal = run['tooltool-downloads'] == 'internal'
-        docker_worker_add_tooltool(config, job, taskdesc, internal=internal)
-
-    # Use `mach` to invoke python scripts so in-tree libraries are available.
-    if run['script'].endswith('.py'):
-        wrapper = 'workspace/build/src/mach python '
-    else:
-        wrapper = ''
-
-    args = run.get('arguments', '')
-    if args:
-        args = ' ' + shell_quote(*args)
-
-    sparse_profile = []
-    if run.get('sparse-profile'):
-        sparse_profile = ['--sparse-profile',
-                          'build/sparse-profiles/{}'.format(run['sparse-profile'])]
-
-    worker['command'] = [
-        '/builds/worker/bin/run-task',
-        '--vcs-checkout=/builds/worker/workspace/build/src',
-    ] + sparse_profile + [
-        '--',
-        'bash',
-        '-c',
-        'cd /builds/worker && '
-        '{}workspace/build/src/taskcluster/scripts/misc/{}{}'.format(
-            wrapper, run['script'], args)
-    ]
-
     attributes = taskdesc.setdefault('attributes', {})
-    attributes['toolchain-artifact'] = run['toolchain-artifact']
+    attributes['toolchain-artifact'] = run.pop('toolchain-artifact')
     if 'toolchain-alias' in run:
-        attributes['toolchain-alias'] = run['toolchain-alias']
+        attributes['toolchain-alias'] = run.pop('toolchain-alias')
 
     if not taskgraph.fast:
         name = taskdesc['label'].replace('{}-'.format(config.kind), '', 1)
-        add_optimization(
-            config, taskdesc,
-            cache_type=CACHE_TYPE,
-            cache_name=name,
-            digest_data=get_digest_data(config, run, taskdesc),
-        )
+        taskdesc['cache'] = {
+            'type': CACHE_TYPE,
+            'name': name,
+            'digest-data': get_digest_data(config, run, taskdesc),
+        }
+
+    # Use `mach` to invoke python scripts so in-tree libraries are available.
+    if run['script'].endswith('.py'):
+        wrapper = [path.join(gecko_path, 'mach'), 'python']
+    else:
+        wrapper = []
+
+    run['using'] = 'run-task'
+    run['cwd'] = run['workdir']
+    run["command"] = (
+        wrapper
+        + ["workspace/build/src/taskcluster/scripts/misc/{}".format(run.pop("script"))]
+        + run.pop("arguments", [])
+    )
+
+    configure_taskdesc_for_run(config, job, taskdesc, worker['implementation'])
 
 
 @run_job_using("generic-worker", "toolchain-script",
@@ -188,7 +170,7 @@ def docker_worker_toolchain(config, job, taskdesc):
 def windows_toolchain(config, job, taskdesc):
     run = job['run']
 
-    worker = taskdesc['worker']
+    worker = taskdesc['worker'] = job['worker']
 
     worker['artifacts'] = [{
         'path': r'public\build',
@@ -196,24 +178,16 @@ def windows_toolchain(config, job, taskdesc):
     }]
     worker['chain-of-trust'] = True
 
-    docker_worker_add_gecko_vcs_env_vars(config, job, taskdesc)
+    # There were no caches on generic-worker before bug 1519472, and they cause
+    # all sorts of problems with toolchain tasks, disable them until
+    # tasks are ready.
+    run['use-caches'] = False
 
     env = worker['env']
     env.update({
         'MOZ_BUILD_DATE': config.params['moz_build_date'],
         'MOZ_SCM_LEVEL': config.params['level'],
-        'MOZ_AUTOMATION': '1',
     })
-
-    hg = r'c:\Program Files\Mercurial\hg.exe'
-    hg_command = ['"{}"'.format(hg)]
-    hg_command.append('robustcheckout')
-    hg_command.extend(['--sharebase', 'y:\\hg-shared'])
-    hg_command.append('--purge')
-    hg_command.extend(['--upstream', 'https://hg.mozilla.org/mozilla-unified'])
-    hg_command.extend(['--revision', '%GECKO_HEAD_REV%'])
-    hg_command.append('%GECKO_HEAD_REPOSITORY%')
-    hg_command.append('.\\build\\src')
 
     # Use `mach` to invoke python scripts so in-tree libraries are available.
     if run['script'].endswith('.py'):
@@ -223,24 +197,26 @@ def windows_toolchain(config, job, taskdesc):
     if args:
         args = ' ' + shell_quote(*args)
 
-    bash = r'c:\mozilla-build\msys\bin\bash'
-    worker['command'] = [
-        ' '.join(hg_command),
-        # do something intelligent.
-        r'{} build/src/taskcluster/scripts/misc/{}{}'.format(
-            bash, run['script'], args)
-    ]
-
     attributes = taskdesc.setdefault('attributes', {})
-    attributes['toolchain-artifact'] = run['toolchain-artifact']
+    attributes['toolchain-artifact'] = run.pop('toolchain-artifact')
     if 'toolchain-alias' in run:
-        attributes['toolchain-alias'] = run['toolchain-alias']
+        attributes['toolchain-alias'] = run.pop('toolchain-alias')
 
     if not taskgraph.fast:
         name = taskdesc['label'].replace('{}-'.format(config.kind), '', 1)
-        add_optimization(
-            config, taskdesc,
-            cache_type=CACHE_TYPE,
-            cache_name=name,
-            digest_data=get_digest_data(config, run, taskdesc),
-        )
+        taskdesc['cache'] = {
+            'type': CACHE_TYPE,
+            'name': name,
+            'digest-data': get_digest_data(config, run, taskdesc),
+        }
+
+    bash = r'c:\mozilla-build\msys\bin\bash'
+
+    run['using'] = 'run-task'
+    run['command'] = [
+        # do something intelligent.
+        r'{} build/src/taskcluster/scripts/misc/{}{}'.format(
+            bash, run.pop('script'), args)
+    ]
+    run.pop('arguments', None)
+    configure_taskdesc_for_run(config, job, taskdesc, worker['implementation'])

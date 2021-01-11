@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import os
 import re
@@ -40,6 +40,7 @@ extensions = [
     'sphinx.ext.todo',
     'mozbuild.sphinx',
     'sphinx_js',
+    'sphinxcontrib.mermaid',
 ]
 
 # JSDoc must run successfully for dirs specified, so running
@@ -48,6 +49,8 @@ js_source_path = [
     'browser/components/extensions',
     'testing/marionette',
     'toolkit/components/extensions',
+    'toolkit/components/extensions/parent',
+    'toolkit/components/featuregates',
     'toolkit/mozapps/extensions',
 ]
 root_for_relative_js_paths = '.'

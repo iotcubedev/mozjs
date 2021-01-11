@@ -7,8 +7,8 @@
  * https://w3c.github.io/push-api/
  */
 
-[Constructor(DOMString type, optional PushEventInit eventInitDict),
- Func="mozilla::dom::DOMPrefs::PushEnabled",
+[Constructor(DOMString type, optional PushEventInit eventInitDict = {}),
+ Pref="dom.push.enabled",
  Exposed=ServiceWorker]
 interface PushEvent : ExtendableEvent {
   readonly attribute PushMessageData? data;

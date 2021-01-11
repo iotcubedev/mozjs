@@ -4,7 +4,6 @@
  * This program is made available under an ISC-style license.  See the
  * accompanying file LICENSE for details.
  */
-#define __MSVCRT_VERSION__ 0x0700
 #undef WINVER
 #define WINVER 0x0501
 #undef WIN32_LEAN_AND_MEAN
@@ -1050,7 +1049,6 @@ static struct cubeb_ops const winmm_ops = {
   /*.get_max_channel_count=*/ winmm_get_max_channel_count,
   /*.get_min_latency=*/ winmm_get_min_latency,
   /*.get_preferred_sample_rate =*/ winmm_get_preferred_sample_rate,
-  /*.get_preferred_channel_layout =*/ NULL,
   /*.enumerate_devices =*/ winmm_enumerate_devices,
   /*.device_collection_destroy =*/ winmm_device_collection_destroy,
   /*.destroy =*/ winmm_destroy,

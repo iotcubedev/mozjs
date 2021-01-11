@@ -12,39 +12,48 @@
 namespace mozilla {
 namespace dom {
 
-class PaymentRequestChild final : public PPaymentRequestChild
-{
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(PaymentRequestChild);
-public:
-  PaymentRequestChild();
+class PaymentRequest;
 
-  void MaybeDelete();
+class PaymentRequestChild final : public PPaymentRequestChild {
+  friend class PPaymentRequestChild;
+
+ public:
+  explicit PaymentRequestChild(PaymentRequest* aRequest);
+
+  void MaybeDelete(bool aCanBeInManager);
 
   nsresult RequestPayment(const IPCPaymentActionRequest& aAction);
 
-protected:
-  mozilla::ipc::IPCResult
-  RecvRespondPayment(const IPCPaymentActionResponse& aResponse) override;
+ protected:
+  mozilla::ipc::IPCResult RecvRespondPayment(
+      const IPCPaymentActionResponse& aResponse);
 
-  mozilla::ipc::IPCResult
-  RecvChangeShippingAddress(const nsString& aRequestId,
-                            const IPCPaymentAddress& aAddress) override;
+  mozilla::ipc::IPCResult RecvChangeShippingAddress(
+      const nsString& aRequestId, const IPCPaymentAddress& aAddress);
 
-  mozilla::ipc::IPCResult
-  RecvChangeShippingOption(const nsString& aRequestId,
-                           const nsString& aOption) override;
+  mozilla::ipc::IPCResult RecvChangeShippingOption(const nsString& aRequestId,
+                                                   const nsString& aOption);
+
+  mozilla::ipc::IPCResult RecvChangePayerDetail(const nsString& aRequestId,
+                                                const nsString& aPayerName,
+                                                const nsString& aPayerEmail,
+                                                const nsString& aPayerPhone);
+
+  mozilla::ipc::IPCResult RecvChangePaymentMethod(
+      const nsString& aRequestId, const nsString& aMethodName,
+      const IPCMethodChangeDetails& aMethodDetails);
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
-private:
+ private:
   ~PaymentRequestChild() = default;
 
-  bool SendRequestPayment(const IPCPaymentActionRequest& aAction);
+  void DetachFromRequest(bool aCanBeInManager);
 
-  bool mActorAlive;
+  PaymentRequest* MOZ_NON_OWNING_REF mRequest;
 };
 
-} // end of namespace dom
-} // end of namespace mozilla
+}  // end of namespace dom
+}  // end of namespace mozilla
 
 #endif

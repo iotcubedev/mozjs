@@ -46,14 +46,9 @@ export MOZ_SIMPLE_PACKAGE_NAME=target
 # Ensure that in tree libraries can be found
 export LIBRARY_PATH=$LIBRARY_PATH:$WORKSPACE/src/obj-firefox:$WORKSPACE/src/gcc/lib64
 
-if [[ -n ${USE_SCCACHE} ]]; then
-    # Point sccache at the Taskcluster proxy for AWS credentials.
-    export AWS_IAM_CREDENTIALS_URL="http://taskcluster/auth/v1/aws/s3/read-write/taskcluster-level-${MOZ_SCM_LEVEL}-sccache-${TASKCLUSTER_WORKER_GROUP}/?format=iam-role-compat"
-fi
-
 # test required parameters are supplied
 if [[ -z ${MOZHARNESS_SCRIPT} ]]; then fail "MOZHARNESS_SCRIPT is not set"; fi
-if [[ -z ${MOZHARNESS_CONFIG} ]]; then fail "MOZHARNESS_CONFIG is not set"; fi
+if [[ -z "${MOZHARNESS_CONFIG}" && -z "${EXTRA_MOZHARNESS_CONFIG}" ]]; then fail "MOZHARNESS_CONFIG or EXTRA_MOZHARNESS_CONFIG is not set"; fi
 
 # run XVfb in the background, if necessary
 if $NEED_XVFB; then
@@ -88,7 +83,7 @@ export TOOLTOOL_CACHE
 
 config_path_cmds=""
 for path in ${MOZHARNESS_CONFIG_PATHS}; do
-    config_path_cmds="${config_path_cmds} --extra-config-path ${WORKSPACE}/build/src/${path}"
+    config_path_cmds="${config_path_cmds} --extra-config-path ${GECKO_PATH}/${path}"
 done
 
 # support multiple, space delimited, config files
@@ -117,7 +112,7 @@ fi
 
 cd /builds/worker
 
-python2.7 $WORKSPACE/build/src/testing/${MOZHARNESS_SCRIPT} \
+$GECKO_PATH/mach python $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
   ${config_path_cmds} \
   ${config_cmds} \
   $debug_flag \
@@ -125,7 +120,6 @@ python2.7 $WORKSPACE/build/src/testing/${MOZHARNESS_SCRIPT} \
   $actions \
   $options \
   --log-level=debug \
-  --scm-level=$MOZ_SCM_LEVEL \
   --work-dir=$WORKSPACE/build \
   --branch=${MH_BRANCH} \
   --build-pool=${MH_BUILD_POOL}

@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-date.prototype.toisostring
-es5id: 15.9.5.43-0-7
 description: >
     Date.prototype.toISOString - TypeError is thrown when this is any
     primitive values
@@ -11,7 +10,7 @@ description: >
 
 
 assert.throws(TypeError, function() {
-            Date.prototype.toISOString.call(15);
+  Date.prototype.toISOString.call(15);
 });
 
 reportCompare(0, 0);

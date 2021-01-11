@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -17,12 +18,12 @@ flags: [async]
 ---*/
 
 Promise.resolve(23).then(function(value) {
-    if (value !== 23) {
-      $DONE('The promise should be fulfilled with the provided value.');
-      return;
-    }
+  if (value !== 23) {
+    $DONE('The promise should be fulfilled with the provided value.');
+    return;
+  }
 
-    $DONE();
-  }, function() {
-    $DONE('The promise should not be rejected.');
-  });
+  $DONE();
+}, function() {
+  $DONE('The promise should not be rejected.');
+});

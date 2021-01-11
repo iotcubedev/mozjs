@@ -6,12 +6,11 @@ info: |
     The initial value of Boolean.prototype.constructor is the
     built-in Boolean constructor
 esid: sec-boolean-constructor
-es5id: 15.6.4.1_A1
 description: Compare Boolean.prototype.constructor with Boolean
 ---*/
 
 //CHECK#1
-if(Boolean.prototype.constructor !== Boolean){
+if (Boolean.prototype.constructor !== Boolean) {
   $ERROR('#1: Boolean.prototype.constructor === Boolean');
 }
 

@@ -8,11 +8,12 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
+#include "nsIContent.h"
 #include "nsIDOMEventListener.h"
 
 // X.h defines KeyPress
 #ifdef KeyPress
-#undef KeyPress
+#  undef KeyPress
 #endif
 
 class nsMenuFrame;
@@ -22,15 +23,14 @@ namespace mozilla {
 namespace dom {
 class EventTarget;
 class KeyboardEvent;
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
 /**
  * EventListener implementation for menubar.
  */
-class nsMenuBarListener final : public nsIDOMEventListener
-{
-public:
+class nsMenuBarListener final : public nsIDOMEventListener {
+ public:
   explicit nsMenuBarListener(nsMenuBarFrame* aMenuBarFrame,
                              nsIContent* aMenuBarContent);
 
@@ -39,7 +39,7 @@ public:
   /**
    * nsIDOMEventListener interface method.
    */
-  NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) override;
+  NS_DECL_NSIDOMEVENTLISTENER
 
   /**
    * When mMenuBarFrame is being destroyed, this should be called.
@@ -60,34 +60,35 @@ public:
    */
   static bool IsAccessKeyPressed(mozilla::dom::KeyboardEvent* aEvent);
 
-protected:
+ protected:
   virtual ~nsMenuBarListener();
 
-  nsresult KeyUp(nsIDOMEvent* aMouseEvent);
-  nsresult KeyDown(nsIDOMEvent* aMouseEvent);
-  nsresult KeyPress(nsIDOMEvent* aMouseEvent);
-  nsresult Blur(nsIDOMEvent* aEvent);
-  nsresult OnWindowDeactivated(nsIDOMEvent* aEvent);
-  nsresult MouseDown(nsIDOMEvent* aMouseEvent);
-  nsresult Fullscreen(nsIDOMEvent* aEvent);
+  nsresult KeyUp(mozilla::dom::Event* aMouseEvent);
+  nsresult KeyDown(mozilla::dom::Event* aMouseEvent);
+  nsresult KeyPress(mozilla::dom::Event* aMouseEvent);
+  nsresult Blur(mozilla::dom::Event* aEvent);
+  nsresult OnWindowDeactivated(mozilla::dom::Event* aEvent);
+  nsresult MouseDown(mozilla::dom::Event* aMouseEvent);
+  nsresult Fullscreen(mozilla::dom::Event* aEvent);
 
   static void InitAccessKey();
 
-  static mozilla::Modifiers
-    GetModifiersForAccessKey(mozilla::dom::KeyboardEvent* event);
+  static mozilla::Modifiers GetModifiersForAccessKey(
+      mozilla::dom::KeyboardEvent* event);
 
   /**
    * Given a key event for an Alt+shortcut combination,
    * return the menu, if any, that would be opened. If aPeek
    * is false, then play a beep and deactivate the menubar on Windows.
    */
-  nsMenuFrame* GetMenuForKeyEvent(mozilla::dom::KeyboardEvent* aKeyEvent, bool aPeek);
+  nsMenuFrame* GetMenuForKeyEvent(mozilla::dom::KeyboardEvent* aKeyEvent,
+                                  bool aPeek);
 
   /**
    * Call MarkAsReservedByChrome if the user's preferences indicate that
    * the key should be chrome-only.
    */
-  void ReserveKeyIfNeeded(nsIDOMEvent* aKeyEvent);
+  void ReserveKeyIfNeeded(mozilla::dom::Event* aKeyEvent);
 
   // This should only be called by the nsMenuBarListener during event dispatch,
   // thus ensuring that this doesn't get destroyed during the process.
@@ -116,4 +117,4 @@ protected:
   static mozilla::Modifiers mAccessKeyMask;
 };
 
-#endif // #ifndef nsMenuBarListener_h
+#endif  // #ifndef nsMenuBarListener_h

@@ -10,10 +10,8 @@
 namespace mozilla {
 namespace layers {
 
-void
-BSPTree::BuildDrawOrder(BSPTreeNode* aNode,
-                        nsTArray<LayerPolygon>& aLayers) const
-{
+void BSPTree::BuildDrawOrder(BSPTreeNode* aNode,
+                             nsTArray<LayerPolygon>& aLayers) const {
   const gfx::Point4D& normal = aNode->First().GetNormal();
 
   BSPTreeNode* front = aNode->front;
@@ -35,7 +33,7 @@ BSPTree::BuildDrawOrder(BSPTreeNode* aNode,
     MOZ_ASSERT(layer.geometry);
 
     if (layer.geometry->GetPoints().Length() >= 3) {
-      aLayers.AppendElement(Move(layer));
+      aLayers.AppendElement(std::move(layer));
     }
   }
 
@@ -44,13 +42,10 @@ BSPTree::BuildDrawOrder(BSPTreeNode* aNode,
   }
 }
 
-void
-BSPTree::BuildTree(BSPTreeNode* aRoot,
-                   std::list<LayerPolygon>& aLayers)
-{
+void BSPTree::BuildTree(BSPTreeNode* aRoot, std::list<LayerPolygon>& aLayers) {
   MOZ_ASSERT(!aLayers.empty());
 
-  aRoot->layers.push_back(Move(aLayers.front()));
+  aRoot->layers.push_back(std::move(aLayers.front()));
   aLayers.pop_front();
 
   if (aLayers.empty()) {
@@ -69,38 +64,38 @@ BSPTree::BuildTree(BSPTreeNode* aRoot,
 
     // Calculate the plane-point distances for the polygon classification.
     size_t pos = 0, neg = 0;
-    nsTArray<float> distances =
-      CalculatePointPlaneDistances(geometry, planeNormal, planePoint, pos, neg);
+    nsTArray<float> distances = CalculatePointPlaneDistances(
+        geometry, planeNormal, planePoint, pos, neg);
 
     // Back polygon
     if (pos == 0 && neg > 0) {
-      backLayers.push_back(Move(layerPolygon));
+      backLayers.push_back(std::move(layerPolygon));
     }
     // Front polygon
     else if (pos > 0 && neg == 0) {
-      frontLayers.push_back(Move(layerPolygon));
+      frontLayers.push_back(std::move(layerPolygon));
     }
     // Coplanar polygon
     else if (pos == 0 && neg == 0) {
-      aRoot->layers.push_back(Move(layerPolygon));
+      aRoot->layers.push_back(std::move(layerPolygon));
     }
     // Polygon intersects with the splitting plane.
     else if (pos > 0 && neg > 0) {
       nsTArray<gfx::Point4D> backPoints, frontPoints;
       // Clip the polygon against the plane. We reuse the previously calculated
       // distances to find the plane-edge intersections.
-      ClipPointsWithPlane(geometry, planeNormal, distances,
-                          backPoints, frontPoints);
+      ClipPointsWithPlane(geometry, planeNormal, distances, backPoints,
+                          frontPoints);
 
       const gfx::Point4D& normal = layerPolygon.geometry->GetNormal();
       Layer* layer = layerPolygon.layer;
 
       if (backPoints.Length() >= 3) {
-        backLayers.emplace_back(layer, Move(backPoints), normal);
+        backLayers.emplace_back(layer, std::move(backPoints), normal);
       }
 
       if (frontPoints.Length() >= 3) {
-        frontLayers.emplace_back(layer, Move(frontPoints), normal);
+        frontLayers.emplace_back(layer, std::move(frontPoints), normal);
       }
     }
   }
@@ -116,5 +111,5 @@ BSPTree::BuildTree(BSPTreeNode* aRoot,
   }
 }
 
-} // namespace layers
-} // namespace mozilla
+}  // namespace layers
+}  // namespace mozilla

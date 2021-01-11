@@ -6,11 +6,10 @@ info: |
     The Date.prototype.toString property "length" has { ReadOnly, !
     DontDelete, DontEnum } attributes
 esid: sec-date.prototype.tostring
-es5id: 15.9.5.2_A3_T2
 description: Checking DontDelete attribute
 ---*/
 
-if (delete Date.prototype.toString.length  !== true) {
+if (delete Date.prototype.toString.length !== true) {
   $ERROR('#1: The Date.prototype.toString.length property does not have the attributes DontDelete');
 }
 

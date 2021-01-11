@@ -39,7 +39,16 @@
 #include "windows/handler/exception_handler.h"
 #include "common/windows/guid_string.h"
 
+#ifdef MOZ_PHC
+#include "replace_malloc_bridge.h"
+#endif
+
 namespace google_breakpad {
+
+// This define is new to Windows 10.
+#ifndef DBG_PRINTEXCEPTION_WIDE_C
+#define DBG_PRINTEXCEPTION_WIDE_C ((DWORD)0x4001000A)
+#endif
 
 vector<ExceptionHandler*>* ExceptionHandler::handler_stack_ = NULL;
 LONG ExceptionHandler::handler_stack_index_ = 0;
@@ -380,7 +389,7 @@ DWORD ExceptionHandler::ExceptionHandlerThreadMain(void* lpParameter) {
   assert(self->handler_start_semaphore_ != NULL);
   assert(self->handler_finish_semaphore_ != NULL);
 
-  while (true) {
+  for (;;) {
     if (WaitForSingleObject(self->handler_start_semaphore_, INFINITE) ==
         WAIT_OBJECT_0) {
       // Perform the requested action.
@@ -473,7 +482,9 @@ LONG ExceptionHandler::HandleException(EXCEPTION_POINTERS* exinfo) {
   DWORD code = exinfo->ExceptionRecord->ExceptionCode;
   LONG action;
   bool is_debug_exception = (code == EXCEPTION_BREAKPOINT) ||
-                            (code == EXCEPTION_SINGLE_STEP);
+                            (code == EXCEPTION_SINGLE_STEP) ||
+                            (code == DBG_PRINTEXCEPTION_C) ||
+                            (code == DBG_PRINTEXCEPTION_WIDE_C);
 
   if (code == EXCEPTION_INVALID_HANDLE &&
       current_handler->consume_invalid_handle_exceptions_) {
@@ -816,24 +827,45 @@ bool ExceptionHandler::WriteMinidumpForChild(HANDLE child,
   CloseHandle(child_thread_handle);
 
   if (callback) {
+    // nullptr here for phc::AddrInfo* is ok because this is not a crash.
     success = callback(handler.dump_path_c_, handler.next_minidump_id_c_,
-                       callback_context, NULL, NULL, success);
+                       callback_context, NULL, NULL, nullptr, success);
   }
 
   return success;
 }
 
+#ifdef MOZ_PHC
+static void GetPHCAddrInfo(EXCEPTION_POINTERS* exinfo,
+                           mozilla::phc::AddrInfo* addr_info) {
+  // Is this a crash involving a PHC allocation?
+  PEXCEPTION_RECORD rec = exinfo->ExceptionRecord;
+  if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+    // rec->ExceptionInformation[0] contains a value indicating what type of
+    // operation it what, and rec->ExceptionInformation[1] contains the
+    // virtual address of the inaccessible data.
+    char* crashAddr = reinterpret_cast<char*>(rec->ExceptionInformation[1]);
+    ReplaceMalloc::IsPHCAllocation(crashAddr, addr_info);
+  }
+}
+#endif
+
 bool ExceptionHandler::WriteMinidumpWithException(
     DWORD requesting_thread_id,
     EXCEPTION_POINTERS* exinfo,
     MDRawAssertionInfo* assertion) {
+    mozilla::phc::AddrInfo addr_info;
+#ifdef MOZ_PHC
+    GetPHCAddrInfo(exinfo, &addr_info);
+#endif
+
   // Give user code a chance to approve or prevent writing a minidump.  If the
   // filter returns false, don't handle the exception at all.  If this method
   // was called as a result of an exception, returning false will cause
   // HandleException to call any previous handler or return
   // EXCEPTION_CONTINUE_SEARCH on the exception thread, allowing it to appear
   // as though this handler were not present at all.
-  if (filter_ && !filter_(callback_context_, exinfo, assertion)) {
+  if (filter_ && !filter_(callback_context_, exinfo, &addr_info, assertion)) {
     return false;
   }
 
@@ -854,7 +886,7 @@ bool ExceptionHandler::WriteMinidumpWithException(
     // scenario, the server process ends up creating the dump path and dump
     // id so they are not known to the client.
     success = callback_(dump_path_c_, next_minidump_id_c_, callback_context_,
-                        exinfo, assertion, success);
+                        exinfo, assertion, &addr_info, success);
   }
 
   return success;

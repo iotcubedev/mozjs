@@ -3,8 +3,6 @@
 
 /*---
 info: If string.charAt(k) not equal "%", return this char
-es5id: 15.1.3.2_A2.1_T1
-es6id: 18.2.6.3
 esid: sec-decodeuricomponent-encodeduricomponent
 description: Complex tests
 includes: [decimalToHexString.js]
@@ -22,7 +20,7 @@ for (var indexI = 0; indexI <= 65535; indexI++) {
         $ERROR('#' + hex + ' ');
         errorCount++;
       }
-    } catch (e){
+    } catch (e) {
       $ERROR('#' + hex + ' ');
       errorCount++;
     }

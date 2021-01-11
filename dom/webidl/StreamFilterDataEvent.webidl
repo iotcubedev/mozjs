@@ -11,9 +11,9 @@
  * any standard.
  */
 
-[Constructor(DOMString type, optional StreamFilterDataEventInit eventInitDict),
+[Constructor(DOMString type, optional StreamFilterDataEventInit eventInitDict = {}),
  Func="mozilla::extensions::StreamFilter::IsAllowedInContext",
- Exposed=(Window,System)]
+ Exposed=Window]
 interface StreamFilterDataEvent : Event {
   /**
    * Contains a chunk of data read from the input stream.

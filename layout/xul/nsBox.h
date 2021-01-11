@@ -8,14 +8,13 @@
 #define nsBox_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/StaticPtr.h"
 #include "nsIFrame.h"
 
 class nsITheme;
 
 class nsBox : public nsIFrame {
-
-public:
-
+ public:
   friend class nsIFrame;
 
   static void Shutdown();
@@ -26,11 +25,13 @@ public:
   virtual nscoord GetXULFlex() override;
   virtual nscoord GetXULBoxAscent(nsBoxLayoutState& aBoxLayoutState) override;
 
-  virtual nsSize GetXULMinSizeForScrollArea(nsBoxLayoutState& aBoxLayoutState) override;
+  virtual nsSize GetXULMinSizeForScrollArea(
+      nsBoxLayoutState& aBoxLayoutState) override;
 
   virtual bool IsXULCollapsed() override;
 
-  virtual void SetXULBounds(nsBoxLayoutState& aBoxLayoutState, const nsRect& aRect,
+  virtual void SetXULBounds(nsBoxLayoutState& aBoxLayoutState,
+                            const nsRect& aRect,
                             bool aRemoveOverflowAreas = false) override;
 
   virtual nsresult GetXULBorder(nsMargin& aBorderAndPadding) override;
@@ -42,22 +43,13 @@ public:
 
   virtual nsresult XULRelayoutChildAtOrdinal(nsIFrame* aChild) override;
 
-#ifdef DEBUG_LAYOUT
-  NS_IMETHOD GetDebugBoxAt(const nsPoint& aPoint, nsIFrame** aBox) override;
-  virtual nsresult GetXULDebug(bool& aDebug) override;
-  virtual nsresult SetXULDebug(nsBoxLayoutState& aState, bool aDebug) override;
-
-  virtual nsresult XULDumpBox(FILE* out) override;
-  void PropagateDebug(nsBoxLayoutState& aState);
-#endif
-
-  nsBox(ClassID aID);
+  nsBox(ComputedStyle*, nsPresContext*, ClassID);
   virtual ~nsBox();
 
   /**
-   * Returns true if this box clips its children, e.g., if this box is an sc
-rollbox.
-  */
+   * Returns true if this box clips its children, e.g., if this box is an
+   * scrollbox.
+   */
   virtual bool DoesClipChildren();
   virtual bool ComputesOwnOverflowArea() = 0;
 
@@ -74,55 +66,26 @@ rollbox.
   static void AddMargin(nsIFrame* aChild, nsSize& aSize);
   static void AddMargin(nsSize& aSize, const nsMargin& aMargin);
 
-  static nsSize BoundsCheckMinMax(const nsSize& aMinSize, const nsSize& aMaxSize);
-  static nsSize BoundsCheck(const nsSize& aMinSize, const nsSize& aPrefSize, const nsSize& aMaxSize);
-  static nscoord BoundsCheck(nscoord aMinSize, nscoord aPrefSize, nscoord aMaxSize);
+  static nsSize BoundsCheckMinMax(const nsSize& aMinSize,
+                                  const nsSize& aMaxSize);
+  static nsSize BoundsCheck(const nsSize& aMinSize, const nsSize& aPrefSize,
+                            const nsSize& aMaxSize);
+  static nscoord BoundsCheck(nscoord aMinSize, nscoord aPrefSize,
+                             nscoord aMaxSize);
 
   static nsIFrame* GetChildXULBox(const nsIFrame* aFrame);
   static nsIFrame* GetNextXULBox(const nsIFrame* aFrame);
   static nsIFrame* GetParentXULBox(const nsIFrame* aFrame);
 
-protected:
-
-#ifdef DEBUG_LAYOUT
-  virtual void AppendAttribute(const nsAutoString& aAttribute, const nsAutoString& aValue, nsAutoString& aResult);
-
-  virtual void ListBox(nsAutoString& aResult);
-#endif
-
+ protected:
   nsresult BeginXULLayout(nsBoxLayoutState& aState);
   NS_IMETHOD DoXULLayout(nsBoxLayoutState& aBoxLayoutState);
   nsresult EndXULLayout(nsBoxLayoutState& aState);
 
-#ifdef DEBUG_LAYOUT
-  virtual void GetBoxName(nsAutoString& aName);
-  void PropagateDebug(nsBoxLayoutState& aState);
-#endif
-
   static bool gGotTheme;
-  static nsITheme* gTheme;
+  static mozilla::StaticRefPtr<nsITheme> gTheme;
 
-  enum eMouseThrough {
-    unset,
-    never,
-    always
-  };
-
-private:
-
-  //nscoord mX;
-  //nscoord mY;
+  enum eMouseThrough { unset, never, always };
 };
 
-#ifdef DEBUG_LAYOUT
-#define NS_BOX_ASSERTION(box,expr,str) \
-  if (!(expr)) { \
-       box->XULDumpBox(stdout); \
-       NS_DebugBreak(NSDebugAssertion, str, #expr, __FILE__, __LINE__); \
-  }
-#else
-#define NS_BOX_ASSERTION(box,expr,str) {}
 #endif
-
-#endif
-

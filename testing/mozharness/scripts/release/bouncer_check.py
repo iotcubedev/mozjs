@@ -15,17 +15,27 @@ import sys
 
 sys.path.insert(1, os.path.dirname(os.path.dirname(sys.path[0])))
 
-from mozharness.base.python import VirtualenvMixin, virtualenv_config_options
 from mozharness.base.script import BaseScript
+from mozharness.mozilla.automation import EXIT_STATUS_DICT, TBPL_FAILURE
 
 BOUNCER_URL_PATTERN = "{bouncer_prefix}?product={product}&os={os}&lang={lang}"
 
 
-class BouncerCheck(BaseScript, VirtualenvMixin):
+class BouncerCheck(BaseScript):
     config_options = [
         [["--version"], {
             "dest": "version",
             "help": "Version of release, eg: 39.0b5",
+        }],
+        [["--product-field"], {
+            "dest": "product_field",
+            "help": "Version field of release from product details, eg: LATEST_FIREFOX_VERSION",
+        }],
+        [["--products-url"], {
+            "dest": "products_url",
+            "help": "The URL of the current Firefox product versions",
+            "type": str,
+            "default": "https://product-details.mozilla.org/1.0/firefox_versions.json",
         }],
         [["--previous-version"], {
             "dest": "prev_versions",
@@ -50,53 +60,81 @@ class BouncerCheck(BaseScript, VirtualenvMixin):
             "type": int,
             "help": "Number of HTTP sessions running in parallel",
         }],
-    ] + virtualenv_config_options
+    ]
 
     def __init__(self, require_config_file=True):
         super(BouncerCheck, self).__init__(
             config_options=self.config_options,
             require_config_file=require_config_file,
             config={
-                "virtualenv_modules": [
-                    "redo",
-                    "requests",
-                    "futures==3.1.1",
+                "cdn_urls": [
+                    'download-installer.cdn.mozilla.net',
+                    'download.cdn.mozilla.net',
+                    'download.mozilla.org',
+                    'archive.mozilla.org',
                 ],
-                "virtualenv_path": "venv",
             },
             all_actions=[
-                "create-virtualenv",
-                "activate-virtualenv",
                 "check-bouncer",
             ],
             default_actions=[
-                "create-virtualenv",
-                "activate-virtualenv",
                 "check-bouncer",
             ],
         )
 
+    def _pre_config_lock(self, rw_config):
+        super(BouncerCheck, self)._pre_config_lock(rw_config)
+
+        if "product_field" not in self.config:
+            return
+
+        firefox_versions = self.load_json_url(self.config["products_url"])
+
+        if self.config['product_field'] not in firefox_versions:
+            self.fatal('Unknown Firefox label: {}'.format(self.config['product_field']))
+        self.config["version"] = firefox_versions[self.config["product_field"]]
+        self.log("Set Firefox version {}".format(self.config["version"]))
+
     def check_url(self, session, url):
         from redo import retry
+        from requests.exceptions import HTTPError
+        try:
+            from urllib.parse import urlparse
+        except ImportError:
+            # Python 2
+            from urlparse import urlparse
 
         def do_check_url():
             self.log("Checking {}".format(url))
             r = session.head(url, verify=True, timeout=10, allow_redirects=True)
             try:
                 r.raise_for_status()
-            except Exception:
-                self.warning("FAIL: {}, status: {}".format(url, r.status_code))
+            except HTTPError:
+                self.error("FAIL: {}, status: {}".format(url, r.status_code))
                 raise
 
-        retry(do_check_url, sleeptime=3, max_sleeptime=10, attempts=3)
+            final_url = urlparse(r.url)
+            if final_url.scheme != 'https':
+                self.error('FAIL: URL scheme is not https: {}'.format(r.url))
+                self.return_code = EXIT_STATUS_DICT[TBPL_FAILURE]
+
+            if final_url.netloc not in self.config['cdn_urls']:
+                self.error('FAIL: host not in allowed locations: {}'.format(r.url))
+                self.return_code = EXIT_STATUS_DICT[TBPL_FAILURE]
+
+        try:
+            retry(do_check_url, sleeptime=3, max_sleeptime=10, attempts=3)
+        except HTTPError:
+            # The error was already logged above.
+            self.return_code = EXIT_STATUS_DICT[TBPL_FAILURE]
+            return
 
     def get_urls(self):
         for product in self.config["products"].values():
             if not product["check_uptake"]:
                 continue
             product_name = product["product-name"] % {"version": self.config["version"]}
-            for path in product["paths"].values():
-                bouncer_platform = path["bouncer-platform"]
+            for bouncer_platform in product["platforms"]:
                 for locale in self.config["locales"]:
                     url = BOUNCER_URL_PATTERN.format(
                         bouncer_prefix=self.config["bouncer_prefix"],
@@ -112,8 +150,7 @@ class BouncerCheck(BaseScript, VirtualenvMixin):
             for prev_version in self.config.get("prev_versions", []):
                 product_name = product["product-name"] % {"version": self.config["version"],
                                                           "prev_version": prev_version}
-                for path in product["paths"].values():
-                    bouncer_platform = path["bouncer-platform"]
+                for bouner_platform in product["platforms"]:
                     for locale in self.config["locales"]:
                         url = BOUNCER_URL_PATTERN.format(
                             bouncer_prefix=self.config["bouncer_prefix"],

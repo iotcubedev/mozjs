@@ -3,6 +3,8 @@
 # Any copyright is dedicated to the Public Domain.
 # http://creativecommons.org/publicdomain/zero/1.0/
 
+from __future__ import absolute_import, print_function
+
 import unittest
 import json
 
@@ -31,6 +33,7 @@ class TestGenerateManifest(unittest.TestCase):
             '57.0.*',
             'Firefox',
             '/var/vcs/l10n-central',
+            'langpack-fi@firefox.mozilla.og',
             ctx,
             {},
         )
@@ -50,6 +53,7 @@ class TestGenerateManifest(unittest.TestCase):
             '57.0.*',
             'Firefox',
             '/var/vcs/l10n-central',
+            'langpack-fi@firefox.mozilla.og',
             ctx,
             {},
         )

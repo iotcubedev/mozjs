@@ -15,6 +15,7 @@ The definition for a simple event looks like this:
        "events": [
          {
            "name": "onSomething",
+           "type": "function",
            "description": "Description of the event",
            "parameters": [
              {
@@ -59,19 +60,23 @@ events relatively simple.  A simple event implementation looks like:
 
 .. code-block:: js
 
-   class myapi extends ExtensionAPI {
+   this.myapi = class extends ExtensionAPI {
      getAPI(context) {
        return {
          myapi: {
-           onSomething: new EventManager(context, "myapi.onSomething", fire => {
-             const callback = value => {
-               fire.async(value);
-             };
-             RegisterSomeInternalCallback(callback);
-             return () => {
-               UnregisterInternalCallback(callback);
-             };
-           }).api()
+           onSomething: new EventManager({
+             context,
+             name: "myapi.onSomething",
+             register: fire => {
+               const callback = value => {
+                 fire.async(value);
+               };
+               RegisterSomeInternalCallback(callback);
+               return () => {
+                 UnregisterInternalCallback(callback);
+               };
+             }
+           }).api(),
          }
        }
      }
@@ -126,6 +131,7 @@ the ``extraParameters`` property.  For example:
        "events": [
          {
            "name": "onSomething",
+           "type": "function",
            "description": "Description of the event",
            "parameters": [
              {
@@ -152,20 +158,24 @@ For example, extending our example above:
 
 .. code-block:: js
 
-   class myapi extends ExtensionAPI {
+   this.myapi = class extends ExtensionAPI {
      getAPI(context) {
        return {
          myapi: {
-           onSomething: new EventManager(context, "myapi.onSomething", (fire, minValue) => {
-             const callback = value => {
-               if (value >= minValue) 
-                 fire.async(value);
-               }
-             };
-             RegisterSomeInternalCallback(callback);
-             return () => {
-               UnregisterInternalCallback(callback);
-             };
+           onSomething: new EventManager({
+             context,
+             name: "myapi.onSomething",
+             register: (fire, minValue) => {
+               const callback = value => {
+                 if (value >= minValue) {
+                   fire.async(value);
+                 }
+               };
+               RegisterSomeInternalCallback(callback);
+               return () => {
+                 UnregisterInternalCallback(callback);
+               };
+             }
            }).api()
          }
        }
@@ -186,6 +196,7 @@ This can be defined in the schema with the ``returns`` property:
        "events": [
          {
            "name": "onSomething",
+           "type": "function",
            "description": "Description of the event",
            "parameters": [
              {
@@ -208,19 +219,23 @@ which is a Promise that resolves to the listener's return value:
 
 .. code-block:: js
 
-   class myapi extends ExtensionAPI {
+   this.myapi = class extends ExtensionAPI {
      getAPI(context) {
        return {
          myapi: {
-           onSomething: new EventManager(context, "myapi.onSomething", fire => {
-             const callback = async (value) => {
-               let rv = await fire.async(value);
-               log(`The onSomething listener returned the string ${rv}`);
-             };
-             RegisterSomeInternalCallback(callback);
-             return () => {
-               UnregisterInternalCallback(callback);
-             };
+           onSomething: new EventManager({
+             context,
+             name: "myapi.onSomething",
+             register: fire => {
+               const callback = async (value) => {
+                 let rv = await fire.async(value);
+                 log(`The onSomething listener returned the string ${rv}`);
+               };
+               RegisterSomeInternalCallback(callback);
+               return () => {
+                 UnregisterInternalCallback(callback);
+               };
+             }
            }).api()
          }
        }
@@ -260,20 +275,24 @@ could be written explicitly as:
 
 .. code-block:: js
 
-   class myapi extends ExtensionAPI {
+   this.myapi = class extends ExtensionAPI {
      getAPI(context) {
        return {
          myapi: {
-           onSomething: new EventManager(context, "myapi.onSomething", fire => {
-             const listener = (value) => {
-               fire.async(value);
-             };
+           onSomething: new EventManager(
+             context,
+             name: "myapi.onSomething",
+             register: fire => {
+               const listener = (value) => {
+                 fire.async(value);
+               };
 
-             let parentEvent = context.childManager.getParentEvent("myapi.onSomething");
-             parent.addListener(listener);
-             return () => {
-               parent.removeListener(listener);
-             };
+               let parentEvent = context.childManager.getParentEvent("myapi.onSomething");
+               parent.addListener(listener);
+               return () => {
+                 parent.removeListener(listener);
+               };
+             }
            }).api()
          }
        }

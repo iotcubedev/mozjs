@@ -6,11 +6,10 @@ info: |
     The Date.prototype.setMonth property "length" has { ReadOnly, !
     DontDelete, DontEnum } attributes
 esid: sec-date.prototype.setmonth
-es5id: 15.9.5.38_A3_T2
 description: Checking DontDelete attribute
 ---*/
 
-if (delete Date.prototype.setMonth.length  !== true) {
+if (delete Date.prototype.setMonth.length !== true) {
   $ERROR('#1: The Date.prototype.setMonth.length property does not have the attributes DontDelete');
 }
 

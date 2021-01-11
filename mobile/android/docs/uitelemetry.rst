@@ -177,6 +177,9 @@ Events
   Sent when a user has accepted the data notification policy. Can be ``false``
   instead of ``true`` if an error occurs.
 
+``pwa.1``
+  When the user interacts with a Progressive Web Application
+
 ``sanitize.1``
   Sent when the user chooses to clear private data.
 
@@ -194,6 +197,9 @@ Events
 
 ``search.setdefault.1``
   Sent when the user sets a search engine to be the default.
+
+``search.widget.1``
+  Sent when the user initiates a search through the widget.
 
 ``share.1``
   Sharing content.

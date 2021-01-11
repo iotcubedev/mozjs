@@ -18,18 +18,19 @@
 #include "mozilla/ContentEvents.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Move.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/ErrorEventBinding.h"
 #include "mozilla/dom/IDBOpenDBRequestBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
-#include "mozilla/dom/WorkerHolder.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRef.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsIScriptContext.h"
 #include "nsJSUtils.h"
-#include "nsPIDOMWindow.h"
+#include "nsIGlobalObject.h"
 #include "nsString.h"
 #include "ReportInternalError.h"
 
@@ -46,39 +47,35 @@ namespace {
 
 NS_DEFINE_IID(kIDBRequestIID, PRIVATE_IDBREQUEST_IID);
 
-} // namespace
+}  // namespace
 
 IDBRequest::IDBRequest(IDBDatabase* aDatabase)
-  : IDBWrapperCache(aDatabase)
-  , mLoggingSerialNumber(0)
-  , mLineNo(0)
-  , mColumn(0)
-  , mHaveResultOrErrorCode(false)
-{
+    : DOMEventTargetHelper(aDatabase),
+      mLoggingSerialNumber(0),
+      mLineNo(0),
+      mColumn(0),
+      mHaveResultOrErrorCode(false) {
   MOZ_ASSERT(aDatabase);
   aDatabase->AssertIsOnOwningThread();
 
   InitMembers();
 }
 
-IDBRequest::IDBRequest(nsPIDOMWindowInner* aOwner)
-  : IDBWrapperCache(aOwner)
-  , mLoggingSerialNumber(0)
-  , mLineNo(0)
-  , mColumn(0)
-  , mHaveResultOrErrorCode(false)
-{
+IDBRequest::IDBRequest(nsIGlobalObject* aGlobal)
+    : DOMEventTargetHelper(aGlobal),
+      mLoggingSerialNumber(0),
+      mLineNo(0),
+      mColumn(0),
+      mHaveResultOrErrorCode(false) {
   InitMembers();
 }
 
-IDBRequest::~IDBRequest()
-{
+IDBRequest::~IDBRequest() {
   AssertIsOnOwningThread();
+  mozilla::DropJSObjects(this);
 }
 
-void
-IDBRequest::InitMembers()
-{
+void IDBRequest::InitMembers() {
   AssertIsOnOwningThread();
 
   mResultVal.setUndefined();
@@ -90,11 +87,9 @@ IDBRequest::InitMembers()
 }
 
 // static
-already_AddRefed<IDBRequest>
-IDBRequest::Create(JSContext* aCx,
-                   IDBDatabase* aDatabase,
-                   IDBTransaction* aTransaction)
-{
+already_AddRefed<IDBRequest> IDBRequest::Create(JSContext* aCx,
+                                                IDBDatabase* aDatabase,
+                                                IDBTransaction* aTransaction) {
   MOZ_ASSERT(aCx);
   MOZ_ASSERT(aDatabase);
   aDatabase->AssertIsOnOwningThread();
@@ -103,18 +98,14 @@ IDBRequest::Create(JSContext* aCx,
   CaptureCaller(aCx, request->mFilename, &request->mLineNo, &request->mColumn);
 
   request->mTransaction = aTransaction;
-  request->SetScriptOwner(aDatabase->GetScriptOwner());
 
   return request.forget();
 }
 
 // static
-already_AddRefed<IDBRequest>
-IDBRequest::Create(JSContext* aCx,
-                   IDBObjectStore* aSourceAsObjectStore,
-                   IDBDatabase* aDatabase,
-                   IDBTransaction* aTransaction)
-{
+already_AddRefed<IDBRequest> IDBRequest::Create(
+    JSContext* aCx, IDBObjectStore* aSourceAsObjectStore,
+    IDBDatabase* aDatabase, IDBTransaction* aTransaction) {
   MOZ_ASSERT(aSourceAsObjectStore);
   aSourceAsObjectStore->AssertIsOnOwningThread();
 
@@ -126,12 +117,10 @@ IDBRequest::Create(JSContext* aCx,
 }
 
 // static
-already_AddRefed<IDBRequest>
-IDBRequest::Create(JSContext* aCx,
-                   IDBIndex* aSourceAsIndex,
-                   IDBDatabase* aDatabase,
-                   IDBTransaction* aTransaction)
-{
+already_AddRefed<IDBRequest> IDBRequest::Create(JSContext* aCx,
+                                                IDBIndex* aSourceAsIndex,
+                                                IDBDatabase* aDatabase,
+                                                IDBTransaction* aTransaction) {
   MOZ_ASSERT(aSourceAsIndex);
   aSourceAsIndex->AssertIsOnOwningThread();
 
@@ -143,11 +132,9 @@ IDBRequest::Create(JSContext* aCx,
 }
 
 // static
-uint64_t
-IDBRequest::NextSerialNumber()
-{
+uint64_t IDBRequest::NextSerialNumber() {
   BackgroundChildImpl::ThreadLocal* threadLocal =
-    BackgroundChildImpl::GetThreadLocalForCurrentThread();
+      BackgroundChildImpl::GetThreadLocalForCurrentThread();
   MOZ_ASSERT(threadLocal);
 
   ThreadLocal* idbThreadLocal = threadLocal->mIndexedDBThreadLocal;
@@ -156,19 +143,15 @@ IDBRequest::NextSerialNumber()
   return idbThreadLocal->NextRequestSN();
 }
 
-void
-IDBRequest::SetLoggingSerialNumber(uint64_t aLoggingSerialNumber)
-{
+void IDBRequest::SetLoggingSerialNumber(uint64_t aLoggingSerialNumber) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aLoggingSerialNumber > mLoggingSerialNumber);
 
   mLoggingSerialNumber = aLoggingSerialNumber;
 }
 
-void
-IDBRequest::CaptureCaller(JSContext* aCx, nsAString& aFilename,
-                          uint32_t* aLineNo, uint32_t* aColumn)
-{
+void IDBRequest::CaptureCaller(JSContext* aCx, nsAString& aFilename,
+                               uint32_t* aLineNo, uint32_t* aColumn) {
   MOZ_ASSERT(aFilename.IsEmpty());
   MOZ_ASSERT(aLineNo);
   MOZ_ASSERT(aColumn);
@@ -176,10 +159,8 @@ IDBRequest::CaptureCaller(JSContext* aCx, nsAString& aFilename,
   nsJSUtils::GetCallingLocation(aCx, aFilename, aLineNo, aColumn);
 }
 
-void
-IDBRequest::GetSource(
-             Nullable<OwningIDBObjectStoreOrIDBIndexOrIDBCursor>& aSource) const
-{
+void IDBRequest::GetSource(
+    Nullable<OwningIDBObjectStoreOrIDBIndexOrIDBCursor>& aSource) const {
   AssertIsOnOwningThread();
 
   MOZ_ASSERT_IF(mSourceAsObjectStore, !mSourceAsIndex);
@@ -199,19 +180,16 @@ IDBRequest::GetSource(
   }
 }
 
-void
-IDBRequest::Reset()
-{
+void IDBRequest::Reset() {
   AssertIsOnOwningThread();
 
   mResultVal.setUndefined();
+
   mHaveResultOrErrorCode = false;
   mError = nullptr;
 }
 
-void
-IDBRequest::SetError(nsresult aRv)
-{
+void IDBRequest::SetError(nsresult aRv) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(NS_FAILED(aRv));
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aRv) == NS_ERROR_MODULE_DOM_INDEXEDDB);
@@ -226,30 +204,24 @@ IDBRequest::SetError(nsresult aRv)
 
 #ifdef DEBUG
 
-nsresult
-IDBRequest::GetErrorCode() const
-{
+nsresult IDBRequest::GetErrorCode() const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mHaveResultOrErrorCode);
 
   return mErrorCode;
 }
 
-DOMException*
-IDBRequest::GetErrorAfterResult() const
-{
+DOMException* IDBRequest::GetErrorAfterResult() const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mHaveResultOrErrorCode);
 
   return mError;
 }
 
-#endif // DEBUG
+#endif  // DEBUG
 
-void
-IDBRequest::GetCallerLocation(nsAString& aFilename, uint32_t* aLineNo,
-                              uint32_t* aColumn) const
-{
+void IDBRequest::GetCallerLocation(nsAString& aFilename, uint32_t* aLineNo,
+                                   uint32_t* aColumn) const {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aLineNo);
   MOZ_ASSERT(aColumn);
@@ -259,19 +231,14 @@ IDBRequest::GetCallerLocation(nsAString& aFilename, uint32_t* aLineNo,
   *aColumn = mColumn;
 }
 
-IDBRequestReadyState
-IDBRequest::ReadyState() const
-{
+IDBRequestReadyState IDBRequest::ReadyState() const {
   AssertIsOnOwningThread();
 
-  return IsPending() ?
-    IDBRequestReadyState::Pending :
-    IDBRequestReadyState::Done;
+  return IsPending() ? IDBRequestReadyState::Pending
+                     : IDBRequestReadyState::Done;
 }
 
-void
-IDBRequest::SetSource(IDBCursor* aSource)
-{
+void IDBRequest::SetSource(IDBCursor* aSource) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aSource);
   MOZ_ASSERT(mSourceAsObjectStore || mSourceAsIndex);
@@ -280,16 +247,13 @@ IDBRequest::SetSource(IDBCursor* aSource)
   mSourceAsCursor = aSource;
 }
 
-JSObject*
-IDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
-{
-  return IDBRequestBinding::Wrap(aCx, this, aGivenProto);
+JSObject* IDBRequest::WrapObject(JSContext* aCx,
+                                 JS::Handle<JSObject*> aGivenProto) {
+  return IDBRequest_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-void
-IDBRequest::GetResult(JS::MutableHandle<JS::Value> aResult,
-                      ErrorResult& aRv) const
-{
+void IDBRequest::GetResult(JS::MutableHandle<JS::Value> aResult,
+                           ErrorResult& aRv) const {
   AssertIsOnOwningThread();
 
   if (!mHaveResultOrErrorCode) {
@@ -300,42 +264,33 @@ IDBRequest::GetResult(JS::MutableHandle<JS::Value> aResult,
   aResult.set(mResultVal);
 }
 
-void
-IDBRequest::SetResultCallback(ResultCallback* aCallback)
-{
+void IDBRequest::SetResultCallback(ResultCallback* aCallback) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aCallback);
   MOZ_ASSERT(!mHaveResultOrErrorCode);
   MOZ_ASSERT(mResultVal.isUndefined());
   MOZ_ASSERT(!mError);
 
-  // See if our window is still valid.
-  if (NS_WARN_IF(NS_FAILED(CheckInnerWindowCorrectness()))) {
+  // Already disconnected from the owner.
+  if (!GetOwnerGlobal()) {
+    SetError(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+    return;
+  }
+
+  // See this global is still valid.
+  if (NS_WARN_IF(NS_FAILED(CheckCurrentGlobalCorrectness()))) {
     SetError(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
     return;
   }
 
   AutoJSAPI autoJS;
-  Maybe<JSAutoCompartment> ac;
-
-  if (GetScriptOwner()) {
-    // If we have a script owner we want the SafeJSContext and then to enter the
-    // script owner's compartment.
-    autoJS.Init();
-    ac.emplace(autoJS.cx(), GetScriptOwner());
-  } else {
-    // Otherwise our owner is a window and we use that to initialize.
-    MOZ_ASSERT(GetOwner());
-    if (!autoJS.Init(GetOwner())) {
-      IDB_WARNING("Failed to initialize AutoJSAPI!");
-      SetError(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
-      return;
-    }
+  if (!autoJS.Init(GetOwnerGlobal())) {
+    IDB_WARNING("Failed to initialize AutoJSAPI!");
+    SetError(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+    return;
   }
 
   JSContext* cx = autoJS.cx();
-
-  AssertIsRooted();
 
   JS::Rooted<JS::Value> result(cx);
   nsresult rv = aCallback->GetResult(cx, &result);
@@ -352,14 +307,14 @@ IDBRequest::SetResultCallback(ResultCallback* aCallback)
   }
 
   mError = nullptr;
+
   mResultVal = result;
+  mozilla::HoldJSObjects(this);
 
   mHaveResultOrErrorCode = true;
 }
 
-DOMException*
-IDBRequest::GetError(ErrorResult& aRv)
-{
+DOMException* IDBRequest::GetError(ErrorResult& aRv) {
   AssertIsOnOwningThread();
 
   if (!mHaveResultOrErrorCode) {
@@ -372,7 +327,8 @@ IDBRequest::GetError(ErrorResult& aRv)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(IDBRequest)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBRequest,
+                                                  DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsObjectStore)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsIndex)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsCursor)
@@ -380,8 +336,10 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mError)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBRequest,
+                                                DOMEventTargetHelper)
   tmp->mResultVal.setUndefined();
+  mozilla::DropJSObjects(tmp);
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSourceAsObjectStore)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSourceAsIndex)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSourceAsCursor)
@@ -389,7 +347,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mError)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(IDBRequest, DOMEventTargetHelper)
   // Don't need NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER because
   // DOMEventTargetHelper does it for us.
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mResultVal)
@@ -399,131 +357,47 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(IDBRequest)
   if (aIID.Equals(kIDBRequestIID)) {
     foundInterface = this;
   } else
-NS_INTERFACE_MAP_END_INHERITING(IDBWrapperCache)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(IDBRequest, IDBWrapperCache)
-NS_IMPL_RELEASE_INHERITED(IDBRequest, IDBWrapperCache)
+NS_IMPL_ADDREF_INHERITED(IDBRequest, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(IDBRequest, DOMEventTargetHelper)
 
-nsresult
-IDBRequest::GetEventTargetParent(EventChainPreVisitor& aVisitor)
-{
+void IDBRequest::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
   AssertIsOnOwningThread();
 
   aVisitor.mCanHandle = true;
   aVisitor.SetParentTarget(mTransaction, false);
-  return NS_OK;
 }
-
-class IDBOpenDBRequest::WorkerHolder final
-  : public mozilla::dom::WorkerHolder
-{
-  WorkerPrivate* mWorkerPrivate;
-#ifdef DEBUG
-  // This is only here so that assertions work in the destructor even if
-  // NoteAddWorkerHolderFailed was called.
-  WorkerPrivate* mWorkerPrivateDEBUG;
-#endif
-
-public:
-  explicit
-  WorkerHolder(WorkerPrivate* aWorkerPrivate)
-    : mozilla::dom::WorkerHolder("IDBOpenDBRequest::WorkerHolder")
-    , mWorkerPrivate(aWorkerPrivate)
-#ifdef DEBUG
-    , mWorkerPrivateDEBUG(aWorkerPrivate)
-#endif
-  {
-    MOZ_ASSERT(aWorkerPrivate);
-    aWorkerPrivate->AssertIsOnWorkerThread();
-
-    MOZ_COUNT_CTOR(IDBOpenDBRequest::WorkerHolder);
-  }
-
-  ~WorkerHolder()
-  {
-#ifdef DEBUG
-    mWorkerPrivateDEBUG->AssertIsOnWorkerThread();
-#endif
-
-    MOZ_COUNT_DTOR(IDBOpenDBRequest::WorkerHolder);
-  }
-
-  void
-  NoteAddWorkerHolderFailed()
-  {
-    MOZ_ASSERT(mWorkerPrivate);
-    mWorkerPrivate->AssertIsOnWorkerThread();
-
-    mWorkerPrivate = nullptr;
-  }
-
-private:
-  virtual bool
-  Notify(WorkerStatus aStatus) override;
-};
 
 IDBOpenDBRequest::IDBOpenDBRequest(IDBFactory* aFactory,
-                                   nsPIDOMWindowInner* aOwner,
+                                   nsIGlobalObject* aGlobal,
                                    bool aFileHandleDisabled)
-  : IDBRequest(aOwner)
-  , mFactory(aFactory)
-  , mFileHandleDisabled(aFileHandleDisabled)
-  , mIncreasedActiveDatabaseCount(false)
-{
+    : IDBRequest(aGlobal),
+      mFactory(aFactory),
+      mFileHandleDisabled(aFileHandleDisabled),
+      mIncreasedActiveDatabaseCount(false) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aFactory);
-
-  // aOwner may be null.
+  MOZ_ASSERT(aGlobal);
 }
 
-IDBOpenDBRequest::~IDBOpenDBRequest()
-{
+IDBOpenDBRequest::~IDBOpenDBRequest() {
   AssertIsOnOwningThread();
   MOZ_ASSERT(!mIncreasedActiveDatabaseCount);
 }
 
 // static
-already_AddRefed<IDBOpenDBRequest>
-IDBOpenDBRequest::CreateForWindow(JSContext* aCx,
-                                  IDBFactory* aFactory,
-                                  nsPIDOMWindowInner* aOwner,
-                                  JS::Handle<JSObject*> aScriptOwner)
-{
+already_AddRefed<IDBOpenDBRequest> IDBOpenDBRequest::Create(
+    JSContext* aCx, IDBFactory* aFactory, nsIGlobalObject* aGlobal) {
   MOZ_ASSERT(aFactory);
   aFactory->AssertIsOnOwningThread();
-  MOZ_ASSERT(aOwner);
-  MOZ_ASSERT(aScriptOwner);
+  MOZ_ASSERT(aGlobal);
 
   bool fileHandleDisabled = !IndexedDatabaseManager::IsFileHandleEnabled();
 
   RefPtr<IDBOpenDBRequest> request =
-    new IDBOpenDBRequest(aFactory, aOwner, fileHandleDisabled);
+      new IDBOpenDBRequest(aFactory, aGlobal, fileHandleDisabled);
   CaptureCaller(aCx, request->mFilename, &request->mLineNo, &request->mColumn);
-
-  request->SetScriptOwner(aScriptOwner);
-
-  request->IncreaseActiveDatabaseCount();
-
-  return request.forget();
-}
-
-// static
-already_AddRefed<IDBOpenDBRequest>
-IDBOpenDBRequest::CreateForJS(JSContext* aCx,
-                              IDBFactory* aFactory,
-                              JS::Handle<JSObject*> aScriptOwner)
-{
-  MOZ_ASSERT(aFactory);
-  aFactory->AssertIsOnOwningThread();
-  MOZ_ASSERT(aScriptOwner);
-
-  bool fileHandleDisabled = !IndexedDatabaseManager::IsFileHandleEnabled();
-
-  RefPtr<IDBOpenDBRequest> request =
-    new IDBOpenDBRequest(aFactory, nullptr, fileHandleDisabled);
-  CaptureCaller(aCx, request->mFilename, &request->mLineNo, &request->mColumn);
-
-  request->SetScriptOwner(aScriptOwner);
 
   if (!NS_IsMainThread()) {
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
@@ -531,13 +405,11 @@ IDBOpenDBRequest::CreateForJS(JSContext* aCx,
 
     workerPrivate->AssertIsOnWorkerThread();
 
-    nsAutoPtr<WorkerHolder> workerHolder(new WorkerHolder(workerPrivate));
-    if (NS_WARN_IF(!workerHolder->HoldWorker(workerPrivate, Canceling))) {
-      workerHolder->NoteAddWorkerHolderFailed();
+    request->mWorkerRef =
+        StrongWorkerRef::Create(workerPrivate, "IDBOpenDBRequest");
+    if (NS_WARN_IF(!request->mWorkerRef)) {
       return nullptr;
     }
-
-    request->mWorkerHolder = Move(workerHolder);
   }
 
   request->IncreaseActiveDatabaseCount();
@@ -545,9 +417,7 @@ IDBOpenDBRequest::CreateForJS(JSContext* aCx,
   return request.forget();
 }
 
-void
-IDBOpenDBRequest::SetTransaction(IDBTransaction* aTransaction)
-{
+void IDBOpenDBRequest::SetTransaction(IDBTransaction* aTransaction) {
   AssertIsOnOwningThread();
 
   MOZ_ASSERT(!aTransaction || !mTransaction);
@@ -555,9 +425,7 @@ IDBOpenDBRequest::SetTransaction(IDBTransaction* aTransaction)
   mTransaction = aTransaction;
 }
 
-void
-IDBOpenDBRequest::DispatchNonTransactionError(nsresult aErrorCode)
-{
+void IDBOpenDBRequest::DispatchNonTransactionError(nsresult aErrorCode) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(NS_FAILED(aErrorCode));
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aErrorCode) == NS_ERROR_MODULE_DOM_INDEXEDDB);
@@ -569,36 +437,29 @@ IDBOpenDBRequest::DispatchNonTransactionError(nsresult aErrorCode)
   SetError(aErrorCode);
 
   // Make an error event and fire it at the target.
-  nsCOMPtr<nsIDOMEvent> event =
-    CreateGenericEvent(this,
-                       nsDependentString(kErrorEventType),
-                       eDoesBubble,
-                       eCancelable);
+  RefPtr<Event> event = CreateGenericEvent(
+      this, nsDependentString(kErrorEventType), eDoesBubble, eCancelable);
   MOZ_ASSERT(event);
 
-  bool ignored;
-  if (NS_FAILED(DispatchEvent(event, &ignored))) {
+  IgnoredErrorResult rv;
+  DispatchEvent(*event, rv);
+  if (rv.Failed()) {
     NS_WARNING("Failed to dispatch event!");
   }
 }
 
-void
-IDBOpenDBRequest::NoteComplete()
-{
+void IDBOpenDBRequest::NoteComplete() {
   AssertIsOnOwningThread();
-  MOZ_ASSERT_IF(!NS_IsMainThread(), mWorkerHolder);
+  MOZ_ASSERT_IF(!NS_IsMainThread(), mWorkerRef);
 
   // Normally, we decrease the number of active IDBOpenRequests here.
   MaybeDecreaseActiveDatabaseCount();
 
-  // If we have a WorkerHolder installed on the worker then nulling this out
-  // will uninstall it from the worker.
-  mWorkerHolder = nullptr;
+  // If we have a WorkerRef, then nulling this out will release the worker.
+  mWorkerRef = nullptr;
 }
 
-void
-IDBOpenDBRequest::IncreaseActiveDatabaseCount()
-{
+void IDBOpenDBRequest::IncreaseActiveDatabaseCount() {
   AssertIsOnOwningThread();
   MOZ_ASSERT(!mIncreasedActiveDatabaseCount);
 
@@ -611,9 +472,7 @@ IDBOpenDBRequest::IncreaseActiveDatabaseCount()
   mIncreasedActiveDatabaseCount = true;
 }
 
-void
-IDBOpenDBRequest::MaybeDecreaseActiveDatabaseCount()
-{
+void IDBOpenDBRequest::MaybeDecreaseActiveDatabaseCount() {
   AssertIsOnOwningThread();
 
   if (mIncreasedActiveDatabaseCount) {
@@ -625,13 +484,11 @@ IDBOpenDBRequest::MaybeDecreaseActiveDatabaseCount()
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(IDBOpenDBRequest)
 
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBOpenDBRequest,
-                                                  IDBRequest)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBOpenDBRequest, IDBRequest)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFactory)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBOpenDBRequest,
-                                                IDBRequest)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBOpenDBRequest, IDBRequest)
   // Don't unlink mFactory!
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -641,11 +498,9 @@ NS_INTERFACE_MAP_END_INHERITING(IDBRequest)
 NS_IMPL_ADDREF_INHERITED(IDBOpenDBRequest, IDBRequest)
 NS_IMPL_RELEASE_INHERITED(IDBOpenDBRequest, IDBRequest)
 
-nsresult
-IDBOpenDBRequest::PostHandleEvent(EventChainPostVisitor& aVisitor)
-{
+nsresult IDBOpenDBRequest::PostHandleEvent(EventChainPostVisitor& aVisitor) {
   nsresult rv =
-    IndexedDatabaseManager::CommonPostHandleEvent(aVisitor, mFactory);
+      IndexedDatabaseManager::CommonPostHandleEvent(aVisitor, mFactory);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -653,27 +508,12 @@ IDBOpenDBRequest::PostHandleEvent(EventChainPostVisitor& aVisitor)
   return NS_OK;
 }
 
-JSObject*
-IDBOpenDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
-{
+JSObject* IDBOpenDBRequest::WrapObject(JSContext* aCx,
+                                       JS::Handle<JSObject*> aGivenProto) {
   AssertIsOnOwningThread();
 
-  return IDBOpenDBRequestBinding::Wrap(aCx, this, aGivenProto);
+  return IDBOpenDBRequest_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-bool
-IDBOpenDBRequest::
-WorkerHolder::Notify(WorkerStatus aStatus)
-{
-  MOZ_ASSERT(mWorkerPrivate);
-  mWorkerPrivate->AssertIsOnWorkerThread();
-  MOZ_ASSERT(aStatus > Running);
-
-  // There's nothing we can really do here at the moment...
-  NS_WARNING("Worker closing but IndexedDB is waiting to open a database!");
-
-  return true;
-}
-
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla

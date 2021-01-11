@@ -10,8 +10,9 @@
 #include "nscore.h"
 
 #include "DateTimeFormat.h"
+#include "MediaManager.h"
+#include "mozilla/dom/ServiceWorkerRegistrar.h"
 #include "nsAttrValue.h"
-#include "nsAutoCopyListener.h"
 #include "nsColorNames.h"
 #include "nsComputedDOMStyle.h"
 #include "nsContentDLF.h"
@@ -19,32 +20,24 @@
 #include "nsCSSAnonBoxes.h"
 #include "mozilla/css/ErrorReporter.h"
 #include "nsCSSKeywords.h"
-#include "nsCSSParser.h"
 #include "nsCSSProps.h"
-#include "nsCSSPseudoClasses.h"
 #include "nsCSSPseudoElements.h"
 #include "nsCSSRendering.h"
 #include "nsGenericHTMLFrameElement.h"
 #include "mozilla/dom/Attr.h"
-#include "nsDOMClassInfo.h"
-#include "mozilla/EventListenerManager.h"
+#include "mozilla/dom/PopupBlocker.h"
 #include "nsFrame.h"
+#include "nsFrameState.h"
 #include "nsGlobalWindow.h"
 #include "nsGkAtoms.h"
 #include "nsImageFrame.h"
 #include "nsLayoutStylesheetCache.h"
-#ifdef MOZ_OLD_STYLE
-#include "mozilla/RuleProcessorCache.h"
-#endif
 #include "nsRange.h"
 #include "nsRegion.h"
 #include "nsRepeatService.h"
 #include "nsFloatManager.h"
 #include "nsSprocketLayout.h"
 #include "nsStackLayout.h"
-#ifdef MOZ_OLD_STYLE
-#include "nsStyleSet.h"
-#endif
 #include "nsTextControlFrame.h"
 #include "nsXBLService.h"
 #include "txMozillaXSLTProcessor.h"
@@ -58,7 +51,6 @@
 #include "nsHTMLDNSPrefetch.h"
 #include "nsHtml5Module.h"
 #include "nsHTMLTags.h"
-#include "nsIRDFContentSink.h"	// for RDF atom initialization
 #include "mozilla/dom/FallbackEncoding.h"
 #include "nsFocusManager.h"
 #include "nsListControlFrame.h"
@@ -81,18 +73,17 @@
 #include "mozilla/dom/WebCryptoThreadPool.h"
 
 #ifdef MOZ_XUL
-#include "nsXULPopupManager.h"
-#include "nsXULContentUtils.h"
-#include "nsXULPrototypeCache.h"
-#include "nsXULTooltipListener.h"
+#  include "nsXULPopupManager.h"
+#  include "nsXULContentUtils.h"
+#  include "nsXULPrototypeCache.h"
+#  include "nsXULTooltipListener.h"
 
-#include "inDOMView.h"
-
-#include "nsMenuBarListener.h"
+#  include "nsMenuBarListener.h"
 #endif
 
+#include "mozilla/dom/UIDirectionManager.h"
+
 #include "CubebUtils.h"
-#include "Latency.h"
 #include "WebAudioUtils.h"
 
 #include "nsError.h"
@@ -112,55 +103,66 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/IMEStateManager.h"
 #include "mozilla/dom/HTMLVideoElement.h"
+#include "ThirdPartyUtil.h"
 #include "TouchManager.h"
 #include "DecoderDoctorLogger.h"
 #include "MediaDecoder.h"
-#include "MediaPrefs.h"
+#include "mozilla/ClearSiteData.h"
+#include "mozilla/EditorController.h"
+#include "mozilla/Fuzzyfox.h"
+#include "mozilla/HTMLEditorController.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/StaticPresData.h"
-#include "mozilla/StylePrefs.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/IPCBlobInputStreamStorage.h"
 #include "mozilla/dom/WebIDLGlobalNameHash.h"
-#include "mozilla/dom/ipc/IPCBlobInputStreamStorage.h"
 #include "mozilla/dom/U2FTokenManager.h"
+#ifdef OS_WIN
+#  include "mozilla/dom/WinWebAuthnManager.h"
+#endif
 #include "mozilla/dom/PointerEventHandler.h"
-#include "nsHostObjectProtocolHandler.h"
+#include "mozilla/dom/RemoteWorkerService.h"
+#include "mozilla/dom/BlobURLProtocolHandler.h"
+#include "mozilla/dom/ReportingHeader.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/quota/ActorsParent.h"
+#include "mozilla/dom/localstorage/ActorsParent.h"
+#include "mozilla/net/UrlClassifierFeatureFactory.h"
 #include "nsThreadManager.h"
+#include "mozilla/css/ImageLoader.h"
+#include "gfxUserFontSet.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
 using namespace mozilla::dom;
 using namespace mozilla::dom::ipc;
+using namespace mozilla::dom::quota;
 
 nsrefcnt nsLayoutStatics::sLayoutStaticRefcnt = 0;
 
-nsresult
-nsLayoutStatics::Initialize()
-{
-  NS_ASSERTION(sLayoutStaticRefcnt == 0,
-               "nsLayoutStatics isn't zero!");
+nsresult nsLayoutStatics::Initialize() {
+  NS_ASSERTION(sLayoutStaticRefcnt == 0, "nsLayoutStatics isn't zero!");
 
   sLayoutStaticRefcnt = 1;
-  NS_LOG_ADDREF(&sLayoutStaticRefcnt, sLayoutStaticRefcnt,
-                "nsLayoutStatics", 1);
+  NS_LOG_ADDREF(&sLayoutStaticRefcnt, sLayoutStaticRefcnt, "nsLayoutStatics",
+                1);
 
   nsresult rv;
 
   ContentParent::StartUp();
 
-  // Register all of our atoms once
-  nsCSSAnonBoxes::AddRefAtoms();
-  nsCSSPseudoClasses::AddRefAtoms();
-  nsCSSPseudoElements::AddRefAtoms();
   nsCSSKeywords::AddRefTable();
   nsCSSProps::AddRefTable();
   nsColorNames::AddRefTable();
-  nsGkAtoms::AddRefAtoms();
-  nsHTMLTags::RegisterAtoms();
-  nsRDFAtoms::RegisterAtoms();
 
-  NS_SetStaticAtomsDone();
+#ifdef DEBUG
+  nsCSSPseudoElements::AssertAtoms();
+  nsCSSAnonBoxes::AssertAtoms();
+  DebugVerifyFrameStateBits();
+#endif
 
   StartupJSEnvironment();
+  nsJSContext::EnsureStatics();
 
   nsGlobalWindowInner::Init();
   nsGlobalWindowOuter::Init();
@@ -190,6 +192,7 @@ nsLayoutStatics::Initialize()
   mozilla::SharedFontList::Initialize();
   StaticPresData::Init();
   nsCSSRendering::Init();
+  css::ImageLoader::Init();
 
   rv = nsHTMLDNSPrefetch::Initialize();
   if (NS_FAILED(rv)) {
@@ -197,21 +200,14 @@ nsLayoutStatics::Initialize()
     return rv;
   }
 
-#ifdef MOZ_XUL
-  rv = nsXULContentUtils::Init();
-  if (NS_FAILED(rv)) {
-    NS_ERROR("Could not initialize nsXULContentUtils");
-    return rv;
-  }
-
-#endif
-
   nsMathMLOperators::AddRefTable();
 
 #ifdef DEBUG
   nsFrame::DisplayReflowStartup();
 #endif
   Attr::Initialize();
+
+  PopupBlocker::Initialize();
 
   rv = txMozillaXSLTProcessor::Startup();
   if (NS_FAILED(rv)) {
@@ -231,8 +227,6 @@ nsLayoutStatics::Initialize()
     return rv;
   }
 
-  StylePrefs::Init();
-
 #ifdef MOZ_XUL
   rv = nsXULPopupManager::Init();
   if (NS_FAILED(rv)) {
@@ -247,37 +241,32 @@ nsLayoutStatics::Initialize()
     return rv;
   }
 
-  AsyncLatencyLogger::InitializeStatics();
   DecoderDoctorLogger::Init();
   MediaManager::StartupInit();
   CubebUtils::InitLibrary();
 
-  nsContentSink::InitializeStatics();
   nsHtml5Module::InitializeStatics();
   mozilla::dom::FallbackEncoding::Initialize();
   nsLayoutUtils::Initialize();
   PointerEventHandler::InitializeStatics();
   TouchManager::InitializeStatics();
 
-  nsCORSListenerProxy::Startup();
-
   nsWindowMemoryReporter::Init();
 
   SVGElementFactory::Init();
-  nsSVGUtils::Init();
 
   ProcessPriorityManager::Init();
 
-  nsPermissionManager::ClearOriginDataObserverInit();
+  nsPermissionManager::Startup();
+
   nsCookieService::AppClearDataObserverInit();
   nsApplicationCacheService::AppClearDataObserverInit();
-
-  HTMLVideoElement::Init();
-  nsGenericHTMLFrameElement::InitStatics();
 
 #ifdef MOZ_XUL
   nsMenuBarListener::InitializeStatics();
 #endif
+
+  UIDirectionManager::Initialize();
 
   CacheObserver::Init();
 
@@ -285,72 +274,75 @@ nsLayoutStatics::Initialize()
 
   ServiceWorkerRegistrar::Initialize();
 
-#ifdef DEBUG
-#ifdef MOZ_OLD_STYLE
-  GeckoStyleContext::Initialize();
-#endif
-  mozilla::LayerAnimationInfo::Initialize();
-#endif
-
   MediaDecoder::InitStatics();
 
   PromiseDebugging::Init();
 
   mozilla::dom::WebCryptoThreadPool::Initialize();
 
-#ifdef MOZ_STYLO
   if (XRE_IsParentProcess() || XRE_IsContentProcess()) {
     InitializeServo();
   }
-#endif
-
-#ifndef MOZ_WIDGET_ANDROID
-  // On Android, we instantiate it when constructing AndroidBridge.
-  MediaPrefs::GetSingleton();
-#endif
 
   // This must be initialized on the main-thread.
   mozilla::dom::IPCBlobInputStreamStorage::Initialize();
 
   mozilla::dom::U2FTokenManager::Initialize();
 
+#ifdef OS_WIN
+  mozilla::dom::WinWebAuthnManager::Initialize();
+#endif
+
   if (XRE_IsParentProcess()) {
-    // On content process we initialize DOMPrefs when PContentChild is fully
-    // initialized.
-    mozilla::dom::DOMPrefs::Initialize();
+    // On content process we initialize these components when PContentChild is
+    // fully initialized.
+    mozilla::dom::RemoteWorkerService::Initialize();
+    // This one should be initialized on the parent only
+    mozilla::dom::BrowserParent::InitializeStatics();
   }
 
   nsThreadManager::InitializeShutdownObserver();
 
+  mozilla::Fuzzyfox::Start();
+
+  ClearSiteData::Initialize();
+
+  // Reporting API.
+  ReportingHeader::Initialize();
+
+  if (XRE_IsParentProcess()) {
+    InitializeQuotaManager();
+    InitializeLocalStorage();
+  }
+
+  ThirdPartyUtil::Startup();
+
   return NS_OK;
 }
 
-void
-nsLayoutStatics::Shutdown()
-{
+void nsLayoutStatics::Shutdown() {
   // Don't need to shutdown nsWindowMemoryReporter, that will be done by the
   // memory reporter manager.
 
-#ifdef MOZ_STYLO
   if (XRE_IsParentProcess() || XRE_IsContentProcess()) {
     ShutdownServo();
     URLExtraData::ReleaseDummy();
   }
-#endif
 
+  Document::Shutdown();
   nsMessageManagerScriptExecutor::Shutdown();
   nsFocusManager::Shutdown();
 #ifdef MOZ_XUL
   nsXULPopupManager::Shutdown();
 #endif
+  UIDirectionManager::Shutdown();
   StorageObserver::Shutdown();
   txMozillaXSLTProcessor::Shutdown();
   Attr::Shutdown();
-  EventListenerManager::Shutdown();
+  PopupBlocker::Shutdown();
   IMEStateManager::Shutdown();
-#ifdef MOZ_OLD_STYLE
-  nsCSSParser::Shutdown();
-#endif
+  EditorController::Shutdown();
+  HTMLEditorController::Shutdown();
   nsMediaFeatures::Shutdown();
   nsHTMLDNSPrefetch::Shutdown();
   nsCSSRendering::Shutdown();
@@ -388,22 +380,15 @@ nsLayoutStatics::Shutdown()
   nsAttrValue::Shutdown();
   nsContentUtils::Shutdown();
   nsLayoutStylesheetCache::Shutdown();
-#ifdef MOZ_OLD_STYLE
-  RuleProcessorCache::Shutdown();
-#endif
 
   ShutdownJSEnvironment();
   nsGlobalWindowInner::ShutDown();
   nsGlobalWindowOuter::ShutDown();
-  nsDOMClassInfo::ShutDown();
-  WebIDLGlobalNameHash::Shutdown();
   nsListControlFrame::Shutdown();
   nsXBLService::Shutdown();
-  nsAutoCopyListener::Shutdown();
   FrameLayerBuilder::Shutdown();
 
   CubebUtils::ShutdownLibrary();
-  AsyncLatencyLogger::ShutdownLogger();
   WebAudioUtils::Shutdown();
 
   nsCORSListenerProxy::Shutdown();
@@ -438,5 +423,11 @@ nsLayoutStatics::Shutdown()
 
   PromiseDebugging::Shutdown();
 
-  nsHostObjectProtocolHandler::RemoveDataEntries();
+  BlobURLProtocolHandler::RemoveDataEntries();
+
+  css::ImageLoader::Shutdown();
+
+  mozilla::net::UrlClassifierFeatureFactory::Shutdown();
+
+  gfxUserFontEntry::Shutdown();
 }

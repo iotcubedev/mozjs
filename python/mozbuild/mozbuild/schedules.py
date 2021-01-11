@@ -23,8 +23,12 @@ INCLUSIVE_COMPONENTS = [
     # inclusive test suites -- these *only* run when certain files have changed
     'jittest',
     'test-verify',
+    'test-verify-gpu',
     'test-verify-wpt',
+    'test-coverage',
+    'test-coverage-wpt',
     'jsreftest',
+    'android-hw-gfx',
 ]
 INCLUSIVE_COMPONENTS = sorted(INCLUSIVE_COMPONENTS)
 
@@ -43,9 +47,11 @@ EXCLUSIVE_COMPONENTS = [
     'cppunittest',
     'firefox-ui',
     'geckoview',
+    'geckoview-junit',
     'gtest',
     'marionette',
     'mochitest',
+    'raptor',
     'reftest',
     'robocop',
     'talos',

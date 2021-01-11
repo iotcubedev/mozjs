@@ -7,7 +7,7 @@
 #include "mozilla/dom/HTMLStyleElementBinding.h"
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
-#include "nsIDocument.h"
+#include "mozilla/dom/Document.h"
 #include "nsUnicharUtils.h"
 #include "nsThreadUtils.h"
 #include "nsContentUtils.h"
@@ -18,15 +18,13 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Style)
 namespace mozilla {
 namespace dom {
 
-HTMLStyleElement::HTMLStyleElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
-  : nsGenericHTMLElement(aNodeInfo)
-{
+HTMLStyleElement::HTMLStyleElement(
+    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+    : nsGenericHTMLElement(std::move(aNodeInfo)) {
   AddMutationObserver(this);
 }
 
-HTMLStyleElement::~HTMLStyleElement()
-{
-}
+HTMLStyleElement::~HTMLStyleElement() {}
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLStyleElement)
 
@@ -47,81 +45,59 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(HTMLStyleElement,
 
 NS_IMPL_ELEMENT_CLONE(HTMLStyleElement)
 
-
-bool
-HTMLStyleElement::Disabled()
-{
+bool HTMLStyleElement::Disabled() const {
   StyleSheet* ss = GetSheet();
   return ss && ss->Disabled();
 }
 
-void
-HTMLStyleElement::SetDisabled(bool aDisabled)
-{
+void HTMLStyleElement::SetDisabled(bool aDisabled) {
   if (StyleSheet* ss = GetSheet()) {
     ss->SetDisabled(aDisabled);
   }
 }
 
-void
-HTMLStyleElement::CharacterDataChanged(nsIContent* aContent,
-                                       const CharacterDataChangeInfo&)
-{
+void HTMLStyleElement::CharacterDataChanged(nsIContent* aContent,
+                                            const CharacterDataChangeInfo&) {
   ContentChanged(aContent);
 }
 
-void
-HTMLStyleElement::ContentAppended(nsIContent* aFirstNewContent)
-{
+void HTMLStyleElement::ContentAppended(nsIContent* aFirstNewContent) {
   ContentChanged(aFirstNewContent->GetParent());
 }
 
-void
-HTMLStyleElement::ContentInserted(nsIContent* aChild)
-{
+void HTMLStyleElement::ContentInserted(nsIContent* aChild) {
   ContentChanged(aChild);
 }
 
-void
-HTMLStyleElement::ContentRemoved(nsIContent* aChild,
-                                 nsIContent* aPreviousSibling)
-{
+void HTMLStyleElement::ContentRemoved(nsIContent* aChild,
+                                      nsIContent* aPreviousSibling) {
   ContentChanged(aChild);
 }
 
-void
-HTMLStyleElement::ContentChanged(nsIContent* aContent)
-{
+void HTMLStyleElement::ContentChanged(nsIContent* aContent) {
   mTriggeringPrincipal = nullptr;
   if (nsContentUtils::IsInSameAnonymousTree(this, aContent)) {
-    UpdateStyleSheetInternal(nullptr, nullptr);
+    Unused << UpdateStyleSheetInternal(nullptr, nullptr);
   }
 }
 
-nsresult
-HTMLStyleElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
-                             nsIContent* aBindingParent,
-                             bool aCompileEventHandlers)
-{
-  nsresult rv = nsGenericHTMLElement::BindToTree(aDocument, aParent,
-                                                 aBindingParent,
-                                                 aCompileEventHandlers);
+nsresult HTMLStyleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
+  nsresult rv = nsGenericHTMLElement::BindToTree(aContext, aParent);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  void (HTMLStyleElement::*update)() = &HTMLStyleElement::UpdateStyleSheetInternal;
+  void (HTMLStyleElement::*update)() =
+      &HTMLStyleElement::UpdateStyleSheetInternal;
   nsContentUtils::AddScriptRunner(
-    NewRunnableMethod("dom::HTMLStyleElement::BindToTree", this, update));
+      NewRunnableMethod("dom::HTMLStyleElement::BindToTree", this, update));
 
   return rv;
 }
 
-void
-HTMLStyleElement::UnbindFromTree(bool aDeep, bool aNullParent)
-{
-  nsCOMPtr<nsIDocument> oldDoc = GetUncomposedDoc();
+void HTMLStyleElement::UnbindFromTree(bool aNullParent) {
+  nsCOMPtr<Document> oldDoc = GetUncomposedDoc();
   ShadowRoot* oldShadow = GetContainingShadow();
 
-  nsGenericHTMLElement::UnbindFromTree(aDeep, aNullParent);
+  nsGenericHTMLElement::UnbindFromTree(aNullParent);
 
   if (oldShadow && GetContainingShadow()) {
     // The style is in a shadow tree and is still in the
@@ -130,59 +106,47 @@ HTMLStyleElement::UnbindFromTree(bool aDeep, bool aNullParent)
     return;
   }
 
-  UpdateStyleSheetInternal(oldDoc, oldShadow);
+  Unused << UpdateStyleSheetInternal(oldDoc, oldShadow);
 }
 
-nsresult
-HTMLStyleElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                               const nsAttrValue* aValue,
-                               const nsAttrValue* aOldValue,
-                               nsIPrincipal* aSubjectPrincipal,
-                               bool aNotify)
-{
+nsresult HTMLStyleElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                                        const nsAttrValue* aValue,
+                                        const nsAttrValue* aOldValue,
+                                        nsIPrincipal* aSubjectPrincipal,
+                                        bool aNotify) {
   if (aNameSpaceID == kNameSpaceID_None) {
-    if (aName == nsGkAtoms::title ||
-        aName == nsGkAtoms::media ||
+    if (aName == nsGkAtoms::title || aName == nsGkAtoms::media ||
         aName == nsGkAtoms::type) {
-      UpdateStyleSheetInternal(nullptr, nullptr, true);
-    } else if (aName == nsGkAtoms::scoped &&
-               OwnerDoc()->IsScopedStyleEnabled()) {
-      bool isScoped = aValue;
-      UpdateStyleSheetScopedness(isScoped);
+      Unused << UpdateStyleSheetInternal(nullptr, nullptr, ForceUpdate::Yes);
     }
   }
 
-  return nsGenericHTMLElement::AfterSetAttr(aNameSpaceID, aName, aValue,
-                                            aOldValue, aSubjectPrincipal, aNotify);
+  return nsGenericHTMLElement::AfterSetAttr(
+      aNameSpaceID, aName, aValue, aOldValue, aSubjectPrincipal, aNotify);
 }
 
-NS_IMETHODIMP
-HTMLStyleElement::GetInnerHTML(nsAString& aInnerHTML)
-{
+void HTMLStyleElement::GetInnerHTML(nsAString& aInnerHTML,
+                                    OOMReporter& aError) {
   if (!nsContentUtils::GetNodeTextContent(this, false, aInnerHTML, fallible)) {
-    return NS_ERROR_OUT_OF_MEMORY;
+    aError.ReportOOM();
   }
-  return NS_OK;
 }
 
-void
-HTMLStyleElement::SetInnerHTML(const nsAString& aInnerHTML,
-                               nsIPrincipal* aScriptedPrincipal,
-                               ErrorResult& aError)
-{
+void HTMLStyleElement::SetInnerHTML(const nsAString& aInnerHTML,
+                                    nsIPrincipal* aScriptedPrincipal,
+                                    ErrorResult& aError) {
   SetTextContentInternal(aInnerHTML, aScriptedPrincipal, aError);
 }
 
-void
-HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
-                                         nsIPrincipal* aScriptedPrincipal,
-                                         ErrorResult& aError)
-{
+void HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
+                                              nsIPrincipal* aScriptedPrincipal,
+                                              ErrorResult& aError) {
   // Per spec, if we're setting text content to an empty string and don't
   // already have any children, we should not trigger any mutation observers, or
   // re-parse the stylesheet.
   if (aTextContent.IsEmpty() && !GetFirstChild()) {
-    nsIPrincipal* principal = mTriggeringPrincipal ? mTriggeringPrincipal.get() : NodePrincipal();
+    nsIPrincipal* principal =
+        mTriggeringPrincipal ? mTriggeringPrincipal.get() : NodePrincipal();
     if (principal == aScriptedPrincipal) {
       return;
     }
@@ -196,62 +160,40 @@ HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
 
   mTriggeringPrincipal = aScriptedPrincipal;
 
-  UpdateStyleSheetInternal(nullptr, nullptr);
+  Unused << UpdateStyleSheetInternal(nullptr, nullptr);
 }
 
-already_AddRefed<nsIURI>
-HTMLStyleElement::GetStyleSheetURL(bool* aIsInline, nsIPrincipal** aTriggeringPrincipal)
-{
-  *aIsInline = true;
-  *aTriggeringPrincipal = do_AddRef(mTriggeringPrincipal).take();
-  return nullptr;
-}
-
-void
-HTMLStyleElement::GetStyleSheetInfo(nsAString& aTitle,
-                                    nsAString& aType,
-                                    nsAString& aMedia,
-                                    bool* aIsScoped,
-                                    bool* aIsAlternate)
-{
-  aTitle.Truncate();
-  aType.Truncate();
-  aMedia.Truncate();
-  *aIsAlternate = false;
-
-  nsAutoString title;
-  GetAttr(kNameSpaceID_None, nsGkAtoms::title, title);
-  title.CompressWhitespace();
-  aTitle.Assign(title);
-
-  GetAttr(kNameSpaceID_None, nsGkAtoms::media, aMedia);
-  // The HTML5 spec is formulated in terms of the CSSOM spec, which specifies
-  // that media queries should be ASCII lowercased during serialization.
-  nsContentUtils::ASCIIToLower(aMedia);
-
-  GetAttr(kNameSpaceID_None, nsGkAtoms::type, aType);
-
-  *aIsScoped = HasAttr(kNameSpaceID_None, nsGkAtoms::scoped) &&
-               OwnerDoc()->IsScopedStyleEnabled();
-
-  nsAutoString mimeType;
-  nsAutoString notUsed;
-  nsContentUtils::SplitMimeType(aType, mimeType, notUsed);
-  if (!mimeType.IsEmpty() && !mimeType.LowerCaseEqualsLiteral("text/css")) {
-    return;
+Maybe<nsStyleLinkElement::SheetInfo> HTMLStyleElement::GetStyleSheetInfo() {
+  if (!IsCSSMimeTypeAttribute(*this)) {
+    return Nothing();
   }
 
-  // If we get here we assume that we're loading a css file, so set the
-  // type to 'text/css'
-  aType.AssignLiteral("text/css");
+  nsAutoString title;
+  nsAutoString media;
+  GetTitleAndMediaForElement(*this, title, media);
+
+  nsCOMPtr<nsIReferrerInfo> referrerInfo = new ReferrerInfo();
+  referrerInfo->InitWithNode(this);
+  nsCOMPtr<nsIPrincipal> prin = mTriggeringPrincipal;
+  return Some(SheetInfo{
+      *OwnerDoc(),
+      this,
+      nullptr,
+      prin.forget(),
+      referrerInfo.forget(),
+      CORS_NONE,
+      title,
+      media,
+      HasAlternateRel::No,
+      IsInline::Yes,
+      IsExplicitlyEnabled::No,
+  });
 }
 
-JSObject*
-HTMLStyleElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aGivenProto)
-{
-  return HTMLStyleElementBinding::Wrap(aCx, this, aGivenProto);
+JSObject* HTMLStyleElement::WrapNode(JSContext* aCx,
+                                     JS::Handle<JSObject*> aGivenProto) {
+  return HTMLStyleElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-} // namespace dom
-} // namespace mozilla
-
+}  // namespace dom
+}  // namespace mozilla

@@ -4,7 +4,6 @@
 /*---
 info: If array element is undefined or null, use the empty string
 esid: sec-array.prototype.join
-es5id: 15.4.4.5_A1.3_T1
 description: Checking this use new Array() and []
 ---*/
 
@@ -23,7 +22,7 @@ if (x.join() !== "") {
 }
 
 //CHECK#3
-x = Array(undefined,1,null,3);
+x = Array(undefined, 1, null, 3);
 if (x.join() !== ",1,,3") {
   $ERROR('#3: x = Array(undefined,1,null,3); x.join() === ",1,,3". Actual: ' + (x.join()));
 }

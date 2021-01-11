@@ -10,7 +10,6 @@ from __future__ import absolute_import, print_function
 
 import logging
 import os
-import subprocess
 import sys
 import time
 
@@ -22,6 +21,7 @@ from mozbuild.base import MachCommandConditions
 from mozbuild.frontend.emitter import TreeMetadataEmitter
 from mozbuild.frontend.reader import BuildReader
 from mozbuild.mozinfo import write_mozinfo
+from mozbuild.util import FileAvoidWrite
 from itertools import chain
 
 from mozbuild.backend import (
@@ -79,14 +79,14 @@ def config_status(topobjdir='.', topsrcdir='.', defines=None,
 
     if 'CONFIG_FILES' in os.environ:
         raise Exception('Using the CONFIG_FILES environment variable is not '
-            'supported.')
+                        'supported.')
     if 'CONFIG_HEADERS' in os.environ:
         raise Exception('Using the CONFIG_HEADERS environment variable is not '
-            'supported.')
+                        'supported.')
 
     if not os.path.isabs(topsrcdir):
         raise Exception('topsrcdir must be defined as an absolute directory: '
-            '%s' % topsrcdir)
+                        '%s' % topsrcdir)
 
     default_backends = ['RecursiveMake']
     default_backends = (substs or {}).get('BUILD_BACKENDS', ['RecursiveMake'])
@@ -111,13 +111,11 @@ def config_status(topobjdir='.', topsrcdir='.', defines=None,
         topobjdir = os.path.abspath('.')
 
     env = ConfigEnvironment(topsrcdir, topobjdir, defines=defines,
-            non_global_defines=non_global_defines, substs=substs,
-            source=source, mozconfig=mozconfig)
+                            non_global_defines=non_global_defines, substs=substs,
+                            source=source, mozconfig=mozconfig)
 
-    # mozinfo.json only needs written if configure changes and configure always
-    # passes this environment variable.
-    if 'WRITE_MOZINFO' in os.environ:
-        write_mozinfo(os.path.join(topobjdir, 'mozinfo.json'), env, os.environ)
+    with FileAvoidWrite(os.path.join(topobjdir, 'mozinfo.json')) as f:
+        write_mozinfo(f, env, os.environ)
 
     cpu_start = time.clock()
     time_start = time.time()

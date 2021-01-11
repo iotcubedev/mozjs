@@ -4,11 +4,10 @@
 /*---
 info: If end is undefined use length
 esid: sec-array.prototype.slice
-es5id: 15.4.4.10_A1.5_T1
 description: end === undefined
 ---*/
 
-var x = [0,1,2,3,4];
+var x = [0, 1, 2, 3, 4];
 var arr = x.slice(3, undefined);
 
 //CHECK#1

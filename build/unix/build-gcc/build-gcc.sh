@@ -5,67 +5,6 @@ set -x
 
 make_flags="-j$(nproc)"
 
-. $data_dir/download-tools.sh
-
-prepare() {
-  pushd $root_dir
-  download_and_check ftp://ftp.gnu.org/gnu/binutils binutils-$binutils_version.tar.$binutils_ext.sig
-  tar xaf $TMPDIR/binutils-$binutils_version.tar.$binutils_ext
-
-  case "$gcc_version" in
-  *-*)
-    download ftp://gcc.gnu.org/pub/gcc/snapshots/$gcc_version/gcc-$gcc_version.tar.$gcc_ext
-    ;;
-  *)
-    download_and_check ftp://ftp.gnu.org/gnu/gcc/gcc-$gcc_version gcc-$gcc_version.tar.$gcc_ext.sig
-    ;;
-  esac
-  tar xaf $TMPDIR/gcc-$gcc_version.tar.$gcc_ext
-  cd gcc-$gcc_version
-
-  (
-    # Divert commands that download_prerequisites use
-    ln() { :; }
-    tar() { :; }
-    sed() { :; }
-    wget() {
-      echo $1
-    }
-
-    . ./contrib/download_prerequisites
-  ) | while read url; do
-    file=$(basename $url)
-    case "$file" in
-    gmp-*.tar.*)
-      # If download_prerequisites wants 4.3.2, use 5.1.3 instead.
-      file=${file/4.3.2/5.1.3}
-      download_and_check https://gmplib.org/download/gmp $file.sig
-      ;;
-    mpfr-*.tar.*)
-      # If download_prerequisites wants 2.4.2, use 3.1.5 instead.
-      file=${file/2.4.2/3.1.5}
-      download_and_check http://www.mpfr.org/${file%.tar.*} $file.asc
-      ;;
-    mpc-*.tar.*)
-      # If download_prerequisites wants 0.8.1, use 0.8.2 instead.
-      file=${file/0.8.1/0.8.2}
-      download_and_check http://www.multiprecision.org/downloads $file.asc
-      ;;
-    *)
-      download $(dirname $url) $file
-      ;;
-    esac
-    tar xaf $TMPDIR/$file
-    ln -sf ${file%.tar.*} ${file%-*}
-  done
-
-  # Check all the downloads we did are in the checksums list, and that the
-  # checksums match.
-  diff -u <(sort -k 2 $root_dir/downloads) $root_dir/checksums
-
-  popd
-}
-
 prepare_mingw() {
   export prefix=/tools/mingw32
   export install_dir=$root_dir$prefix
@@ -85,7 +24,7 @@ apply_patch() {
     pushd $root_dir/$1
     shift
   else
-    pushd $root_dir/gcc-$gcc_version
+    pushd $root_dir/gcc-source
   fi
   patch -p1 < $1
   popd
@@ -97,12 +36,18 @@ build_binutils() {
   then
     # gold is disabled because we don't use it on automation, and also we ran into
     # some issues with it using this script in build-clang.py.
-    binutils_configure_flags="--disable-gold --enable-plugins --disable-nls --with-sysroot=/"
+    #
+    # --enable-targets builds extra target support in ld.
+    # Enabling aarch64 support brings in arm support, so we don't need to specify that too.
+    #
+    # It is important to have the binutils --target and the gcc --target match,
+    # so binutils will install binaries in a place that gcc will look for them.
+    binutils_configure_flags="--enable-targets=aarch64-unknown-linux-gnu --build=x86_64-unknown-linux-gnu --target=x86_64-unknown-linux-gnu --disable-gold --enable-plugins --disable-nls --with-sysroot=/"
   fi
 
   mkdir $root_dir/binutils-objdir
   pushd $root_dir/binutils-objdir
-  ../binutils-$binutils_version/configure --prefix=${prefix-/tools/gcc}/ $binutils_configure_flags
+  ../binutils-source/configure --prefix=${prefix-/tools/gcc}/ $binutils_configure_flags
   make $make_flags
   make install $make_flags DESTDIR=$root_dir
   export PATH=$root_dir/${prefix-/tools/gcc}/bin:$PATH
@@ -110,9 +55,13 @@ build_binutils() {
 }
 
 build_gcc() {
+  # Be explicit about --build and --target so header and library install
+  # directories are consistent.
+  local target="${1:-x86_64-unknown-linux-gnu}"
+
   mkdir $root_dir/gcc-objdir
   pushd $root_dir/gcc-objdir
-  ../gcc-$gcc_version/configure --prefix=${prefix-/tools/gcc} --enable-languages=c,c++  --disable-nls --disable-gnu-unique-object --enable-__cxa_atexit --with-arch-32=pentiumpro --with-sysroot=/
+  ../gcc-source/configure --prefix=${prefix-/tools/gcc} --build=x86_64-unknown-linux-gnu --target="${target}" --enable-languages=c,c++  --disable-nls --disable-gnu-unique-object --enable-__cxa_atexit --with-arch-32=pentiumpro --with-sysroot=/
   make $make_flags
   make $make_flags install DESTDIR=$root_dir
 
@@ -126,7 +75,7 @@ build_gcc() {
 build_gcc_and_mingw() {
   mkdir gcc-objdir
   pushd gcc-objdir
-  ../gcc-$gcc_version/configure --prefix=$install_dir --target=i686-w64-mingw32 --with-gnu-ld --with-gnu-as --disable-multilib --enable-threads=posix
+  ../gcc-source/configure --prefix=$install_dir --target=i686-w64-mingw32 --with-gnu-ld --with-gnu-as --disable-multilib --enable-threads=posix
   make $make_flags all-gcc
   make $make_flags install-gcc
   popd

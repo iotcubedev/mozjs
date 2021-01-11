@@ -14,18 +14,21 @@ function run_test() {
   const debuggee = addTestGlobal("test-symbols");
   const client = new DebuggerClient(DebuggerServer.connectPipe());
 
-  client.connect().then(function () {
-    attachTestTabAndResume(client, "test-symbols",
-                           function (response, tabClient, threadClient) {
-                             add_task(testSymbols.bind(null, client, debuggee));
-                             run_next_test();
-                           });
+  client.connect().then(function() {
+    attachTestTabAndResume(client, "test-symbols", function(
+      response,
+      targetFront,
+      threadFront
+    ) {
+      add_task(testSymbols.bind(null, client, threadFront, debuggee));
+      run_next_test();
+    });
   });
 
   do_test_pending();
 }
 
-async function testSymbols(client, debuggee) {
+async function testSymbols(client, threadFront, debuggee) {
   const evalCode = () => {
     /* eslint-disable */
     Cu.evalInSandbox(
@@ -44,7 +47,7 @@ async function testSymbols(client, debuggee) {
     /* eslint-enable */
   };
 
-  const packet = await executeOnNextTickAndWaitForPause(evalCode, client);
+  const packet = await executeOnNextTickAndWaitForPause(evalCode, threadFront);
   const { sym } = packet.frame.environment.bindings.variables;
 
   equal(sym.value.type, "symbol");

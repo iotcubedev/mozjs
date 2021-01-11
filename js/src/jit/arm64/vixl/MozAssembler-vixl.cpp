@@ -399,7 +399,7 @@ void Assembler::hint(Instruction* at, SystemHint code) {
 
 
 void Assembler::svc(Instruction* at, int code) {
-  VIXL_ASSERT(is_uint16(code));
+  VIXL_ASSERT(IsUint16(code));
   Emit(at, SVC | ImmException(code));
 }
 
@@ -415,7 +415,7 @@ void Assembler::csdb(Instruction* at) {
 
 
 BufferOffset Assembler::Logical(const Register& rd, const Register& rn,
-                                const Operand operand, LogicalOp op)
+                                const Operand& operand, LogicalOp op)
 {
   VIXL_ASSERT(rd.size() == rn.size());
   if (operand.IsImmediate()) {
@@ -424,7 +424,7 @@ BufferOffset Assembler::Logical(const Register& rd, const Register& rn,
 
     VIXL_ASSERT(immediate != 0);
     VIXL_ASSERT(immediate != -1);
-    VIXL_ASSERT(rd.Is64Bits() || is_uint32(immediate));
+    VIXL_ASSERT(rd.Is64Bits() || IsUint32(immediate));
 
     // If the operation is NOT, invert the operation and immediate.
     if ((op & NOT) == NOT) {
@@ -463,7 +463,7 @@ BufferOffset Assembler::DataProcShiftedRegister(const Register& rd, const Regist
                                                 const Operand& operand, FlagsUpdate S, Instr op)
 {
   VIXL_ASSERT(operand.IsShiftedRegister());
-  VIXL_ASSERT(rn.Is64Bits() || (rn.Is32Bits() && is_uint5(operand.shift_amount())));
+  VIXL_ASSERT(rn.Is64Bits() || (rn.Is32Bits() && IsUint5(operand.shift_amount())));
   return Emit(SF(rd) | op | Flags(S) |
               ShiftDP(operand.shift()) | ImmDPShift(operand.shift_amount()) |
               Rm(operand.reg()) | Rn(rn) | Rd(rd));
@@ -539,7 +539,7 @@ struct PoolHeader {
 	// "Natural" guards are part of the normal instruction stream,
 	// while "non-natural" guards are inserted for the sole purpose
 	// of skipping around a pool.
-        bool isNatural : 1;
+        uint32_t isNatural : 1;
         uint32_t ONES : 16;
       };
       uint32_t data;
@@ -554,12 +554,12 @@ struct PoolHeader {
     Header(uint32_t data)
       : data(data)
     {
-      JS_STATIC_ASSERT(sizeof(Header) == sizeof(uint32_t));
+      VIXL_STATIC_ASSERT(sizeof(Header) == sizeof(uint32_t));
       VIXL_ASSERT(ONES == 0xffff);
     }
 
     uint32_t raw() const {
-      JS_STATIC_ASSERT(sizeof(Header) == sizeof(uint32_t));
+      VIXL_STATIC_ASSERT(sizeof(Header) == sizeof(uint32_t));
       return data;
     }
   };
@@ -585,7 +585,7 @@ void MozBaseAssembler::WritePoolHeader(uint8_t* start, js::jit::Pool* p, bool is
 
   // Get the total size of the pool.
   const uintptr_t totalPoolSize = sizeof(PoolHeader) + p->getPoolSize();
-  const uintptr_t totalPoolInstructions = totalPoolSize / sizeof(Instruction);
+  const uintptr_t totalPoolInstructions = totalPoolSize / kInstructionSize;
 
   VIXL_ASSERT((totalPoolSize & 0x3) == 0);
   VIXL_ASSERT(totalPoolInstructions < (1 << 15));
@@ -685,7 +685,7 @@ void MozBaseAssembler::RetargetNearBranch(Instruction* i, int byteOffset, bool f
     VIXL_ASSERT(byteOffset % kInstructionSize == 0);
     // Opposite of ImmTestBranchBit(): MSB in bit 5, 0:5 at bit 40.
     unsigned bit_pos = (i->ImmTestBranchBit5() << 5) | (i->ImmTestBranchBit40());
-    VIXL_ASSERT(is_uint6(bit_pos));
+    VIXL_ASSERT(IsUint6(bit_pos));
 
     // Register size doesn't matter for the encoding.
     Register rt = Register::XRegFromCode(i->Rt());
@@ -724,4 +724,3 @@ void MozBaseAssembler::RetargetFarBranch(Instruction* i, uint8_t** slot, uint8_t
 
 
 }  // namespace vixl
-

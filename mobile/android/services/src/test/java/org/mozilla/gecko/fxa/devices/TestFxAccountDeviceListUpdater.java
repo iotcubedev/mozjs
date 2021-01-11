@@ -20,10 +20,11 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mozilla.gecko.background.db.DelegatingTestContentProvider;
 import org.mozilla.gecko.background.fxa.FxAccountClient;
-import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.fxa.authenticator.AndroidFxAccount;
 import org.mozilla.gecko.fxa.login.State;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowContentResolver;
 
 import java.util.List;
@@ -41,7 +42,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-@RunWith(TestRunner.class)
+@RunWith(RobolectricTestRunner.class)
 public class TestFxAccountDeviceListUpdater {
 
     @Before
@@ -49,6 +50,7 @@ public class TestFxAccountDeviceListUpdater {
         // Process Mockito annotations
         MockitoAnnotations.initMocks(this);
         fxaDevicesUpdater = spy(new FxAccountDeviceListUpdater(fxAccount, contentResolver));
+        resolver = RuntimeEnvironment.application.getContentResolver();
     }
 
     FxAccountDeviceListUpdater fxaDevicesUpdater;
@@ -61,6 +63,8 @@ public class TestFxAccountDeviceListUpdater {
 
     @Mock
     ContentResolver contentResolver;
+
+    protected ContentResolver resolver;
 
     @Mock
     FxAccountClient fxaClient;
@@ -122,8 +126,7 @@ public class TestFxAccountDeviceListUpdater {
         final ContentProvider provider = DelegatingTestContentProvider.createDelegatingBrowserProvider();
         Cursor c = null;
         try {
-            final ShadowContentResolver cr = new ShadowContentResolver();
-            ContentProviderClient remoteDevicesClient = cr.acquireContentProviderClient(BrowserContract.RemoteDevices.CONTENT_URI);
+            ContentProviderClient remoteDevicesClient = resolver.acquireContentProviderClient(BrowserContract.RemoteDevices.CONTENT_URI);
 
             // First let's insert a client for initial state.
 

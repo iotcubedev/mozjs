@@ -4,13 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_ipc_IPCBlobInputStream_h
-#define mozilla_dom_ipc_IPCBlobInputStream_h
+#ifndef mozilla_dom_IPCBlobInputStream_h
+#define mozilla_dom_IPCBlobInputStream_h
 
+#include "mozilla/Mutex.h"
+#include "mozIIPCBlobInputStream.h"
 #include "nsIAsyncInputStream.h"
 #include "nsICloneableInputStream.h"
 #include "nsIFileStreams.h"
 #include "nsIIPCSerializableInputStream.h"
+#include "nsIInputStreamLength.h"
 #include "nsCOMPtr.h"
 
 namespace mozilla {
@@ -18,13 +21,22 @@ namespace dom {
 
 class IPCBlobInputStreamChild;
 
-class IPCBlobInputStream final : public nsIAsyncInputStream
-                               , public nsIInputStreamCallback
-                               , public nsICloneableInputStreamWithRange
-                               , public nsIIPCSerializableInputStream
-                               , public nsIAsyncFileMetadata
-{
-public:
+#define IPCBLOBINPUTSTREAM_IID                       \
+  {                                                  \
+    0xbcfa38fc, 0x8b7f, 0x4d79, {                    \
+      0xbe, 0x3a, 0x1e, 0x7b, 0xbe, 0x52, 0x38, 0xcd \
+    }                                                \
+  }
+
+class IPCBlobInputStream final : public nsIAsyncInputStream,
+                                 public nsIInputStreamCallback,
+                                 public nsICloneableInputStreamWithRange,
+                                 public nsIIPCSerializableInputStream,
+                                 public nsIAsyncFileMetadata,
+                                 public nsIInputStreamLength,
+                                 public nsIAsyncInputStreamLength,
+                                 public mozIIPCBlobInputStream {
+ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIINPUTSTREAM
   NS_DECL_NSIASYNCINPUTSTREAM
@@ -34,24 +46,37 @@ public:
   NS_DECL_NSIIPCSERIALIZABLEINPUTSTREAM
   NS_DECL_NSIFILEMETADATA
   NS_DECL_NSIASYNCFILEMETADATA
+  NS_DECL_NSIINPUTSTREAMLENGTH
+  NS_DECL_NSIASYNCINPUTSTREAMLENGTH
 
   explicit IPCBlobInputStream(IPCBlobInputStreamChild* aActor);
 
-  void
-  StreamReady(already_AddRefed<nsIInputStream> aInputStream);
+  void StreamReady(already_AddRefed<nsIInputStream> aInputStream);
 
-private:
+  void LengthReady(int64_t aLength);
+
+  void SerializeInternal(mozilla::ipc::InputStreamParams& aParams);
+
+  // mozIIPCBlobInputStream
+  NS_IMETHOD_(nsIInputStream*) GetInternalStream() override {
+    if (mRemoteStream) {
+      return mRemoteStream;
+    }
+
+    if (mAsyncRemoteStream) {
+      return mAsyncRemoteStream;
+    }
+
+    return nullptr;
+  }
+
+ private:
   ~IPCBlobInputStream();
 
-  nsresult
-  MaybeExecuteInputStreamCallback(nsIInputStreamCallback* aCallback,
-                                  nsIEventTarget* aEventTarget);
+  nsresult EnsureAsyncRemoteStream(const MutexAutoLock& aProofOfLock);
 
-  nsresult
-  EnsureAsyncRemoteStream();
-
-  void
-  InitWithExistingRange(uint64_t aStart, uint64_t aLength);
+  void InitWithExistingRange(uint64_t aStart, uint64_t aLength,
+                             const MutexAutoLock& aProofOfLock);
 
   RefPtr<IPCBlobInputStreamChild> mActor;
 
@@ -79,6 +104,9 @@ private:
   uint64_t mStart;
   uint64_t mLength;
 
+  // Set to true if the stream is used via Read/ReadSegments or Close.
+  bool mConsumed;
+
   nsCOMPtr<nsIInputStream> mRemoteStream;
   nsCOMPtr<nsIAsyncInputStream> mAsyncRemoteStream;
 
@@ -89,9 +117,18 @@ private:
   // These 2 values are set only if mState is ePending.
   nsCOMPtr<nsIFileMetadataCallback> mFileMetadataCallback;
   nsCOMPtr<nsIEventTarget> mFileMetadataCallbackEventTarget;
+
+  // These 2 values are set only when nsIAsyncInputStreamLength::asyncWait() is
+  // called.
+  nsCOMPtr<nsIInputStreamLengthCallback> mLengthCallback;
+  nsCOMPtr<nsIEventTarget> mLengthCallbackEventTarget;
+
+  // Any member of this class is protected by mutex because touched on
+  // multiple threads.
+  Mutex mMutex;
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_dom_ipc_IPCBlobInputStream_h
+#endif  // mozilla_dom_IPCBlobInputStream_h

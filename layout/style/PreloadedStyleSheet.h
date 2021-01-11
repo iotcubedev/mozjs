@@ -12,7 +12,6 @@
 #include "mozilla/css/SheetParsingMode.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/Result.h"
-#include "mozilla/StyleBackendType.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsICSSLoaderObserver.h"
@@ -22,65 +21,55 @@ class nsIURI;
 
 namespace mozilla {
 namespace dom {
-  class Promise;
+class Promise;
 }
 
 class StyleSheet;
 
-class PreloadedStyleSheet : public nsIPreloadedStyleSheet
-{
-public:
-  // *aResult is addrefed.
-  static nsresult Create(nsIURI* aURI, css::SheetParsingMode aParsingMode,
-                         PreloadedStyleSheet** aResult);
+class PreloadedStyleSheet : public nsIPreloadedStyleSheet {
+ public:
+  PreloadedStyleSheet(nsIURI*, css::SheetParsingMode);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(PreloadedStyleSheet)
 
   // *aResult is not addrefed, since the PreloadedStyleSheet holds a strong
   // reference to the sheet.
-  nsresult GetSheet(StyleBackendType aType, StyleSheet** aResult);
+  nsresult GetSheet(StyleSheet** aResult);
 
   nsresult Preload();
   nsresult PreloadAsync(NotNull<dom::Promise*> aPromise);
 
-protected:
+ protected:
   virtual ~PreloadedStyleSheet() {}
 
-private:
-  PreloadedStyleSheet(nsIURI* aURI, css::SheetParsingMode aParsingMode);
-
-  class StylesheetPreloadObserver final : public nsICSSLoaderObserver
-  {
-  public:
+ private:
+  class StylesheetPreloadObserver final : public nsICSSLoaderObserver {
+   public:
     NS_DECL_ISUPPORTS
 
     explicit StylesheetPreloadObserver(NotNull<dom::Promise*> aPromise,
                                        PreloadedStyleSheet* aSheet)
-      : mPromise(aPromise)
-      , mPreloadedSheet(aSheet)
-    {}
+        : mPromise(aPromise), mPreloadedSheet(aSheet) {}
 
-    NS_IMETHOD StyleSheetLoaded(StyleSheet* aSheet,
-                                bool aWasAlternate,
+    NS_IMETHOD StyleSheetLoaded(StyleSheet* aSheet, bool aWasDeferred,
                                 nsresult aStatus) override;
 
-  protected:
+   protected:
     virtual ~StylesheetPreloadObserver() {}
 
-  private:
+   private:
     RefPtr<dom::Promise> mPromise;
     RefPtr<PreloadedStyleSheet> mPreloadedSheet;
   };
 
-  RefPtr<StyleSheet> mGecko;
-  RefPtr<StyleSheet> mServo;
+  RefPtr<StyleSheet> mSheet;
 
   bool mLoaded;
   nsCOMPtr<nsIURI> mURI;
   css::SheetParsingMode mParsingMode;
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // mozilla_PreloadedStyleSheet_h
+#endif  // mozilla_PreloadedStyleSheet_h

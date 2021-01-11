@@ -12,18 +12,18 @@
 namespace mozilla {
 
 class CodeCoverageHandler {
-public:
+ public:
   static void Init();
   static void Init(const CrossProcessMutexHandle& aHandle);
   static CodeCoverageHandler* Get();
   CrossProcessMutex* GetMutex();
   CrossProcessMutexHandle GetMutexHandle(int aProcId);
-  static void DumpCounters(int);
-  static void ResetCounters(int);
+  static void FlushCounters();
+  static void FlushCountersSignalHandler(int);
 
-private:
+ private:
   CodeCoverageHandler();
-  CodeCoverageHandler(const CrossProcessMutexHandle& aHandle);
+  explicit CodeCoverageHandler(const CrossProcessMutexHandle& aHandle);
 
   static StaticAutoPtr<CodeCoverageHandler> instance;
   CrossProcessMutex mGcovLock;
@@ -33,6 +33,6 @@ private:
   void SetSignalHandlers();
 };
 
-}
+}  // namespace mozilla
 
-#endif // mozilla_codecoveragehandler_h
+#endif  // mozilla_codecoveragehandler_h

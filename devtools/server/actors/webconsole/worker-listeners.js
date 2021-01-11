@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ft= javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,18 +19,18 @@ function ConsoleAPIListener(window, owner, consoleID) {
 }
 
 ConsoleAPIListener.prototype = {
-  init: function () {
+  init: function() {
     setConsoleEventHandler(this.observe);
   },
-  destroy: function () {
+  destroy: function() {
     setConsoleEventHandler(null);
   },
-  observe: function (message) {
+  observe: function(message) {
     this.owner.onConsoleAPICall(message.wrappedJSObject);
   },
-  getCachedMessages: function () {
+  getCachedMessages: function() {
     return retrieveConsoleEvents();
-  }
+  },
 };
 
 exports.ConsoleAPIListener = ConsoleAPIListener;

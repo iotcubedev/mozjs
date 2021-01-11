@@ -3,13 +3,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef widget_windows_CompositorWidgetParent_h
-#define widget_windows_CompositorWidgetParent_h
+#ifndef widget_windows_WinCompositorWidget_h
+#define widget_windows_WinCompositorWidget_h
 
 #include "CompositorWidget.h"
 #include "gfxASurface.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/gfx/CriticalSection.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/widget/WinCompositorWindowThread.h"
 #include "nsIWidget.h"
 
 class nsWindow;
@@ -17,10 +20,8 @@ class nsWindow;
 namespace mozilla {
 namespace widget {
 
-class PlatformCompositorWidgetDelegate
-  : public CompositorWidgetDelegate
-{
-public:
+class PlatformCompositorWidgetDelegate : public CompositorWidgetDelegate {
+ public:
   // Callbacks for nsWindow.
   virtual void EnterPresentLock() = 0;
   virtual void LeavePresentLock() = 0;
@@ -33,6 +34,9 @@ public:
   // If in-process and using software rendering, return the backing transparent
   // DC.
   virtual HDC GetTransparentDC() const = 0;
+  virtual void SetParentWnd(const HWND aParentWnd) {}
+  virtual void UpdateCompositorWnd(const HWND aCompositorWnd,
+                                   const HWND aParentWnd) {}
 
   // CompositorWidgetDelegate Overrides
 
@@ -47,13 +51,12 @@ class WinCompositorWidgetInitData;
 // the most part it only requires an HWND, however it maintains extra state
 // for transparent windows, as well as for synchronizing WM_SETTEXT messages
 // with the compositor.
-class WinCompositorWidget
- : public CompositorWidget,
-   public PlatformCompositorWidgetDelegate
-{
-public:
+class WinCompositorWidget : public CompositorWidget,
+                            public PlatformCompositorWidgetDelegate {
+ public:
   WinCompositorWidget(const WinCompositorWidgetInitData& aInitData,
                       const layers::CompositorOptions& aOptions);
+  ~WinCompositorWidget() override;
 
   // CompositorWidget Overrides
 
@@ -63,18 +66,14 @@ public:
   void EndRemoteDrawing() override;
   bool NeedsToDeferEndRemoteDrawing() override;
   LayoutDeviceIntSize GetClientSize() override;
-  already_AddRefed<gfx::DrawTarget> GetBackBufferDrawTarget(gfx::DrawTarget* aScreenTarget,
-                                                            const LayoutDeviceIntRect& aRect,
-                                                            const LayoutDeviceIntRect& aClearRect) override;
+  already_AddRefed<gfx::DrawTarget> GetBackBufferDrawTarget(
+      gfx::DrawTarget* aScreenTarget, const gfx::IntRect& aRect,
+      bool* aOutIsCleared) override;
   already_AddRefed<gfx::SourceSurface> EndBackBufferDrawing() override;
   bool InitCompositor(layers::Compositor* aCompositor) override;
   uintptr_t GetWidgetKey() override;
-  WinCompositorWidget* AsWindows() override {
-    return this;
-  }
-  CompositorWidgetDelegate* AsDelegate() override {
-    return this;
-  }
+  WinCompositorWidget* AsWindows() override { return this; }
+  CompositorWidgetDelegate* AsDelegate() override { return this; }
   bool IsHidden() const override;
 
   // PlatformCompositorWidgetDelegate Overrides
@@ -90,26 +89,44 @@ public:
   // Ensure that a transparent surface exists, then return it.
   RefPtr<gfxASurface> EnsureTransparentSurface();
 
-  HDC GetTransparentDC() const override {
-    return mMemoryDC;
-  }
+  HDC GetTransparentDC() const override { return mMemoryDC; }
   HWND GetHwnd() const {
-    return mWnd;
+    return mCompositorWnds.mCompositorWnd ? mCompositorWnds.mCompositorWnd
+                                          : mWnd;
   }
 
-private:
+  HWND GetCompositorHwnd() const { return mCompositorWnds.mCompositorWnd; }
+
+  void EnsureCompositorWindow();
+  void DestroyCompositorWindow();
+  void UpdateCompositorWndSizeIfNecessary();
+
+  mozilla::Mutex& GetTransparentSurfaceLock() {
+    return mTransparentSurfaceLock;
+  }
+
+  bool HasGlass() const;
+
+ protected:
+ private:
   HDC GetWindowSurface();
   void FreeWindowSurface(HDC dc);
 
   void CreateTransparentSurface(const gfx::IntSize& aSize);
 
-private:
+ private:
   uintptr_t mWidgetKey;
   HWND mWnd;
+
+  WinCompositorWnds mCompositorWnds;
+  LayoutDeviceIntSize mLastCompositorWndSize;
+
   gfx::CriticalSection mPresentLock;
 
   // Transparency handling.
-  nsTransparencyMode mTransparencyMode;
+  mozilla::Mutex mTransparentSurfaceLock;
+  mozilla::Atomic<nsTransparencyMode, MemoryOrdering::Relaxed>
+      mTransparencyMode;
   RefPtr<gfxASurface> mTransparentSurface;
   HDC mMemoryDC;
   HDC mCompositeDC;
@@ -120,7 +137,7 @@ private:
   bool mNotDeferEndRemoteDrawing;
 };
 
-} // namespace widget
-} // namespace mozilla
+}  // namespace widget
+}  // namespace mozilla
 
-#endif // widget_windows_CompositorWidgetParent_h
+#endif  // widget_windows_WinCompositorWidget_h

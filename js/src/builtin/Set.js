@@ -26,8 +26,8 @@ function SetForEach(callbackfn, thisArg = undefined) {
     var S = this;
 
     // Steps 2-3.
-    if (!IsObject(S) || !IsSetObject(S))
-        return callFunction(CallSetMethodIfWrapped, S, callbackfn, thisArg, "SetForEach");
+    if (!IsObject(S) || (S = GuardToSetObject(S)) === null)
+        return callFunction(CallSetMethodIfWrapped, this, callbackfn, thisArg, "SetForEach");
 
     // Step 4.
     if (!IsCallable(callbackfn))
@@ -53,17 +53,19 @@ function SetForEach(callbackfn, thisArg = undefined) {
     }
 }
 
-function SetValues() {
+// Uncloned functions with `$` prefix are allocated as extended function
+// to store the original name in `_SetCanonicalName`.
+function $SetValues() {
     return callFunction(std_Set_iterator, this);
 }
-_SetCanonicalName(SetValues, "values");
+_SetCanonicalName($SetValues, "values");
 
 // ES6 final draft 23.2.2.2.
-function SetSpecies() {
+function $SetSpecies() {
     // Step 1.
     return this;
 }
-_SetCanonicalName(SetSpecies, "get [Symbol.species]");
+_SetCanonicalName($SetSpecies, "get [Symbol.species]");
 
 
 var setIteratorTemp = { setIterationResult: null };
@@ -73,8 +75,8 @@ function SetIteratorNext() {
     var O = this;
 
     // Steps 2-3.
-    if (!IsObject(O) || !IsSetIterator(O))
-        return callFunction(CallSetIteratorMethodIfWrapped, O, "SetIteratorNext");
+    if (!IsObject(O) || (O = GuardToSetIterator(O)) === null)
+        return callFunction(CallSetIteratorMethodIfWrapped, this, "SetIteratorNext");
 
     // Steps 4-5 (implemented in _GetNextSetEntryForIterator).
     // Steps 8-9 (omitted).
@@ -91,7 +93,7 @@ function SetIteratorNext() {
         // Steps 10.b-c (omitted).
 
         // Step 6.
-        var itemKind = UnsafeGetInt32FromReservedSlot(this, ITERATOR_SLOT_ITEM_KIND);
+        var itemKind = UnsafeGetInt32FromReservedSlot(O, ITERATOR_SLOT_ITEM_KIND);
 
         var result;
         if (itemKind === ITEM_KIND_VALUE) {

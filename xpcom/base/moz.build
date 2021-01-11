@@ -14,7 +14,6 @@ XPIDL_SOURCES += [
     'nsIException.idl',
     'nsIGZFileWriter.idl',
     'nsIInterfaceRequestor.idl',
-    'nsILoadURIDelegate.idl',
     'nsIMemory.idl',
     'nsIMemoryInfoDumper.idl',
     'nsIMemoryReporter.idl',
@@ -30,16 +29,25 @@ XPIDL_SOURCES += [
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     XPIDL_SOURCES += [
+        'nsIMacPreferencesReader.idl',
         'nsIMacUtils.idl',
     ]
     EXPORTS.mozilla += [
         'MacHelpers.h',
+        'MacStringHelpers.h',
+        'nsMacPreferencesReader.h',
     ]
     UNIFIED_SOURCES += [
         'MacHelpers.mm',
+        'MacStringHelpers.mm',
+        'nsMacPreferencesReader.mm',
     ]
 
 XPIDL_MODULE = 'xpcom_base'
+
+XPCOM_MANIFESTS += [
+    'components.conf',
+]
 
 EXPORTS += [
     '!ErrorList.h',
@@ -62,10 +70,10 @@ EXPORTS += [
     'nsDebugImpl.h',
     'nsDumpUtils.h',
     'nsError.h',
+    'nsErrorService.h',
     'nsGZFileWriter.h',
     'nsIClassInfoImpl.h',
     'nsID.h',
-    'nsIID.h',
     'nsIInterfaceRequestorUtils.h',
     'nsINIParser.h',
     'nsInterfaceRequestorAgg.h',
@@ -74,14 +82,13 @@ EXPORTS += [
     'nsISupportsImpl.h',
     'nsISupportsUtils.h',
     'nsIWeakReferenceUtils.h',
+    'nsMaybeWeakPtr.h',
     'nsMemory.h',
     'nsObjCExceptions.h',
     'nsQueryObject.h',
     'nsSystemInfo.h',
     'nsTraceRefcnt.h',
-    'nsTWeakRef.h',
     'nsVersionComparator.h',
-    'nsWeakPtr.h',
     'nsWeakReference.h',
 ]
 
@@ -89,7 +96,7 @@ if CONFIG['OS_ARCH'] == 'WINNT':
     EXPORTS += [
         'nsWindowsHelpers.h',
     ]
-    if CONFIG['CC_TYPE'] != 'gcc':
+    if CONFIG['CC_TYPE'] not in ('gcc', 'clang'):
         OS_LIBS += [
             'wscapi',
         ]
@@ -106,23 +113,34 @@ EXPORTS.mozilla += [
     'DeferredFinalize.h',
     'EnumeratedArrayCycleCollection.h',
     'ErrorNames.h',
+    'GkRustUtils.h',
     'HoldDropJSObjects.h',
     'IntentionalCrash.h',
     'JSObjectHolder.h',
     'Logging.h',
+    'MemoryInfo.h',
+    'MemoryMapping.h',
     'MemoryReportingProcess.h',
+    'MemoryTelemetry.h',
     'nsMemoryInfoDumper.h',
     'NSPRLogModulesParser.h',
     'OwningNonNull.h',
     'SizeOfState.h',
+    'StaticLocalPtr.h',
+    'StaticMonitor.h',
     'StaticMutex.h',
     'StaticPtr.h',
+    'TupleCycleCollection.h',
 ]
 
+SOURCES += [
 # nsDebugImpl isn't unified because we disable PGO so that NS_ABORT_OOM isn't
 # optimized away oddly.
-SOURCES += [
     'nsDebugImpl.cpp',
+# nsDumpUtils.cpp includes SpecialSystemDirectory.h which includes
+# nsLocalFileMac.h which upsets other files in this dir that have a different
+# idea about what `TextRange` means.
+    'nsDumpUtils.cpp',
 ]
 SOURCES['nsDebugImpl.cpp'].no_pgo = True
 
@@ -135,10 +153,13 @@ UNIFIED_SOURCES += [
     'DebuggerOnGCRunnable.cpp',
     'DeferredFinalize.cpp',
     'ErrorNames.cpp',
+    'GkRustUtils.cpp',
     'HoldDropJSObjects.cpp',
     'JSObjectHolder.cpp',
+    'LogCommandLineHandler.cpp',
     'Logging.cpp',
     'LogModulePrefWatcher.cpp',
+    'MemoryTelemetry.cpp',
     'nsClassInfoImpl.cpp',
     'nsCOMPtr.cpp',
     'nsConsoleMessage.cpp',
@@ -147,7 +168,6 @@ UNIFIED_SOURCES += [
     'nsCycleCollectionParticipant.cpp',
     'nsCycleCollector.cpp',
     'nsCycleCollectorTraceJSHelpers.cpp',
-    'nsDumpUtils.cpp',
     'nsErrorService.cpp',
     'nsGZFileWriter.cpp',
     'nsID.cpp',
@@ -170,6 +190,16 @@ UNIFIED_SOURCES += [
     'nsWeakReference.cpp',
 ]
 
+if CONFIG['OS_TARGET'] in ('Linux', 'Android'):
+    UNIFIED_SOURCES += [
+        'MemoryMapping.cpp',
+    ]
+
+if CONFIG['OS_TARGET'] == 'WINNT':
+    UNIFIED_SOURCES += [
+        'MemoryInfo.cpp',
+    ]
+
 GENERATED_FILES += [
     "error_list.rs",
     "ErrorList.h",
@@ -189,6 +219,21 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
         'nsCrashOnException.cpp',
     ]
 
+if CONFIG['COMPILE_ENVIRONMENT']:
+    GENERATED_FILES += [
+        'gk_rust_utils_ffi_generated.h',
+    ]
+
+    EXPORTS.mozilla += [
+        '!gk_rust_utils_ffi_generated.h',
+    ]
+
+    ffi_generated = GENERATED_FILES['gk_rust_utils_ffi_generated.h']
+    ffi_generated.script = '/layout/style/RunCbindgen.py:generate'
+    ffi_generated.inputs = [
+        '/xpcom/rust/gkrust_utils',
+    ]
+
 include('/ipc/chromium/chromium-config.mozbuild')
 
 FINAL_LIBRARY = 'xul'
@@ -196,8 +241,10 @@ FINAL_LIBRARY = 'xul'
 LOCAL_INCLUDES += [
     '../build',
     '/dom/base',
+    '/mfbt',
+    '/netwerk/base',
     '/xpcom/ds',
 ]
 
-if 'gtk' in CONFIG['MOZ_WIDGET_TOOLKIT']:
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
     CXXFLAGS += CONFIG['TK_CFLAGS']

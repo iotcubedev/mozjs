@@ -1,21 +1,30 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 //! Generic types for font stuff.
 
-use app_units::Au;
-use byteorder::{ReadBytesExt, BigEndian};
+use crate::parser::{Parse, ParserContext};
+use byteorder::{BigEndian, ReadBytesExt};
 use cssparser::Parser;
 use num_traits::One;
-use parser::{Parse, ParserContext};
 use std::fmt::{self, Write};
 use std::io::Cursor;
-use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
-use values::distance::{ComputeSquaredDistance, SquaredDistance};
+use style_traits::{CssWriter, ParseError};
+use style_traits::{StyleParseErrorKind, ToCss};
 
 /// https://drafts.csswg.org/css-fonts-4/#feature-tag-value
-#[derive(Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
 pub struct FeatureTagValue<Integer> {
     /// A four-character tag, packed into a u32 (one byte per character).
     pub tag: FontTag,
@@ -45,7 +54,20 @@ where
 /// Variation setting for a single feature, see:
 ///
 /// https://drafts.csswg.org/css-fonts-4/#font-variation-settings-def
-#[derive(Animate, Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToCss)]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
 pub struct VariationValue<Number> {
     /// A four-character tag, packed into a u32 (one byte per character).
     #[animation(constant)]
@@ -54,22 +76,20 @@ pub struct VariationValue<Number> {
     pub value: Number,
 }
 
-impl<Number> ComputeSquaredDistance for VariationValue<Number>
-where
-    Number: ComputeSquaredDistance,
-{
-    #[inline]
-    fn compute_squared_distance(&self, other: &Self) -> Result<SquaredDistance, ()> {
-        if self.tag != other.tag {
-            return Err(());
-        }
-        self.value.compute_squared_distance(&other.value)
-    }
-}
-
 /// A value both for font-variation-settings and font-feature-settings.
 #[css(comma)]
-#[derive(Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToCss)]
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+)]
 pub struct FontSettings<T>(#[css(if_empty = "normal", iterable)] pub Box<[T]>);
 
 impl<T> FontSettings<T> {
@@ -92,7 +112,9 @@ impl<T: Parse> Parse for FontSettings<T> {
         }
 
         Ok(FontSettings(
-            input.parse_comma_separated(|i| T::parse(context, i))?.into_boxed_slice()
+            input
+                .parse_comma_separated(|i| T::parse(context, i))?
+                .into_boxed_slice(),
         ))
     }
 }
@@ -103,7 +125,18 @@ impl<T: Parse> Parse for FontSettings<T> {
 ///   https://drafts.csswg.org/css-fonts-4/#font-variation-settings-def
 ///   https://drafts.csswg.org/css-fonts-4/#descdef-font-face-font-feature-settings
 ///
-#[derive(Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
 pub struct FontTag(pub u32);
 
 impl ToCss for FontTag {
@@ -111,7 +144,7 @@ impl ToCss for FontTag {
     where
         W: Write,
     {
-        use byteorder::{BigEndian, ByteOrder};
+        use byteorder::ByteOrder;
         use std::str;
 
         let mut raw = [0u8; 4];
@@ -130,7 +163,7 @@ impl Parse for FontTag {
 
         // allowed strings of length 4 containing chars: <U+20, U+7E>
         if tag.len() != 4 || tag.as_bytes().iter().any(|c| *c < b' ' || *c > b'~') {
-            return Err(location.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+            return Err(location.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
 
         let mut raw = Cursor::new(tag.as_bytes());
@@ -138,94 +171,32 @@ impl Parse for FontTag {
     }
 }
 
-#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
-#[derive(PartialEq, ToAnimatedValue, ToAnimatedZero, ToCss)]
-/// Additional information for keyword-derived font sizes.
-pub struct KeywordInfo<Length> {
-    /// The keyword used
-    pub kw: KeywordSize,
-    /// A factor to be multiplied by the computed size of the keyword
-    #[css(skip)]
-    pub factor: f32,
-    /// An additional Au offset to add to the kw*factor in the case of calcs
-    #[css(skip)]
-    pub offset: Length,
-}
 
-impl<L> KeywordInfo<L>
-where
-    Au: Into<L>,
-{
-    /// KeywordInfo value for font-size: medium
-    pub fn medium() -> Self {
-        KeywordSize::Medium.into()
-    }
-}
-
-impl<L> From<KeywordSize> for KeywordInfo<L>
-where
-    Au: Into<L>,
-{
-    fn from(x: KeywordSize) -> Self {
-        KeywordInfo {
-            kw: x,
-            factor: 1.,
-            offset: Au(0).into(),
-        }
-    }
-}
-
-/// CSS font keywords
-#[derive(Animate, Clone, ComputeSquaredDistance, Copy, Debug, MallocSizeOf)]
-#[derive(PartialEq, ToAnimatedValue, ToAnimatedZero)]
+/// A generic value for the `font-style` property.
+///
+/// https://drafts.csswg.org/css-fonts-4/#font-style-prop
 #[allow(missing_docs)]
-pub enum KeywordSize {
-    XXSmall,
-    XSmall,
-    Small,
-    Medium,
-    Large,
-    XLarge,
-    XXLarge,
-    // This is not a real font keyword and will not parse
-    // HTML font-size 7 corresponds to this value
-    XXXLarge,
-}
-
-impl KeywordSize {
-    /// Convert to an HTML <font size> value
-    #[inline]
-    pub fn html_size(self) -> u8 {
-        self as u8
-    }
-}
-
-impl Default for KeywordSize {
-    fn default() -> Self {
-        KeywordSize::Medium
-    }
-}
-
-impl ToCss for KeywordSize {
-    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
-    where
-        W: Write,
-    {
-        dest.write_str(match *self {
-            KeywordSize::XXSmall => "xx-small",
-            KeywordSize::XSmall => "x-small",
-            KeywordSize::Small => "small",
-            KeywordSize::Medium => "medium",
-            KeywordSize::Large => "large",
-            KeywordSize::XLarge => "x-large",
-            KeywordSize::XXLarge => "xx-large",
-            KeywordSize::XXXLarge => {
-                debug_assert!(
-                    false,
-                    "We should never serialize specified values set via HTML presentation attributes"
-                );
-                "-servo-xxx-large"
-            },
-        })
-    }
+#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
+#[derive(
+    Animate,
+    Clone,
+    ComputeSquaredDistance,
+    Copy,
+    Debug,
+    Hash,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToAnimatedValue,
+    ToAnimatedZero,
+    ToResolvedValue,
+    ToShmem,
+)]
+pub enum FontStyle<Angle> {
+    #[animation(error)]
+    Normal,
+    #[animation(error)]
+    Italic,
+    #[value_info(starts_with_keyword)]
+    Oblique(Angle),
 }

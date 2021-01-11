@@ -6,7 +6,6 @@ info: |
     The join function is intentionally generic.
     It does not require that its this value be an Array object
 esid: sec-array.prototype.join
-es5id: 15.4.4.5_A2_T2
 description: If ToUint32(length) is zero, return the empty string
 ---*/
 
@@ -43,7 +42,7 @@ if (obj.join() !== "") {
 if (obj.length !== -0) {
   $ERROR('#8: var obj = {}; obj.length = -0; obj.join = Array.prototype.join; obj.join(); obj.length === 0. Actual: ' + (obj.length));
 } else {
-  if (1/obj.length !== Number.NEGATIVE_INFINITY) {
+  if (1 / obj.length !== Number.NEGATIVE_INFINITY) {
     $ERROR('#8: var obj = {}; obj.length = -0; obj.join = Array.prototype.join; obj.join(); obj.length === -0. Actual: ' + (obj.length));
   }
 }

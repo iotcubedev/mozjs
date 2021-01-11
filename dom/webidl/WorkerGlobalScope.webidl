@@ -26,6 +26,10 @@ interface WorkerGlobalScope : EventTarget {
 
   attribute EventHandler onoffline;
   attribute EventHandler ononline;
+  [Pref="dom.promise_rejection_events.enabled"]
+  attribute EventHandler onrejectionhandled;
+  [Pref="dom.promise_rejection_events.enabled"]
+  attribute EventHandler onunhandledrejection;
   // also has additional members in a partial interface
 };
 
@@ -40,8 +44,8 @@ partial interface WorkerGlobalScope {
 
   void dump(optional DOMString str);
 
-  // XXXbz no spec for this yet, because the webperf WG is a bit dysfunctional
-  [Constant, Cached]
+  // https://w3c.github.io/hr-time/#the-performance-attribute
+  [Constant, Cached, Replaceable, BinaryName="getPerformance"]
   readonly attribute Performance performance;
 
   [Func="WorkerGlobalScope::IsInAutomation", Throws]

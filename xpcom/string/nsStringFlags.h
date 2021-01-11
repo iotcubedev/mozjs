@@ -18,8 +18,7 @@ namespace detail {
 // strings.
 
 // bits for mDataFlags
-enum class StringDataFlags : uint16_t
-{
+enum class StringDataFlags : uint16_t {
   // Some terminology:
   //
   //   "dependent buffer"    A dependent buffer is one that the string class
@@ -27,8 +26,8 @@ enum class StringDataFlags : uint16_t
   //                         external code to ensure the lifetime of the
   //                         dependent buffer.
   //
-  //   "shared buffer"       A shared buffer is one that the string class
-  //                         allocates.  When it allocates a shared string
+  //   "refcounted buffer"   A refcounted buffer is one that the string class
+  //                         allocates.  When it allocates a refcounted string
   //                         buffer, it allocates some additional space at
   //                         the beginning of the buffer for additional
   //                         fields, including a reference count and a
@@ -40,37 +39,47 @@ enum class StringDataFlags : uint16_t
   //
   // Some comments about the string data flags:
   //
-  //   SHARED, OWNED, and INLINE are all mutually exlusive.  They
+  //   REFCOUNTED, OWNED, and INLINE are all mutually exlusive.  They
   //   indicate the allocation type of mData.  If none of these flags
   //   are set, then the string buffer is dependent.
   //
-  //   SHARED, OWNED, or INLINE imply TERMINATED.  This is because
+  //   REFCOUNTED, OWNED, or INLINE imply TERMINATED.  This is because
   //   the string classes always allocate null-terminated buffers, and
   //   non-terminated substrings are always dependent.
   //
   //   VOIDED implies TERMINATED, and moreover it implies that mData
   //   points to char_traits::sEmptyBuffer.  Therefore, VOIDED is
-  //   mutually exclusive with SHARED, OWNED, and INLINE.
+  //   mutually exclusive with REFCOUNTED, OWNED, and INLINE.
 
-  TERMINATED   = 1 << 0,  // IsTerminated returns true
-  VOIDED       = 1 << 1,  // IsVoid returns true
-  SHARED       = 1 << 2,  // mData points to a heap-allocated, shared buffer
-  OWNED        = 1 << 3,  // mData points to a heap-allocated, raw buffer
-  INLINE       = 1 << 4,  // mData points to a writable, inline buffer
-  LITERAL      = 1 << 5   // mData points to a string literal; DataFlags::TERMINATED will also be set
+  // IsTerminated returns true
+  TERMINATED = 1 << 0,
+
+  // IsVoid returns true
+  VOIDED = 1 << 1,
+
+  // mData points to a heap-allocated, shareable, refcounted buffer
+  REFCOUNTED = 1 << 2,
+
+  // mData points to a heap-allocated, raw buffer
+  OWNED = 1 << 3,
+
+  // mData points to a writable, inline buffer
+  INLINE = 1 << 4,
+
+  // mData points to a string literal; DataFlags::TERMINATED will also be set
+  LITERAL = 1 << 5
 };
 
 // bits for mClassFlags
-enum class StringClassFlags : uint16_t
-{
-  INLINE          = 1 << 0, // |this|'s buffer is inline
+enum class StringClassFlags : uint16_t {
+  INLINE = 1 << 0,          // |this|'s buffer is inline
   NULL_TERMINATED = 1 << 1  // |this| requires its buffer is null-terminated
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(StringDataFlags)
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(StringClassFlags)
 
-} // namespace detail
-} // namespace mozilla
+}  // namespace detail
+}  // namespace mozilla
 
 #endif

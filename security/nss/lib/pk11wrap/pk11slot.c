@@ -607,12 +607,32 @@ PK11_FindSlotsByNames(const char *dllName, const char *slotName,
     return slotList;
 }
 
-PK11SlotInfo *
-PK11_FindSlotByName(const char *name)
+typedef PRBool (*PK11SlotMatchFunc)(PK11SlotInfo *slot, const void *arg);
+
+static PRBool
+pk11_MatchSlotByTokenName(PK11SlotInfo *slot, const void *arg)
 {
+    return PORT_Strcmp(slot->token_name, arg) == 0;
+}
+
+static PRBool
+pk11_MatchSlotBySerial(PK11SlotInfo *slot, const void *arg)
+{
+    return PORT_Memcmp(slot->serial, arg, sizeof(slot->serial)) == 0;
+}
+
+static PRBool
+pk11_MatchSlotByTokenURI(PK11SlotInfo *slot, const void *arg)
+{
+    return pk11_MatchUriTokenInfo(slot, (PK11URI *)arg);
+}
+
+static PK11SlotInfo *
+pk11_FindSlot(const void *arg, PK11SlotMatchFunc func)
+{
+    SECMODListLock *moduleLock = SECMOD_GetDefaultModuleListLock();
     SECMODModuleList *mlp;
     SECMODModuleList *modules;
-    SECMODListLock *moduleLock = SECMOD_GetDefaultModuleListLock();
     int i;
     PK11SlotInfo *slot = NULL;
 
@@ -620,10 +640,6 @@ PK11_FindSlotByName(const char *name)
         PORT_SetError(SEC_ERROR_NOT_INITIALIZED);
         return slot;
     }
-    if ((name == NULL) || (*name == 0)) {
-        return PK11_GetInternalKeySlot();
-    }
-
     /* work through all the slots */
     SECMOD_GetReadLock(moduleLock);
     modules = SECMOD_GetDefaultModuleList();
@@ -631,7 +647,7 @@ PK11_FindSlotByName(const char *name)
         for (i = 0; i < mlp->module->slotCount; i++) {
             PK11SlotInfo *tmpSlot = mlp->module->slots[i];
             if (PK11_IsPresent(tmpSlot)) {
-                if (PORT_Strcmp(tmpSlot->token_name, name) == 0) {
+                if (func(tmpSlot, arg)) {
                     slot = PK11_ReferenceSlot(tmpSlot);
                     break;
                 }
@@ -649,43 +665,41 @@ PK11_FindSlotByName(const char *name)
     return slot;
 }
 
+static PK11SlotInfo *
+pk11_FindSlotByTokenURI(const char *uriString)
+{
+    PK11SlotInfo *slot = NULL;
+    PK11URI *uri;
+
+    uri = PK11URI_ParseURI(uriString);
+    if (!uri) {
+        PORT_SetError(SEC_ERROR_INVALID_ARGS);
+        return slot;
+    }
+
+    slot = pk11_FindSlot(uri, pk11_MatchSlotByTokenURI);
+    PK11URI_DestroyURI(uri);
+    return slot;
+}
+
+PK11SlotInfo *
+PK11_FindSlotByName(const char *name)
+{
+    if ((name == NULL) || (*name == 0)) {
+        return PK11_GetInternalKeySlot();
+    }
+
+    if (!PORT_Strncasecmp(name, "pkcs11:", strlen("pkcs11:"))) {
+        return pk11_FindSlotByTokenURI(name);
+    }
+
+    return pk11_FindSlot(name, pk11_MatchSlotByTokenName);
+}
+
 PK11SlotInfo *
 PK11_FindSlotBySerial(char *serial)
 {
-    SECMODModuleList *mlp;
-    SECMODModuleList *modules;
-    SECMODListLock *moduleLock = SECMOD_GetDefaultModuleListLock();
-    int i;
-    PK11SlotInfo *slot = NULL;
-
-    if (!moduleLock) {
-        PORT_SetError(SEC_ERROR_NOT_INITIALIZED);
-        return slot;
-    }
-    /* work through all the slots */
-    SECMOD_GetReadLock(moduleLock);
-    modules = SECMOD_GetDefaultModuleList();
-    for (mlp = modules; mlp != NULL; mlp = mlp->next) {
-        for (i = 0; i < mlp->module->slotCount; i++) {
-            PK11SlotInfo *tmpSlot = mlp->module->slots[i];
-            if (PK11_IsPresent(tmpSlot)) {
-                if (PORT_Memcmp(tmpSlot->serial, serial,
-                                sizeof(tmpSlot->serial)) == 0) {
-                    slot = PK11_ReferenceSlot(tmpSlot);
-                    break;
-                }
-            }
-        }
-        if (slot != NULL)
-            break;
-    }
-    SECMOD_ReleaseReadLock(moduleLock);
-
-    if (slot == NULL) {
-        PORT_SetError(SEC_ERROR_NO_TOKEN);
-    }
-
-    return slot;
+    return pk11_FindSlot(serial, pk11_MatchSlotBySerial);
 }
 
 /*
@@ -1425,6 +1439,11 @@ PK11_InitSlot(SECMODModule *mod, CK_SLOT_ID slotID, PK11SlotInfo *slot)
     slot->slotID = slotID;
     slot->isThreadSafe = mod->isThreadSafe;
     slot->hasRSAInfo = PR_FALSE;
+    slot->module = mod; /* NOTE: we don't make a reference here because
+                         * modules have references to their slots. This
+                         * works because modules keep implicit references
+                         * from their slots, and won't unload and disappear
+                         * until all their slots have been freed */
 
     if (PK11_GETTAB(slot)->C_GetSlotInfo(slotID, &slotInfo) != CKR_OK) {
         slot->disabled = PR_TRUE;
@@ -1434,11 +1453,6 @@ PK11_InitSlot(SECMODModule *mod, CK_SLOT_ID slotID, PK11SlotInfo *slot)
 
     /* test to make sure claimed mechanism work */
     slot->needTest = mod->internal ? PR_FALSE : PR_TRUE;
-    slot->module = mod; /* NOTE: we don't make a reference here because
-                         * modules have references to their slots. This
-                         * works because modules keep implicit references
-                         * from their slots, and won't unload and disappear
-                         * until all their slots have been freed */
     (void)PK11_MakeString(NULL, slot->slot_name,
                           (char *)slotInfo.slotDescription, sizeof(slotInfo.slotDescription));
     slot->isHW = (PRBool)((slotInfo.flags & CKF_HW_SLOT) == CKF_HW_SLOT);

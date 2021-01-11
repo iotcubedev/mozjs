@@ -5,12 +5,13 @@
  *
  * The origin of this IDL file is
  * https://w3c.github.io/FileAPI/#file
+ * https://wicg.github.io/entries-api
  */
 
 interface nsIFile;
 
 [Constructor(sequence<BlobPart> fileBits,
-             USVString fileName, optional FilePropertyBag options),
+             USVString fileName, optional FilePropertyBag options = {}),
  Exposed=(Window,Worker)]
 interface File : Blob {
   readonly attribute DOMString name;
@@ -19,8 +20,7 @@ interface File : Blob {
   readonly attribute long long lastModified;
 };
 
-dictionary FilePropertyBag {
-  DOMString type = "";
+dictionary FilePropertyBag : BlobPropertyBag {
   long long lastModified;
 };
 
@@ -29,14 +29,14 @@ dictionary ChromeFilePropertyBag : FilePropertyBag {
   boolean existenceCheck = true;
 };
 
+// https://wicg.github.io/entries-api
+partial interface File {
+  [BinaryName="relativePath", Pref="dom.webkitBlink.dirPicker.enabled"]
+  readonly attribute USVString webkitRelativePath;
+};
+
 // Mozilla extensions
 partial interface File {
-  [GetterThrows, Deprecated="FileLastModifiedDate"]
-  readonly attribute Date lastModifiedDate;
-
-  [BinaryName="relativePath", Func="mozilla::dom::DOMPrefs::WebkitBlinkDirectoryPickerEnabled"]
-  readonly attribute USVString webkitRelativePath;
-
   [GetterThrows, ChromeOnly, NeedsCallerType]
   readonly attribute DOMString mozFullPath;
 };
@@ -50,9 +50,9 @@ partial interface File {
 partial interface File {
   [ChromeOnly, Throws, NeedsCallerType]
   static Promise<File> createFromNsIFile(nsIFile file,
-                                         optional ChromeFilePropertyBag options);
+                                         optional ChromeFilePropertyBag options = {});
 
   [ChromeOnly, Throws, NeedsCallerType]
   static Promise<File> createFromFileName(USVString fileName,
-                                          optional ChromeFilePropertyBag options);
+                                          optional ChromeFilePropertyBag options = {});
 };

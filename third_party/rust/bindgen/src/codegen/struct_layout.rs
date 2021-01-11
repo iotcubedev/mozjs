@@ -6,9 +6,8 @@ use ir::comp::CompInfo;
 use ir::context::BindgenContext;
 use ir::layout::Layout;
 use ir::ty::{Type, TypeKind};
-use quote;
+use proc_macro2::{self, Ident, Span};
 use std::cmp;
-use std::mem;
 
 /// Trace the layout of struct.
 #[derive(Debug)]
@@ -86,9 +85,9 @@ impl<'a> StructLayoutTracker<'a> {
         name: &'a str,
     ) -> Self {
         StructLayoutTracker {
-            name: name,
-            ctx: ctx,
-            comp: comp,
+            name,
+            ctx,
+            comp,
             is_packed: comp.is_packed(ctx, &ty.layout(ctx)),
             latest_offset: 0,
             padding_count: 0,
@@ -101,7 +100,7 @@ impl<'a> StructLayoutTracker<'a> {
     pub fn saw_vtable(&mut self) {
         debug!("saw vtable for {}", self.name);
 
-        let ptr_size = mem::size_of::<*mut ()>();
+        let ptr_size = self.ctx.target_pointer_size();
         self.latest_offset += ptr_size;
         self.latest_field_layout = Some(Layout::new(ptr_size, ptr_size));
         self.max_field_align = ptr_size;
@@ -154,11 +153,8 @@ impl<'a> StructLayoutTracker<'a> {
         field_name: &str,
         field_ty: &Type,
         field_offset: Option<usize>,
-    ) -> Option<quote::Tokens> {
-        let mut field_layout = match field_ty.layout(self.ctx) {
-            Some(l) => l,
-            None => return None,
-        };
+    ) -> Option<proc_macro2::TokenStream> {
+        let mut field_layout = field_ty.layout(self.ctx)?;
 
         if let TypeKind::Array(inner, len) =
             *field_ty.canonical_type(self.ctx).kind()
@@ -168,15 +164,13 @@ impl<'a> StructLayoutTracker<'a> {
             // can support.
             //
             // This means that the structs in the array are super-unsafe to
-            // access, since they won't be properly aligned, but *shrug*.
-            if let Some(layout) = self.ctx.resolve_type(inner).layout(
-                self.ctx,
-            )
-            {
-                if layout.align > mem::size_of::<*mut ()>() {
-                    field_layout.size = align_to(layout.size, layout.align) *
-                        len;
-                    field_layout.align = mem::size_of::<*mut ()>();
+            // access, since they won't be properly aligned, but there's not too
+            // much we can do about it.
+            if let Some(layout) = self.ctx.resolve_type(inner).layout(self.ctx) {
+                if layout.align > self.ctx.target_pointer_size() {
+                    field_layout.size =
+                        align_to(layout.size, layout.align) * len;
+                    field_layout.align = self.ctx.target_pointer_size();
                 }
             }
         }
@@ -196,7 +190,7 @@ impl<'a> StructLayoutTracker<'a> {
 
             // Otherwise the padding is useless.
             let need_padding = padding_bytes >= field_layout.align ||
-                field_layout.align > mem::size_of::<*mut ()>();
+                field_layout.align > self.ctx.target_pointer_size();
 
             self.latest_offset += padding_bytes;
 
@@ -218,7 +212,7 @@ impl<'a> StructLayoutTracker<'a> {
             if need_padding && padding_bytes != 0 {
                 Some(Layout::new(
                     padding_bytes,
-                    cmp::min(field_layout.align, mem::size_of::<*mut ()>()),
+                    cmp::min(field_layout.align, self.ctx.target_pointer_size())
                 ))
             } else {
                 None
@@ -241,7 +235,7 @@ impl<'a> StructLayoutTracker<'a> {
         padding_layout.map(|layout| self.padding_field(layout))
     }
 
-    pub fn pad_struct(&mut self, layout: Layout) -> Option<quote::Tokens> {
+    pub fn pad_struct(&mut self, layout: Layout) -> Option<proc_macro2::TokenStream> {
         debug!(
             "pad_struct:\n\tself = {:#?}\n\tlayout = {:#?}",
             self,
@@ -270,15 +264,15 @@ impl<'a> StructLayoutTracker<'a> {
                  (self.last_field_was_bitfield &&
                       padding_bytes >=
                           self.latest_field_layout.unwrap().align) ||
-                 layout.align > mem::size_of::<*mut ()>())
+                 layout.align > self.ctx.target_pointer_size())
         {
             let layout = if self.is_packed {
                 Layout::new(padding_bytes, 1)
             } else if self.last_field_was_bitfield ||
-                       layout.align > mem::size_of::<*mut ()>()
+                       layout.align > self.ctx.target_pointer_size()
             {
                 // We've already given up on alignment here.
-                Layout::for_size(padding_bytes)
+                Layout::for_size(self.ctx, padding_bytes)
             } else {
                 Layout::new(padding_bytes, layout.align)
             };
@@ -292,21 +286,36 @@ impl<'a> StructLayoutTracker<'a> {
     }
 
     pub fn requires_explicit_align(&self, layout: Layout) -> bool {
-        self.max_field_align < layout.align &&
-            layout.align <= mem::size_of::<*mut ()>()
+        let repr_align = self.ctx.options().rust_features().repr_align;
+
+        // Always force explicit repr(align) for stuff more than 16-byte aligned
+        // to work-around https://github.com/rust-lang/rust/issues/54341.
+        //
+        // Worst-case this just generates redundant alignment attributes.
+        if repr_align && self.max_field_align >= 16 {
+            return true;
+        }
+
+        if self.max_field_align >= layout.align {
+            return false;
+        }
+
+        // We can only generate up-to a word of alignment unless we support
+        // repr(align).
+        repr_align || layout.align <= self.ctx.target_pointer_size()
     }
 
     fn padding_bytes(&self, layout: Layout) -> usize {
         align_to(self.latest_offset, layout.align) - self.latest_offset
     }
 
-    fn padding_field(&mut self, layout: Layout) -> quote::Tokens {
-        let ty = helpers::blob(layout);
+    fn padding_field(&mut self, layout: Layout) -> proc_macro2::TokenStream {
+        let ty = helpers::blob(self.ctx, layout);
         let padding_count = self.padding_count;
 
         self.padding_count += 1;
 
-        let padding_field_name = quote::Ident::new(format!("__bindgen_padding_{}", padding_count));
+        let padding_field_name = Ident::new(&format!("__bindgen_padding_{}", padding_count), Span::call_site());
 
         self.max_field_align = cmp::max(self.max_field_align, layout.align);
 

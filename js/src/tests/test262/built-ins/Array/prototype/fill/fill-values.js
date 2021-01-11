@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-array.prototype.fill
-es6id: 22.1.3.6
 description: >
   Fills all the elements with `value` from a defaul start and index.
 info: |
@@ -28,8 +27,7 @@ includes: [compareArray.js]
 assert(compareArray([].fill(8), []));
 
 assert(compareArray(
-  [0, 0].fill(),
-  [undefined, undefined]
+  [0, 0].fill(), [undefined, undefined]
 ));
 
 assert(

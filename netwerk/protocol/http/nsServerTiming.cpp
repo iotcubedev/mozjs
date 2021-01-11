@@ -9,22 +9,19 @@
 NS_IMPL_ISUPPORTS(nsServerTiming, nsIServerTiming)
 
 NS_IMETHODIMP
-nsServerTiming::GetName(nsACString &aName)
-{
+nsServerTiming::GetName(nsACString& aName) {
   aName.Assign(mName);
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsServerTiming::GetDuration(double *aDuration)
-{
+nsServerTiming::GetDuration(double* aDuration) {
   *aDuration = mDuration;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsServerTiming::GetDescription(nsACString &aDescription)
-{
+nsServerTiming::GetDescription(nsACString& aDescription) {
   aDescription.Assign(mDescription);
   return NS_OK;
 }
@@ -32,22 +29,19 @@ nsServerTiming::GetDescription(nsACString &aDescription)
 namespace mozilla {
 namespace net {
 
-static double
-ParseDouble(const nsACString& aString)
-{
+static double ParseDouble(const nsACString& aString) {
   nsresult rv;
   double val = PromiseFlatCString(aString).ToDouble(&rv);
   return NS_FAILED(rv) ? 0.0f : val;
 }
 
-void
-ServerTimingParser::Parse()
-{
+void ServerTimingParser::Parse() {
   // https://w3c.github.io/server-timing/#the-server-timing-header-field
   // Server-Timing             = #server-timing-metric
-  // server-timing-metric      = metric-name *( OWS ";" OWS server-timing-param )
-  // metric-name               = token
-  // server-timing-param       = server-timing-param-name OWS "=" OWS server-timing-param-value
+  // server-timing-metric      = metric-name *( OWS ";" OWS server-timing-param
+  // ) metric-name               = token server-timing-param       =
+  // server-timing-param-name OWS "=" OWS
+  //                             server-timing-param-value
   // server-timing-param-name  = token
   // server-timing-param-value = token / quoted-string
 
@@ -72,22 +66,29 @@ ServerTimingParser::Parse()
     for (uint32_t pairIndex = 1;
          pairIndex < parsedHeader.mValues[index].mValues.Length();
          ++pairIndex) {
-      nsDependentCSubstring &currentName =
-        parsedHeader.mValues[index].mValues[pairIndex].mName;
-      nsDependentCSubstring &currentValue =
-        parsedHeader.mValues[index].mValues[pairIndex].mValue;
+      nsDependentCSubstring& currentName =
+          parsedHeader.mValues[index].mValues[pairIndex].mName;
+      nsDependentCSubstring& currentValue =
+          parsedHeader.mValues[index].mValues[pairIndex].mValue;
 
       // We should only take the value from the first
       // occurrence of server-timing-param-name ("dur" and "desc").
-      if (currentName.LowerCaseEqualsASCII("dur") &&
-          currentValue.BeginReading() &&
-          !foundDuration) {
-        timingHeader->SetDuration(ParseDouble(currentValue));
+      // This is true whether or not the value makes any sense (or, indeed, if
+      // there even is a value).
+      if (currentName.LowerCaseEqualsASCII("dur") && !foundDuration) {
+        if (currentValue.BeginReading()) {
+          timingHeader->SetDuration(ParseDouble(currentValue));
+        } else {
+          timingHeader->SetDuration(0.0);
+        }
         foundDuration = true;
       } else if (currentName.LowerCaseEqualsASCII("desc") &&
-                 !currentValue.IsEmpty() &&
                  !foundDescription) {
-        timingHeader->SetDescription(currentValue);
+        if (!currentValue.IsEmpty()) {
+          timingHeader->SetDescription(currentValue);
+        } else {
+          timingHeader->SetDescription(EmptyCString());
+        }
         foundDescription = true;
       }
 
@@ -99,10 +100,9 @@ ServerTimingParser::Parse()
 }
 
 nsTArray<nsCOMPtr<nsIServerTiming>>&&
-ServerTimingParser::TakeServerTimingHeaders()
-{
-  return Move(mServerTimingHeaders);
+ServerTimingParser::TakeServerTimingHeaders() {
+  return std::move(mServerTimingHeaders);
 }
 
-} // namespace net
-} // namespace mozilla
+}  // namespace net
+}  // namespace mozilla

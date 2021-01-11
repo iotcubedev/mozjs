@@ -6,12 +6,11 @@ info: |
     If start is negative, use max(start + length, 0).
     If deleteCount is negative, use 0
 esid: sec-array.prototype.splice
-es5id: 15.4.4.12_A1.2_T2
 description: -length < start = deleteCount < 0, itemCount = 0
 ---*/
 
-var x = [0,1];
-var arr = x.splice(-1,-1);
+var x = [0, 1];
+var arr = x.splice(-1, -1);
 
 //CHECK#0
 arr.getClass = Object.prototype.toString;

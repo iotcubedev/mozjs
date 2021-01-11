@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use glue;
 use jsapi::root::*;
 use rust::GCMethods;
@@ -51,7 +55,7 @@ impl<T: GCMethods + Copy> Heap<T> {
             let ptr = self.ptr.get();
             let prev = *ptr;
             *ptr = v;
-            T::post_barrier(ptr, prev, v);
+            T::write_barriers(ptr, prev, v);
         }
     }
 
@@ -114,7 +118,7 @@ impl<T: GCMethods + Copy> Drop for Heap<T> {
     fn drop(&mut self) {
         unsafe {
             let prev = self.ptr.get();
-            T::post_barrier(prev, *prev, T::initial());
+            T::write_barriers(prev, *prev, T::initial());
         }
     }
 }

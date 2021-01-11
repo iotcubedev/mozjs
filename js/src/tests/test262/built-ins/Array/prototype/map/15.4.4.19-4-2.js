@@ -3,15 +3,14 @@
 
 /*---
 esid: sec-array.prototype.map
-es5id: 15.4.4.19-4-2
 description: >
     Array.prototype.map throws ReferenceError if callbackfn is
     unreferenced
 ---*/
 
-  var arr = new Array(10);
+var arr = new Array(10);
 assert.throws(ReferenceError, function() {
-    arr.map(foo);
+  arr.map(foo);
 });
 
 reportCompare(0, 0);

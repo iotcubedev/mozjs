@@ -23,93 +23,72 @@ namespace gfx {
 
 #define CLONE_INTO(Type) new (aList->Append<Type>()) Type
 
-class StrokeOptionsCommand : public DrawingCommand
-{
-public:
-  StrokeOptionsCommand(CommandType aType,
-                       const StrokeOptions& aStrokeOptions)
-    : DrawingCommand(aType)
-    , mStrokeOptions(aStrokeOptions)
-  {
+class StrokeOptionsCommand : public DrawingCommand {
+ public:
+  StrokeOptionsCommand(const StrokeOptions& aStrokeOptions)
+      : mStrokeOptions(aStrokeOptions) {
     // Stroke Options dashes are owned by the caller.
     // Have to copy them here so they don't get freed
     // between now and replay.
     if (aStrokeOptions.mDashLength) {
       mDashes.resize(aStrokeOptions.mDashLength);
       mStrokeOptions.mDashPattern = &mDashes.front();
-      PodCopy(&mDashes.front(), aStrokeOptions.mDashPattern, mStrokeOptions.mDashLength);
+      PodCopy(&mDashes.front(), aStrokeOptions.mDashPattern,
+              mStrokeOptions.mDashLength);
     }
   }
 
-  virtual ~StrokeOptionsCommand() {}
+  virtual ~StrokeOptionsCommand() = default;
 
-protected:
+ protected:
   StrokeOptions mStrokeOptions;
   std::vector<Float> mDashes;
 };
 
-class StoredPattern
-{
-public:
-  explicit StoredPattern(const Pattern& aPattern)
-  {
-    Assign(aPattern);
-  }
+class StoredPattern {
+ public:
+  explicit StoredPattern(const Pattern& aPattern) { Assign(aPattern); }
 
-  void Assign(const Pattern& aPattern)
-  {
+  void Assign(const Pattern& aPattern) {
     switch (aPattern.GetType()) {
-    case PatternType::COLOR:
-      new (mColor)ColorPattern(*static_cast<const ColorPattern*>(&aPattern));
-      return;
-    case PatternType::SURFACE:
-    {
-      SurfacePattern* surfPat = new (mSurface)SurfacePattern(*static_cast<const SurfacePattern*>(&aPattern));
-      surfPat->mSurface->GuaranteePersistance();
-      return;
+      case PatternType::COLOR:
+        new (mColor) ColorPattern(*static_cast<const ColorPattern*>(&aPattern));
+        return;
+      case PatternType::SURFACE: {
+        SurfacePattern* surfPat = new (mSurface)
+            SurfacePattern(*static_cast<const SurfacePattern*>(&aPattern));
+        surfPat->mSurface->GuaranteePersistance();
+        return;
+      }
+      case PatternType::LINEAR_GRADIENT:
+        new (mLinear) LinearGradientPattern(
+            *static_cast<const LinearGradientPattern*>(&aPattern));
+        return;
+      case PatternType::RADIAL_GRADIENT:
+        new (mRadial) RadialGradientPattern(
+            *static_cast<const RadialGradientPattern*>(&aPattern));
+        return;
     }
-    case PatternType::LINEAR_GRADIENT:
-      new (mLinear)LinearGradientPattern(*static_cast<const LinearGradientPattern*>(&aPattern));
-      return;
-    case PatternType::RADIAL_GRADIENT:
-      new (mRadial)RadialGradientPattern(*static_cast<const RadialGradientPattern*>(&aPattern));
-      return;
-    }
   }
 
-  ~StoredPattern()
-  {
-    reinterpret_cast<Pattern*>(mPattern)->~Pattern();
-  }
+  ~StoredPattern() { reinterpret_cast<Pattern*>(mPattern)->~Pattern(); }
 
-  Pattern* Get()
-  {
-    return reinterpret_cast<Pattern*>(mPattern);
-  }
+  Pattern* Get() { return reinterpret_cast<Pattern*>(mPattern); }
 
-  const Pattern* Get() const
-  {
+  const Pattern* Get() const {
     return reinterpret_cast<const Pattern*>(mPattern);
   }
 
-  operator Pattern&()
-  {
-    return *reinterpret_cast<Pattern*>(mPattern);
-  }
+  operator Pattern&() { return *reinterpret_cast<Pattern*>(mPattern); }
 
-  operator const Pattern&() const
-  {
+  operator const Pattern&() const {
     return *reinterpret_cast<const Pattern*>(mPattern);
   }
 
-  StoredPattern(const StoredPattern& aPattern)
-  {
-    Assign(aPattern);
-  }
+  StoredPattern(const StoredPattern& aPattern) { Assign(aPattern); }
 
-private:
-  StoredPattern operator=(const StoredPattern& aOther)
-  {
+ private:
+  StoredPattern operator=(const StoredPattern& aOther) {
     // Block this so that we notice if someone's doing excessive assigning.
     return *this;
   }
@@ -123,31 +102,30 @@ private:
   };
 };
 
-class DrawSurfaceCommand : public DrawingCommand
-{
-public:
-  DrawSurfaceCommand(SourceSurface *aSurface, const Rect& aDest,
-                     const Rect& aSource, const DrawSurfaceOptions& aSurfOptions,
+class DrawSurfaceCommand : public DrawingCommand {
+ public:
+  DrawSurfaceCommand(SourceSurface* aSurface, const Rect& aDest,
+                     const Rect& aSource,
+                     const DrawSurfaceOptions& aSurfOptions,
                      const DrawOptions& aOptions)
-    : DrawingCommand(DrawSurfaceCommand::Type)
-    , mSurface(aSurface), mDest(aDest)
-    , mSource(aSource), mSurfOptions(aSurfOptions)
-    , mOptions(aOptions)
-  {
+      : mSurface(aSurface),
+        mDest(aDest),
+        mSource(aSource),
+        mSurfOptions(aSurfOptions),
+        mOptions(aOptions) {}
+
+  CommandType GetType() const override { return DrawSurfaceCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(DrawSurfaceCommand)
+    (mSurface, mDest, mSource, mSurfOptions, mOptions);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
-    CLONE_INTO(DrawSurfaceCommand)(mSurface, mDest, mSource, mSurfOptions, mOptions);
-  }
-
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->DrawSurface(mSurface, mDest, mSource, mSurfOptions, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[DrawSurface surf=" << mSurface;
     aStream << " dest=" << mDest;
     aStream << " src=" << mSource;
@@ -159,7 +137,7 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::DRAWSURFACE;
 
-private:
+ private:
   RefPtr<SourceSurface> mSurface;
   Rect mDest;
   Rect mSource;
@@ -167,37 +145,33 @@ private:
   DrawOptions mOptions;
 };
 
-class DrawSurfaceWithShadowCommand : public DrawingCommand
-{
-public:
-  DrawSurfaceWithShadowCommand(SourceSurface *aSurface,
-                               const Point &aDest,
-                               const Color &aColor,
-                               const Point &aOffset,
-                               Float aSigma,
-                               CompositionOp aOperator)
-    : DrawingCommand(DrawSurfaceWithShadowCommand::Type),
-      mSurface(aSurface),
-      mDest(aDest),
-      mColor(aColor),
-      mOffset(aOffset),
-      mSigma(aSigma),
-      mOperator(aOperator)
-  {
+class DrawSurfaceWithShadowCommand : public DrawingCommand {
+ public:
+  DrawSurfaceWithShadowCommand(SourceSurface* aSurface, const Point& aDest,
+                               const Color& aColor, const Point& aOffset,
+                               Float aSigma, CompositionOp aOperator)
+      : mSurface(aSurface),
+        mDest(aDest),
+        mColor(aColor),
+        mOffset(aOffset),
+        mSigma(aSigma),
+        mOperator(aOperator) {}
+
+  CommandType GetType() const override {
+    return DrawSurfaceWithShadowCommand::Type;
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
-    CLONE_INTO(DrawSurfaceWithShadowCommand)(mSurface, mDest, mColor, mOffset, mSigma, mOperator);
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(DrawSurfaceWithShadowCommand)
+    (mSurface, mDest, mColor, mOffset, mSigma, mOperator);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
-    aDT->DrawSurfaceWithShadow(mSurface, mDest, mColor, mOffset, mSigma, mOperator);
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
+    aDT->DrawSurfaceWithShadow(mSurface, mDest, mColor, mOffset, mSigma,
+                               mOperator);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[DrawSurfaceWithShadow surf=" << mSurface;
     aStream << " dest=" << mDest;
     aStream << " color=" << mColor;
@@ -210,7 +184,7 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::DRAWSURFACEWITHSHADOW;
 
-private:
+ private:
   RefPtr<SourceSurface> mSurface;
   Point mDest;
   Color mColor;
@@ -219,24 +193,22 @@ private:
   CompositionOp mOperator;
 };
 
-class DrawFilterCommand : public DrawingCommand
-{
-public:
+class DrawFilterCommand : public DrawingCommand {
+ public:
   DrawFilterCommand(FilterNode* aFilter, const Rect& aSourceRect,
                     const Point& aDestPoint, const DrawOptions& aOptions)
-    : DrawingCommand(DrawFilterCommand::Type)
-    , mFilter(aFilter), mSourceRect(aSourceRect)
-    , mDestPoint(aDestPoint), mOptions(aOptions)
-  {
-  }
+      : mFilter(aFilter),
+        mSourceRect(aSourceRect),
+        mDestPoint(aDestPoint),
+        mOptions(aOptions) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return DrawFilterCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(DrawFilterCommand)(mFilter, mSourceRect, mDestPoint, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     RefPtr<FilterNode> filter = mFilter;
     if (mFilter->GetBackendType() == FilterBackend::FILTER_BACKEND_CAPTURE) {
       filter = static_cast<FilterNodeCapture*>(filter.get())->Validate(aDT);
@@ -251,8 +223,7 @@ public:
     aDT->DrawFilter(filter, mSourceRect, mDestPoint, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[DrawFilter surf=" << mFilter;
     aStream << " src=" << mSourceRect;
     aStream << " dest=" << mDestPoint;
@@ -263,74 +234,64 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::DRAWFILTER;
 
-private:
+ private:
   RefPtr<FilterNode> mFilter;
   Rect mSourceRect;
   Point mDestPoint;
   DrawOptions mOptions;
 };
 
-class ClearRectCommand : public DrawingCommand
-{
-public:
-  explicit ClearRectCommand(const Rect& aRect)
-    : DrawingCommand(ClearRectCommand::Type)
-    , mRect(aRect)
-  {
-  }
+class ClearRectCommand : public DrawingCommand {
+ public:
+  explicit ClearRectCommand(const Rect& aRect) : mRect(aRect) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return ClearRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(ClearRectCommand)(mRect);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->ClearRect(mRect);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[ClearRect rect=" << mRect << "]";
   }
 
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::CLEARRECT;
 
-private:
+ private:
   Rect mRect;
 };
 
-class CopySurfaceCommand : public DrawingCommand
-{
-public:
-  CopySurfaceCommand(SourceSurface* aSurface,
-                     const IntRect& aSourceRect,
+class CopySurfaceCommand : public DrawingCommand {
+ public:
+  CopySurfaceCommand(SourceSurface* aSurface, const IntRect& aSourceRect,
                      const IntPoint& aDestination)
-    : DrawingCommand(CopySurfaceCommand::Type)
-    , mSurface(aSurface)
-    , mSourceRect(aSourceRect)
-    , mDestination(aDestination)
-  {
-  }
+      : mSurface(aSurface),
+        mSourceRect(aSourceRect),
+        mDestination(aDestination) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return CopySurfaceCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(CopySurfaceCommand)(mSurface, mSourceRect, mDestination);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix* aTransform) const override
-  {
+  virtual void ExecuteOnDT(DrawTarget* aDT,
+                           const Matrix* aTransform) const override {
     MOZ_ASSERT(!aTransform || !aTransform->HasNonIntegerTranslation());
     Point dest(Float(mDestination.x), Float(mDestination.y));
     if (aTransform) {
       dest = aTransform->TransformPoint(dest);
     }
-    aDT->CopySurface(mSurface, mSourceRect, IntPoint(uint32_t(dest.x), uint32_t(dest.y)));
+    aDT->CopySurface(mSurface, mSourceRect,
+                     IntPoint(uint32_t(dest.x), uint32_t(dest.y)));
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[CopySurface surf=" << mSurface;
     aStream << " src=" << mSourceRect;
     aStream << " dest=" << mDestination;
@@ -340,43 +301,59 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::COPYSURFACE;
 
-private:
+ private:
   RefPtr<SourceSurface> mSurface;
   IntRect mSourceRect;
   IntPoint mDestination;
 };
 
-class FillRectCommand : public DrawingCommand
-{
-public:
-  FillRectCommand(const Rect& aRect,
-                  const Pattern& aPattern,
-                  const DrawOptions& aOptions)
-    : DrawingCommand(FillRectCommand::Type)
-    , mRect(aRect)
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
+class CopyRectCommand : public DrawingCommand {
+ public:
+  CopyRectCommand(const IntRect& aSourceRect, const IntPoint& aDestination)
+      : mSourceRect(aSourceRect), mDestination(aDestination) {}
+
+  CommandType GetType() const override { return CopyRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(CopyRectCommand)(mSourceRect, mDestination);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  virtual void ExecuteOnDT(DrawTarget* aDT,
+                           const Matrix* aTransform) const override {
+    aDT->CopyRect(mSourceRect, mDestination);
+  }
+
+  void Log(TreeLog<>& aStream) const override {
+    aStream << "[CopyRect src=" << mSourceRect;
+    aStream << " dest=" << mDestination;
+    aStream << "]";
+  }
+
+  static const bool AffectsSnapshot = true;
+  static const CommandType Type = CommandType::COPYRECT;
+
+ private:
+  IntRect mSourceRect;
+  IntPoint mDestination;
+};
+
+class FillRectCommand : public DrawingCommand {
+ public:
+  FillRectCommand(const Rect& aRect, const Pattern& aPattern,
+                  const DrawOptions& aOptions)
+      : mRect(aRect), mPattern(aPattern), mOptions(aOptions) {}
+
+  CommandType GetType() const override { return FillRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(FillRectCommand)(mRect, mPattern, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->FillRect(mRect, mPattern, mOptions);
   }
 
-  bool GetAffectedRect(Rect& aDeviceRect, const Matrix& aTransform) const override
-  {
-    aDeviceRect = aTransform.TransformBounds(mRect);
-    return true;
-  }
-
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[FillRect rect=" << mRect;
     aStream << " pattern=" << mPattern.Get();
     aStream << " opt=" << mOptions;
@@ -386,38 +363,65 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::FILLRECT;
 
-private:
+ private:
   Rect mRect;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class StrokeRectCommand : public StrokeOptionsCommand
-{
-public:
-  StrokeRectCommand(const Rect& aRect,
-                    const Pattern& aPattern,
-                    const StrokeOptions& aStrokeOptions,
-                    const DrawOptions& aOptions)
-    : StrokeOptionsCommand(StrokeRectCommand::Type, aStrokeOptions)
-    , mRect(aRect)
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
+class FillRoundedRectCommand : public DrawingCommand {
+ public:
+  FillRoundedRectCommand(const RoundedRect& aRect, const Pattern& aPattern,
+                         const DrawOptions& aOptions)
+      : mRect(aRect), mPattern(aPattern), mOptions(aOptions) {}
+
+  CommandType GetType() const override { return FillRoundedRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(FillRoundedRectCommand)(mRect, mPattern, mOptions);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
+    aDT->FillRoundedRect(mRect, mPattern, mOptions);
+  }
+
+  void Log(TreeLog<>& aStream) const override {
+    aStream << "[FillRoundedRect rect=" << mRect.rect;
+    aStream << " pattern=" << mPattern.Get();
+    aStream << " opt=" << mOptions;
+    aStream << "]";
+  }
+
+  static const bool AffectsSnapshot = true;
+  static const CommandType Type = CommandType::FILLROUNDEDRECT;
+
+ private:
+  RoundedRect mRect;
+  StoredPattern mPattern;
+  DrawOptions mOptions;
+};
+
+class StrokeRectCommand : public StrokeOptionsCommand {
+ public:
+  StrokeRectCommand(const Rect& aRect, const Pattern& aPattern,
+                    const StrokeOptions& aStrokeOptions,
+                    const DrawOptions& aOptions)
+      : StrokeOptionsCommand(aStrokeOptions),
+        mRect(aRect),
+        mPattern(aPattern),
+        mOptions(aOptions) {}
+
+  CommandType GetType() const override { return StrokeRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(StrokeRectCommand)(mRect, mPattern, mStrokeOptions, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->StrokeRect(mRect, mPattern, mStrokeOptions, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[StrokeRect rect=" << mRect;
     aStream << " pattern=" << mPattern.Get();
     aStream << " opt=" << mOptions;
@@ -427,40 +431,36 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::STROKERECT;
 
-private:
+ private:
   Rect mRect;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class StrokeLineCommand : public StrokeOptionsCommand
-{
-public:
-  StrokeLineCommand(const Point& aStart,
-                    const Point& aEnd,
+class StrokeLineCommand : public StrokeOptionsCommand {
+ public:
+  StrokeLineCommand(const Point& aStart, const Point& aEnd,
                     const Pattern& aPattern,
                     const StrokeOptions& aStrokeOptions,
                     const DrawOptions& aOptions)
-    : StrokeOptionsCommand(StrokeLineCommand::Type, aStrokeOptions)
-    , mStart(aStart)
-    , mEnd(aEnd)
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
+      : StrokeOptionsCommand(aStrokeOptions),
+        mStart(aStart),
+        mEnd(aEnd),
+        mPattern(aPattern),
+        mOptions(aOptions) {}
+
+  CommandType GetType() const override { return StrokeLineCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(StrokeLineCommand)
+    (mStart, mEnd, mPattern, mStrokeOptions, mOptions);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
-    CLONE_INTO(StrokeLineCommand)(mStart, mEnd, mPattern, mStrokeOptions, mOptions);
-  }
-
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->StrokeLine(mStart, mEnd, mPattern, mStrokeOptions, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[StrokeLine start=" << mStart;
     aStream << " end=" << mEnd;
     aStream << " pattern=" << mPattern.Get();
@@ -471,44 +471,32 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::STROKELINE;
 
-private:
+ private:
   Point mStart;
   Point mEnd;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class FillCommand : public DrawingCommand
-{
-public:
-  FillCommand(const Path* aPath,
-              const Pattern& aPattern,
+class FillCommand : public DrawingCommand {
+ public:
+  FillCommand(const Path* aPath, const Pattern& aPattern,
               const DrawOptions& aOptions)
-    : DrawingCommand(FillCommand::Type)
-    , mPath(const_cast<Path*>(aPath))
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
-  }
+      : mPath(const_cast<Path*>(aPath)),
+        mPattern(aPattern),
+        mOptions(aOptions) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return FillCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(FillCommand)(mPath, mPattern, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->Fill(mPath, mPattern, mOptions);
   }
 
-  bool GetAffectedRect(Rect& aDeviceRect, const Matrix& aTransform) const override
-  {
-    aDeviceRect = mPath->GetBounds(aTransform);
-    return true;
-  }
-
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[FillCommand path=" << mPath;
     aStream << " pattern=" << mPattern.Get();
     aStream << " opt=" << mOptions;
@@ -518,85 +506,33 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::FILL;
 
-private:
+ private:
   RefPtr<Path> mPath;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-#ifndef M_SQRT2
-#define M_SQRT2 1.41421356237309504880
-#endif
-
-#ifndef M_SQRT1_2
-#define M_SQRT1_2 0.707106781186547524400844362104849039
-#endif
-
-// The logic for this comes from _cairo_stroke_style_max_distance_from_path
-static Rect
-PathExtentsToMaxStrokeExtents(const StrokeOptions &aStrokeOptions,
-                              const Rect &aRect,
-                              const Matrix &aTransform)
-{
-  double styleExpansionFactor = 0.5f;
-
-  if (aStrokeOptions.mLineCap == CapStyle::SQUARE) {
-    styleExpansionFactor = M_SQRT1_2;
-  }
-
-  if (aStrokeOptions.mLineJoin == JoinStyle::MITER &&
-      styleExpansionFactor < M_SQRT2 * aStrokeOptions.mMiterLimit) {
-    styleExpansionFactor = M_SQRT2 * aStrokeOptions.mMiterLimit;
-  }
-
-  styleExpansionFactor *= aStrokeOptions.mLineWidth;
-
-  double dx = styleExpansionFactor * hypot(aTransform._11, aTransform._21);
-  double dy = styleExpansionFactor * hypot(aTransform._22, aTransform._12);
-
-  // Even if the stroke only partially covers a pixel, it must still render to
-  // full pixels. Round up to compensate for this.
-  dx = ceil(dx);
-  dy = ceil(dy);
-
-  Rect result = aRect;
-  result.Inflate(dx, dy);
-  return result;
-}
-
-
-class StrokeCommand : public StrokeOptionsCommand
-{
-public:
-  StrokeCommand(const Path* aPath,
-                const Pattern& aPattern,
+class StrokeCommand : public StrokeOptionsCommand {
+ public:
+  StrokeCommand(const Path* aPath, const Pattern& aPattern,
                 const StrokeOptions& aStrokeOptions,
                 const DrawOptions& aOptions)
-    : StrokeOptionsCommand(StrokeCommand::Type, aStrokeOptions)
-    , mPath(const_cast<Path*>(aPath))
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
-  }
+      : StrokeOptionsCommand(aStrokeOptions),
+        mPath(const_cast<Path*>(aPath)),
+        mPattern(aPattern),
+        mOptions(aOptions) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return StrokeCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(StrokeCommand)(mPath, mPattern, mStrokeOptions, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->Stroke(mPath, mPattern, mStrokeOptions, mOptions);
   }
 
-  bool GetAffectedRect(Rect& aDeviceRect, const Matrix& aTransform) const override
-  {
-    aDeviceRect = PathExtentsToMaxStrokeExtents(mStrokeOptions, mPath->GetBounds(aTransform), aTransform);
-    return true;
-  }
-
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[Stroke path=" << mPath;
     aStream << " pattern=" << mPattern.Get();
     aStream << " opt=" << mOptions;
@@ -606,48 +542,42 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::STROKE;
 
-private:
+ private:
   RefPtr<Path> mPath;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class FillGlyphsCommand : public DrawingCommand
-{
+class FillGlyphsCommand : public DrawingCommand {
   friend class DrawTargetCaptureImpl;
-public:
-  FillGlyphsCommand(ScaledFont* aFont,
-                    const GlyphBuffer& aBuffer,
-                    const Pattern& aPattern,
-                    const DrawOptions& aOptions)
-    : DrawingCommand(FillGlyphsCommand::Type)
-    , mFont(aFont)
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
+
+ public:
+  FillGlyphsCommand(ScaledFont* aFont, const GlyphBuffer& aBuffer,
+                    const Pattern& aPattern, const DrawOptions& aOptions)
+      : mFont(aFont), mPattern(aPattern), mOptions(aOptions) {
     mGlyphs.resize(aBuffer.mNumGlyphs);
-    memcpy(&mGlyphs.front(), aBuffer.mGlyphs, sizeof(Glyph) * aBuffer.mNumGlyphs);
+    memcpy(&mGlyphs.front(), aBuffer.mGlyphs,
+           sizeof(Glyph) * aBuffer.mNumGlyphs);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return FillGlyphsCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     GlyphBuffer glyphs = {
-      mGlyphs.data(),
-      (uint32_t)mGlyphs.size(),
+        mGlyphs.data(),
+        (uint32_t)mGlyphs.size(),
     };
     CLONE_INTO(FillGlyphsCommand)(mFont, glyphs, mPattern, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     GlyphBuffer buf;
     buf.mNumGlyphs = mGlyphs.size();
     buf.mGlyphs = &mGlyphs.front();
     aDT->FillGlyphs(mFont, buf, mPattern, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[FillGlyphs font=" << mFont;
     aStream << " glyphCount=" << mGlyphs.size();
     aStream << " pattern=" << mPattern.Get();
@@ -658,50 +588,49 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::FILLGLYPHS;
 
-private:
+ private:
   RefPtr<ScaledFont> mFont;
   std::vector<Glyph> mGlyphs;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class StrokeGlyphsCommand : public StrokeOptionsCommand
-{
+class StrokeGlyphsCommand : public StrokeOptionsCommand {
   friend class DrawTargetCaptureImpl;
-public:
-  StrokeGlyphsCommand(ScaledFont* aFont,
-                      const GlyphBuffer& aBuffer,
+
+ public:
+  StrokeGlyphsCommand(ScaledFont* aFont, const GlyphBuffer& aBuffer,
                       const Pattern& aPattern,
                       const StrokeOptions& aStrokeOptions,
                       const DrawOptions& aOptions)
-    : StrokeOptionsCommand(StrokeGlyphsCommand::Type, aStrokeOptions)
-    , mFont(aFont)
-    , mPattern(aPattern)
-    , mOptions(aOptions)
-  {
+      : StrokeOptionsCommand(aStrokeOptions),
+        mFont(aFont),
+        mPattern(aPattern),
+        mOptions(aOptions) {
     mGlyphs.resize(aBuffer.mNumGlyphs);
-    memcpy(&mGlyphs.front(), aBuffer.mGlyphs, sizeof(Glyph) * aBuffer.mNumGlyphs);
+    memcpy(&mGlyphs.front(), aBuffer.mGlyphs,
+           sizeof(Glyph) * aBuffer.mNumGlyphs);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return StrokeGlyphsCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     GlyphBuffer glyphs = {
-      mGlyphs.data(),
-      (uint32_t)mGlyphs.size(),
+        mGlyphs.data(),
+        (uint32_t)mGlyphs.size(),
     };
-    CLONE_INTO(StrokeGlyphsCommand)(mFont, glyphs, mPattern, mStrokeOptions, mOptions);
+    CLONE_INTO(StrokeGlyphsCommand)
+    (mFont, glyphs, mPattern, mStrokeOptions, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     GlyphBuffer buf;
     buf.mNumGlyphs = mGlyphs.size();
     buf.mGlyphs = &mGlyphs.front();
     aDT->StrokeGlyphs(mFont, buf, mPattern, mStrokeOptions, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[StrokeGlyphs font=" << mFont;
     aStream << " glyphCount=" << mGlyphs.size();
     aStream << " pattern=" << mPattern.Get();
@@ -712,38 +641,30 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::STROKEGLYPHS;
 
-private:
+ private:
   RefPtr<ScaledFont> mFont;
   std::vector<Glyph> mGlyphs;
   StoredPattern mPattern;
   DrawOptions mOptions;
 };
 
-class MaskCommand : public DrawingCommand
-{
-public:
-  MaskCommand(const Pattern& aSource,
-              const Pattern& aMask,
+class MaskCommand : public DrawingCommand {
+ public:
+  MaskCommand(const Pattern& aSource, const Pattern& aMask,
               const DrawOptions& aOptions)
-    : DrawingCommand(MaskCommand::Type)
-    , mSource(aSource)
-    , mMask(aMask)
-    , mOptions(aOptions)
-  {
-  }
+      : mSource(aSource), mMask(aMask), mOptions(aOptions) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return MaskCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(MaskCommand)(mSource, mMask, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->Mask(mSource, mMask, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[Mask source=" << mSource.Get();
     aStream << " mask=" << mMask.Get();
     aStream << " opt=" << mOptions;
@@ -753,39 +674,32 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::MASK;
 
-private:
+ private:
   StoredPattern mSource;
   StoredPattern mMask;
   DrawOptions mOptions;
 };
 
-class MaskSurfaceCommand : public DrawingCommand
-{
-public:
-  MaskSurfaceCommand(const Pattern& aSource,
-                     const SourceSurface* aMask,
-                     const Point& aOffset,
-                     const DrawOptions& aOptions)
-    : DrawingCommand(MaskSurfaceCommand::Type)
-    , mSource(aSource)
-    , mMask(const_cast<SourceSurface*>(aMask))
-    , mOffset(aOffset)
-    , mOptions(aOptions)
-  {
-  }
+class MaskSurfaceCommand : public DrawingCommand {
+ public:
+  MaskSurfaceCommand(const Pattern& aSource, const SourceSurface* aMask,
+                     const Point& aOffset, const DrawOptions& aOptions)
+      : mSource(aSource),
+        mMask(const_cast<SourceSurface*>(aMask)),
+        mOffset(aOffset),
+        mOptions(aOptions) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return MaskSurfaceCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(MaskSurfaceCommand)(mSource, mMask, mOffset, mOptions);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->MaskSurface(mSource, mMask, mOffset, mOptions);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[Mask source=" << mSource.Get();
     aStream << " mask=" << mMask;
     aStream << " offset=" << &mOffset;
@@ -796,107 +710,89 @@ public:
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::MASKSURFACE;
 
-private:
+ private:
   StoredPattern mSource;
   RefPtr<SourceSurface> mMask;
   Point mOffset;
   DrawOptions mOptions;
 };
 
-class PushClipCommand : public DrawingCommand
-{
-public:
+class PushClipCommand : public DrawingCommand {
+ public:
   explicit PushClipCommand(const Path* aPath)
-    : DrawingCommand(PushClipCommand::Type)
-    , mPath(const_cast<Path*>(aPath))
-  {
-  }
+      : mPath(const_cast<Path*>(aPath)) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return PushClipCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(PushClipCommand)(mPath);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->PushClip(mPath);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[PushClip path=" << mPath << "]";
   }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::PUSHCLIP;
 
-private:
+ private:
   RefPtr<Path> mPath;
 };
 
-class PushClipRectCommand : public DrawingCommand
-{
-public:
-  explicit PushClipRectCommand(const Rect& aRect)
-    : DrawingCommand(PushClipRectCommand::Type)
-    , mRect(aRect)
-  {
-  }
+class PushClipRectCommand : public DrawingCommand {
+ public:
+  explicit PushClipRectCommand(const Rect& aRect) : mRect(aRect) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return PushClipRectCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(PushClipRectCommand)(mRect);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->PushClipRect(mRect);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[PushClipRect rect=" << mRect << "]";
   }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::PUSHCLIPRECT;
 
-private:
+ private:
   Rect mRect;
 };
 
-class PushLayerCommand : public DrawingCommand
-{
-public:
-  PushLayerCommand(const bool aOpaque,
-                   const Float aOpacity,
-                   SourceSurface* aMask,
-                   const Matrix& aMaskTransform,
-                   const IntRect& aBounds,
-                   bool aCopyBackground)
-    : DrawingCommand(PushLayerCommand::Type)
-    , mOpaque(aOpaque)
-    , mOpacity(aOpacity)
-    , mMask(aMask)
-    , mMaskTransform(aMaskTransform)
-    , mBounds(aBounds)
-    , mCopyBackground(aCopyBackground)
-  {
+class PushLayerCommand : public DrawingCommand {
+ public:
+  PushLayerCommand(const bool aOpaque, const Float aOpacity,
+                   SourceSurface* aMask, const Matrix& aMaskTransform,
+                   const IntRect& aBounds, bool aCopyBackground)
+      : mOpaque(aOpaque),
+        mOpacity(aOpacity),
+        mMask(aMask),
+        mMaskTransform(aMaskTransform),
+        mBounds(aBounds),
+        mCopyBackground(aCopyBackground) {}
+
+  CommandType GetType() const override { return PushLayerCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(PushLayerCommand)
+    (mOpaque, mOpacity, mMask, mMaskTransform, mBounds, mCopyBackground);
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
-    CLONE_INTO(PushLayerCommand)(mOpaque, mOpacity, mMask, mMaskTransform, mBounds, mCopyBackground);
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
+    aDT->PushLayer(mOpaque, mOpacity, mMask, mMaskTransform, mBounds,
+                   mCopyBackground);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
-    aDT->PushLayer(mOpaque, mOpacity, mMask,
-                   mMaskTransform, mBounds, mCopyBackground);
-  }
-
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[PushLayer opaque=" << mOpaque;
     aStream << " opacity=" << mOpacity;
     aStream << " mask=" << mMask;
@@ -909,7 +805,7 @@ public:
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::PUSHLAYER;
 
-private:
+ private:
   bool mOpaque;
   float mOpacity;
   RefPtr<SourceSurface> mMask;
@@ -918,77 +814,60 @@ private:
   bool mCopyBackground;
 };
 
-class PopClipCommand : public DrawingCommand
-{
-public:
-  PopClipCommand()
-    : DrawingCommand(PopClipCommand::Type)
-  {
-  }
+class PopClipCommand : public DrawingCommand {
+ public:
+  PopClipCommand() {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return PopClipCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(PopClipCommand)();
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->PopClip();
   }
 
-  void Log(TreeLog& aStream) const override
-  {
-    aStream << "[PopClip]";
-  }
+  void Log(TreeLog<>& aStream) const override { aStream << "[PopClip]"; }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::POPCLIP;
 };
 
-class PopLayerCommand : public DrawingCommand
-{
-public:
-  PopLayerCommand()
-    : DrawingCommand(PopLayerCommand::Type)
-  {
-  }
+class PopLayerCommand : public DrawingCommand {
+ public:
+  PopLayerCommand() {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return PopLayerCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(PopLayerCommand)();
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->PopLayer();
   }
 
-  void Log(TreeLog& aStream) const override
-  {
-    aStream << "[PopLayer]";
-  }
+  void Log(TreeLog<>& aStream) const override { aStream << "[PopLayer]"; }
 
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::POPLAYER;
 };
 
-class SetTransformCommand : public DrawingCommand
-{
+class SetTransformCommand : public DrawingCommand {
   friend class DrawTargetCaptureImpl;
-public:
-  explicit SetTransformCommand(const Matrix& aTransform)
-    : DrawingCommand(SetTransformCommand::Type)
-    , mTransform(aTransform)
-  {
-  }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+ public:
+  explicit SetTransformCommand(const Matrix& aTransform)
+      : mTransform(aTransform) {}
+
+  CommandType GetType() const override { return SetTransformCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(SetTransformCommand)(mTransform);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix* aMatrix) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix* aMatrix) const override {
     if (aMatrix) {
       aDT->SetTransform(mTransform * (*aMatrix));
     } else {
@@ -996,110 +875,117 @@ public:
     }
   }
 
-  void Log(TreeLog& aStream) const override
-  {
+  void Log(TreeLog<>& aStream) const override {
     aStream << "[SetTransform transform=" << mTransform << "]";
   }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::SETTRANSFORM;
 
-private:
+ private:
   Matrix mTransform;
 };
 
-class SetPermitSubpixelAACommand : public DrawingCommand
-{
+class SetPermitSubpixelAACommand : public DrawingCommand {
   friend class DrawTargetCaptureImpl;
-public:
+
+ public:
   explicit SetPermitSubpixelAACommand(bool aPermitSubpixelAA)
-    : DrawingCommand(SetPermitSubpixelAACommand::Type)
-    , mPermitSubpixelAA(aPermitSubpixelAA)
-  {
+      : mPermitSubpixelAA(aPermitSubpixelAA) {}
+
+  CommandType GetType() const override {
+    return SetPermitSubpixelAACommand::Type;
   }
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(SetPermitSubpixelAACommand)(mPermitSubpixelAA);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix* aMatrix) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix* aMatrix) const override {
     aDT->SetPermitSubpixelAA(mPermitSubpixelAA);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
-    aStream << "[SetPermitSubpixelAA permitSubpixelAA=" << mPermitSubpixelAA << "]";
+  void Log(TreeLog<>& aStream) const override {
+    aStream << "[SetPermitSubpixelAA permitSubpixelAA=" << mPermitSubpixelAA
+            << "]";
   }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::SETPERMITSUBPIXELAA;
 
-private:
+ private:
   bool mPermitSubpixelAA;
 };
 
-class FlushCommand : public DrawingCommand
-{
-public:
-  explicit FlushCommand()
-    : DrawingCommand(FlushCommand::Type)
-  {
-  }
+class FlushCommand : public DrawingCommand {
+ public:
+  FlushCommand() = default;
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return FlushCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(FlushCommand)();
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->Flush();
   }
 
-  void Log(TreeLog& aStream) const override
-  {
-    aStream << "[Flush]";
-  }
+  void Log(TreeLog<>& aStream) const override { aStream << "[Flush]"; }
 
   static const bool AffectsSnapshot = false;
   static const CommandType Type = CommandType::FLUSH;
 };
 
-class BlurCommand : public DrawingCommand
-{
-public:
-  explicit BlurCommand(const AlphaBoxBlur& aBlur)
-   : DrawingCommand(BlurCommand::Type)
-   , mBlur(aBlur)
-  {}
+class BlurCommand : public DrawingCommand {
+ public:
+  explicit BlurCommand(const AlphaBoxBlur& aBlur) : mBlur(aBlur) {}
 
-  void CloneInto(CaptureCommandList* aList) override
-  {
+  CommandType GetType() const override { return BlurCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
     CLONE_INTO(BlurCommand)(mBlur);
   }
 
-  virtual void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override
-  {
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
     aDT->Blur(mBlur);
   }
 
-  void Log(TreeLog& aStream) const override
-  {
-    aStream << "[Blur]";
-  }
+  void Log(TreeLog<>& aStream) const override { aStream << "[Blur]"; }
 
   static const bool AffectsSnapshot = true;
   static const CommandType Type = CommandType::BLUR;
 
-private:
+ private:
   AlphaBoxBlur mBlur;
+};
+
+class PadEdgesCommand : public DrawingCommand {
+ public:
+  explicit PadEdgesCommand(const IntRegion& aRegion) : mRegion(aRegion) {}
+
+  CommandType GetType() const override { return PadEdgesCommand::Type; }
+
+  void CloneInto(CaptureCommandList* aList) override {
+    CLONE_INTO(PadEdgesCommand)(IntRegion(mRegion));
+  }
+
+  void ExecuteOnDT(DrawTarget* aDT, const Matrix*) const override {
+    aDT->PadEdges(mRegion);
+  }
+
+  void Log(TreeLog<>& aStream) const override { aStream << "[PADEDGES]"; }
+
+  static const bool AffectsSnapshot = true;
+  static const CommandType Type = CommandType::PADEDGES;
+
+ private:
+  IntRegion mRegion;
 };
 
 #undef CLONE_INTO
 
-} // namespace gfx
-} // namespace mozilla
+}  // namespace gfx
+}  // namespace mozilla
 
 #endif /* MOZILLA_GFX_DRAWCOMMANDS_H_ */

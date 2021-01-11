@@ -4,10 +4,16 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * The origin of this IDL file is
- * https://webaudio.github.io/web-audio-api/#AudioWorkletGlobalScope
+ * https://webaudio.github.io/web-audio-api/#audioworkletglobalscope
  */
+
+callback constructor AudioWorkletProcessorConstructor = AudioWorkletProcessor (object options);
 
 [Global=(Worklet,AudioWorklet),Exposed=AudioWorklet]
 interface AudioWorkletGlobalScope : WorkletGlobalScope {
-    void registerProcessor (DOMString name, VoidFunction processorCtor);
+    [Throws]
+    void registerProcessor (DOMString name, AudioWorkletProcessorConstructor processorCtor);
+    readonly  attribute   unsigned long long currentFrame;
+    readonly  attribute   double currentTime;
+    readonly  attribute   float sampleRate;
 };

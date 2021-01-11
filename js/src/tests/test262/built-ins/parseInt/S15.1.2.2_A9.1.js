@@ -3,8 +3,6 @@
 
 /*---
 info: The length property of parseInt has the attribute DontEnum
-es5id: 15.1.2.2_A9.1
-es6id: 18.2.5
 esid: sec-parseint-string-radix
 description: Checking use propertyIsEnumerable, for-in
 ---*/
@@ -16,7 +14,7 @@ if (parseInt.propertyIsEnumerable('length') !== false) {
 
 //CHECK#2
 var result = true;
-for (var p in parseInt){
+for (var p in parseInt) {
   if (p === "length") {
     result = false;
   }

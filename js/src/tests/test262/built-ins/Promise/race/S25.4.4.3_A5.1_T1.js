@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -10,10 +11,10 @@ flags: [async]
 
 var p = Promise.race([]);
 
-p.then(function () {
-    $ERROR("Never settles.");
-}, function () {
-    $ERROR("Never settles.");
+p.then(function() {
+  $ERROR("Never settles.");
+}, function() {
+  $ERROR("Never settles.");
 }).then($DONE, $DONE);
 
 // use three 'then's to allow above to settle 

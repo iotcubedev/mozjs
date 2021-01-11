@@ -7,12 +7,12 @@ import org.json.JSONObject;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.Experiments;
 import org.mozilla.gecko.switchboard.DeviceUuidFactory;
 import org.mozilla.gecko.switchboard.Preferences;
 import org.mozilla.gecko.switchboard.SwitchBoard;
 import org.mozilla.gecko.util.IOUtils;
+import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 
 import java.io.BufferedInputStream;
@@ -29,7 +29,7 @@ import java.util.UUID;
 
 import static org.junit.Assert.*;
 
-@RunWith(TestRunner.class)
+@RunWith(RobolectricTestRunner.class)
 public class TestSwitchboard {
 
     /**
@@ -127,19 +127,9 @@ public class TestSwitchboard {
     }
 
     @Test
-    public void testMatching() {
-        final Context c = RuntimeEnvironment.application;
-        assertTrue("is-experiment is matching", SwitchBoard.isInExperiment(c, "is-matching"));
-        assertFalse("is-not-matching is not matching", SwitchBoard.isInExperiment(c, "is-not-matching"));
-    }
-
-    @Test
     public void testNotExisting() {
         final Context c = RuntimeEnvironment.application;
         assertFalse("F0O does not exists", SwitchBoard.isInExperiment(c, "F0O"));
         assertFalse("BaAaz does not exists", SwitchBoard.hasExperimentValues(c, "BaAaz"));
     }
-
-
-
 }

@@ -14,50 +14,43 @@
 
 struct nsQuoteNode : public nsGenConNode {
   // open-quote, close-quote, no-open-quote, or no-close-quote
-  const nsStyleContentType mType;
+  const StyleContentType mType;
 
   // Quote depth before this quote, which is always non-negative.
   int32_t mDepthBefore;
 
-  nsQuoteNode(nsStyleContentType& aType, uint32_t aContentIndex)
-    : nsGenConNode(aContentIndex)
-    , mType(aType)
-    , mDepthBefore(0)
-  {
-    NS_ASSERTION(aType == eStyleContentType_OpenQuote ||
-                 aType == eStyleContentType_CloseQuote ||
-                 aType == eStyleContentType_NoOpenQuote ||
-                 aType == eStyleContentType_NoCloseQuote,
+  nsQuoteNode(StyleContentType aType, uint32_t aContentIndex)
+      : nsGenConNode(aContentIndex), mType(aType), mDepthBefore(0) {
+    NS_ASSERTION(aType == StyleContentType::OpenQuote ||
+                     aType == StyleContentType::CloseQuote ||
+                     aType == StyleContentType::NoOpenQuote ||
+                     aType == StyleContentType::NoCloseQuote,
                  "incorrect type");
     NS_ASSERTION(aContentIndex <= INT32_MAX, "out of range");
   }
 
-  virtual bool InitTextFrame(nsGenConList* aList,
-          nsIFrame* aPseudoFrame, nsIFrame* aTextFrame) override;
+  virtual bool InitTextFrame(nsGenConList* aList, nsIFrame* aPseudoFrame,
+                             nsIFrame* aTextFrame) override;
 
   // is this 'open-quote' or 'no-open-quote'?
   bool IsOpenQuote() {
-    return mType == eStyleContentType_OpenQuote ||
-           mType == eStyleContentType_NoOpenQuote;
+    return mType == StyleContentType::OpenQuote ||
+           mType == StyleContentType::NoOpenQuote;
   }
 
   // is this 'close-quote' or 'no-close-quote'?
-  bool IsCloseQuote() {
-    return !IsOpenQuote();
-  }
+  bool IsCloseQuote() { return !IsOpenQuote(); }
 
   // is this 'open-quote' or 'close-quote'?
   bool IsRealQuote() {
-    return mType == eStyleContentType_OpenQuote ||
-           mType == eStyleContentType_CloseQuote;
+    return mType == StyleContentType::OpenQuote ||
+           mType == StyleContentType::CloseQuote;
   }
 
   // Depth of the quote for *this* node.  Either non-negative or -1.
   // -1 means this is a closing quote that tried to decrement the
   // counter below zero (which means no quote should be rendered).
-  int32_t Depth() {
-    return IsOpenQuote() ? mDepthBefore : mDepthBefore - 1;
-  }
+  int32_t Depth() { return IsOpenQuote() ? mDepthBefore : mDepthBefore - 1; }
 
   // always non-negative
   int32_t DepthAfter() {
@@ -66,13 +59,16 @@ struct nsQuoteNode : public nsGenConNode {
   }
 
   // The text that should be displayed for this quote.
-  const nsString* Text();
+  nsString Text();
 };
 
 class nsQuoteList : public nsGenConList {
-private:
-  nsQuoteNode* FirstNode() { return static_cast<nsQuoteNode*>(mList.getFirst()); }
-public:
+ private:
+  nsQuoteNode* FirstNode() {
+    return static_cast<nsQuoteNode*>(mList.getFirst());
+  }
+
+ public:
   // assign the correct |mDepthBefore| value to a node that has been inserted
   // Should be called immediately after calling |Insert|.
   void Calc(nsQuoteNode* aNode);

@@ -4,12 +4,9 @@ config = {
     'default_actions': [
         'clobber',
         'build',
-        'update',  # decided by query_is_nightly()
     ],
     'stage_platform': 'macosx64-searchfox-debug',
     'debug_build': True,
-    'enable_signing': False,
-    'perfherder_extra_options': ['static-analysis'],
     #### 64 bit build specific #####
     'env': {
         'MOZBUILD_STATE_PATH': os.path.join(os.getcwd(), '.mozbuild'),
@@ -29,6 +26,4 @@ config = {
                 '/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/X11/bin',
     },
     'mozconfig_variant': 'debug-searchfox',
-    'artifact_flag_build_variant_in_try': None,
-    #######################
 }

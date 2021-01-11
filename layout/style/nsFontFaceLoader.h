@@ -13,22 +13,20 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/FontFaceSet.h"
 #include "nsCOMPtr.h"
+#include "nsIFontLoadCompleteCallback.h"
 #include "nsIStreamLoader.h"
 #include "nsIChannel.h"
 #include "nsIRequestObserver.h"
 #include "gfxUserFontSet.h"
 #include "nsHashKeys.h"
 #include "nsTHashtable.h"
-#ifdef MOZ_OLD_STYLE
-#include "nsCSSRules.h"
-#endif
 
 class nsIPrincipal;
 
-class nsFontFaceLoader : public nsIStreamLoaderObserver
-                       , public nsIRequestObserver
-{
-public:
+class nsFontFaceLoader final : public nsIStreamLoaderObserver,
+                               public nsIRequestObserver,
+                               public nsIFontLoadCompleteCallback {
+ public:
   nsFontFaceLoader(gfxUserFontEntry* aFontToLoad, nsIURI* aFontURI,
                    mozilla::dom::FontFaceSet* aFontFaceSet,
                    nsIChannel* aChannel);
@@ -50,20 +48,27 @@ public:
 
   gfxUserFontEntry* GetUserFontEntry() const { return mUserFontEntry; }
 
-protected:
+  // Called by the gfxUserFontEntry once it has finished the platform font
+  // loading.
+  NS_IMETHODIMP FontLoadComplete() final;
+
+ protected:
   virtual ~nsFontFaceLoader();
 
   // helper method for determining the font-display value
-  uint8_t GetFontDisplay();
+  mozilla::StyleFontDisplay GetFontDisplay();
 
-private:
-  RefPtr<gfxUserFontEntry>  mUserFontEntry;
-  nsCOMPtr<nsIURI>        mFontURI;
-  RefPtr<mozilla::dom::FontFaceSet> mFontFaceSet;
-  nsCOMPtr<nsIChannel>    mChannel;
-  nsCOMPtr<nsITimer>      mLoadTimer;
-  mozilla::TimeStamp      mStartTime;
-  nsIStreamLoader*        mStreamLoader;
+ private:
+  RefPtr<gfxUserFontEntry> mUserFontEntry;
+  nsCOMPtr<nsIURI> mFontURI;
+  // Cleared in FontFaceSet::~FontFaceSet, and on cancelation and such too.
+  mozilla::dom::FontFaceSet* MOZ_NON_OWNING_REF mFontFaceSet;
+  nsCOMPtr<nsIChannel> mChannel;
+  nsCOMPtr<nsITimer> mLoadTimer;
+  mozilla::TimeStamp mStartTime;
+  nsIStreamLoader* mStreamLoader;
+  bool mInStreamComplete = false;
+  bool mInLoadTimerCallback = false;
 };
 
 #endif /* !defined(nsFontFaceLoader_h_) */

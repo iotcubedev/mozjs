@@ -3,39 +3,51 @@
 <head>
   <script src="/resources/testharness.js"></script>
   <script src="/resources/testharnessreport.js"></script>
-  <script src="./support/helper.js"></script>
+  <script src="support/helper.sub.js"></script>
 
-  <meta http-equiv="Content-Security-Policy" content="require-trusted-types">
+  <meta http-equiv="Content-Security-Policy" content="trusted-types *">
 </head>
 <body>
 <script>
+  // TrustedURL assignments do not throw.
+  test(t => {
+    let p = createURL_policy(window, 1);
+    let url = p.createURL(location.href + "#xxx");
+    location.href = url;
+    assert_equals("" + url, location.href, "location href");
+  }, "location.href assigned via policy (successful URL transformation).");
+
   // String assignments throw.
-  promise_test(t => {
-    return promise_rejects(t, new TypeError(), createFrameAndHref("about:blank"));
+  test(t => {
+    let href = location.href;
+    assert_throws(new TypeError(), _ => {
+      location.href = 'A string';
+    });
+    assert_equals(location.href, href);
   }, "`location.href = string` throws");
 
-  // TrustedURL assignments work.
-  promise_test(t => {
-    var url = TrustedURL.create(URLS.safe);
-    return createFrameAndHref(url);
-  }, "Basic processing: safe URL, safe construction.");
-
-  promise_test(t => {
-    var url = TrustedURL.unsafelyCreate(URLS.safe);
-    return createFrameAndHref(url);
-  }, "Basic processing: safe URL, unsafe construction.");
-
-  promise_test(t => {
-    var url = TrustedURL.create(URLS.javascript);
-    return createFrameAndHref(url).then(i => {
-      assert_equals(i.contentDocument.body.innerText, "");
+  // Null assignment throws.
+  test(t => {
+    let href = location.href;
+    assert_throws(new TypeError(), _ => {
+      location.href = null;
     });
-  }, "Basic processing: javascript URL, safe construction.");
+    assert_equals(location.href, href);
+  }, "`location.href = null` throws");
 
-  promise_test(t => {
-    var url = TrustedURL.unsafelyCreate(URLS.javascript);
-    return createFrameAndHref(url).then(i => {
-      assert_equals(i.contentDocument.body.innerText, "scripted");
-    });
-  }, "Basic processing: javascript URL, unsafe construction.");
+  // Create default policy. Applies to all subsequent tests.
+  let p = window.TrustedTypes.createPolicy("default",
+      { createURL: createLocationURLJS }, true);
+
+  // After default policy creation string assignment implicitly calls createURL.
+  test(t => {
+    location.href = "xxxx";
+    assert_true(location.href.endsWith("#xxxx"));
+  }, "`location.href = string` via default policy (successful URL transformation).");
+
+  // After default policy creation null assignment implicitly calls createURL.
+  test(t => {
+    location.href = null;
+    assert_true(location.href.endsWith("#null"));
+  }, "`location.href = null` assigned via default policy does not throw.");
 </script>

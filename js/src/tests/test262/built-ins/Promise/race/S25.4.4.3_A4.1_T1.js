@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -11,17 +12,16 @@ flags: [async]
 
 var iterThrows = {};
 var error = new Test262Error();
-iterThrows[Symbol.iterator] = function () {
-    return {
-        next: function () {
-            throw error;
-        }
-    };
+iterThrows[Symbol.iterator] = function() {
+  return {
+    next: function() {
+      throw error;
+    }
+  };
 };
 
-Promise.race(iterThrows).then(function () {
-    $ERROR('Promise unexpectedly fulfilled: Promise.race(iterThrows) should throw TypeError');
-}, function (reason) {
-    assert.sameValue(reason, error);
-}).then($DONE,$DONE);
-
+Promise.race(iterThrows).then(function() {
+  $ERROR('Promise unexpectedly fulfilled: Promise.race(iterThrows) should throw TypeError');
+}, function(reason) {
+  assert.sameValue(reason, error);
+}).then($DONE, $DONE);

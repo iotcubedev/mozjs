@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
+# You can obtain one at http://mozilla.org/MPL/2.0/.
+
 """
 In asm code, out-of-bounds heap accesses cause segfaults, which the engine
 handles internally. Make GDB ignore them.
@@ -9,6 +13,7 @@ SIGSEGV = 11
 
 # A sigaction buffer for each inferior process.
 sigaction_buffers = {}
+
 
 def on_stop(event):
     if isinstance(event, gdb.SignalEvent) and event.stop_signal == 'SIGSEGV':
@@ -31,9 +36,11 @@ def on_stop(event):
             # itself and re-raise.
             gdb.execute("continue")
 
+
 def on_exited(event):
     if event.inferior in sigaction_buffers:
         del sigaction_buffers[event.inferior]
+
 
 def install():
     gdb.events.stop.connect(on_stop)

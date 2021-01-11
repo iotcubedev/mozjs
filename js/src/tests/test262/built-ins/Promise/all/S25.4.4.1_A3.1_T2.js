@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -13,10 +14,10 @@ description: Promise.all(new Error()) returns Promise rejected with TypeError
 flags: [async]
 ---*/
 
-Promise.all(new Error("abrupt")).then(function () {
-    $ERROR('Promise unexpectedly resolved: Promise.all(abruptCompletion) should throw TypeError');
-},function (err) {
-    if (!(err instanceof TypeError)) {
-        $ERROR('Expected TypeError, got ' + err);
-    }
-}).then($DONE,$DONE);
+Promise.all(new Error("abrupt")).then(function() {
+  $ERROR('Promise unexpectedly resolved: Promise.all(abruptCompletion) should throw TypeError');
+}, function(err) {
+  if (!(err instanceof TypeError)) {
+    $ERROR('Expected TypeError, got ' + err);
+  }
+}).then($DONE, $DONE);

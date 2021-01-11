@@ -11,9 +11,8 @@
 
 #include "nsInlineFrame.h"
 
-class nsRubyContentFrame : public nsInlineFrame
-{
-public:
+class nsRubyContentFrame : public nsInlineFrame {
+ public:
   NS_DECL_ABSTRACT_FRAME(nsRubyContentFrame)
 
   // nsIFrame overrides
@@ -26,10 +25,10 @@ public:
   // See http://dev.w3.org/csswg/css-ruby/#anon-gen-interpret-space
   bool IsIntraLevelWhitespace() const;
 
-protected:
-  nsRubyContentFrame(nsStyleContext* aContext, ClassID aID)
-    : nsInlineFrame(aContext, aID)
-  {}
+ protected:
+  nsRubyContentFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
+                     ClassID aID)
+      : nsInlineFrame(aStyle, aPresContext, aID) {}
 };
 
 #endif /* nsRubyContentFrame_h___ */

@@ -31,40 +31,23 @@
 
 namespace mozilla {
 namespace dom {
+class Event;
 class EventTarget;
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
 class nsWebBrowser;
 class ChromeTooltipListener;
-
-// {6D10C180-6888-11d4-952B-0020183BF181}
-#define NS_ICDOCSHELLTREEOWNER_IID \
-  { 0x6d10c180, 0x6888, 0x11d4, { 0x95, 0x2b, 0x0, 0x20, 0x18, 0x3b, 0xf1, 0x81 } }
-
-// This is a fake 'hidden' interface that nsDocShellTreeOwner implements.
-// Classes can QI for this interface to be sure that
-// they're dealing with a valid nsDocShellTreeOwner and not some other object
-// that implements nsIDocShellTreeOwner.
-class nsICDocShellTreeOwner : public nsISupports
-{
-public:
-  NS_DECLARE_STATIC_IID_ACCESSOR(NS_ICDOCSHELLTREEOWNER_IID)
-};
-
-NS_DEFINE_STATIC_IID_ACCESSOR(nsICDocShellTreeOwner, NS_ICDOCSHELLTREEOWNER_IID)
 
 class nsDocShellTreeOwner final : public nsIDocShellTreeOwner,
                                   public nsIBaseWindow,
                                   public nsIInterfaceRequestor,
                                   public nsIWebProgressListener,
                                   public nsIDOMEventListener,
-                                  public nsICDocShellTreeOwner,
-                                  public nsSupportsWeakReference
-{
+                                  public nsSupportsWeakReference {
   friend class nsWebBrowser;
 
-public:
+ public:
   NS_DECL_ISUPPORTS
 
   NS_DECL_NSIBASEWINDOW
@@ -73,7 +56,7 @@ public:
   NS_DECL_NSIINTERFACEREQUESTOR
   NS_DECL_NSIWEBPROGRESSLISTENER
 
-protected:
+ protected:
   nsDocShellTreeOwner();
   virtual ~nsDocShellTreeOwner();
 
@@ -103,7 +86,7 @@ protected:
   already_AddRefed<nsIEmbeddingSiteWindow> GetOwnerWin();
   already_AddRefed<nsIInterfaceRequestor> GetOwnerRequestor();
 
-protected:
+ protected:
   // Weak References
   nsWebBrowser* mWebBrowser;
   nsIDocShellTreeOwner* mTreeOwner;
@@ -113,7 +96,7 @@ protected:
   nsIEmbeddingSiteWindow* mOwnerWin;
   nsIInterfaceRequestor* mOwnerRequestor;
 
-  nsWeakPtr mWebBrowserChromeWeak; // nsIWebBrowserChrome
+  nsWeakPtr mWebBrowserChromeWeak;  // nsIWebBrowserChrome
 
   // the objects that listen for chrome events like context menus and tooltips.
   // They are separate objects to avoid circular references between |this|
@@ -124,35 +107,37 @@ protected:
 
   nsCOMPtr<nsIPrompt> mPrompter;
   nsCOMPtr<nsIAuthPrompt> mAuthPrompter;
-  nsCOMPtr<nsITabParent> mPrimaryTabParent;
+  nsCOMPtr<nsIRemoteTab> mPrimaryRemoteTab;
 };
-
 
 // The class that listens to the chrome events and tells the embedding chrome to
 // show tooltips, as appropriate. Handles registering itself with the DOM with
 // AddChromeListeners() and removing itself with RemoveChromeListeners().
-class ChromeTooltipListener final : public nsIDOMEventListener
-{
-protected:
+class ChromeTooltipListener final : public nsIDOMEventListener {
+ protected:
   virtual ~ChromeTooltipListener();
 
-public:
+ public:
   NS_DECL_ISUPPORTS
 
-  ChromeTooltipListener(nsWebBrowser* aInBrowser, nsIWebBrowserChrome* aInChrome);
+  ChromeTooltipListener(nsWebBrowser* aInBrowser,
+                        nsIWebBrowserChrome* aInChrome);
 
-  NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) override;
-  NS_IMETHOD MouseMove(nsIDOMEvent* aMouseEvent);
+  NS_DECL_NSIDOMEVENTLISTENER
+  NS_IMETHOD MouseMove(mozilla::dom::Event* aMouseEvent);
 
   // Add/remove the relevant listeners, based on what interfaces the embedding
   // chrome implements.
   NS_IMETHOD AddChromeListeners();
   NS_IMETHOD RemoveChromeListeners();
 
-private:
+  NS_IMETHOD HideTooltip();
+
+  bool WebProgressShowedTooltip(nsIWebProgress* aWebProgress);
+
+ private:
   // various delays for tooltips
-  enum
-  {
+  enum {
     kTooltipAutoHideTime = 5000,    // ms
     kTooltipMouseMoveTolerance = 7  // pixel tolerance for mousemove event
   };
@@ -163,7 +148,7 @@ private:
   NS_IMETHOD ShowTooltip(int32_t aInXCoords, int32_t aInYCoords,
                          const nsAString& aInTipText,
                          const nsAString& aDirText);
-  NS_IMETHOD HideTooltip();
+  nsITooltipTextProvider* GetTooltipTextProvider();
 
   nsWebBrowser* mWebBrowser;
   nsCOMPtr<mozilla::dom::EventTarget> mEventTarget;
@@ -189,16 +174,22 @@ private:
   int32_t mMouseScreenY;
 
   bool mShowingTooltip;
+
   bool mTooltipShownOnce;
+
+  // The string of text that we last displayed.
+  nsString mLastShownTooltipText;
+
+  nsWeakPtr mLastDocshell;
 
   // The node hovered over that fired the timer. This may turn into the node
   // that triggered the tooltip, but only if the timer ever gets around to
   // firing. This is a strong reference, because the tooltip content can be
-  // destroyed while we're waiting for the tooltip to pup up, and we need to
+  // destroyed while we're waiting for the tooltip to pop up, and we need to
   // detect that. It's set only when the tooltip timer is created and launched.
   // The timer must either fire or be cancelled (or possibly released?), and we
   // release this reference in each of those cases. So we don't leak.
-  nsCOMPtr<nsIDOMNode> mPossibleTooltipNode;
+  nsCOMPtr<nsINode> mPossibleTooltipNode;
 };
 
 #endif /* nsDocShellTreeOwner_h__ */

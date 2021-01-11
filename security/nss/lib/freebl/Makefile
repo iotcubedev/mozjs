@@ -242,6 +242,9 @@ ifeq ($(CPU_ARCH),arm)
     DEFINES += -DSHA_NO_LONG_LONG # avoid 64-bit arithmetic in SHA512
     MPI_SRCS += mpi_arm.c
 endif
+ifeq ($(CPU_ARCH),aarch64)
+    EXTRA_SRCS += gcm-aarch64.c
+endif
 ifeq ($(CPU_ARCH),ppc)
 ifdef USE_64
     DEFINES += -DNSS_NO_INIT_SUPPORT
@@ -493,6 +496,9 @@ endif # Solaris for non-sparc family CPUs
 endif # target == SunO
 
 ifdef USE_64
+# no __int128 at least up to lcc 1.23 (pretending to be gcc5)
+# NB: CC_NAME is not defined here
+ifneq ($(shell $(CC) -? 2>&1 >/dev/null </dev/null | sed -e 's/:.*//;1q'),lcc)
     ifdef CC_IS_CLANG
             HAVE_INT128_SUPPORT = 1
             DEFINES += -DHAVE_INT128_SUPPORT
@@ -506,7 +512,8 @@ ifdef USE_64
             DEFINES += -DHAVE_INT128_SUPPORT
         endif
     endif
-endif
+endif # lcc
+endif # USE_64
 
 ifndef HAVE_INT128_SUPPORT
     DEFINES += -DKRML_NOUINT128
@@ -517,13 +524,13 @@ ifndef NSS_DISABLE_CHACHAPOLY
         ifdef HAVE_INT128_SUPPORT
             EXTRA_SRCS += Hacl_Poly1305_64.c
         else
-            EXTRA_SRCS += poly1305.c
+            EXTRA_SRCS += Hacl_Poly1305_32.c
         endif
     else
         ifeq ($(CPU_ARCH),aarch64)
             EXTRA_SRCS += Hacl_Poly1305_64.c
         else
-            EXTRA_SRCS += poly1305.c
+            EXTRA_SRCS += Hacl_Poly1305_32.c
         endif
     endif # x86_64
 
@@ -535,10 +542,14 @@ ifeq (,$(filter-out i386 x386 x86 x86_64 aarch64,$(CPU_ARCH)))
     # All intel architectures get the 64 bit version
     # With custom uint128 if necessary (faster than generic 32 bit version).
     ECL_SRCS += curve25519_64.c
-    VERIFIED_SRCS += Hacl_Curve25519.c FStar.c
+    VERIFIED_SRCS += Hacl_Curve25519.c
 else
     # All non intel architectures get the generic 32 bit implementation (slow!)
     ECL_SRCS += curve25519_32.c
+endif
+
+ifndef HAVE_INT128_SUPPORT
+    VERIFIED_SRCS += FStar.c
 endif
 
 #######################################################################
@@ -748,4 +759,8 @@ ifdef INTEL_GCM_CLANG_CL
 # clang-cl needs -mssse3
 #
 $(OBJDIR)/$(PROG_PREFIX)intel-gcm-wrap$(OBJ_SUFFIX): CFLAGS += -mssse3
+endif
+
+ifeq ($(CPU_ARCH),aarch64)
+$(OBJDIR)/$(PROG_PREFIX)gcm-aarch64$(OBJ_SUFFIX): CFLAGS += -march=armv8-a+crypto
 endif

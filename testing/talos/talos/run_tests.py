@@ -7,17 +7,19 @@ from __future__ import absolute_import, print_function
 
 import copy
 import os
+import subprocess
 import sys
 import time
 import traceback
 import urllib
 
 import mozhttpd
+import mozinfo
 import mozversion
-import utils
+
+from talos import utils
 from mozlog import get_proxy_logger
 from talos.config import get_configs, ConfigurationError
-from talos.mitmproxy import mitmproxy
 from talos.results import TalosResults
 from talos.ttest import TTest
 from talos.utils import TalosError, TalosRegression
@@ -54,7 +56,7 @@ def set_tp_preferences(test, browser_config):
                 test[cycle_var] = 2
 
     CLI_bool_options = ['tpchrome', 'tphero', 'tpmozafterpaint', 'tploadnocache', 'tpscrolltest',
-                        'fnbpaint']
+                        'fnbpaint', 'pdfpaint']
     CLI_options = ['tpcycles', 'tppagecycles', 'tptimeout', 'tpmanifest']
     for key in CLI_bool_options:
         _pref_name = "talos.%s" % key
@@ -121,11 +123,16 @@ def run_tests(config, browser_config):
         if not test.get('profile', False):
             test['profile'] = config.get('profile')
 
+    if mozinfo.os == 'win':
+        browser_config['extra_args'] = ['-wait-for-browser', '-no-deelevate']
+    else:
+        browser_config['extra_args'] = []
+
     # pass --no-remote to firefox launch, if --develop is specified
     # we do that to allow locally the user to have another running firefox
     # instance
     if browser_config['develop']:
-        browser_config['extra_args'] = '--no-remote'
+        browser_config['extra_args'].append('--no-remote')
 
     # Pass subtests filter argument via a preference
     if browser_config['subtests']:
@@ -216,33 +223,6 @@ def run_tests(config, browser_config):
     if config['gecko_profile']:
         talos_results.add_extra_option('geckoProfile')
 
-    # some tests use mitmproxy to playback pages
-    mitmproxy_recordings_list = config.get('mitmproxy', False)
-    if mitmproxy_recordings_list is not False:
-        # needed so can tell talos ttest to allow external connections
-        browser_config['mitmproxy'] = True
-
-        # start mitmproxy playback; this also generates the CA certificate
-        mitmdump_path = config.get('mitmdumpPath', False)
-        if mitmdump_path is False:
-            # cannot continue, need path for mitmdump playback tool
-            raise TalosError('Aborting: mitmdumpPath not provided on cmd line but is required')
-
-        mitmproxy_recording_path = os.path.join(here, 'mitmproxy')
-        mitmproxy_proc = mitmproxy.start_mitmproxy_playback(mitmdump_path,
-                                                            mitmproxy_recording_path,
-                                                            mitmproxy_recordings_list.split(),
-                                                            browser_config['browser_path'])
-
-        # install the generated CA certificate into Firefox
-        # mitmproxy cert setup needs path to mozharness install; mozharness has set this
-        # value in the SCRIPTSPATH env var for us in mozharness/mozilla/testing/talos.py
-        scripts_path = os.environ.get('SCRIPTSPATH')
-        LOG.info('scripts_path: %s' % str(scripts_path))
-        mitmproxy.install_mitmproxy_cert(mitmproxy_proc,
-                                         browser_config['browser_path'],
-                                         str(scripts_path))
-
     testname = None
 
     # run the tests
@@ -317,10 +297,6 @@ def run_tests(config, browser_config):
 
     LOG.info("Completed test suite (%s)" % timer.elapsed())
 
-    # if mitmproxy was used for page playback, stop it
-    if mitmproxy_recordings_list is not False:
-        mitmproxy.stop_mitmproxy_playback(mitmproxy_proc)
-
     # output results
     if results_urls and not browser_config['no_upload_results']:
         talos_results.output(results_urls)
@@ -328,9 +304,70 @@ def run_tests(config, browser_config):
             print("Thanks for running Talos locally. Results are in %s"
                   % (results_urls['output_urls']))
 
+    # when running talos locally with gecko profiling on, use the view-gecko-profile
+    # tool to automatically load the latest gecko profile in profiler.firefox.com
+    if config['gecko_profile'] and browser_config['develop']:
+        if os.environ.get('DISABLE_PROFILE_LAUNCH', '0') == '1':
+            LOG.info("Not launching profiler.firefox.com because DISABLE_PROFILE_LAUNCH=1")
+        else:
+            view_gecko_profile(config['browser_path'])
+
     # we will stop running tests on a failed test, or we will return 0 for
     # green
     return 0
+
+
+def view_gecko_profile(ffox_bin):
+    # automatically load the latest talos gecko-profile archive in profiler.firefox.com
+    if sys.platform.startswith('win') and not ffox_bin.endswith(".exe"):
+        ffox_bin = ffox_bin + ".exe"
+
+    if not os.path.exists(ffox_bin):
+        LOG.info("unable to find Firefox bin, cannot launch view-gecko-profile")
+        return
+
+    profile_zip = os.environ.get('TALOS_LATEST_GECKO_PROFILE_ARCHIVE', None)
+    if profile_zip is None or not os.path.exists(profile_zip):
+        LOG.info("No local talos gecko profiles were found so not launching profiler.firefox.com")
+        return
+
+    # need the view-gecko-profile tool, it's in repo/testing/tools
+    repo_dir = os.environ.get('MOZ_DEVELOPER_REPO_DIR', None)
+    if repo_dir is None:
+        LOG.info("unable to find MOZ_DEVELOPER_REPO_DIR, can't launch view-gecko-profile")
+        return
+
+    view_gp = os.path.join(repo_dir, 'testing', 'tools',
+                           'view_gecko_profile', 'view_gecko_profile.py')
+    if not os.path.exists(view_gp):
+        LOG.info("unable to find the view-gecko-profile tool, cannot launch it")
+        return
+
+    command = ['python',
+               view_gp,
+               '-b', ffox_bin,
+               '-p', profile_zip]
+
+    LOG.info('Auto-loading this profile in perfhtml.io: %s' % profile_zip)
+    LOG.info(command)
+
+    # if the view-gecko-profile tool fails to launch for some reason, we don't
+    # want to crash talos! just dump error and finsh up talos as usual
+    try:
+        view_profile = subprocess.Popen(command,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE)
+        # that will leave it running in own instance and let talos finish up
+    except Exception as e:
+        LOG.info("failed to launch view-gecko-profile tool, exeption: %s" % e)
+        return
+
+    time.sleep(5)
+    ret = view_profile.poll()
+    if ret is None:
+        LOG.info("view-gecko-profile successfully started as pid %d" % view_profile.pid)
+    else:
+        LOG.error('view-gecko-profile process failed to start, poll returned: %s' % ret)
 
 
 def make_comparison_result(base_and_reference_results):

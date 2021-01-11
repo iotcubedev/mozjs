@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -25,12 +26,12 @@ var p = new Promise(function() {
 });
 
 p.then(function() {
-    $DONE('The promise should not be fulfilled.');
-  }, function(x) {
-    if (x !== thenable) {
-      $DONE('The promise should be rejected with the resolution value.');
-      return;
-    }
+  $DONE('The promise should not be fulfilled.');
+}, function(x) {
+  if (x !== thenable) {
+    $DONE('The promise should be rejected with the resolution value.');
+    return;
+  }
 
-    $DONE();
-  });
+  $DONE();
+});

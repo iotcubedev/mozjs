@@ -3,8 +3,6 @@
 
 /*---
 info: Return sign * Result(17)
-es5id: 15.1.2.2_A7.3_T1
-es6id: 18.2.5
 esid: sec-parseint-string-radix
 description: Complex test. Check algorithm
 ---*/
@@ -17,8 +15,8 @@ for (var i = 2; i <= 36; i++) {
     var str = "+";
     var sign = 1;
     if (j % 2 !== 0) {
-        str = "-";
-        sign= -1;
+      str = "-";
+      sign = -1;
     }
     var num = 0;
     var pow = 1;

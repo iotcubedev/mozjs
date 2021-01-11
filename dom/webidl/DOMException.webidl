@@ -16,7 +16,7 @@
 interface StackFrame;
 
 [NoInterfaceObject,
- Exposed=(Window,Worker,System)]
+ Exposed=(Window,Worker)]
 interface ExceptionMembers
 {
   // The nsresult associated with this exception.
@@ -56,6 +56,7 @@ interface Exception {
   // The name of the error code (ie, a string repr of |result|).
   readonly attribute DOMString               name;
   // A custom message set by the thrower.
+  [BinaryName="messageMoz"]
   readonly attribute DOMString               message;
   // A generic formatter - make it suitable to print, etc.
   stringifier;
@@ -66,12 +67,13 @@ Exception implements ExceptionMembers;
 // XXXkhuey this is an 'exception', not an interface, but we don't have any
 // parser or codegen mechanisms for dealing with exceptions.
 [ExceptionClass,
- Exposed=(Window, Worker,System),
+ Exposed=(Window, Worker),
  Constructor(optional DOMString message = "", optional DOMString name)]
 interface DOMException {
   // The name of the error code (ie, a string repr of |result|).
   readonly attribute DOMString               name;
   // A custom message set by the thrower.
+  [BinaryName="messageMoz"]
   readonly attribute DOMString               message;
   readonly attribute unsigned short code;
 

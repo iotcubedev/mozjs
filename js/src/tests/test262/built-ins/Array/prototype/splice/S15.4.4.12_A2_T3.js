@@ -6,16 +6,18 @@ info: |
     The splice function is intentionally generic.
     It does not require that its this value be an Array object
 esid: sec-array.prototype.splice
-es5id: 15.4.4.12_A2_T3
 description: >
     If start is positive, use min(start, length).  If deleteCount is
     negative, use 0
 ---*/
 
-var obj = {0:0,1:1};
+var obj = {
+  0: 0,
+  1: 1
+};
 obj.length = 2;
 obj.splice = Array.prototype.splice;
-var arr = obj.splice(0,-1,2,3);
+var arr = obj.splice(0, -1, 2, 3);
 
 //CHECK#0
 arr.getClass = Object.prototype.toString;

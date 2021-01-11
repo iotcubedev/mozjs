@@ -6,17 +6,15 @@ config = {
 
     # note: overridden by MOZHARNESS_ACTIONS in TaskCluster tasks
     'default_actions': [
-        'clobber',
         'build',
-        'update',  # decided by query_is_nightly()
     ],
-    "buildbot_json_path": "buildprops.json",
     'app_ini_path': '%(obj_dir)s/dist/bin/application.ini',
-    # decides whether we want to use moz_sign_cmd in env
-    'enable_signing': True,
     'secret_files': [
-        {'filename': '/builds/gapi.data',
-         'secret_name': 'project/releng/gecko/build/level-%(scm-level)s/gapi.data',
+        {'filename': '/builds/gls-gapi.data',
+         'secret_name': 'project/releng/gecko/build/level-%(scm-level)s/gls-gapi.data',
+         'min_scm_level': 1},
+        {'filename': '/builds/sb-gapi.data',
+         'secret_name': 'project/releng/gecko/build/level-%(scm-level)s/sb-gapi.data',
          'min_scm_level': 1},
         {'filename': '/builds/mozilla-desktop-geoloc-api.key',
          'secret_name': 'project/releng/gecko/build/level-%(scm-level)s/mozilla-desktop-geoloc-api.key',
@@ -24,13 +22,11 @@ config = {
     ],
     'enable_check_test': False,
     'vcs_share_base': '/builds/hg-shared',
-    'enable_count_ctors': False,
     #########################################################################
 
 
     #########################################################################
     ###### 64 bit specific ######
-    'base_name': 'OS X 10.7 %(branch)s',
     'platform': 'macosx64',
     'stage_platform': 'macosx64',
     'env': {
@@ -43,9 +39,8 @@ config = {
         'MOZ_CRASHREPORTER_NO_REPORT': '1',
         'LC_ALL': 'C',
         ## 64 bit specific
-        'PATH': '/usr/local/bin:/usr/lib64/ccache:/bin:\
-/usr/bin:/usr/local/sbin:/usr/sbin:/sbin:/tools/git/bin:/tools/python27/bin:\
-/tools/python27-mercurial/bin:/home/cltbld/bin',
+        'PATH': '/usr/local/bin:/bin:'
+                '/usr/bin:/usr/local/sbin:/usr/sbin:/sbin'
         ##
     },
     "check_test_env": {
@@ -54,6 +49,5 @@ config = {
     },
     'mozconfig_platform': 'macosx64',
     'mozconfig_variant': 'nightly',
-    'artifact_flag_build_variant_in_try': 'cross-artifact',
     #########################################################################
 }

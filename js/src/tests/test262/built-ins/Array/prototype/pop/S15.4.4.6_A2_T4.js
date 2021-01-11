@@ -6,7 +6,6 @@ info: |
     The pop function is intentionally generic.
     It does not require that its this value be an Array object
 esid: sec-array.prototype.pop
-es5id: 15.4.4.6_A2_T4
 description: >
     Operator use ToNumber from length.  If Type(value) is Object,
     evaluate ToPrimitive(value, Number)
@@ -17,7 +16,11 @@ obj.pop = Array.prototype.pop;
 
 //CHECK#1
 obj[0] = -1;
-obj.length = {valueOf: function() {return 1}};
+obj.length = {
+  valueOf: function() {
+    return 1
+  }
+};
 var pop = obj.pop();
 if (pop !== -1) {
   $ERROR('#1: obj[0] = -1; obj.length = {valueOf: function() {return 1}}  obj.pop() === -1. Actual: ' + (pop));
@@ -25,7 +28,14 @@ if (pop !== -1) {
 
 //CHECK#2
 obj[0] = -1;
-obj.length = {valueOf: function() {return 1}, toString: function() {return 0}};
+obj.length = {
+  valueOf: function() {
+    return 1
+  },
+  toString: function() {
+    return 0
+  }
+};
 var pop = obj.pop();
 if (pop !== -1) {
   $ERROR('#0: obj[0] = -1; obj.length = {valueOf: function() {return 1}, toString: function() {return 0}}  obj.pop() === -1. Actual: ' + (pop));
@@ -33,7 +43,14 @@ if (pop !== -1) {
 
 //CHECK#3
 obj[0] = -1;
-obj.length = {valueOf: function() {return 1}, toString: function() {return {}}};
+obj.length = {
+  valueOf: function() {
+    return 1
+  },
+  toString: function() {
+    return {}
+  }
+};
 var pop = obj.pop();
 if (pop !== -1) {
   $ERROR('#3: obj[0] = -1; obj.length = {valueOf: function() {return 1}, toString: function() {return {}}}  obj.pop() === -1. Actual: ' + (pop));
@@ -42,9 +59,16 @@ if (pop !== -1) {
 //CHECK#4
 try {
   obj[0] = -1;
-  obj.length = {valueOf: function() {return 1}, toString: function() {throw "error"}};
+  obj.length = {
+    valueOf: function() {
+      return 1
+    },
+    toString: function() {
+      throw "error"
+    }
+  };
   var pop = obj.pop();
-if (pop !== -1) {
+  if (pop !== -1) {
     $ERROR('#4.1: obj[0] = -1; obj.length = {valueOf: function() {return 1}, toString: function() {throw "error"}}; obj.pop() === ",". Actual: ' + (pop));
   }
 }
@@ -58,7 +82,11 @@ catch (e) {
 
 //CHECK#5
 obj[0] = -1;
-obj.length = {toString: function() {return 0}};
+obj.length = {
+  toString: function() {
+    return 0
+  }
+};
 var pop = obj.pop();
 if (pop !== undefined) {
   $ERROR('#5: obj[0] = -1; obj.length = {toString: function() {return 0}}  obj.pop() === undefined. Actual: ' + (pop));
@@ -66,7 +94,14 @@ if (pop !== undefined) {
 
 //CHECK#6
 obj[0] = -1;
-obj.length = {valueOf: function() {return {}}, toString: function() {return 0}}
+obj.length = {
+  valueOf: function() {
+    return {}
+  },
+  toString: function() {
+    return 0
+  }
+}
 var pop = obj.pop();
 if (pop !== undefined) {
   $ERROR('#6: obj[0] = -1; obj.length = {valueOf: function() {return {}}, toString: function() {return 0}}  obj.pop() === undefined. Actual: ' + (pop));
@@ -75,7 +110,14 @@ if (pop !== undefined) {
 //CHECK#7
 try {
   obj[0] = -1;
-  obj.length = {valueOf: function() {throw "error"}, toString: function() {return 0}};
+  obj.length = {
+    valueOf: function() {
+      throw "error"
+    },
+    toString: function() {
+      return 0
+    }
+  };
   var pop = obj.pop();
   $ERROR('#7.1: obj[0] = -1; obj.length = {valueOf: function() {throw "error"}, toString: function() {return 0}}; obj.pop() throw "error". Actual: ' + (pop));
 }
@@ -88,7 +130,14 @@ catch (e) {
 //CHECK#8
 try {
   obj[0] = -1;
-  obj.length = {valueOf: function() {return {}}, toString: function() {return {}}};
+  obj.length = {
+    valueOf: function() {
+      return {}
+    },
+    toString: function() {
+      return {}
+    }
+  };
   var pop = obj.pop();
   $ERROR('#8.1: obj[0] = -1; obj.length = {valueOf: function() {return {}}, toString: function() {return {}}}  obj.pop() throw TypeError. Actual: ' + (pop));
 }

@@ -7,17 +7,17 @@
 #ifndef MOZILLA_GFX_2D_SSSE3_SCALER_H_
 #define MOZILLA_GFX_2D_SSSE3_SCALER_H_
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-void ssse3_scale_data(uint32_t *src, int src_width, int src_height,
-                int src_stride,
-                uint32_t *dest, int dest_width, int dest_height,
-                int dest_rowstride,
-                int x, int y,
-                int width, int height);
+bool ssse3_scale_data(uint32_t* src, int src_width, int src_height,
+                      int src_stride, uint32_t* dest, int dest_width,
+                      int dest_height, int dest_rowstride, int x, int y,
+                      int width, int height);
 #ifdef __cplusplus
 }
 #endif
 
-#endif // MOZILLA_GFX_2D_SSS3_SCALER_H_
+#endif  // MOZILLA_GFX_2D_SSS3_SCALER_H_

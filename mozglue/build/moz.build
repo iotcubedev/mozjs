@@ -15,6 +15,7 @@ else:
     Library('mozglue')
 
 if CONFIG['OS_TARGET'] == 'Android':
+    LDFLAGS += ['-Wl,--version-script,%s/mozglue.ver' % SRCDIR]
     SOURCES += [
         'BionicGlue.cpp',
     ]
@@ -24,17 +25,18 @@ if CONFIG['MOZ_ASAN']:
         'AsanOptions.cpp',
     ]
 
+if CONFIG['MOZ_UBSAN']:
+    SOURCES += [
+        'UbsanOptions.cpp',
+    ]
+
 if CONFIG['OS_TARGET'] == 'WINNT':
-    DEFFILE = 'mozglue.def'
+    DEFFILE = '!mozglue.def'
     # We'll break the DLL blocklist if we immediately load user32.dll
     DELAYLOAD_DLLS += [
         'user32.dll',
     ]
-
-    if CONFIG['CC_TYPE'] == "msvc":
-        CFLAGS += ['-guard:cf']
-        CXXFLAGS += ['-guard:cf']
-        LDFLAGS += ['-guard:cf']
+    RCINCLUDE = 'mozglue.rc'
 
 if CONFIG['MOZ_WIDGET_TOOLKIT']:
 
@@ -53,14 +55,12 @@ if CONFIG['MOZ_WIDGET_TOOLKIT']:
             '/memory/build',
         ]
 
-        if CONFIG['CC_TYPE'] == "msvc":
-            SOURCES += ['WindowsCFGStatus.cpp']
         SOURCES += [
             'Authenticode.cpp',
+            'UntrustedDllsHandler.cpp',
             'WindowsDllBlocklist.cpp',
         ]
 
-        DisableStlWrapping()
         OS_LIBS += [
             'crypt32',
             'version',
@@ -72,16 +72,30 @@ if CONFIG['MOZ_WIDGET_TOOLKIT']:
         ]
         EXPORTS.mozilla += [
             'Authenticode.h',
+            'WindowsDllBlocklistCommon.h',
         ]
         EXPORTS.mozilla.glue += [
             'WindowsDllServices.h',
         ]
 
+        # Generate DLL Blocklists
+        blocklist_header_types = ['A11y', 'Launcher', 'Legacy', 'Test']
+        blocklist_file_leaf_tpl = 'WindowsDllBlocklist{0}Defs.h'
+        blocklist_files = tuple([blocklist_file_leaf_tpl.format(type)
+                                 for type in blocklist_header_types])
+        GENERATED_FILES += [
+            blocklist_files
+        ]
+        blocklist_defs = GENERATED_FILES[blocklist_files]
+        blocklist_defs.script = 'gen_dll_blocklist_defs.py:gen_blocklists'
+        blocklist_defs.inputs = ['WindowsDllBlocklistDefs.in']
+        EXPORTS.mozilla += ['!' + hdr for hdr in blocklist_files]
+
     EXPORTS.mozilla += [
         'arm.h',
         'mips.h',
+        'ppc.h',
         'SSE.h',
-        'WindowsCFGStatus.h',
         'WindowsDllBlocklist.h',
     ]
 
@@ -100,6 +114,11 @@ if CONFIG['MOZ_WIDGET_TOOLKIT']:
             'mips.cpp',
         ]
 
+    if CONFIG['CPU_ARCH'].startswith('ppc'):
+        SOURCES += [
+            'ppc.cpp',
+        ]
+
     if CONFIG['MOZ_LINKER']:
         USE_LIBS += [
             'zlib',
@@ -109,10 +128,8 @@ USE_LIBS += [
     'mfbt',
 ]
 
-DEFINES['IMPL_MFBT'] = True
+LIBRARY_DEFINES['IMPL_MFBT'] = True
 LIBRARY_DEFINES['MOZ_HAS_MOZGLUE'] = True
-
-LDFLAGS += CONFIG['MOZ_GLUE_WRAP_LDFLAGS']
 
 if CONFIG['OS_TARGET'] == 'Darwin':
     # On OSX 10.10.3, a dead lock happens in some cases involving dynamic
@@ -124,7 +141,7 @@ if CONFIG['OS_TARGET'] == 'Darwin':
     # for TLS.
     LDFLAGS += ['-Wl,-bind_at_load']
 
-if CONFIG['MOZ_LINKER'] and CONFIG['TARGET_CPU'] == 'arm':
+if CONFIG['MOZ_LINKER'] and CONFIG['CPU_ARCH'] == 'arm':
     LDFLAGS += ['-Wl,-version-script,%s/arm-eabi-filter' % SRCDIR]
 
 DIST_INSTALL = True

@@ -8,6 +8,7 @@
 
 #include "ContainerWriter.h"
 #include "CubebUtils.h"
+#include "MediaQueue.h"
 #include "MediaStreamGraph.h"
 #include "MediaStreamListener.h"
 #include "mozilla/DebugOnly.h"
@@ -18,6 +19,9 @@
 
 namespace mozilla {
 
+class DriftCompensator;
+class Muxer;
+class Runnable;
 class TaskQueue;
 
 namespace dom {
@@ -25,19 +29,20 @@ class AudioNode;
 class AudioStreamTrack;
 class MediaStreamTrack;
 class VideoStreamTrack;
-}
+}  // namespace dom
 
+class DriftCompensator;
 class MediaEncoder;
 
-class MediaEncoderListener
-{
-public:
+class MediaEncoderListener {
+ public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaEncoderListener)
   virtual void Initialized() = 0;
   virtual void DataAvailable() = 0;
   virtual void Error() = 0;
   virtual void Shutdown() = 0;
-protected:
+
+ protected:
   virtual ~MediaEncoderListener() {}
 };
 
@@ -73,54 +78,55 @@ protected:
  *    been initialized and when there's data available.
  *    => encoder->RegisterListener(listener);
  *
- * 3) Connect the MediaStreamTracks to be recorded.
+ * 3) Connect the sources to be recorded. Either through:
+ *    => encoder->ConnectAudioNode(node);
+ *    or
  *    => encoder->ConnectMediaStreamTrack(track);
- *    This creates the corresponding TrackEncoder and connects the track and
- *    the TrackEncoder through a track listener. This also starts encoding.
+ *    These should not be mixed. When connecting MediaStreamTracks there is
+ *    support for at most one of each kind.
  *
- * 4) When the MediaEncoderListener is notified that the MediaEncoder is
- *    initialized, we can encode metadata.
- *    => encoder->GetEncodedMetadata(...);
- *
- * 5) When the MediaEncoderListener is notified that the MediaEncoder has
- *    data available, we can encode data.
+ * 4) When the MediaEncoderListener is notified that the MediaEncoder has
+ *    data available, we can encode data. This also encodes metadata on its
+ *    first invocation.
  *    => encoder->GetEncodedData(...);
  *
- * 6) To stop encoding, there are multiple options:
+ * 5) To stop encoding, there are multiple options:
  *
- *    6.1) Stop() for a graceful stop.
+ *    5.1) Stop() for a graceful stop.
  *         => encoder->Stop();
  *
- *    6.2) Cancel() for an immediate stop, if you don't need the data currently
+ *    5.2) Cancel() for an immediate stop, if you don't need the data currently
  *         buffered.
  *         => encoder->Cancel();
  *
- *    6.3) When all input tracks end, the MediaEncoder will automatically stop
+ *    5.3) When all input tracks end, the MediaEncoder will automatically stop
  *         and shut down.
  */
-class MediaEncoder
-{
-private:
+class MediaEncoder {
+ private:
   class AudioTrackListener;
   class VideoTrackListener;
   class EncoderListener;
 
-public :
+ public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaEncoder)
 
   MediaEncoder(TaskQueue* aEncoderThread,
+               RefPtr<DriftCompensator> aDriftCompensator,
                UniquePtr<ContainerWriter> aWriter,
                AudioTrackEncoder* aAudioEncoder,
-               VideoTrackEncoder* aVideoEncoder,
+               VideoTrackEncoder* aVideoEncoder, TrackRate aTrackRate,
                const nsAString& aMIMEType);
 
-  /* Note - called from control code, not on MSG threads. */
-  void Suspend(TimeStamp aTime);
+  /**
+   * Called on main thread from MediaRecorder::Pause.
+   */
+  void Suspend();
 
   /**
-   * Note - called from control code, not on MSG threads.
-   * Calculates time spent paused in order to offset frames. */
-  void Resume(TimeStamp aTime);
+   * Called on main thread from MediaRecorder::Resume.
+   */
+  void Resume();
 
   /**
    * Stops the current encoding, and disconnects the input tracks.
@@ -147,34 +153,19 @@ public :
    * to create the encoder. For now, default aMIMEType to "audio/ogg" and use
    * Ogg+Opus if it is empty.
    */
-  static already_AddRefed<MediaEncoder>
-  CreateEncoder(TaskQueue* aEncoderThread,
-                const nsAString& aMIMEType,
-                uint32_t aAudioBitrate,
-                uint32_t aVideoBitrate,
-                uint8_t aTrackTypes,
-                TrackRate aTrackRate);
+  static already_AddRefed<MediaEncoder> CreateEncoder(
+      TaskQueue* aEncoderThread, const nsAString& aMIMEType,
+      uint32_t aAudioBitrate, uint32_t aVideoBitrate, uint8_t aTrackTypes,
+      TrackRate aTrackRate);
 
-  /**
-   * Encodes raw metadata for all tracks to aOutputBufs. aMIMEType is the valid
-   * mime-type for the returned container data. The buffer of container data is
-   * allocated in ContainerWriter::GetContainerData().
-   *
-   * Should there be insufficient input data for either track encoder to infer
-   * the metadata, or if metadata has already been encoded, we return an error
-   * and the output arguments are undefined. Otherwise we return NS_OK.
-   */
-  nsresult GetEncodedMetadata(nsTArray<nsTArray<uint8_t> >* aOutputBufs,
-                              nsAString& aMIMEType);
   /**
    * Encodes raw data for all tracks to aOutputBufs. The buffer of container
    * data is allocated in ContainerWriter::GetContainerData().
    *
-   * This implies that metadata has already been encoded and that all track
-   * encoders are still active. Should either implication break, we return an
-   * error and the output argument is undefined. Otherwise we return NS_OK.
+   * On its first call, metadata is also encoded. TrackEncoders must have been
+   * initialized before this is called.
    */
-  nsresult GetEncodedData(nsTArray<nsTArray<uint8_t> >* aOutputBufs);
+  nsresult GetEncodedData(nsTArray<nsTArray<uint8_t>>* aOutputBufs);
 
   /**
    * Return true if MediaEncoder has been shutdown. Reasons are encoding
@@ -193,6 +184,8 @@ public :
 #ifdef MOZ_WEBM_ENCODER
   static bool IsWebMEncoderEnabled();
 #endif
+
+  const nsString& MimeType() const;
 
   /**
    * Notifies listeners that this MediaEncoder has been initialized.
@@ -229,10 +222,22 @@ public :
    */
   void SetVideoKeyFrameInterval(int32_t aVideoKeyFrameInterval);
 
-protected:
+ protected:
   ~MediaEncoder();
 
-private:
+ private:
+  /**
+   * Sets mGraphStream if not already set, using a new stream from aStream's
+   * graph.
+   */
+  void EnsureGraphStreamFrom(MediaStream* aStream);
+
+  /**
+   * Takes a regular runnable and dispatches it to the graph wrapped in a
+   * ControlMessage.
+   */
+  void RunOnGraph(already_AddRefed<Runnable> aRunnable);
+
   /**
    * Shuts down the MediaEncoder and cleans up track encoders.
    * Listeners will be notified of the shutdown unless we were Cancel()ed first.
@@ -245,14 +250,10 @@ private:
    */
   void SetError();
 
-  // Get encoded data from trackEncoder and write to muxer
-  nsresult WriteEncodedDataToMuxer(TrackEncoder *aTrackEncoder);
-  // Get metadata from trackEncoder and copy to muxer
-  nsresult CopyMetadataToMuxer(TrackEncoder* aTrackEncoder);
-
   const RefPtr<TaskQueue> mEncoderThread;
+  const RefPtr<DriftCompensator> mDriftCompensator;
 
-  UniquePtr<ContainerWriter> mWriter;
+  UniquePtr<Muxer> mMuxer;
   RefPtr<AudioTrackEncoder> mAudioEncoder;
   RefPtr<AudioTrackListener> mAudioListener;
   RefPtr<VideoTrackEncoder> mVideoEncoder;
@@ -275,23 +276,25 @@ private:
   // A video track that we are encoding. Will be null if the input stream
   // doesn't contain video on start() or if the input is an AudioNode.
   RefPtr<dom::VideoStreamTrack> mVideoTrack;
+
+  // A stream to keep the MediaStreamGraph alive while we're recording.
+  RefPtr<SharedDummyStream> mGraphStream;
+
   TimeStamp mStartTime;
-  nsString mMIMEType;
+  const nsString mMIMEType;
   bool mInitialized;
-  bool mMetadataEncoded;
   bool mCompleted;
   bool mError;
   bool mCanceled;
   bool mShutdown;
   // Get duration from create encoder, for logging purpose
-  double GetEncodeTimeStamp()
-  {
+  double GetEncodeTimeStamp() {
     TimeDuration decodeTime;
     decodeTime = TimeStamp::Now() - mStartTime;
     return decodeTime.ToMilliseconds();
   }
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
 #endif

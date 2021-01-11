@@ -19,7 +19,7 @@
 
 // This is the schema version. Update it at any schema change and add a
 // corresponding migrateVxx method below.
-#define DATABASE_SCHEMA_VERSION 43
+#define DATABASE_SCHEMA_VERSION 53
 
 // Fired after Places inited.
 #define TOPIC_PLACES_INIT_COMPLETE "places-init-complete"
@@ -49,23 +49,25 @@ enum JournalMode {
   JOURNAL_DELETE = 0
   // Can reduce fsyncs on Linux when journal is deleted (See bug 460315).
   // We fallback to this mode when WAL is unavailable.
-, JOURNAL_TRUNCATE
+  ,
+  JOURNAL_TRUNCATE
   // Unsafe in case of crashes on database swap or low memory.
-, JOURNAL_MEMORY
+  ,
+  JOURNAL_MEMORY
   // Can reduce number of fsyncs.  We try to use this mode by default.
-, JOURNAL_WAL
+  ,
+  JOURNAL_WAL
 };
 
 class ClientsShutdownBlocker;
 class ConnectionShutdownBlocker;
 
-class Database final : public nsIObserver
-                     , public nsSupportsWeakReference
-{
+class Database final : public nsIObserver, public nsSupportsWeakReference {
   typedef mozilla::storage::StatementCache<mozIStorageStatement> StatementCache;
-  typedef mozilla::storage::StatementCache<mozIStorageAsyncStatement> AsyncStatementCache;
+  typedef mozilla::storage::StatementCache<mozIStorageAsyncStatement>
+      AsyncStatementCache;
 
-public:
+ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOBSERVER
 
@@ -78,12 +80,14 @@ public:
   nsresult Init();
 
   /**
-   * The AsyncShutdown client used by clients of this API to be informed of shutdown.
+   * The AsyncShutdown client used by clients of this API to be informed of
+   * shutdown.
    */
   already_AddRefed<nsIAsyncShutdownClient> GetClientsShutdown();
 
   /**
-   * The AsyncShutdown client used by clients of this API to be informed of connection shutdown.
+   * The AsyncShutdown client used by clients of this API to be informed of
+   * connection shutdown.
    */
   already_AddRefed<nsIAsyncShutdownClient> GetConnectionShutdown();
 
@@ -109,8 +113,7 @@ public:
    *
    * @return one of the nsINavHistoryService::DATABASE_STATUS_* constants.
    */
-  uint16_t GetDatabaseStatus()
-  {
+  uint16_t GetDatabaseStatus() {
     mozilla::Unused << EnsureConnection();
     return mDatabaseStatus;
   }
@@ -120,8 +123,7 @@ public:
    *
    * @return The connection handle.
    */
-  mozIStorageConnection* MainConn()
-  {
+  mozIStorageConnection* MainConn() {
     mozilla::Unused << EnsureConnection();
     return mMainConn;
   }
@@ -133,8 +135,7 @@ public:
    * @param aEvent
    *        The runnable to be dispatched.
    */
-  void DispatchToAsyncThread(nsIRunnable* aEvent)
-  {
+  void DispatchToAsyncThread(nsIRunnable* aEvent) {
     if (mClosed || NS_FAILED(EnsureConnection())) {
       return;
     }
@@ -156,10 +157,8 @@ public:
    * @note Always null check the result.
    * @note Always use a scoper to reset the statement.
    */
-  template<int N>
-  already_AddRefed<mozIStorageStatement>
-  GetStatement(const char (&aQuery)[N])
-  {
+  template <int N>
+  already_AddRefed<mozIStorageStatement> GetStatement(const char (&aQuery)[N]) {
     nsDependentCString query(aQuery, N - 1);
     return GetStatement(query);
   }
@@ -173,7 +172,7 @@ public:
    * @note Always null check the result.
    * @note Always use a scoper to reset the statement.
    */
-  already_AddRefed<mozIStorageStatement>  GetStatement(const nsACString& aQuery);
+  already_AddRefed<mozIStorageStatement> GetStatement(const nsACString& aQuery);
 
   /**
    * Gets a cached asynchronous statement.
@@ -184,10 +183,9 @@ public:
    * @note Always null check the result.
    * @note AsyncStatements are automatically reset on execution.
    */
-  template<int N>
-  already_AddRefed<mozIStorageAsyncStatement>
-  GetAsyncStatement(const char (&aQuery)[N])
-  {
+  template <int N>
+  already_AddRefed<mozIStorageAsyncStatement> GetAsyncStatement(
+      const char (&aQuery)[N]) {
     nsDependentCString query(aQuery, N - 1);
     return GetAsyncStatement(query);
   }
@@ -201,11 +199,37 @@ public:
    * @note Always null check the result.
    * @note AsyncStatements are automatically reset on execution.
    */
-  already_AddRefed<mozIStorageAsyncStatement> GetAsyncStatement(const nsACString& aQuery);
+  already_AddRefed<mozIStorageAsyncStatement> GetAsyncStatement(
+      const nsACString& aQuery);
 
   uint32_t MaxUrlLength();
 
-protected:
+  int64_t GetRootFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mRootId;
+  }
+  int64_t GetMenuFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mMenuRootId;
+  }
+  int64_t GetTagsFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mTagsRootId;
+  }
+  int64_t GetUnfiledFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mUnfiledRootId;
+  }
+  int64_t GetToolbarFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mToolbarRootId;
+  }
+  int64_t GetMobileFolderId() {
+    mozilla::Unused << EnsureConnection();
+    return mMobileRootId;
+  }
+
+ protected:
   /**
    * Finalizes the cached statements and closes the database connection.
    * A TOPIC_PLACES_CONNECTION_CLOSED notification is fired when done.
@@ -215,25 +239,13 @@ protected:
   bool IsShutdownStarted() const;
 
   /**
-   * Initializes the database file.  If the database does not exist or is
-   * corrupt, a new one is created.  In case of corruption it also creates a
-   * backup copy of the database.
-   *
-   * @param aStorage
-   *        mozStorage service instance.
-   * @param aNewDatabaseCreated
-   *        whether a new database file has been created.
-   */
-  nsresult InitDatabaseFile(nsCOMPtr<mozIStorageService>& aStorage,
-                            bool* aNewDatabaseCreated);
-
-  /**
    * Ensure the favicons database file exists.
    *
    * @param aStorage
    *        mozStorage service instance.
    */
-  nsresult EnsureFaviconsDatabaseFile(nsCOMPtr<mozIStorageService>& aStorage);
+  nsresult EnsureFaviconsDatabaseAttached(
+      const nsCOMPtr<mozIStorageService>& aStorage);
 
   /**
    * Creates a database backup and replaces the original file with a new
@@ -241,19 +253,29 @@ protected:
    *
    * @param aStorage
    *        mozStorage service instance.
+   * @param aDbfilename
+   *        the database file name to replace.
    * @param aTryToClone
    *        whether we should try to clone a corrupt database.
+   * @param aReopenConnection
+   *        whether we should open a new connection to the replaced database.
    */
   nsresult BackupAndReplaceDatabaseFile(nsCOMPtr<mozIStorageService>& aStorage,
-                                        bool aTryToClone);
+                                        const nsString& aDbFilename,
+                                        bool aTryToClone,
+                                        bool aReopenConnection);
 
   /**
    * Tries to recover tables and their contents from a corrupt database.
    *
    * @param aStorage
    *        mozStorage service instance.
+   * @param aDatabaseFile
+   *        nsIFile pointing to the places.sqlite file considered corrupt.
    */
-  nsresult TryToCloneTablesFromCorruptDatabase(nsCOMPtr<mozIStorageService>& aStorage);
+  nsresult TryToCloneTablesFromCorruptDatabase(
+      const nsCOMPtr<mozIStorageService>& aStorage,
+      const nsCOMPtr<nsIFile>& aDatabaseFile);
 
   /**
    * Set up the connection environment through PRAGMAs.
@@ -274,9 +296,15 @@ protected:
   nsresult InitSchema(bool* aDatabaseMigrated);
 
   /**
+   * Checks the root bookmark folders are present, and saves the IDs for them.
+   */
+  nsresult CheckRoots();
+
+  /**
    * Creates bookmark roots in a new DB.
    */
-  nsresult CreateBookmarkRoots();
+  nsresult EnsureBookmarkRoots(const int32_t startPosition,
+                               bool shouldReparentRoots);
 
   /**
    * Initializes additionale SQLite functions, defined in SQLFunctions.h
@@ -291,11 +319,6 @@ protected:
   /**
    * Helpers used by schema upgrades.
    */
-  nsresult MigrateV31Up();
-  nsresult MigrateV32Up();
-  nsresult MigrateV33Up();
-  nsresult MigrateV34Up();
-  nsresult MigrateV35Up();
   nsresult MigrateV36Up();
   nsresult MigrateV37Up();
   nsresult MigrateV38Up();
@@ -304,17 +327,27 @@ protected:
   nsresult MigrateV41Up();
   nsresult MigrateV42Up();
   nsresult MigrateV43Up();
+  nsresult MigrateV44Up();
+  nsresult MigrateV45Up();
+  nsresult MigrateV46Up();
+  nsresult MigrateV47Up();
+  nsresult MigrateV48Up();
+  nsresult MigrateV49Up();
+  nsresult MigrateV50Up();
+  nsresult MigrateV51Up();
+  nsresult MigrateV52Up();
+  nsresult MigrateV53Up();
+
+  void MigrateV52OriginFrecencies();
 
   nsresult UpdateBookmarkRootTitles();
 
   friend class ConnectionShutdownBlocker;
 
   int64_t CreateMobileRoot();
-  nsresult GetItemsWithAnno(const nsACString& aAnnoName, int32_t aItemType,
-                            nsTArray<int64_t>& aItemIds);
-  nsresult DeleteBookmarkItem(int32_t aItemId);
+  nsresult ConvertOldStyleQuery(nsCString& aURL);
 
-private:
+ private:
   ~Database();
 
   /**
@@ -365,9 +398,17 @@ private:
 
   // Used to initialize components on places startup.
   nsCategoryCache<nsIObserver> mCacheObservers;
+
+  // Used to cache the places folder Ids when the connection is started.
+  int64_t mRootId;
+  int64_t mMenuRootId;
+  int64_t mTagsRootId;
+  int64_t mUnfiledRootId;
+  int64_t mToolbarRootId;
+  int64_t mMobileRootId;
 };
 
-} // namespace places
-} // namespace mozilla
+}  // namespace places
+}  // namespace mozilla
 
-#endif // mozilla_places_Database_h_
+#endif  // mozilla_places_Database_h_

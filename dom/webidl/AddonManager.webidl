@@ -56,8 +56,8 @@ dictionary addonInstallOptions {
 
 [HeaderFile="mozilla/AddonManagerWebAPI.h",
  Func="mozilla::AddonManagerWebAPI::IsAPIEnabled",
- NavigatorProperty="mozAddonManager",
- JSImplementation="@mozilla.org/addon-web-api/manager;1"]
+ JSImplementation="@mozilla.org/addon-web-api/manager;1",
+ WantsEventListenerHooks]
 interface AddonManager : EventTarget {
   /**
    * Gets information about an add-on
@@ -75,20 +75,14 @@ interface AddonManager : EventTarget {
    *        Only one supported option: 'url', the URL of the addon to install.
    * @return A promise that resolves to an instance of AddonInstall.
    */
-  Promise<AddonInstall> createInstall(optional addonInstallOptions options);
+  Promise<AddonInstall> createInstall(optional addonInstallOptions options = {});
 
   // Indicator to content whether permissions prompts are enabled
   readonly attribute boolean permissionPromptsEnabled;
-
-  /* Hooks for managing event listeners */
-  [ChromeOnly]
-  void eventListenerWasAdded(DOMString type);
-  [ChromeOnly]
-  void eventListenerWasRemoved(DOMString type);
 };
 
-[ChromeOnly,Exposed=System,HeaderFile="mozilla/AddonManagerWebAPI.h"]
-interface AddonManagerPermissions {
-  static boolean isHostPermitted(DOMString host);
+[ChromeOnly,Exposed=Window,HeaderFile="mozilla/AddonManagerWebAPI.h"]
+namespace AddonManagerPermissions {
+  boolean isHostPermitted(DOMString host);
 };
 

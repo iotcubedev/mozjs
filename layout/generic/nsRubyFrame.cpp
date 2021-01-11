@@ -9,13 +9,15 @@
 #include "nsRubyFrame.h"
 
 #include "RubyUtils.h"
+#include "mozilla/ComputedStyle.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/WritingModes.h"
 #include "nsLineLayout.h"
 #include "nsPresContext.h"
 #include "nsRubyBaseContainerFrame.h"
 #include "nsRubyTextContainerFrame.h"
-#include "nsStyleContext.h"
 
 using namespace mozilla;
 
@@ -30,11 +32,9 @@ NS_QUERYFRAME_TAIL_INHERITING(nsInlineFrame)
 
 NS_IMPL_FRAMEARENA_HELPERS(nsRubyFrame)
 
-nsContainerFrame*
-NS_NewRubyFrame(nsIPresShell* aPresShell,
-                nsStyleContext* aContext)
-{
-  return new (aPresShell) nsRubyFrame(aContext);
+nsContainerFrame* NS_NewRubyFrame(PresShell* aPresShell,
+                                  ComputedStyle* aStyle) {
+  return new (aPresShell) nsRubyFrame(aStyle, aPresShell->GetPresContext());
 }
 
 //----------------------------------------------------------------------
@@ -42,9 +42,8 @@ NS_NewRubyFrame(nsIPresShell* aPresShell,
 // nsRubyFrame Method Implementations
 // ==================================
 
-/* virtual */ bool
-nsRubyFrame::IsFrameOfType(uint32_t aFlags) const
-{
+/* virtual */
+bool nsRubyFrame::IsFrameOfType(uint32_t aFlags) const {
   if (aFlags & eBidiInlineContainer) {
     return false;
   }
@@ -52,41 +51,36 @@ nsRubyFrame::IsFrameOfType(uint32_t aFlags) const
 }
 
 #ifdef DEBUG_FRAME_DUMP
-nsresult
-nsRubyFrame::GetFrameName(nsAString& aResult) const
-{
+nsresult nsRubyFrame::GetFrameName(nsAString& aResult) const {
   return MakeFrameName(NS_LITERAL_STRING("Ruby"), aResult);
 }
 #endif
 
-/* virtual */ void
-nsRubyFrame::AddInlineMinISize(gfxContext *aRenderingContext,
-                               nsIFrame::InlineMinISizeData *aData)
-{
+/* virtual */
+void nsRubyFrame::AddInlineMinISize(gfxContext* aRenderingContext,
+                                    nsIFrame::InlineMinISizeData* aData) {
   for (nsIFrame* frame = this; frame; frame = frame->GetNextInFlow()) {
-    for (RubySegmentEnumerator e(static_cast<nsRubyFrame*>(frame));
-         !e.AtEnd(); e.Next()) {
+    for (RubySegmentEnumerator e(static_cast<nsRubyFrame*>(frame)); !e.AtEnd();
+         e.Next()) {
       e.GetBaseContainer()->AddInlineMinISize(aRenderingContext, aData);
     }
   }
 }
 
-/* virtual */ void
-nsRubyFrame::AddInlinePrefISize(gfxContext *aRenderingContext,
-                                nsIFrame::InlinePrefISizeData *aData)
-{
+/* virtual */
+void nsRubyFrame::AddInlinePrefISize(gfxContext* aRenderingContext,
+                                     nsIFrame::InlinePrefISizeData* aData) {
   for (nsIFrame* frame = this; frame; frame = frame->GetNextInFlow()) {
-    for (RubySegmentEnumerator e(static_cast<nsRubyFrame*>(frame));
-         !e.AtEnd(); e.Next()) {
+    for (RubySegmentEnumerator e(static_cast<nsRubyFrame*>(frame)); !e.AtEnd();
+         e.Next()) {
       e.GetBaseContainer()->AddInlinePrefISize(aRenderingContext, aData);
     }
   }
   aData->mLineIsEmpty = false;
 }
 
-static nsRubyBaseContainerFrame*
-FindRubyBaseContainerAncestor(nsIFrame* aFrame)
-{
+static nsRubyBaseContainerFrame* FindRubyBaseContainerAncestor(
+    nsIFrame* aFrame) {
   for (nsIFrame* ancestor = aFrame->GetParent();
        ancestor && ancestor->IsFrameOfType(nsIFrame::eLineParticipant);
        ancestor = ancestor->GetParent()) {
@@ -97,12 +91,11 @@ FindRubyBaseContainerAncestor(nsIFrame* aFrame)
   return nullptr;
 }
 
-/* virtual */ void
-nsRubyFrame::Reflow(nsPresContext* aPresContext,
-                    ReflowOutput& aDesiredSize,
-                    const ReflowInput& aReflowInput,
-                    nsReflowStatus& aStatus)
-{
+/* virtual */
+void nsRubyFrame::Reflow(nsPresContext* aPresContext,
+                         ReflowOutput& aDesiredSize,
+                         const ReflowInput& aReflowInput,
+                         nsReflowStatus& aStatus) {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsRubyFrame");
   DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
@@ -115,34 +108,10 @@ nsRubyFrame::Reflow(nsPresContext* aPresContext,
   }
 
   // Grab overflow frames from prev-in-flow and its own.
-  MoveInlineOverflowToChildList(
-    aReflowInput.mLineLayout->LineContainerFrame());
+  MoveInlineOverflowToChildList(aReflowInput.mLineLayout->LineContainerFrame());
 
   // Clear leadings
   mLeadings.Reset();
-
-  // Since the ruby base container is going to reflow not only the ruby
-  // base frames, but also the ruby text frames, and then *afterwards*
-  // we're going to reflow the ruby text containers (which do not reflow
-  // their children), we need to transfer NS_FRAME_IS_DIRTY status from
-  // the ruby text containers to their child ruby texts now, both so
-  // that the ruby texts are marked dirty if needed, and so that the
-  // ruby text container doesn't mark the ruby text frames dirty *after*
-  // they're reflowed and leave dirty bits in a clean tree (suppressing
-  // future reflows, due to lack of a queued reflow to clean them).
-  for (nsIFrame* child : PrincipalChildList()) {
-    if (child->HasAnyStateBits(NS_FRAME_IS_DIRTY) &&
-        child->IsRubyTextContainerFrame()) {
-      for (nsIFrame* grandchild : child->PrincipalChildList()) {
-        grandchild->AddStateBits(NS_FRAME_IS_DIRTY);
-      }
-      // Replace NS_FRAME_IS_DIRTY with NS_FRAME_HAS_DIRTY_CHILDREN so
-      // we still have a dirty marking, but one that we won't transfer
-      // to children again.
-      child->RemoveStateBits(NS_FRAME_IS_DIRTY);
-      child->AddStateBits(NS_FRAME_HAS_DIRTY_CHILDREN);
-    }
-  }
 
   // Begin the span for the ruby frame
   WritingMode frameWM = aReflowInput.GetWritingMode();
@@ -150,7 +119,7 @@ nsRubyFrame::Reflow(nsPresContext* aPresContext,
   LogicalMargin borderPadding = aReflowInput.ComputedLogicalBorderPadding();
   nscoord startEdge = 0;
   const bool boxDecorationBreakClone =
-    StyleBorder()->mBoxDecorationBreak == StyleBoxDecorationBreak::Clone;
+      StyleBorder()->mBoxDecorationBreak == StyleBoxDecorationBreak::Clone;
   if (boxDecorationBreakClone || !GetPrevContinuation()) {
     startEdge = borderPadding.IStart(frameWM);
   }
@@ -158,8 +127,8 @@ nsRubyFrame::Reflow(nsPresContext* aPresContext,
                "should no longer use available widths");
   nscoord availableISize = aReflowInput.AvailableISize();
   availableISize -= startEdge + borderPadding.IEnd(frameWM);
-  aReflowInput.mLineLayout->BeginSpan(this, &aReflowInput,
-                                      startEdge, availableISize, &mBaseline);
+  aReflowInput.mLineLayout->BeginSpan(this, &aReflowInput, startEdge,
+                                      availableISize, &mBaseline);
 
   for (RubySegmentEnumerator e(this); !e.AtEnd(); e.Next()) {
     ReflowSegment(aPresContext, aReflowInput, e.GetBaseContainer(), aStatus);
@@ -174,7 +143,7 @@ nsRubyFrame::Reflow(nsPresContext* aPresContext,
   ContinuationTraversingState pullState(this);
   while (aStatus.IsEmpty()) {
     nsRubyBaseContainerFrame* baseContainer =
-      PullOneSegment(aReflowInput.mLineLayout, pullState);
+        PullOneSegment(aReflowInput.mLineLayout, pullState);
     if (!baseContainer) {
       // No more continuations after, finish now.
       break;
@@ -197,16 +166,14 @@ nsRubyFrame::Reflow(nsPresContext* aPresContext,
     rbc->UpdateDescendantLeadings(mLeadings);
   }
 
-  nsLayoutUtils::SetBSizeFromFontMetrics(this, aDesiredSize,
-                                         borderPadding, lineWM, frameWM);
+  nsLayoutUtils::SetBSizeFromFontMetrics(this, aDesiredSize, borderPadding,
+                                         lineWM, frameWM);
 }
 
-void
-nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
-                           const ReflowInput& aReflowInput,
-                           nsRubyBaseContainerFrame* aBaseContainer,
-                           nsReflowStatus& aStatus)
-{
+void nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
+                                const ReflowInput& aReflowInput,
+                                nsRubyBaseContainerFrame* aBaseContainer,
+                                nsReflowStatus& aStatus) {
   WritingMode lineWM = aReflowInput.mLineLayout->GetWritingMode();
   LogicalSize availSize(lineWM, aReflowInput.AvailableISize(),
                         aReflowInput.AvailableBSize());
@@ -219,8 +186,8 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
 
   ReflowOutput baseMetrics(aReflowInput);
   bool pushedFrame;
-  aReflowInput.mLineLayout->ReflowFrame(aBaseContainer, aStatus,
-                                        &baseMetrics, pushedFrame);
+  aReflowInput.mLineLayout->ReflowFrame(aBaseContainer, aStatus, &baseMetrics,
+                                        pushedFrame);
 
   if (aStatus.IsInlineBreakBefore()) {
     if (aBaseContainer != mFrames.FirstChild()) {
@@ -264,7 +231,8 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
       nsIFrame* newLastChild = newBaseContainer;
       for (uint32_t i = 0; i < rtcCount; i++) {
         nsIFrame* newTextContainer = CreateNextInFlow(textContainers[i]);
-        MOZ_ASSERT(newTextContainer, "Next-in-flow of rtc should not exist "
+        MOZ_ASSERT(newTextContainer,
+                   "Next-in-flow of rtc should not exist "
                    "if the corresponding rbc does not");
         mFrames.RemoveFrame(newTextContainer);
         mFrames.InsertFrame(nullptr, newLastChild, newTextContainer);
@@ -294,7 +262,7 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
   nscoord segmentISize = baseMetrics.ISize(lineWM);
   const nsSize dummyContainerSize;
   LogicalRect baseRect =
-    aBaseContainer->GetLogicalRect(lineWM, dummyContainerSize);
+      aBaseContainer->GetLogicalRect(lineWM, dummyContainerSize);
   // We need to position our rtc frames on one side or the other of the
   // base container's rect, using a coordinate space that's relative to
   // the ruby frame. Right now, the base container's rect's block-axis
@@ -314,15 +282,15 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
     nsReflowStatus textReflowStatus;
     ReflowOutput textMetrics(aReflowInput);
     ReflowInput textReflowInput(aPresContext, aReflowInput, textContainer,
-                                      availSize.ConvertTo(rtcWM, lineWM));
-    textContainer->Reflow(aPresContext, textMetrics,
-                          textReflowInput, textReflowStatus);
+                                availSize.ConvertTo(rtcWM, lineWM));
+    textContainer->Reflow(aPresContext, textMetrics, textReflowInput,
+                          textReflowStatus);
     // Ruby text containers always return complete reflow status even when
     // they have continuations, because the breaking has already been
     // handled when reflowing the base containers.
     NS_ASSERTION(textReflowStatus.IsEmpty(),
                  "Ruby text container must not break itself inside");
-    // The metrics is initialized with reflow state of this ruby frame,
+    // The metrics is initialized with reflow input of this ruby frame,
     // hence the writing-mode is tied to rubyWM instead of rtcWM.
     LogicalSize size = textMetrics.Size(rubyWM).ConvertTo(lineWM, rubyWM);
     textContainer->SetSize(lineWM, size);
@@ -345,15 +313,17 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
 
     LogicalPoint position(lineWM);
     if (side.isSome()) {
-      if (nsLayoutUtils::IsInterCharacterRubyEnabled() &&
+      if (StaticPrefs::layout_css_ruby_intercharacter_enabled() &&
           rtcWM.IsVerticalRL() &&
           lineWM.GetInlineDir() == WritingMode::eInlineLTR) {
         // Inter-character ruby annotations are only supported for vertical-rl
         // in ltr horizontal writing. Fall back to non-inter-character behavior
         // otherwise.
-        LogicalPoint offset(lineWM, offsetRect.ISize(lineWM),
-          offsetRect.BSize(lineWM) > size.BSize(lineWM) ?
-          (offsetRect.BSize(lineWM) - size.BSize(lineWM)) / 2 : 0);
+        LogicalPoint offset(
+            lineWM, offsetRect.ISize(lineWM),
+            offsetRect.BSize(lineWM) > size.BSize(lineWM)
+                ? (offsetRect.BSize(lineWM) - size.BSize(lineWM)) / 2
+                : 0);
         position = offsetRect.Origin(lineWM) + offset;
         aReflowInput.mLineLayout->AdvanceICoord(size.ISize(lineWM));
       } else if (side.value() == eLogicalSideBStart) {
@@ -362,7 +332,7 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
         position = offsetRect.Origin(lineWM);
       } else if (side.value() == eLogicalSideBEnd) {
         position = offsetRect.Origin(lineWM) +
-          LogicalPoint(lineWM, 0, offsetRect.BSize(lineWM));
+                   LogicalPoint(lineWM, 0, offsetRect.BSize(lineWM));
         offsetRect.BSize(lineWM) += size.BSize(lineWM);
       } else {
         MOZ_ASSERT_UNREACHABLE("???");
@@ -372,7 +342,8 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
     // correct. We will fix it in nsLineLayout after the whole line is
     // reflowed.
     FinishReflowChild(textContainer, aPresContext, textMetrics,
-                      &textReflowInput, lineWM, position, dummyContainerSize, 0);
+                      &textReflowInput, lineWM, position, dummyContainerSize,
+                      ReflowChildFlags::Default);
   }
   MOZ_ASSERT(baseRect.ISize(lineWM) == offsetRect.ISize(lineWM),
              "Annotations should only be placed on the block directions");
@@ -395,10 +366,8 @@ nsRubyFrame::ReflowSegment(nsPresContext* aPresContext,
   mLeadings.Update(startLeading, endLeading);
 }
 
-nsRubyBaseContainerFrame*
-nsRubyFrame::PullOneSegment(const nsLineLayout* aLineLayout,
-                            ContinuationTraversingState& aState)
-{
+nsRubyBaseContainerFrame* nsRubyFrame::PullOneSegment(
+    const nsLineLayout* aLineLayout, ContinuationTraversingState& aState) {
   // Pull a ruby base container
   nsIFrame* baseFrame = GetNextInFlowChild(aState);
   if (!baseFrame) {
@@ -407,8 +376,7 @@ nsRubyFrame::PullOneSegment(const nsLineLayout* aLineLayout,
   MOZ_ASSERT(baseFrame->IsRubyBaseContainerFrame());
 
   // Get the float containing block of the base frame before we pull it.
-  nsBlockFrame* oldFloatCB =
-    nsLayoutUtils::GetFloatContainingBlock(baseFrame);
+  nsBlockFrame* oldFloatCB = nsLayoutUtils::GetFloatContainingBlock(baseFrame);
   PullNextInFlowChild(aState);
 
   // Pull all ruby text containers following the base container
@@ -419,7 +387,7 @@ nsRubyFrame::PullOneSegment(const nsLineLayout* aLineLayout,
   }
 
   if (nsBlockFrame* newFloatCB =
-      nsLayoutUtils::GetAsBlock(aLineLayout->LineContainerFrame())) {
+          do_QueryFrame(aLineLayout->LineContainerFrame())) {
     if (oldFloatCB && oldFloatCB != newFloatCB) {
       newFloatCB->ReparentFloats(baseFrame, oldFloatCB, true);
     }

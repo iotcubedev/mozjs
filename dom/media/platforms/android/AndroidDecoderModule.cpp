@@ -4,7 +4,6 @@
 
 #include "GeneratedJNIWrappers.h"
 #include "MediaInfo.h"
-#include "MediaPrefs.h"
 #include "OpusDecoder.h"
 #include "RemoteDataDecoder.h"
 #include "VPXDecoder.h"
@@ -18,14 +17,15 @@
 #include <jni.h>
 
 #undef LOG
-#define LOG(arg, ...)                                                          \
-  MOZ_LOG(                                                                     \
-    sAndroidDecoderModuleLog,                                                  \
-    mozilla::LogLevel::Debug,                                                  \
-    ("AndroidDecoderModule(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+#define LOG(arg, ...)                                     \
+  MOZ_LOG(                                                \
+      sAndroidDecoderModuleLog, mozilla::LogLevel::Debug, \
+      ("AndroidDecoderModule(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+#define SLOG(arg, ...)                                        \
+  MOZ_LOG(sAndroidDecoderModuleLog, mozilla::LogLevel::Debug, \
+          ("%s: " arg, __func__, ##__VA_ARGS__))
 
 using namespace mozilla;
-using namespace mozilla::gl;
 using namespace mozilla::java::sdk;
 using media::TimeUnit;
 
@@ -33,40 +33,33 @@ namespace mozilla {
 
 mozilla::LazyLogModule sAndroidDecoderModuleLog("AndroidDecoderModule");
 
-const char*
-TranslateMimeType(const nsACString& aMimeType)
-{
+const nsCString TranslateMimeType(const nsACString& aMimeType) {
   if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8)) {
-    return "video/x-vnd.on2.vp8";
+    static NS_NAMED_LITERAL_CSTRING(vp8, "video/x-vnd.on2.vp8");
+    return vp8;
   } else if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9)) {
-    return "video/x-vnd.on2.vp9";
+    static NS_NAMED_LITERAL_CSTRING(vp9, "video/x-vnd.on2.vp9");
+    return vp9;
   }
-  return PromiseFlatCString(aMimeType).get();
+  return nsCString(aMimeType);
 }
 
-static bool
-GetFeatureStatus(int32_t aFeature)
-{
+static bool GetFeatureStatus(int32_t aFeature) {
   nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
   int32_t status = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
   nsCString discardFailureId;
   if (!gfxInfo || NS_FAILED(gfxInfo->GetFeatureStatus(
-                    aFeature, discardFailureId, &status))) {
+                      aFeature, discardFailureId, &status))) {
     return false;
   }
   return status == nsIGfxInfo::FEATURE_STATUS_OK;
 };
 
-AndroidDecoderModule::AndroidDecoderModule(CDMProxy* aProxy)
-{
+AndroidDecoderModule::AndroidDecoderModule(CDMProxy* aProxy) {
   mProxy = static_cast<MediaDrmCDMProxy*>(aProxy);
 }
 
-bool
-AndroidDecoderModule::SupportsMimeType(
-  const nsACString& aMimeType,
-  DecoderDoctorDiagnostics* aDiagnostics) const
-{
+bool AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType) {
   if (jni::GetAPIVersion() < 16) {
     return false;
   }
@@ -100,24 +93,28 @@ AndroidDecoderModule::SupportsMimeType(
   if (OpusDataDecoder::IsOpus(aMimeType) ||
       VorbisDataDecoder::IsVorbis(aMimeType) ||
       aMimeType.EqualsLiteral("audio/flac")) {
-    LOG("Rejecting audio of type %s", aMimeType.Data());
+    SLOG("Rejecting audio of type %s", aMimeType.Data());
     return false;
   }
 
   // Prefer the gecko decoder for Theora.
   // Not all android devices support Theora even when they say they do.
   if (TheoraDecoder::IsTheora(aMimeType)) {
-    LOG("Rejecting video of type %s", aMimeType.Data());
+    SLOG("Rejecting video of type %s", aMimeType.Data());
     return false;
   }
 
   return java::HardwareCodecCapabilityUtils::FindDecoderCodecInfoForMimeType(
-    nsCString(TranslateMimeType(aMimeType)));
+      TranslateMimeType(aMimeType));
 }
 
-already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
-{
+bool AndroidDecoderModule::SupportsMimeType(
+    const nsACString& aMimeType, DecoderDoctorDiagnostics* aDiagnostics) const {
+  return AndroidDecoderModule::SupportsMimeType(aMimeType);
+}
+
+already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateVideoDecoder(
+    const CreateDecoderParams& aParams) {
   // Temporary - forces use of VPXDecoder when alpha is present.
   // Bug 1263836 will handle alpha scenario once implemented. It will shift
   // the check for alpha to PDMFactory but not itself remove the need for a
@@ -132,13 +129,12 @@ AndroidDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
   }
 
   RefPtr<MediaDataDecoder> decoder =
-    RemoteDataDecoder::CreateVideoDecoder(aParams, drmStubId, mProxy);
+      RemoteDataDecoder::CreateVideoDecoder(aParams, drmStubId, mProxy);
   return decoder.forget();
 }
 
-already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
-{
+already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateAudioDecoder(
+    const CreateDecoderParams& aParams) {
   const AudioInfo& config = aParams.AudioConfig();
   if (config.mBitDepth != 16) {
     // We only handle 16-bit audio.
@@ -153,8 +149,8 @@ AndroidDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
     drmStubId = mProxy->GetMediaDrmStubId();
   }
   RefPtr<MediaDataDecoder> decoder =
-   RemoteDataDecoder::CreateAudioDecoder(aParams, drmStubId, mProxy);
+      RemoteDataDecoder::CreateAudioDecoder(aParams, drmStubId, mProxy);
   return decoder.forget();
 }
 
-} // mozilla
+}  // namespace mozilla

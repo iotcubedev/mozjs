@@ -7,8 +7,10 @@ DevToolsModules(
     'filters.js',
     'index.js',
     'requests.js',
+    'search.js',
     'selection.js',
     'sort.js',
     'timing-markers.js',
     'ui.js',
+    'web-sockets.js',
 )

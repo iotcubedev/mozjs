@@ -162,9 +162,9 @@ Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
-add_task(function* test_task() {
-  yield Promise.resolve(true);
-  yield Promise.resolve(false);
+add_task(async function test_task() {
+  await Promise.resolve(true);
+  await Promise.resolve(false);
 });
 '''
 
@@ -173,12 +173,12 @@ Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
-add_task(function* test_task() {
-  yield Promise.resolve(true);
+add_task(async function test_task() {
+  await Promise.resolve(true);
 });
 
-add_task(function* test_2() {
-  yield Promise.resolve(true);
+add_task(async function test_2() {
+  await Promise.resolve(true);
 });
 '''
 
@@ -187,8 +187,8 @@ Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
-add_task(function* test_failing() {
-  yield Promise.reject(new Error("I fail."));
+add_task(async function test_failing() {
+  await Promise.reject(new Error("I fail."));
 });
 '''
 
@@ -197,8 +197,8 @@ Components.utils.import("resource://gre/modules/Promise.jsm");
 
 function run_test() { run_next_test(); }
 
-add_task(function* test() {
-  let result = yield Promise.resolve(false);
+add_task(async function test() {
+  let result = await Promise.resolve(false);
 
   Assert.ok(result);
 });
@@ -219,9 +219,9 @@ Components.utils.import("resource://gre/modules/Promise.jsm", this);
 
 function run_test() { run_next_test(); }
 
-add_task(function* this_test_will_fail() {
+add_task(async function this_test_will_fail() {
   for (let i = 0; i < 10; ++i) {
-    yield Promise.resolve();
+    await Promise.resolve();
   }
   Assert.ok(false);
 });
@@ -319,9 +319,18 @@ function run_test(
 
 # A test for failure to load a test due to an error other than a syntax error
 LOAD_ERROR_OTHER_ERROR = '''
-function run_test() {
-    1 = "foo"; // invalid assignment left-hand side
-};
+"use strict";
+no_such_var = "foo"; // assignment to undeclared variable
+'''
+
+# A test that crashes outright.
+TEST_CRASHING = '''
+function run_test () {
+  Components.utils.import("resource://gre/modules/ctypes.jsm", this);
+  let zero = new ctypes.intptr_t(8);
+  let badptr = ctypes.cast(zero, ctypes.PointerType(ctypes.int32_t));
+  badptr.contents;
+}
 '''
 
 # A test for asynchronous cleanup functions
@@ -348,8 +357,8 @@ function run_test() {
     checkpoints.push(5);
   });
 
-  registerCleanupFunction(function* async_cleanup_3() {
-    yield undefined;
+  registerCleanupFunction(async function async_cleanup_3() {
+    await undefined;
     checkpoints.push(4);
   });
 
@@ -425,12 +434,12 @@ add_task(function no_run_test_add_task_fail() {
 NO_RUN_TEST_ADD_TASK_MULTIPLE = '''
 Components.utils.import("resource://gre/modules/Promise.jsm");
 
-add_task(function* test_task() {
-  yield Promise.resolve(true);
+add_task(async function test_task() {
+  await Promise.resolve(true);
 });
 
-add_task(function* test_2() {
-  yield Promise.resolve(true);
+add_task(async function test_2() {
+  await Promise.resolve(true);
 });
 '''
 
@@ -471,6 +480,7 @@ class XPCShellTestsTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tempdir)
+        self.x.shutdownNode()
 
     def writeFile(self, name, contents):
         """
@@ -893,14 +903,13 @@ add_test({
         """
         Ensure a simple test with an uncaught rejection is reported.
         """
-        self.writeFile("test_simple_uncaught_rejection.js", SIMPLE_UNCAUGHT_REJECTION_TEST)
+        self.writeFile("test_simple_uncaught_rejection.js",
+                       SIMPLE_UNCAUGHT_REJECTION_TEST)
         self.writeManifest(["test_simple_uncaught_rejection.js"])
 
         self.assertTestResult(False)
         self.assertInLog(TEST_FAIL_STRING)
-        if not substs.get('RELEASE_OR_BETA'):
-            # async stacks are currently not enabled in release builds.
-            self.assertInLog("test_simple_uncaught_rejection.js:3:3")
+        self.assertInLog("test_simple_uncaught_rejection.js:3:18")
         self.assertInLog("Test rejection.")
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
@@ -932,6 +941,20 @@ add_test({
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(1, self.x.passCount)
         self.assertEquals(0, self.x.failCount)
+
+    def testCrashLogging(self):
+        """
+        Test that a crashing test process logs a failure.
+        """
+        self.writeFile("test_crashes.js", TEST_CRASHING)
+        self.writeManifest(["test_crashes.js"])
+
+        self.assertTestResult(False)
+        self.assertEquals(1, self.x.testCount)
+        self.assertEquals(0, self.x.passCount)
+        self.assertEquals(1, self.x.failCount)
+        if substs.get('MOZ_CRASHREPORTER'):
+            self.assertInLog("\nPROCESS-CRASH")
 
     def testLogCorrectFileName(self):
         """
@@ -1195,7 +1218,7 @@ add_test({
 
         self.assertTestResult(False)
         self.assertInLog(TEST_FAIL_STRING)
-        self.assertInLog("ReferenceError: invalid assignment left-hand side at")
+        self.assertInLog("ReferenceError: assignment to undeclared variable")
         self.assertInLog("test_error.js:3")
         self.assertNotInLog(TEST_PASS_STRING)
 

@@ -9,13 +9,16 @@ apt-get update -y
 # Install dependencies
 apt-get install -y --no-install-recommends \
     socat \
-    python \
     python-requests \
-    python-requests-unixsocket
+    python-requests-unixsocket \
+    python3.5 \
+    python3-minimal \
+    python3-requests \
+    python3-requests-unixsocket
 
 # Extra dependencies only needed for image building. Will be removed at
 # end of script.
-apt-get install -y python-pip
+apt-get install -y python-pip python3-pip
 
 # Install mercurial
 # shellcheck disable=SC1091
@@ -31,27 +34,16 @@ chmod +x /usr/local/bin/download-and-compress
 # Create workspace
 mkdir -p /builds/worker/workspace
 
-# Install python-zstandard.
-(
-cd /setup
-tooltool_fetch <<EOF
-[
-  {
-    "size": 463794,
-    "visibility": "public",
-    "digest": "c6ba906403e5c18b374faf9f676b10f0988b9f4067bd6c52c548d7dee58fac79974babfd5c438aef8da0a5260158116db69b11f2a52a775772d9904b9d86fdbc",
-    "algorithm": "sha512",
-    "filename": "zstandard-0.8.0.tar.gz"
-  }
-]
-EOF
-)
-
-/usr/bin/pip -v install /setup/zstandard-0.8.0.tar.gz
+# We need to install for both Python 2 and 3 because `mach taskcluster-load-image`
+# uses Python 2 and `download-and-compress` uses Python 3.
+# We also need to make sure to explicitly install python3-distutils so that it doesn't get purged later
+apt-get install -y python3-distutils
+/usr/bin/pip -v install -r /setup/requirements-py2.txt
+/usr/bin/pip3 -v install -r /setup/requirements-py3.txt
 
 # python-pip only needed to install python-zstandard. Removing it removes
 # several hundred MB of dependencies from the image.
-apt-get purge -y python-pip
+apt-get purge -y python-pip python3-pip
 
 # Purge apt-get caches to minimize image size
 apt-get auto-remove -y

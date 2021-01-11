@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -23,22 +24,24 @@ flags: [async]
 ---*/
 
 var reject;
-var p1 = new Promise(function(_, _reject) { reject = _reject; });
+var p1 = new Promise(function(_, _reject) {
+  reject = _reject;
+});
 var p2;
 
 p2 = p1.then(function() {}, function() {
-    return 23;
-  });
+  return 23;
+});
 
 p2.then(function(value) {
-    if (value !== 23) {
-      $DONE('The promise should be fulfilled with the provided value.');
-      return;
-    }
+  if (value !== 23) {
+    $DONE('The promise should be fulfilled with the provided value.');
+    return;
+  }
 
-    $DONE();
-  }, function() {
-    $DONE('The promise should not be rejected.');
-  });
+  $DONE();
+}, function() {
+  $DONE('The promise should not be rejected.');
+});
 
 reject();

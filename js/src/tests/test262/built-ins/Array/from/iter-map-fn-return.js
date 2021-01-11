@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-array.from
-es6id: 22.1.2.1
 description: Value returned by mapping function (traversed via iterator)
 info: |
     [...]
@@ -25,8 +24,14 @@ features: [Symbol.iterator]
 ---*/
 
 var thisVals = [];
-var nextResult = { done: false, value: {} };
-var nextNextResult = { done: false, value: {} };
+var nextResult = {
+  done: false,
+  value: {}
+};
+var nextNextResult = {
+  done: false,
+  value: {}
+};
 var firstReturnVal = {};
 var secondReturnVal = {};
 var mapFn = function(value, idx) {
@@ -45,7 +50,9 @@ items[Symbol.iterator] = function() {
     next: function() {
       var result = nextResult;
       nextResult = nextNextResult;
-      nextNextResult = { done: true };
+      nextNextResult = {
+        done: true
+      };
 
       return result;
     }

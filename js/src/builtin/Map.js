@@ -32,8 +32,8 @@ function MapForEach(callbackfn, thisArg = undefined) {
     var M = this;
 
     // Steps 2-3.
-    if (!IsObject(M) || !IsMapObject(M))
-        return callFunction(CallMapMethodIfWrapped, M, callbackfn, thisArg, "MapForEach");
+    if (!IsObject(M) || (M = GuardToMapObject(M)) === null)
+        return callFunction(CallMapMethodIfWrapped, this, callbackfn, thisArg, "MapForEach");
 
     // Step 4.
     if (!IsCallable(callbackfn))
@@ -63,10 +63,12 @@ function MapForEach(callbackfn, thisArg = undefined) {
     }
 }
 
-function MapEntries() {
+// Uncloned functions with `$` prefix are allocated as extended function
+// to store the original name in `_SetCanonicalName`.
+function $MapEntries() {
     return callFunction(std_Map_iterator, this);
 }
-_SetCanonicalName(MapEntries, "entries");
+_SetCanonicalName($MapEntries, "entries");
 
 var iteratorTemp = { mapIterationResultPair: null };
 
@@ -75,8 +77,8 @@ function MapIteratorNext() {
     var O = this;
 
     // Steps 2-3.
-    if (!IsObject(O) || !IsMapIterator(O))
-        return callFunction(CallMapIteratorMethodIfWrapped, O, "MapIteratorNext");
+    if (!IsObject(O) || (O = GuardToMapIterator(O)) === null)
+        return callFunction(CallMapIteratorMethodIfWrapped, this, "MapIteratorNext");
 
     // Steps 4-5 (implemented in _GetNextMapEntryForIterator).
     // Steps 8-9 (omitted).
@@ -95,7 +97,7 @@ function MapIteratorNext() {
         // Steps 10.b-c (omitted).
 
         // Step 6.
-        var itemKind = UnsafeGetInt32FromReservedSlot(this, ITERATOR_SLOT_ITEM_KIND);
+        var itemKind = UnsafeGetInt32FromReservedSlot(O, ITERATOR_SLOT_ITEM_KIND);
 
         var result;
         if (itemKind === ITEM_KIND_KEY) {
@@ -121,8 +123,8 @@ function MapIteratorNext() {
 }
 
 // ES6 final draft 23.1.2.2.
-function MapSpecies() {
+function $MapSpecies() {
     // Step 1.
     return this;
 }
-_SetCanonicalName(MapSpecies, "get [Symbol.species]");
+_SetCanonicalName($MapSpecies, "get [Symbol.species]");

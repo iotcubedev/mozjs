@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2015 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -33,7 +34,9 @@ var thenable = {
 };
 
 try {
-  Promise.resolve = function(v) { return v; };
+  Promise.resolve = function(v) {
+    return v;
+  };
   self = Promise.race([thenable]);
 } finally {
   Promise.resolve = builtinResolve;
@@ -42,15 +45,15 @@ try {
 resolve(self);
 
 self.then(function() {
-    $DONE('The promise should not be fulfilled.');
-  }, function(value) {
-    if (!value) {
-      $DONE('The promise should be rejected with a value.');
-      return;
-    }
-    if (value.constructor !== TypeError) {
-      $DONE('The promise should be rejected with a TypeError instance.');
-      return;
-    }
-    $DONE();
-  });
+  $DONE('The promise should not be fulfilled.');
+}, function(value) {
+  if (!value) {
+    $DONE('The promise should be rejected with a value.');
+    return;
+  }
+  if (value.constructor !== TypeError) {
+    $DONE('The promise should be rejected with a TypeError instance.');
+    return;
+  }
+  $DONE();
+});

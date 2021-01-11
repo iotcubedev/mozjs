@@ -4,9 +4,10 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-[Constructor(DOMString typeArg, optional KeyboardEventInit keyboardEventInitDict)]
+[Constructor(DOMString typeArg, optional KeyboardEventInit keyboardEventInitDict= {})]
 interface KeyboardEvent : UIEvent
 {
+  [NeedsCallerType]
   readonly attribute unsigned long    charCode;
   [NeedsCallerType]
   readonly attribute unsigned long    keyCode;
@@ -35,7 +36,7 @@ interface KeyboardEvent : UIEvent
   [NeedsCallerType]
   readonly attribute DOMString code;
 
-  [Throws]
+  [Throws, BinaryName="initKeyboardEventJS"]
   void initKeyboardEvent(DOMString typeArg,
                          optional boolean bubblesArg = false,
                          optional boolean cancelableArg = false,

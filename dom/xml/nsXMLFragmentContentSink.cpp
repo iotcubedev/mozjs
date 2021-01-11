@@ -11,8 +11,7 @@
 #include "nsContentSink.h"
 #include "nsIExpatSink.h"
 #include "nsIDTD.h"
-#include "nsIDocument.h"
-#include "nsIDOMDocumentFragment.h"
+#include "mozilla/dom/Document.h"
 #include "nsIContent.h"
 #include "nsGkAtoms.h"
 #include "mozilla/dom/NodeInfo.h"
@@ -33,9 +32,8 @@
 using namespace mozilla::dom;
 
 class nsXMLFragmentContentSink : public nsXMLContentSink,
-                                 public nsIFragmentContentSink
-{
-public:
+                                 public nsIFragmentContentSink {
+ public:
   nsXMLFragmentContentSink();
 
   // nsISupports
@@ -44,8 +42,7 @@ public:
                                                      nsXMLContentSink)
 
   // nsIExpatSink
-  NS_IMETHOD HandleDoctypeDecl(const nsAString& aSubset,
-                               const nsAString& aName,
+  NS_IMETHOD HandleDoctypeDecl(const nsAString& aSubset, const nsAString& aName,
                                const nsAString& aSystemId,
                                const nsAString& aPublicId,
                                nsISupports* aCatalogData) override;
@@ -55,8 +52,7 @@ public:
                                   const char16_t* aEncoding,
                                   int32_t aStandalone) override;
   NS_IMETHOD ReportError(const char16_t* aErrorText,
-                         const char16_t* aSourceText,
-                         nsIScriptError* aError,
+                         const char16_t* aSourceText, nsIScriptError* aError,
                          bool* aRetval) override;
 
   // nsIContentSink
@@ -69,21 +65,21 @@ public:
   // nsIXMLContentSink
 
   // nsIFragmentContentSink
-  NS_IMETHOD FinishFragmentParsing(nsIDOMDocumentFragment** aFragment) override;
-  NS_IMETHOD SetTargetDocument(nsIDocument* aDocument) override;
+  NS_IMETHOD FinishFragmentParsing(DocumentFragment** aFragment) override;
+  NS_IMETHOD SetTargetDocument(Document* aDocument) override;
   NS_IMETHOD WillBuildContent() override;
   NS_IMETHOD DidBuildContent() override;
   NS_IMETHOD IgnoreFirstContainer() override;
   NS_IMETHOD SetPreventScriptExecution(bool aPreventScriptExecution) override;
 
-protected:
+ protected:
   virtual ~nsXMLFragmentContentSink();
 
-  virtual bool SetDocElement(int32_t aNameSpaceID,
-                               nsAtom* aTagName,
-                               nsIContent* aContent) override;
+  virtual bool SetDocElement(int32_t aNameSpaceID, nsAtom* aTagName,
+                             nsIContent* aContent) override;
   virtual nsresult CreateElement(const char16_t** aAtts, uint32_t aAttsCount,
-                                 mozilla::dom::NodeInfo* aNodeInfo, uint32_t aLineNumber,
+                                 mozilla::dom::NodeInfo* aNodeInfo,
+                                 uint32_t aLineNumber, uint32_t aColumnNumber,
                                  nsIContent** aResult, bool* aAppendContent,
                                  mozilla::dom::FromParser aFromParser) override;
   virtual nsresult CloseElement(nsIContent* aContent) override;
@@ -92,33 +88,25 @@ protected:
 
   // nsContentSink overrides
   virtual nsresult ProcessStyleLinkFromHeader(
-    const nsAString& aHref,
-    bool aAlternate,
-    const nsAString& aTitle,
-    const nsAString& aType,
-    const nsAString& aMedia,
-    const nsAString& aReferrerPolicy) override;
+      const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
+      const nsAString& aType, const nsAString& aMedia,
+      const nsAString& aReferrerPolicy) override;
 
   // nsXMLContentSink overrides
   virtual nsresult MaybeProcessXSLTLink(
-    ProcessingInstruction* aProcessingInstruction,
-    const nsAString& aHref,
-    bool aAlternate,
-    const nsAString& aTitle,
-    const nsAString& aType,
-    const nsAString& aMedia,
-    const nsAString& aReferrerPolicy,
-    bool* aWasXSLT = nullptr) override;
+      ProcessingInstruction* aProcessingInstruction, const nsAString& aHref,
+      bool aAlternate, const nsAString& aTitle, const nsAString& aType,
+      const nsAString& aMedia, const nsAString& aReferrerPolicy,
+      bool* aWasXSLT = nullptr) override;
 
-  nsCOMPtr<nsIDocument> mTargetDocument;
+  nsCOMPtr<Document> mTargetDocument;
   // the fragment
-  nsCOMPtr<nsIContent>  mRoot;
-  bool                  mParseError;
+  RefPtr<DocumentFragment> mRoot;
+  bool mParseError;
 };
 
-static nsresult
-NewXMLFragmentContentSinkHelper(nsIFragmentContentSink** aResult)
-{
+static nsresult NewXMLFragmentContentSinkHelper(
+    nsIFragmentContentSink** aResult) {
   nsXMLFragmentContentSink* it = new nsXMLFragmentContentSink();
 
   NS_ADDREF(*aResult = it);
@@ -126,21 +114,15 @@ NewXMLFragmentContentSinkHelper(nsIFragmentContentSink** aResult)
   return NS_OK;
 }
 
-nsresult
-NS_NewXMLFragmentContentSink(nsIFragmentContentSink** aResult)
-{
+nsresult NS_NewXMLFragmentContentSink(nsIFragmentContentSink** aResult) {
   return NewXMLFragmentContentSinkHelper(aResult);
 }
 
-nsXMLFragmentContentSink::nsXMLFragmentContentSink()
- : mParseError(false)
-{
+nsXMLFragmentContentSink::nsXMLFragmentContentSink() : mParseError(false) {
   mRunsToCompletion = true;
 }
 
-nsXMLFragmentContentSink::~nsXMLFragmentContentSink()
-{
-}
+nsXMLFragmentContentSink::~nsXMLFragmentContentSink() {}
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsXMLFragmentContentSink)
   NS_INTERFACE_MAP_ENTRY(nsIFragmentContentSink)
@@ -158,8 +140,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsXMLFragmentContentSink,
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::WillBuildModel(nsDTDMode aDTDMode)
-{
+nsXMLFragmentContentSink::WillBuildModel(nsDTDMode aDTDMode) {
   if (mRoot) {
     return NS_OK;
   }
@@ -174,8 +155,7 @@ nsXMLFragmentContentSink::WillBuildModel(nsDTDMode aDTDMode)
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::DidBuildModel(bool aTerminated)
-{
+nsXMLFragmentContentSink::DidBuildModel(bool aTerminated) {
   // Drop our reference to the parser to get rid of a circular
   // reference.
   mParser = nullptr;
@@ -183,42 +163,34 @@ nsXMLFragmentContentSink::DidBuildModel(bool aTerminated)
   return NS_OK;
 }
 
-void
-nsXMLFragmentContentSink::SetDocumentCharset(
-  NotNull<const Encoding*> aEncoding)
-{
-  NS_NOTREACHED("fragments shouldn't set charset");
+void nsXMLFragmentContentSink::SetDocumentCharset(
+    NotNull<const Encoding*> aEncoding) {
+  MOZ_ASSERT_UNREACHABLE("fragments shouldn't set charset");
 }
 
-nsISupports *
-nsXMLFragmentContentSink::GetTarget()
-{
-  return mTargetDocument;
+nsISupports* nsXMLFragmentContentSink::GetTarget() {
+  return ToSupports(mTargetDocument);
 }
 
 ////////////////////////////////////////////////////////////////////////
 
-bool
-nsXMLFragmentContentSink::SetDocElement(int32_t aNameSpaceID,
-                                        nsAtom* aTagName,
-                                        nsIContent *aContent)
-{
+bool nsXMLFragmentContentSink::SetDocElement(int32_t aNameSpaceID,
+                                             nsAtom* aTagName,
+                                             nsIContent* aContent) {
   // this is a fragment, not a document
   return false;
 }
 
-nsresult
-nsXMLFragmentContentSink::CreateElement(const char16_t** aAtts, uint32_t aAttsCount,
-                                        mozilla::dom::NodeInfo* aNodeInfo, uint32_t aLineNumber,
-                                        nsIContent** aResult, bool* aAppendContent,
-                                        FromParser /*aFromParser*/)
-{
+nsresult nsXMLFragmentContentSink::CreateElement(
+    const char16_t** aAtts, uint32_t aAttsCount,
+    mozilla::dom::NodeInfo* aNodeInfo, uint32_t aLineNumber,
+    uint32_t aColumnNumber, nsIContent** aResult, bool* aAppendContent,
+    FromParser /*aFromParser*/) {
   // Claim to not be coming from parser, since we don't do any of the
   // fancy CloseElement stuff.
-  nsresult rv = nsXMLContentSink::CreateElement(aAtts, aAttsCount,
-                                                aNodeInfo, aLineNumber,
-                                                aResult, aAppendContent,
-                                                NOT_FROM_PARSER);
+  nsresult rv = nsXMLContentSink::CreateElement(
+      aAtts, aAttsCount, aNodeInfo, aLineNumber, aColumnNumber, aResult,
+      aAppendContent, NOT_FROM_PARSER);
 
   // When we aren't grabbing all of the content we, never open a doc
   // element, we run into trouble on the first element, so we don't append,
@@ -230,74 +202,65 @@ nsXMLFragmentContentSink::CreateElement(const char16_t** aAtts, uint32_t aAttsCo
   return rv;
 }
 
-nsresult
-nsXMLFragmentContentSink::CloseElement(nsIContent* aContent)
-{
+nsresult nsXMLFragmentContentSink::CloseElement(nsIContent* aContent) {
   // don't do fancy stuff in nsXMLContentSink
-  if (mPreventScriptExecution &&
-      (aContent->IsHTMLElement(nsGkAtoms::script) ||
-       aContent->IsSVGElement(nsGkAtoms::script))) {
+  if (mPreventScriptExecution && (aContent->IsHTMLElement(nsGkAtoms::script) ||
+                                  aContent->IsSVGElement(nsGkAtoms::script))) {
     nsCOMPtr<nsIScriptElement> sele = do_QueryInterface(aContent);
     if (sele) {
       sele->PreventExecution();
     } else {
-      NS_ASSERTION(nsNameSpaceManager::GetInstance()->mSVGDisabled, "Script did QI correctly, but wasn't a disabled SVG!");
+      NS_ASSERTION(nsNameSpaceManager::GetInstance()->mSVGDisabled,
+                   "Script did QI correctly, but wasn't a disabled SVG!");
     }
   }
   return NS_OK;
 }
 
-void
-nsXMLFragmentContentSink::MaybeStartLayout(bool aIgnorePendingSheets)
-{
-}
+void nsXMLFragmentContentSink::MaybeStartLayout(bool aIgnorePendingSheets) {}
 
 ////////////////////////////////////////////////////////////////////////
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::HandleDoctypeDecl(const nsAString & aSubset,
-                                            const nsAString & aName,
-                                            const nsAString & aSystemId,
-                                            const nsAString & aPublicId,
-                                            nsISupports* aCatalogData)
-{
-  NS_NOTREACHED("fragments shouldn't have doctype declarations");
+nsXMLFragmentContentSink::HandleDoctypeDecl(const nsAString& aSubset,
+                                            const nsAString& aName,
+                                            const nsAString& aSystemId,
+                                            const nsAString& aPublicId,
+                                            nsISupports* aCatalogData) {
+  MOZ_ASSERT_UNREACHABLE("fragments shouldn't have doctype declarations");
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::HandleProcessingInstruction(const char16_t *aTarget,
-                                                      const char16_t *aData)
-{
+nsXMLFragmentContentSink::HandleProcessingInstruction(const char16_t* aTarget,
+                                                      const char16_t* aData) {
   FlushText();
 
   const nsDependentString target(aTarget);
   const nsDependentString data(aData);
 
   RefPtr<ProcessingInstruction> node =
-    NS_NewXMLProcessingInstruction(mNodeInfoManager, target, data);
+      NS_NewXMLProcessingInstruction(mNodeInfoManager, target, data);
 
-  // no special processing here.  that should happen when the fragment moves into the document
+  // no special processing here.  that should happen when the fragment moves
+  // into the document
   return AddContentAsLeaf(node);
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::HandleXMLDeclaration(const char16_t *aVersion,
-                                               const char16_t *aEncoding,
-                                               int32_t aStandalone)
-{
-  NS_NOTREACHED("fragments shouldn't have XML declarations");
+nsXMLFragmentContentSink::HandleXMLDeclaration(const char16_t* aVersion,
+                                               const char16_t* aEncoding,
+                                               int32_t aStandalone) {
+  MOZ_ASSERT_UNREACHABLE("fragments shouldn't have XML declarations");
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsXMLFragmentContentSink::ReportError(const char16_t* aErrorText,
                                       const char16_t* aSourceText,
-                                      nsIScriptError *aError,
-                                      bool *_retval)
-{
-  NS_PRECONDITION(aError && aSourceText && aErrorText, "Check arguments!!!");
+                                      nsIScriptError* aError, bool* _retval) {
+  MOZ_ASSERT(aError && aSourceText && aErrorText, "Check arguments!!!");
 
   // The expat driver should report the error.
   *_retval = true;
@@ -306,13 +269,12 @@ nsXMLFragmentContentSink::ReportError(const char16_t* aErrorText,
 
 #ifdef DEBUG
   // Report the error to stderr.
-  fprintf(stderr,
-          "\n%s\n%s\n\n",
-          NS_LossyConvertUTF16toASCII(aErrorText).get(),
+  fprintf(stderr, "\n%s\n%s\n\n", NS_LossyConvertUTF16toASCII(aErrorText).get(),
           NS_LossyConvertUTF16toASCII(aSourceText).get());
 #endif
 
-  // The following code is similar to the cleanup in nsXMLContentSink::ReportError()
+  // The following code is similar to the cleanup in
+  // nsXMLContentSink::ReportError()
   mState = eXMLContentSinkState_InProlog;
 
   // Clear the current content
@@ -328,31 +290,20 @@ nsXMLFragmentContentSink::ReportError(const char16_t* aErrorText,
   return NS_OK;
 }
 
-nsresult
-nsXMLFragmentContentSink::ProcessStyleLinkFromHeader(
-  const nsAString& aHref,
-  bool aAlternate,
-  const nsAString& aTitle,
-  const nsAString& aType,
-  const nsAString& aMedia,
-  const nsAString& aReferrerPolicy)
+nsresult nsXMLFragmentContentSink::ProcessStyleLinkFromHeader(
+    const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
+    const nsAString& aType, const nsAString& aMedia,
+    const nsAString& aReferrerPolicy)
 
 {
-  NS_NOTREACHED("Shouldn't have headers for a fragment sink");
+  MOZ_ASSERT_UNREACHABLE("Shouldn't have headers for a fragment sink");
   return NS_OK;
 }
 
-nsresult
-nsXMLFragmentContentSink::MaybeProcessXSLTLink(
-  ProcessingInstruction* aProcessingInstruction,
-  const nsAString& aHref,
-  bool aAlternate,
-  const nsAString& aTitle,
-  const nsAString& aType,
-  const nsAString& aMedia,
-  const nsAString& aReferrerPolicy,
-  bool* aWasXSLT)
-{
+nsresult nsXMLFragmentContentSink::MaybeProcessXSLTLink(
+    ProcessingInstruction* aProcessingInstruction, const nsAString& aHref,
+    bool aAlternate, const nsAString& aTitle, const nsAString& aType,
+    const nsAString& aMedia, const nsAString& aReferrerPolicy, bool* aWasXSLT) {
   MOZ_ASSERT(!aWasXSLT, "Our one caller doesn't care about whether we're XSLT");
   return NS_OK;
 }
@@ -360,9 +311,7 @@ nsXMLFragmentContentSink::MaybeProcessXSLTLink(
 ////////////////////////////////////////////////////////////////////////
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::FinishFragmentParsing(nsIDOMDocumentFragment** aFragment)
-{
-  *aFragment = nullptr;
+nsXMLFragmentContentSink::FinishFragmentParsing(DocumentFragment** aFragment) {
   mTargetDocument = nullptr;
   mNodeInfoManager = nullptr;
   mScriptLoader = nullptr;
@@ -373,22 +322,19 @@ nsXMLFragmentContentSink::FinishFragmentParsing(nsIDOMDocumentFragment** aFragme
   mDocElement = nullptr;
   mCurrentHead = nullptr;
   if (mParseError) {
-    //XXX PARSE_ERR from DOM3 Load and Save would be more appropriate
+    // XXX PARSE_ERR from DOM3 Load and Save would be more appropriate
     mRoot = nullptr;
     mParseError = false;
+    *aFragment = nullptr;
     return NS_ERROR_DOM_SYNTAX_ERR;
-  } else if (mRoot) {
-    nsresult rv = CallQueryInterface(mRoot, aFragment);
-    mRoot = nullptr;
-    return rv;
-  } else {
-    return NS_OK;
   }
+
+  mRoot.forget(aFragment);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::SetTargetDocument(nsIDocument* aTargetDocument)
-{
+nsXMLFragmentContentSink::SetTargetDocument(Document* aTargetDocument) {
   NS_ENSURE_ARG_POINTER(aTargetDocument);
 
   mTargetDocument = aTargetDocument;
@@ -398,16 +344,14 @@ nsXMLFragmentContentSink::SetTargetDocument(nsIDocument* aTargetDocument)
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::WillBuildContent()
-{
+nsXMLFragmentContentSink::WillBuildContent() {
   PushContent(mRoot);
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::DidBuildContent()
-{
+nsXMLFragmentContentSink::DidBuildContent() {
   // Note: we need to FlushText() here because if we don't, we might not get
   // an end element to do it for us, so make sure.
   if (!mParseError) {
@@ -419,21 +363,16 @@ nsXMLFragmentContentSink::DidBuildContent()
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::DidProcessATokenImpl()
-{
-  return NS_OK;
-}
+nsXMLFragmentContentSink::DidProcessATokenImpl() { return NS_OK; }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::IgnoreFirstContainer()
-{
-  NS_NOTREACHED("XML isn't as broken as HTML");
+nsXMLFragmentContentSink::IgnoreFirstContainer() {
+  MOZ_ASSERT_UNREACHABLE("XML isn't as broken as HTML");
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsXMLFragmentContentSink::SetPreventScriptExecution(bool aPrevent)
-{
+nsXMLFragmentContentSink::SetPreventScriptExecution(bool aPrevent) {
   mPreventScriptExecution = aPrevent;
   return NS_OK;
 }

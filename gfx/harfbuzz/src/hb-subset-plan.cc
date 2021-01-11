@@ -24,81 +24,17 @@
  * Google Author(s): Garret Rieger, Roderick Sheeter
  */
 
-#include "hb-subset-private.hh"
-
 #include "hb-subset-plan.hh"
+#include "hb-map.hh"
+#include "hb-set.hh"
+
 #include "hb-ot-cmap-table.hh"
 #include "hb-ot-glyf-table.hh"
+#include "hb-ot-cff1-table.hh"
+#include "hb-ot-var-fvar-table.hh"
+#include "hb-ot-stat-table.hh"
 
-static int
-_hb_codepoint_t_cmp (const void *pa, const void *pb)
-{
-  hb_codepoint_t a = * (hb_codepoint_t *) pa;
-  hb_codepoint_t b = * (hb_codepoint_t *) pb;
-
-  return a < b ? -1 : a > b ? +1 : 0;
-}
-
-hb_bool_t
-hb_subset_plan_new_gid_for_codepoint (hb_subset_plan_t *plan,
-                                      hb_codepoint_t codepoint,
-                                      hb_codepoint_t *new_gid)
-{
-  // TODO actual map, delete this garbage.
-  for (unsigned int i = 0; i < plan->codepoints.len; i++)
-  {
-    if (plan->codepoints[i] != codepoint) continue;
-    if (!hb_subset_plan_new_gid_for_old_id(plan, plan->gids_to_retain[i], new_gid))
-    {
-      return false;
-    }
-    return true;
-  }
-  return false;
-}
-
-hb_bool_t
-hb_subset_plan_new_gid_for_old_id (hb_subset_plan_t *plan,
-                                   hb_codepoint_t old_gid,
-                                   hb_codepoint_t *new_gid)
-{
-  // the index in old_gids is the new gid; only up to codepoints.len are valid
-  for (unsigned int i = 0; i < plan->gids_to_retain_sorted.len; i++)
-  {
-    if (plan->gids_to_retain_sorted[i] == old_gid)
-    {
-      *new_gid = i;
-      return true;
-    }
-  }
-  return false;
-}
-
-hb_bool_t
-hb_subset_plan_add_table (hb_subset_plan_t *plan,
-                          hb_tag_t tag,
-                          hb_blob_t *contents)
-{
-  hb_blob_t *source_blob = plan->source->reference_table (tag);
-  DEBUG_MSG(SUBSET, nullptr, "add table %c%c%c%c, dest %d bytes, source %d bytes", HB_UNTAG(tag), hb_blob_get_length (contents), hb_blob_get_length (source_blob));
-  hb_blob_destroy (source_blob);
-  return hb_subset_face_add_table(plan->dest, tag, contents);
-}
-
-static void
-_populate_codepoints (hb_set_t *input_codepoints,
-                      hb_prealloced_array_t<hb_codepoint_t>& plan_codepoints)
-{
-  plan_codepoints.alloc (hb_set_get_population (input_codepoints));
-  hb_codepoint_t cp = -1;
-  while (hb_set_next (input_codepoints, &cp)) {
-    hb_codepoint_t *wr = plan_codepoints.push();
-    *wr = cp;
-  }
-  plan_codepoints.qsort (_hb_codepoint_t_cmp);
-}
-
-static void
+static inline void
 _add_gid_and_children (const OT::glyf::accelerator_t &glyf,
 		       hb_codepoint_t gid,
 		       hb_set_t *gids_to_retain)
@@ -119,64 +55,157 @@ _add_gid_and_children (const OT::glyf::accelerator_t &glyf,
   }
 }
 
+#ifndef HB_NO_SUBSET_CFF
+static inline void
+_add_cff_seac_components (const OT::cff1::accelerator_t &cff,
+           hb_codepoint_t gid,
+           hb_set_t *gids_to_retain)
+{
+  hb_codepoint_t base_gid, accent_gid;
+  if (cff.get_seac_components (gid, &base_gid, &accent_gid))
+  {
+    hb_set_add (gids_to_retain, base_gid);
+    hb_set_add (gids_to_retain, accent_gid);
+  }
+}
+#endif
+
+#ifndef HB_NO_SUBSET_LAYOUT
+static inline void
+_gsub_closure (hb_face_t *face, hb_set_t *gids_to_retain)
+{
+  hb_set_t lookup_indices;
+  hb_ot_layout_collect_lookups (face,
+				HB_OT_TAG_GSUB,
+				nullptr,
+				nullptr,
+				nullptr,
+				&lookup_indices);
+  hb_ot_layout_lookups_substitute_closure (face,
+					   &lookup_indices,
+					   gids_to_retain);
+}
+#endif
+
+static inline void
+_remove_invalid_gids (hb_set_t *glyphs,
+		      unsigned int num_glyphs)
+{
+  hb_codepoint_t gid = HB_SET_VALUE_INVALID;
+  while (glyphs->next (&gid))
+  {
+    if (gid >= num_glyphs)
+      glyphs->del (gid);
+  }
+}
+
 static void
-_populate_gids_to_retain (hb_face_t *face,
-                          hb_prealloced_array_t<hb_codepoint_t>& codepoints,
-                          hb_prealloced_array_t<hb_codepoint_t>& old_gids,
-                          hb_prealloced_array_t<hb_codepoint_t>& old_gids_sorted)
+_populate_gids_to_retain (hb_subset_plan_t* plan,
+			  const hb_set_t *unicodes,
+                          const hb_set_t *input_glyphs_to_retain,
+			  bool close_over_gsub)
 {
   OT::cmap::accelerator_t cmap;
   OT::glyf::accelerator_t glyf;
-  cmap.init (face);
-  glyf.init (face);
+  OT::cff1::accelerator_t cff;
+  cmap.init (plan->source);
+  glyf.init (plan->source);
+  cff.init (plan->source);
 
-  hb_auto_array_t<unsigned int> bad_indices;
+  plan->_glyphset_gsub->add (0); // Not-def
+  hb_set_union (plan->_glyphset_gsub, input_glyphs_to_retain);
 
-  old_gids.alloc (codepoints.len);
-  for (unsigned int i = 0; i < codepoints.len; i++)
+  hb_codepoint_t cp = HB_SET_VALUE_INVALID;
+  while (unicodes->next (&cp))
   {
     hb_codepoint_t gid;
-    if (!cmap.get_nominal_glyph (codepoints[i], &gid))
+    if (!cmap.get_nominal_glyph (cp, &gid))
     {
-      gid = -1;
-      *(bad_indices.push ()) = i;
+      DEBUG_MSG(SUBSET, nullptr, "Drop U+%04X; no gid", cp);
+      continue;
     }
-    *(old_gids.push ()) = gid;
+    plan->unicodes->add (cp);
+    plan->codepoint_to_glyph->set (cp, gid);
+    plan->_glyphset_gsub->add (gid);
   }
 
-  /* Generally there shouldn't be any */
-  while (bad_indices.len > 0)
-  {
-    unsigned int i = bad_indices[bad_indices.len - 1];
-    bad_indices.pop ();
-    DEBUG_MSG(SUBSET, nullptr, "Drop U+%04X; no gid", codepoints[i]);
-    codepoints.remove (i);
-    old_gids.remove (i);
-  }
+#ifndef HB_NO_SUBSET_LAYOUT
+  if (close_over_gsub)
+    // Add all glyphs needed for GSUB substitutions.
+    _gsub_closure (plan->source, plan->_glyphset_gsub);
+#endif
+  _remove_invalid_gids (plan->_glyphset_gsub, plan->source->get_num_glyphs ());
 
   // Populate a full set of glyphs to retain by adding all referenced
   // composite glyphs.
-  // TODO expand with glyphs reached by G*
-  hb_set_t * all_gids_to_retain = hb_set_create ();
-  _add_gid_and_children (glyf, 0, all_gids_to_retain);
-  for (unsigned int i = 0; i < old_gids.len; i++)
-    _add_gid_and_children (glyf, old_gids[i], all_gids_to_retain);
-
-  // Transfer to a sorted list.
-  old_gids_sorted.alloc (hb_set_get_population (all_gids_to_retain));
   hb_codepoint_t gid = HB_SET_VALUE_INVALID;
-  while (hb_set_next (all_gids_to_retain, &gid))
-    *(old_gids_sorted.push ()) = gid;
+  while (plan->_glyphset_gsub->next (&gid))
+  {
+    _add_gid_and_children (glyf, gid, plan->_glyphset);
+#ifndef HB_NO_SUBSET_CFF
+    if (cff.is_valid ())
+      _add_cff_seac_components (cff, gid, plan->_glyphset);
+#endif
+  }
 
-  hb_set_destroy (all_gids_to_retain);
+  _remove_invalid_gids (plan->_glyphset, plan->source->get_num_glyphs ());
+
+  cff.fini ();
   glyf.fini ();
   cmap.fini ();
+}
+
+static void
+_create_old_gid_to_new_gid_map (const hb_face_t *face,
+                                bool             retain_gids,
+				const hb_set_t  *all_gids_to_retain,
+                                hb_map_t        *glyph_map, /* OUT */
+                                hb_map_t        *reverse_glyph_map, /* OUT */
+                                unsigned int    *num_glyphs /* OUT */)
+{
+  if (!retain_gids)
+  {
+    + hb_enumerate (hb_iter (all_gids_to_retain), (hb_codepoint_t) 0)
+    | hb_sink (reverse_glyph_map)
+    ;
+    *num_glyphs = reverse_glyph_map->get_population ();
+  } else {
+    + hb_iter (all_gids_to_retain)
+    | hb_map ([] (hb_codepoint_t _) {
+		return hb_pair_t<hb_codepoint_t, hb_codepoint_t> (_, _);
+	      })
+    | hb_sink (reverse_glyph_map)
+    ;
+
+    unsigned max_glyph =
+    + hb_iter (all_gids_to_retain)
+    | hb_reduce (hb_max, 0u)
+    ;
+    *num_glyphs = max_glyph + 1;
+  }
+
+  + reverse_glyph_map->iter ()
+  | hb_map (&hb_pair_t<hb_codepoint_t, hb_codepoint_t>::reverse)
+  | hb_sink (glyph_map)
+  ;
+}
+
+static void
+_nameid_closure (hb_face_t           *face,
+                 hb_set_t            *nameids)
+{
+#ifndef HB_NO_STAT
+  face->table.STAT->collect_name_ids (nameids);
+#endif
+#ifndef HB_NO_VAR
+  face->table.fvar->collect_name_ids (nameids);
+#endif
 }
 
 /**
  * hb_subset_plan_create:
  * Computes a plan for subsetting the supplied face according
- * to a provide profile and input. The plan describes
+ * to a provided input. The plan describes
  * which tables and glyphs should be retained.
  *
  * Return value: New subset plan.
@@ -185,23 +214,37 @@ _populate_gids_to_retain (hb_face_t *face,
  **/
 hb_subset_plan_t *
 hb_subset_plan_create (hb_face_t           *face,
-                       hb_subset_profile_t *profile,
-                       hb_subset_input_t   *input)
+		       hb_subset_input_t   *input)
 {
   hb_subset_plan_t *plan = hb_object_create<hb_subset_plan_t> ();
 
-  plan->codepoints.init();
-  plan->gids_to_retain.init();
-  plan->gids_to_retain_sorted.init();
-  plan->source = hb_face_reference (face);
-  plan->dest = hb_subset_face_create ();
   plan->drop_hints = input->drop_hints;
+  plan->desubroutinize = input->desubroutinize;
+  plan->retain_gids = input->retain_gids;
+  plan->unicodes = hb_set_create ();
+  plan->name_ids = hb_set_reference (input->name_ids);
+  _nameid_closure (face, plan->name_ids);
+  plan->drop_tables = hb_set_reference (input->drop_tables);
+  plan->source = hb_face_reference (face);
+  plan->dest = hb_face_builder_create ();
 
-  _populate_codepoints (input->unicodes, plan->codepoints);
-  _populate_gids_to_retain (face,
-                            plan->codepoints,
-                            plan->gids_to_retain,
-                            plan->gids_to_retain_sorted);
+  plan->_glyphset = hb_set_create ();
+  plan->_glyphset_gsub = hb_set_create ();
+  plan->codepoint_to_glyph = hb_map_create ();
+  plan->glyph_map = hb_map_create ();
+  plan->reverse_glyph_map = hb_map_create ();
+
+  _populate_gids_to_retain (plan,
+                            input->unicodes,
+                            input->glyphs,
+                            !input->drop_tables->has (HB_OT_TAG_GSUB));
+
+  _create_old_gid_to_new_gid_map (face,
+                                  input->retain_gids,
+				  plan->_glyphset,
+				  plan->glyph_map,
+                                  plan->reverse_glyph_map,
+                                  &plan->_num_output_glyphs);
 
   return plan;
 }
@@ -216,12 +259,16 @@ hb_subset_plan_destroy (hb_subset_plan_t *plan)
 {
   if (!hb_object_destroy (plan)) return;
 
-  plan->codepoints.finish ();
-  plan->gids_to_retain.finish ();
-  plan->gids_to_retain_sorted.finish ();
-
+  hb_set_destroy (plan->unicodes);
+  hb_set_destroy (plan->name_ids);
+  hb_set_destroy (plan->drop_tables);
   hb_face_destroy (plan->source);
   hb_face_destroy (plan->dest);
+  hb_map_destroy (plan->codepoint_to_glyph);
+  hb_map_destroy (plan->glyph_map);
+  hb_map_destroy (plan->reverse_glyph_map);
+  hb_set_destroy (plan->_glyphset);
+  hb_set_destroy (plan->_glyphset_gsub);
 
   free (plan);
 }

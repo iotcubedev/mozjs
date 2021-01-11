@@ -3,13 +3,12 @@
 
 /*---
 esid: sec-array.prototype.map
-es5id: 15.4.4.19-4-1
 description: Array.prototype.map throws TypeError if callbackfn is undefined
 ---*/
 
-  var arr = new Array(10);
+var arr = new Array(10);
 assert.throws(TypeError, function() {
-    arr.map();
+  arr.map();
 });
 
 reportCompare(0, 0);

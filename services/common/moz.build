@@ -15,8 +15,6 @@ EXTRA_COMPONENTS += [
 
 EXTRA_JS_MODULES['services-common'] += [
     'async.js',
-    'blocklist-clients.js',
-    'blocklist-updater.js',
     'kinto-http-client.js',
     'kinto-offline-client.js',
     'kinto-storage-adapter.js',
@@ -38,7 +36,4 @@ TESTING_JS_MODULES.services.common += [
     'modules-testing/logging.js',
 ]
 
-JS_PREFERENCE_FILES += [
-    'services-common.js',
-]
-
+SPHINX_TREES['services'] = 'docs'

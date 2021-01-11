@@ -2,26 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/*jshint bitwise: true, camelcase: false, curly: false, eqeqeq: true,
-         es5: true, forin: true, immed: true, indent: 4, latedef: false,
-         newcap: false, noarg: true, noempty: true, nonew: true,
-         plusplus: false, quotmark: false, regexp: true, undef: true,
-         unused: false, strict: false, trailing: true,
-*/
-
-/*global ToObject: false, ToInteger: false, IsCallable: false,
-         ThrowRangeError: false, ThrowTypeError: false,
-         AssertionFailed: false,
-         MakeConstructible: false, DecompileArg: false,
-         RuntimeDefaultLocale: false,
-         NewDenseArray: false,
-         Dump: false,
-         callFunction: false,
-         TO_UINT32: false,
-         JSMSG_NOT_FUNCTION: false, JSMSG_MISSING_FUN_ARG: false,
-         JSMSG_EMPTY_ARRAY_REDUCE: false, JSMSG_CANT_CONVERT_TO: false,
-*/
-
 #include "SelfHostingDefines.h"
 #include "TypedObjectConstants.h"
 
@@ -111,15 +91,6 @@ function ToLength(v) {
 }
 
 // ES2017 draft rev aebf014403a3e641fb1622aec47c40f051943527
-// 7.2.9 SameValue ( x, y )
-function SameValue(x, y) {
-    if (x === y) {
-        return (x !== 0) || (1 / x === 1 / y);
-    }
-    return (x !== x && y !== y);
-}
-
-// ES2017 draft rev aebf014403a3e641fb1622aec47c40f051943527
 // 7.2.10 SameValueZero ( x, y )
 function SameValueZero(x, y) {
     return x === y || (x !== x && y !== y);
@@ -181,7 +152,7 @@ function SpeciesConstructor(obj, defaultConstructor) {
 
     // Step 4.
     if (!IsObject(ctor))
-        ThrowTypeError(JSMSG_NOT_NONNULL_OBJECT, "object's 'constructor' property");
+        ThrowTypeError(JSMSG_OBJECT_REQUIRED, "object's 'constructor' property");
 
     // Steps 5.
     var s = ctor[std_species];
@@ -219,67 +190,78 @@ function GetInternalError(msg) {
 // To be used when a function is required but calling it shouldn't do anything.
 function NullFunction() {}
 
-// Object Rest/Spread Properties proposal
-// Abstract operation: CopyDataProperties (target, source, excluded)
-function CopyDataProperties(target, source, excluded) {
+// ES2019 draft rev 4c2df13f4194057f09b920ee88712e5a70b1a556
+// 7.3.23 CopyDataProperties (target, source, excludedItems)
+function CopyDataProperties(target, source, excludedItems) {
     // Step 1.
     assert(IsObject(target), "target is an object");
 
     // Step 2.
-    assert(IsObject(excluded), "excluded is an object");
+    assert(IsObject(excludedItems), "excludedItems is an object");
 
-    // Steps 3, 6.
+    // Steps 3 and 7.
     if (source === undefined || source === null)
         return;
 
-    // Step 4.a.
-    source = ToObject(source);
-
-    // Step 4.b.
-    var keys = OwnPropertyKeys(source);
+    // Step 4.
+    var from = ToObject(source);
 
     // Step 5.
+    var keys = CopyDataPropertiesOrGetOwnKeys(target, from, excludedItems);
+
+    // Return if we copied all properties in native code.
+    if (keys === null)
+        return;
+
+    // Step 6.
     for (var index = 0; index < keys.length; index++) {
         var key = keys[index];
 
         // We abbreviate this by calling propertyIsEnumerable which is faster
         // and returns false for not defined properties.
-        if (!hasOwn(key, excluded) && callFunction(std_Object_propertyIsEnumerable, source, key))
-            _DefineDataProperty(target, key, source[key]);
+        if (!hasOwn(key, excludedItems) &&
+            callFunction(std_Object_propertyIsEnumerable, from, key))
+        {
+            _DefineDataProperty(target, key, from[key]);
+        }
     }
 
-    // Step 6 (Return).
+    // Step 7 (Return).
 }
 
-// Object Rest/Spread Properties proposal
-// Abstract operation: CopyDataProperties (target, source, excluded)
+// ES2019 draft rev 4c2df13f4194057f09b920ee88712e5a70b1a556
+// 7.3.23 CopyDataProperties (target, source, excludedItems)
 function CopyDataPropertiesUnfiltered(target, source) {
     // Step 1.
     assert(IsObject(target), "target is an object");
 
     // Step 2 (Not applicable).
 
-    // Steps 3, 6.
+    // Steps 3 and 7.
     if (source === undefined || source === null)
         return;
 
-    // Step 4.a.
-    source = ToObject(source);
-
-    // Step 4.b.
-    var keys = OwnPropertyKeys(source);
+    // Step 4.
+    var from = ToObject(source);
 
     // Step 5.
+    var keys = CopyDataPropertiesOrGetOwnKeys(target, from, null);
+
+    // Return if we copied all properties in native code.
+    if (keys === null)
+        return;
+
+    // Step 6.
     for (var index = 0; index < keys.length; index++) {
         var key = keys[index];
 
         // We abbreviate this by calling propertyIsEnumerable which is faster
         // and returns false for not defined properties.
-        if (callFunction(std_Object_propertyIsEnumerable, source, key))
-            _DefineDataProperty(target, key, source[key]);
+        if (callFunction(std_Object_propertyIsEnumerable, from, key))
+            _DefineDataProperty(target, key, from[key]);
     }
 
-    // Step 6 (Return).
+    // Step 7 (Return).
 }
 
 /*************************************** Testing functions ***************************************/

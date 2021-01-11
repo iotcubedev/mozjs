@@ -49,7 +49,8 @@ interface HTMLTextAreaElement : HTMLElement {
   readonly attribute DOMString type;
   [CEReactions, Throws, Pure]
            attribute DOMString defaultValue;
-  [CEReactions, SetterThrows, TreatNullAs=EmptyString] attribute DOMString value;
+  [CEReactions, SetterThrows] attribute [TreatNullAs=EmptyString] DOMString value;
+  [BinaryName="getTextLength"]
   readonly attribute unsigned long textLength;
 
   readonly attribute boolean willValidate;
@@ -85,20 +86,7 @@ partial interface HTMLTextAreaElement {
   readonly attribute XULControllers controllers;
 };
 
-partial interface HTMLTextAreaElement {
-  // Mirrored chrome-only nsIDOMNSEditableElement methods.  Please make sure
-  // to update this list if nsIDOMNSEditableElement changes.
-
-  [ChromeOnly]
-  readonly attribute nsIEditor? editor;
-
-  // This is similar to set .value on nsIDOMInput/TextAreaElements, but
-  // handling of the value change is closer to the normal user input, so
-  // 'change' event for example will be dispatched when focusing out the
-  // element.
-  [ChromeOnly]
-  void setUserInput(DOMString input);
-};
+HTMLTextAreaElement implements MozEditableElement;
 
 partial interface HTMLTextAreaElement {
   [ChromeOnly]

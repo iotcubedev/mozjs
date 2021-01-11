@@ -5,6 +5,7 @@
 package org.mozilla.gecko.db;
 
 import android.content.ContentProviderClient;
+import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
@@ -15,7 +16,8 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mozilla.gecko.background.testhelpers.TestRunner;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowContentResolver;
 
 import static org.junit.Assert.*;
@@ -25,7 +27,7 @@ import static org.junit.Assert.*;
  * This is WIP junit4 port of robocop tests at org.mozilla.gecko.tests.testBrowserProvider.
  * See Bug 1269492
  */
-@RunWith(TestRunner.class)
+@RunWith(RobolectricTestRunner.class)
 public class BrowserProviderHistoryTest extends BrowserProviderHistoryVisitsTestBase {
     private ContentProviderClient thumbnailClient;
     private Uri thumbnailTestUri;
@@ -38,7 +40,7 @@ public class BrowserProviderHistoryTest extends BrowserProviderHistoryVisitsTest
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        final ShadowContentResolver cr = new ShadowContentResolver();
+        final ContentResolver cr = RuntimeEnvironment.application.getContentResolver();
 
         thumbnailClient = cr.acquireContentProviderClient(BrowserContract.Thumbnails.CONTENT_URI);
         thumbnailTestUri = testUri(BrowserContract.Thumbnails.CONTENT_URI);
@@ -155,7 +157,6 @@ public class BrowserProviderHistoryTest extends BrowserProviderHistoryVisitsTest
      * when updating history record with PARAM_INCREMENT_VISITS=true. Remote aggregate values are updated
      * only if set directly. Aggregate values are not set when inserting a new history record via insertHistory.
      * Local aggregate values are set when inserting a new history record via update.
-     * @throws Exception
      */
     @Test
     public void testHistoryVisitAggregates() throws Exception {

@@ -34,7 +34,7 @@
 
 #ifdef __FreeBSD__
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/sys/netinet/sctp_pcb.c 325370 2017-11-03 20:46:12Z tuexen $");
+__FBSDID("$FreeBSD: head/sys/netinet/sctp_pcb.c 345504 2019-03-25 15:23:20Z tuexen $");
 #endif
 
 #include <netinet/sctp_os.h>
@@ -5760,6 +5760,7 @@ sctp_free_assoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int from_inpcbfre
 	 * in case.
 	 */
 	/* anything on the wheel needs to be removed */
+	SCTP_TCB_SEND_LOCK(stcb);
 	for (i = 0; i < asoc->streamoutcnt; i++) {
 		struct sctp_stream_out *outs;
 
@@ -5768,7 +5769,7 @@ sctp_free_assoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int from_inpcbfre
 		TAILQ_FOREACH_SAFE(sp, &outs->outqueue, next, nsp) {
 			atomic_subtract_int(&asoc->stream_queue_cnt, 1);
 			TAILQ_REMOVE(&outs->outqueue, sp, next);
-			stcb->asoc.ss_functions.sctp_ss_remove_from_stream(stcb, asoc, outs, sp, 0);
+			stcb->asoc.ss_functions.sctp_ss_remove_from_stream(stcb, asoc, outs, sp, 1);
 			sctp_free_spbufspace(stcb, asoc, sp);
 			if (sp->data) {
 				if (so) {
@@ -5790,6 +5791,7 @@ sctp_free_assoc(struct sctp_inpcb *inp, struct sctp_tcb *stcb, int from_inpcbfre
 			sctp_free_a_strmoq(stcb, sp, SCTP_SO_LOCKED);
 		}
 	}
+	SCTP_TCB_SEND_UNLOCK(stcb);
 	/*sa_ignore FREED_MEMORY*/
 	TAILQ_FOREACH_SAFE(strrst, &asoc->resetHead, next_resp, nstrrst) {
 		TAILQ_REMOVE(&asoc->resetHead, strrst, next_resp);
@@ -6848,6 +6850,7 @@ sctp_pcb_init()
 #if defined(_SCTP_NEEDS_CALLOUT_) || defined(_USER_SCTP_NEEDS_CALLOUT_)
 	/* allocate the lock for the callout/timer queue */
 	SCTP_TIMERQ_LOCK_INIT();
+	SCTP_TIMERWAIT_LOCK_INIT();
 	TAILQ_INIT(&SCTP_BASE_INFO(callqueue));
 #endif
 #if defined(__Userspace__)
@@ -7042,6 +7045,7 @@ retry:
 	/* free the locks and mutexes */
 #if defined(__APPLE__)
 	SCTP_TIMERQ_LOCK_DESTROY();
+	SCTP_TIMERWAIT_LOCK_DESTROY();
 #endif
 #ifdef SCTP_PACKET_LOGGING
 	SCTP_IP_PKTLOG_DESTROY();
@@ -7068,6 +7072,7 @@ retry:
 #endif
 #if defined(__Userspace__)
 	SCTP_TIMERQ_LOCK_DESTROY();
+	SCTP_TIMERWAIT_LOCK_DESTROY();
 	SCTP_ZONE_DESTROY(zone_mbuf);
 	SCTP_ZONE_DESTROY(zone_clust);
 	SCTP_ZONE_DESTROY(zone_ext_refcnt);
@@ -7747,6 +7752,8 @@ sctp_load_addresses_from_init(struct sctp_tcb *stcb, struct mbuf *m,
 		if (p_random != NULL) {
 			keylen = sizeof(*p_random) + random_len;
 			memcpy(new_key->key, p_random, keylen);
+		} else {
+			keylen = 0;
 		}
 		/* append in the AUTH chunks */
 		if (chunks != NULL) {

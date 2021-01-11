@@ -6,12 +6,12 @@
 #ifndef InsertNodeTransaction_h
 #define InsertNodeTransaction_h
 
-#include "mozilla/EditTransactionBase.h" // for EditTransactionBase, etc.
-#include "mozilla/EditorDOMPoint.h"     // for EditorDOMPoint
-#include "nsCOMPtr.h"                   // for nsCOMPtr
+#include "mozilla/EditTransactionBase.h"  // for EditTransactionBase, etc.
+#include "mozilla/EditorDOMPoint.h"       // for EditorDOMPoint
+#include "nsCOMPtr.h"                     // for nsCOMPtr
 #include "nsCycleCollectionParticipant.h"
-#include "nsIContent.h"                 // for nsIContent
-#include "nsISupportsImpl.h"            // for NS_DECL_ISUPPORTS_INHERITED
+#include "nsIContent.h"       // for nsIContent
+#include "nsISupportsImpl.h"  // for NS_DECL_ISUPPORTS_INHERITED
 
 namespace mozilla {
 
@@ -20,14 +20,13 @@ class EditorBase;
 /**
  * A transaction that inserts a single element
  */
-class InsertNodeTransaction final : public EditTransactionBase
-{
-protected:
-  InsertNodeTransaction(EditorBase& aEditorBase,
-                        nsIContent& aContentToInsert,
-                        const EditorRawDOMPoint& aPointToInsert);
+class InsertNodeTransaction final : public EditTransactionBase {
+ protected:
+  template <typename PT, typename CT>
+  InsertNodeTransaction(EditorBase& aEditorBase, nsIContent& aContentToInsert,
+                        const EditorDOMPointBase<PT, CT>& aPointToInsert);
 
-public:
+ public:
   /**
    * Create a transaction for inserting aContentToInsert before the child
    * at aPointToInsert.
@@ -42,11 +41,10 @@ public:
    * @return                    A InsertNodeTranaction which was initialized
    *                            with the arguments.
    */
-  static already_AddRefed<InsertNodeTransaction>
-  Create(EditorBase& aEditorBase,
-         nsIContent& aContentToInsert,
-         const EditorRawDOMPoint& aPointToInsert);
-
+  template <typename PT, typename CT>
+  static already_AddRefed<InsertNodeTransaction> Create(
+      EditorBase& aEditorBase, nsIContent& aContentToInsert,
+      const EditorDOMPointBase<PT, CT>& aPointToInsert);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(InsertNodeTransaction,
@@ -54,7 +52,7 @@ public:
 
   NS_DECL_EDITTRANSACTIONBASE
 
-protected:
+ protected:
   virtual ~InsertNodeTransaction();
 
   // The element to insert.
@@ -67,6 +65,6 @@ protected:
   RefPtr<EditorBase> mEditorBase;
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // #ifndef InsertNodeTransaction_h
+#endif  // #ifndef InsertNodeTransaction_h

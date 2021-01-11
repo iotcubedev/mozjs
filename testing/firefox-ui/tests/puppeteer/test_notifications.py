@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
 from firefox_puppeteer import PuppeteerMixin
 from firefox_puppeteer.ui.browser.notifications import (
     AddOnInstallConfirmationNotification,
@@ -18,7 +19,6 @@ class TestNotifications(PuppeteerMixin, MarionetteTestCase):
         super(TestNotifications, self).setUp()
 
         self.marionette.set_pref('extensions.install.requireSecureOrigin', False)
-        self.marionette.set_pref('extensions.allow-non-mpc-extensions', True)
 
         self.addons_url = self.marionette.absolute_url('addons/extensions/')
         self.puppeteer.utils.permissions.add(self.marionette.baseurl, 'install')
@@ -26,7 +26,6 @@ class TestNotifications(PuppeteerMixin, MarionetteTestCase):
     def tearDown(self):
         try:
             self.marionette.clear_pref('extensions.install.requireSecureOrigin')
-            self.marionette.clear_pref('extensions.allow-non-mpc-extensions')
             self.marionette.clear_pref('xpinstall.signatures.required')
 
             self.puppeteer.utils.permissions.remove(self.addons_url, 'install')

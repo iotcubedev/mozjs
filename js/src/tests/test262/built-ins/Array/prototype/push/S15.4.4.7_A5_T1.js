@@ -4,7 +4,6 @@
 /*---
 info: "[[Get]] from not an inherited property"
 esid: sec-array.prototype.push
-es5id: 15.4.4.7_A5_T1
 description: >
     [[Prototype]] of Array instance is Array.prototype, [[Prototype]
     of Array.prototype is Object.prototype
@@ -13,7 +12,9 @@ description: >
 Object.prototype[1] = -1;
 Object.prototype.length = 1;
 Object.prototype.push = Array.prototype.push;
-var x = {0:0};
+var x = {
+  0: 0
+};
 
 //CHECK#1
 var push = x.push(1);

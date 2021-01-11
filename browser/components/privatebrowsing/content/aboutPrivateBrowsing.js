@@ -2,63 +2,84 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const FAVICON_QUESTION = "chrome://global/skin/icons/question-32.png";
-const STRING_BUNDLE = "chrome://browser/locale/aboutPrivateBrowsing.properties";
-const TP_ENABLED_PREF = "privacy.trackingprotection.enabled";
-const TP_PB_ENABLED_PREF = "privacy.trackingprotection.pbmode.enabled";
-
-function updateTPInfo() {
-  let aboutCapabilities = document.aboutCapabilities;
-  let tpButton = document.getElementById("tpButton");
-  let tpToggle = document.getElementById("tpToggle");
-  let title = document.getElementById("title");
-  let titleTracking = document.getElementById("titleTracking");
-  let tpSubHeader = document.getElementById("tpSubHeader");
-
-  let globalTrackingEnabled = aboutCapabilities.getBoolPref(TP_ENABLED_PREF, null);
-  let trackingEnabled = globalTrackingEnabled ||
-                        aboutCapabilities.getBoolPref(TP_PB_ENABLED_PREF, null);
-
-  // if tracking protection is enabled globally we don't even give the user
-  // a choice here by hiding the toggle completely.
-  tpButton.classList.toggle("hide", globalTrackingEnabled);
-  tpToggle.checked = trackingEnabled;
-  title.classList.toggle("hide", trackingEnabled);
-  titleTracking.classList.toggle("hide", !trackingEnabled);
-  tpSubHeader.classList.toggle("tp-off", !trackingEnabled);
-}
+/* eslint-env mozilla/frame-script */
 
 document.addEventListener("DOMContentLoaded", function() {
-  let aboutCapabilities = document.aboutCapabilities;
-  if (!aboutCapabilities.isWindowPrivate()) {
+  if (!RPMIsWindowPrivate()) {
     document.documentElement.classList.remove("private");
     document.documentElement.classList.add("normal");
-    document.title = aboutCapabilities.getStringFromBundle(STRING_BUNDLE, "title.normal");
-    document.getElementById("favicon").setAttribute("href", FAVICON_QUESTION);
-    document.getElementById("startPrivateBrowsing").addEventListener("click", function() {
-      aboutCapabilities.sendAsyncMessage("OpenPrivateWindow", null);
-    });
+    document
+      .getElementById("startPrivateBrowsing")
+      .addEventListener("click", function() {
+        RPMSendAsyncMessage("OpenPrivateWindow");
+      });
     return;
   }
 
-  document.title = aboutCapabilities.getStringFromBundle(STRING_BUNDLE, "title.head");
-  document.getElementById("startTour").addEventListener("click", function() {
-    aboutCapabilities.sendAsyncMessage("DontShowIntroPanelAgain", null);
-  });
-  document.getElementById("startTour").setAttribute("href",
-    aboutCapabilities.formatURLPref("privacy.trackingprotection.introURL"));
-  document.getElementById("learnMore").setAttribute("href",
-    aboutCapabilities.formatURLPref("app.support.baseURL") + "private-browsing");
+  // Setup the private browsing myths link.
+  document
+    .getElementById("private-browsing-myths")
+    .setAttribute(
+      "href",
+      RPMGetFormatURLPref("app.support.baseURL") + "private-browsing-myths"
+    );
 
-  let tpToggle = document.getElementById("tpToggle");
-  document.getElementById("tpButton").addEventListener("click", () => {
-    tpToggle.click();
+  // Setup the search hand-off box.
+  let btn = document.getElementById("search-handoff-button");
+  let editable = document.getElementById("fake-editable");
+  let HIDE_SEARCH_TOPIC = "HideSearch";
+  let SHOW_SEARCH_TOPIC = "ShowSearch";
+  let SEARCH_HANDOFF_TOPIC = "SearchHandoff";
+
+  function showSearch() {
+    btn.classList.remove("focused");
+    btn.classList.remove("hidden");
+    RPMRemoveMessageListener(SHOW_SEARCH_TOPIC, showSearch);
+  }
+
+  function hideSearch() {
+    btn.classList.add("hidden");
+  }
+
+  function handoffSearch(text) {
+    RPMSendAsyncMessage(SEARCH_HANDOFF_TOPIC, { text });
+    RPMAddMessageListener(SHOW_SEARCH_TOPIC, showSearch);
+    if (text) {
+      hideSearch();
+    } else {
+      btn.classList.add("focused");
+      RPMAddMessageListener(HIDE_SEARCH_TOPIC, hideSearch);
+    }
+  }
+  btn.addEventListener("focus", function() {
+    handoffSearch();
   });
-  tpToggle.addEventListener("change", function() {
-    aboutCapabilities.setBoolPref(TP_PB_ENABLED_PREF, tpToggle.checked).then(function() {
-      updateTPInfo();
-    });
+  btn.addEventListener("click", function() {
+    handoffSearch();
   });
 
-  updateTPInfo();
+  // Hand-off any text that gets dropped or pasted
+  editable.addEventListener("drop", function(ev) {
+    ev.preventDefault();
+    let text = ev.dataTransfer.getData("text");
+    if (text) {
+      handoffSearch(text);
+    }
+  });
+  editable.addEventListener("paste", function(ev) {
+    ev.preventDefault();
+    handoffSearch(ev.clipboardData.getData("Text"));
+  });
+
+  // Load contentSearchUI so it sets the search engine icon for us.
+  // TODO: FIXME. We should eventually refector contentSearchUI to do only what
+  // we need and have it do the common search handoff work for
+  // about:newtab and about:privatebrowsing.
+  let input = document.getElementById("dummy-input");
+  new window.ContentSearchUIController(
+    input,
+    input.parentNode,
+    "aboutprivatebrowsing",
+    "aboutprivatebrowsing"
+  );
 });

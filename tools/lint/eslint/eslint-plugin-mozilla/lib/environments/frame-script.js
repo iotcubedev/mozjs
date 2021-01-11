@@ -14,6 +14,7 @@ module.exports = {
     addWeakMessageListener: false,
     atob: false,
     btoa: false,
+    chromeOuterWindowID: false,
     content: false,
     docShell: false,
     privateNoteIntentionalCrash: false,
@@ -23,6 +24,17 @@ module.exports = {
     sendAsyncMessage: false,
     sendSyncMessage: false,
     sendRpcMessage: false,
-    tabEventTarget: false
-  }
+    tabEventTarget: false,
+    RPMGetAppBuildID: false,
+    RPMGetIntPref: false,
+    RPMGetStringPref: false,
+    RPMGetBoolPref: false,
+    RPMSetBoolPref: false,
+    RPMGetFormatURLPref: false,
+    RPMIsWindowPrivate: false,
+    RPMSendAsyncMessage: false,
+    RPMAddMessageListener: false,
+    RPMRecordTelemetryEvent: false,
+    RPMRemoveMessageListener: false,
+  },
 };

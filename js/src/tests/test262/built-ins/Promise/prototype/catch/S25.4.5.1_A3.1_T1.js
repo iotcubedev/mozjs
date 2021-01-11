@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -14,11 +15,10 @@ var obj = {};
 
 var p = Promise.resolve(obj);
 
-p.catch(function () {
-    $ERROR("Should not be called - promise is fulfilled");
-}).then(function (arg) {
-    if (arg !== obj) {
-        $ERROR("Expected promise to be fulfilled with obj, got " + arg);
-    }
+p.catch(function() {
+  $ERROR("Should not be called - promise is fulfilled");
+}).then(function(arg) {
+  if (arg !== obj) {
+    $ERROR("Expected promise to be fulfilled with obj, got " + arg);
+  }
 }).then($DONE, $DONE);
-

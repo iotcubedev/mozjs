@@ -10,30 +10,21 @@ This script manages Desktop repacks for nightly builds.
 """
 import os
 import glob
-import re
 import sys
 import shlex
-import subprocess
 
 # load modules from parent dir
-sys.path.insert(1, os.path.dirname(sys.path[0]))
+sys.path.insert(1, os.path.dirname(sys.path[0]))  # noqa
 
 from mozharness.base.errors import MakefileErrorList
 from mozharness.base.script import BaseScript
-from mozharness.base.transfer import TransferMixin
 from mozharness.base.vcs.vcsbase import VCSMixin
-from mozharness.mozilla.buildbot import BuildbotMixin
-from mozharness.mozilla.purge import PurgeMixin
+from mozharness.mozilla.automation import AutomationMixin
 from mozharness.mozilla.building.buildbase import (
     MakeUploadOutputParser,
     get_mozconfig_path,
 )
 from mozharness.mozilla.l10n.locales import LocalesMixin
-from mozharness.mozilla.mar import MarMixin
-from mozharness.mozilla.release import ReleaseMixin
-from mozharness.mozilla.signing import SigningMixin
-from mozharness.mozilla.updates.balrog import BalrogMixin
-from mozharness.base.python import VirtualenvMixin
 
 try:
     import simplejson as json
@@ -50,52 +41,11 @@ SUCCESS_STR = "Success"
 FAILURE_STR = "Failed"
 
 
-# mandatory configuration options, without them, this script will not work
-# it's a list of values that are already known before starting a build
-configuration_tokens = ('branch',
-                        'platform',
-                        'update_channel',
-                        )
-# some other values such as "%(version)s", "%(buildid)s", ...
-# are defined at run time and they cannot be enforced in the _pre_config_lock
-# phase
-runtime_config_tokens = ('buildid', 'version', 'locale', 'from_buildid',
-                         'abs_objdir', 'revision',
-                         'to_buildid', 'en_us_binary_url',
-                         'en_us_installer_binary_url', 'mar_tools_url',
-                         'who')
-
-
 # DesktopSingleLocale {{{1
-class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
-                          VCSMixin, SigningMixin, PurgeMixin, BaseScript,
-                          BalrogMixin, MarMixin, VirtualenvMixin, TransferMixin):
+class DesktopSingleLocale(LocalesMixin, AutomationMixin,
+                          VCSMixin, BaseScript):
     """Manages desktop repacks"""
     config_options = [[
-        ['--balrog-config', ],
-        {"action": "extend",
-         "dest": "config_files",
-         "type": "string",
-         "help": "Specify the balrog configuration file"}
-    ], [
-        ['--branch-config', ],
-        {"action": "extend",
-         "dest": "config_files",
-         "type": "string",
-         "help": "Specify the branch configuration file"}
-    ], [
-        ['--environment-config', ],
-        {"action": "extend",
-         "dest": "config_files",
-         "type": "string",
-         "help": "Specify the environment (staging, production, ...) configuration file"}
-    ], [
-        ['--platform-config', ],
-        {"action": "extend",
-         "dest": "config_files",
-         "type": "string",
-         "help": "Specify the platform configuration file"}
-    ], [
         ['--locale', ],
         {"action": "extend",
          "dest": "locales",
@@ -103,103 +53,36 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
          "help": "Specify the locale(s) to sign and update. Optionally pass"
                  " revision separated by colon, en-GB:default."}
     ], [
-        ['--locales-file', ],
-        {"action": "store",
-         "dest": "locales_file",
-         "type": "string",
-         "help": "Specify a file to determine which locales to sign and update"}
-    ], [
         ['--tag-override', ],
         {"action": "store",
          "dest": "tag_override",
          "type": "string",
          "help": "Override the tags set for all repos"}
     ], [
-        ['--revision', ],
-        {"action": "store",
-         "dest": "revision",
-         "type": "string",
-         "help": "Override the gecko revision to use (otherwise use buildbot supplied"
-                 " value, or en-US revision) "}
-    ], [
-        ['--user-repo-override', ],
-        {"action": "store",
-         "dest": "user_repo_override",
-         "type": "string",
-         "help": "Override the user repo path for all repos"}
-    ], [
-        ['--release-config-file', ],
-        {"action": "store",
-         "dest": "release_config_file",
-         "type": "string",
-         "help": "Specify the release config file to use"}
-    ], [
-        ['--this-chunk', ],
-        {"action": "store",
-         "dest": "this_locale_chunk",
-         "type": "int",
-         "help": "Specify which chunk of locales to run"}
-    ], [
-        ['--total-chunks', ],
-        {"action": "store",
-         "dest": "total_locale_chunks",
-         "type": "int",
-         "help": "Specify the total number of chunks of locales"}
-    ], [
         ['--en-us-installer-url', ],
         {"action": "store",
          "dest": "en_us_installer_url",
          "type": "string",
          "help": "Specify the url of the en-us binary"}
-    ], [
-        ["--disable-mock"], {
-         "dest": "disable_mock",
-         "action": "store_true",
-         "help": "(deprecated) no-op for CLI compatability with mobile_l10n.py"}
-    ], [
-        ['--scm-level'], {  # Ignored on desktop for now: see Bug 1414678.
-         "action": "store",
-         "type": "int",
-         "dest": "scm_level",
-         "default": 1,
-         "help": "This sets the SCM level for the branch being built."
-                 " See https://www.mozilla.org/en-US/about/"
-                 "governance/policies/commit/access-policy/"}
     ]]
 
     def __init__(self, require_config_file=True):
         # fxbuild style:
         buildscript_kwargs = {
             'all_actions': [
-                "clobber",
-                "pull",
                 "clone-locales",
                 "list-locales",
                 "setup",
                 "repack",
-                "taskcluster-upload",
-                "funsize-props",
-                "submit-to-balrog",
                 "summary",
             ],
             'config': {
-                "buildbot_json_path": "buildprops.json",
                 "ignore_locales": ["en-US"],
                 "locales_dir": "browser/locales",
-                "buildid_section": "App",
-                "buildid_option": "BuildID",
-                "application_ini": "application.ini",
                 "log_name": "single_locale",
-                "clobber_file": 'CLOBBER',
-                "appName": "Firefox",
-                "hashType": "sha512",
-                'virtualenv_modules': [
-                    'requests==2.8.1',
-                ],
-                'virtualenv_path': 'venv',
+                "hg_l10n_base": "https://hg.mozilla.org/l10n-central",
             },
         }
-        #
 
         LocalesMixin.__init__(self)
         BaseScript.__init__(
@@ -209,137 +92,12 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
             **buildscript_kwargs
         )
 
-        self.buildid = None
-        self.make_ident_output = None
         self.bootstrap_env = None
         self.upload_env = None
-        self.revision = None
-        self.version = None
         self.upload_urls = {}
-        self.locales_property = {}
         self.pushdate = None
         # upload_files is a dictionary of files to upload, keyed by locale.
         self.upload_files = {}
-
-    def _pre_config_lock(self, rw_config):
-        """replaces 'configuration_tokens' with their values, before the
-           configuration gets locked. If some of the configuration_tokens
-           are not present, stops the execution of the script"""
-        # since values as branch, platform are mandatory, can replace them in
-        # in the configuration before it is locked down
-        # mandatory tokens
-        for token in configuration_tokens:
-            if token not in self.config:
-                self.fatal('No %s in configuration!' % token)
-
-        # all the important tokens are present in our configuration
-        for token in configuration_tokens:
-            # token_string '%(branch)s'
-            token_string = ''.join(('%(', token, ')s'))
-            # token_value => ash
-            token_value = self.config[token]
-            for element in self.config:
-                # old_value =>  https://hg.mozilla.org/projects/%(branch)s
-                old_value = self.config[element]
-                # new_value => https://hg.mozilla.org/projects/ash
-                new_value = self.__detokenise_element(self.config[element],
-                                                      token_string,
-                                                      token_value)
-                if new_value and new_value != old_value:
-                    msg = "%s: replacing %s with %s" % (element,
-                                                        old_value,
-                                                        new_value)
-                    self.debug(msg)
-                    self.config[element] = new_value
-
-        # now, only runtime_config_tokens should be present in config
-        # we should parse self.config and fail if any other  we spot any
-        # other token
-        tokens_left = set(self._get_configuration_tokens(self.config))
-        unknown_tokens = set(tokens_left) - set(runtime_config_tokens)
-        if unknown_tokens:
-            msg = ['unknown tokens in configuration:']
-            for t in unknown_tokens:
-                msg.append(t)
-            self.fatal(' '.join(msg))
-        self.info('configuration looks ok')
-
-        self.read_buildbot_config()
-        if not self.buildbot_config:
-            self.warning("Skipping buildbot properties overrides")
-            # Set an empty dict
-            self.buildbot_config = {"properties": {}}
-            return
-        props = self.buildbot_config["properties"]
-        for prop in ['mar_tools_url']:
-            if props.get(prop):
-                self.info("Overriding %s with %s" % (prop, props[prop]))
-                self.config[prop] = props.get(prop)
-
-    def _get_configuration_tokens(self, iterable):
-        """gets a list of tokens in iterable"""
-        regex = re.compile('%\(\w+\)s')
-        results = []
-        try:
-            for element in iterable:
-                if isinstance(iterable, str):
-                    # this is a string, look for tokens
-                    # self.debug("{0}".format(re.findall(regex, element)))
-                    tokens = re.findall(regex, iterable)
-                    for token in tokens:
-                        # clean %(branch)s => branch
-                        # remove %(
-                        token_name = token.partition('%(')[2]
-                        # remove )s
-                        token_name = token_name.partition(')s')[0]
-                        results.append(token_name)
-                    break
-
-                elif isinstance(iterable, (list, tuple)):
-                    results.extend(self._get_configuration_tokens(element))
-
-                elif isinstance(iterable, dict):
-                    results.extend(self._get_configuration_tokens(iterable[element]))
-
-        except TypeError:
-            # element is a int/float/..., nothing to do here
-            pass
-
-        # remove duplicates, and return results
-
-        return list(set(results))
-
-    def __detokenise_element(self, config_option, token, value):
-        """reads config_options and returns a version of the same config_option
-           replacing token with value recursively"""
-        # config_option is a string, let's replace token with value
-        if isinstance(config_option, str):
-            # if token does not appear in this string,
-            # nothing happens and the original value is returned
-            return config_option.replace(token, value)
-        # it's a dictionary
-        elif isinstance(config_option, dict):
-            # replace token for each element of this dictionary
-            for element in config_option:
-                config_option[element] = self.__detokenise_element(
-                    config_option[element], token, value)
-            return config_option
-        # it's a list
-        elif isinstance(config_option, list):
-            # create a new list and append the replaced elements
-            new_list = []
-            for element in config_option:
-                new_list.append(self.__detokenise_element(element, token, value))
-            return new_list
-        elif isinstance(config_option, tuple):
-            # create a new list and append the replaced elements
-            new_list = []
-            for element in config_option:
-                new_list.append(self.__detokenise_element(element, token, value))
-            return tuple(new_list)
-        else:
-            # everything else, bool, number, ...
-            return config_option
 
     # Helper methods {{{2
     def query_bootstrap_env(self):
@@ -349,46 +107,19 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
         config = self.config
         replace_dict = self.query_abs_dirs()
 
-        replace_dict['en_us_binary_url'] = config.get('en_us_binary_url')
-        self.read_buildbot_config()
-        # Override en_us_binary_url if packageUrl is passed as a property from
-        # the en-US build
-        if self.buildbot_config["properties"].get("packageUrl"):
-            packageUrl = self.buildbot_config["properties"]["packageUrl"]
-            # trim off the filename, the build system wants a directory
-            packageUrl = packageUrl.rsplit('/', 1)[0]
-            self.info("Overriding en_us_binary_url with %s" % packageUrl)
-            replace_dict['en_us_binary_url'] = str(packageUrl)
-        # Override en_us_binary_url if passed as a buildbot property
-        if self.buildbot_config["properties"].get("en_us_binary_url"):
-            self.info("Overriding en_us_binary_url with %s" %
-                      self.buildbot_config["properties"]["en_us_binary_url"])
-            replace_dict['en_us_binary_url'] = \
-                str(self.buildbot_config["properties"]["en_us_binary_url"])
         bootstrap_env = self.query_env(partial_env=config.get("bootstrap_env"),
                                        replace_dict=replace_dict)
-        # Override en_us_installer_binary_url if passed as a buildbot property
-        if self.buildbot_config["properties"].get("en_us_installer_binary_url"):
-            self.info("Overriding en_us_binary_url with %s" %
-                      self.buildbot_config["properties"]["en_us_installer_binary_url"])
-            bootstrap_env['EN_US_INSTALLER_BINARY_URL'] = str(
-                self.buildbot_config["properties"]["en_us_installer_binary_url"])
-        if 'MOZ_SIGNING_SERVERS' in os.environ:
-            sign_cmd = self.query_moz_sign_cmd(formats=None)
-            sign_cmd = subprocess.list2cmdline(sign_cmd)
-            # windows fix
-            bootstrap_env['MOZ_SIGN_CMD'] = sign_cmd.replace('\\', '\\\\\\\\')
-        for binary in self._mar_binaries():
-            # "mar -> MAR" and 'mar.exe -> MAR' (windows)
-            name = binary.replace('.exe', '')
-            name = name.upper()
-            binary_path = os.path.join(self._mar_tool_dir(), binary)
-            # windows fix...
-            if binary.endswith('.exe'):
-                binary_path = binary_path.replace('\\', '\\\\\\\\')
-            bootstrap_env[name] = binary_path
         if self.query_is_nightly():
             bootstrap_env["IS_NIGHTLY"] = "yes"
+            # we might set update_channel explicitly
+            if config.get('update_channel'):
+                update_channel = config['update_channel']
+            else:  # Let's just give the generic channel based on branch.
+                update_channel = "nightly-%s" % (config['branch'],)
+            if isinstance(update_channel, unicode):
+                update_channel = update_channel.encode("utf-8")
+            bootstrap_env["MOZ_UPDATE_CHANNEL"] = update_channel
+            self.info("Update channel set to: {}".format(bootstrap_env["MOZ_UPDATE_CHANNEL"]))
         self.bootstrap_env = bootstrap_env
         return self.bootstrap_env
 
@@ -411,71 +142,8 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
 
     def query_l10n_env(self):
         l10n_env = self._query_upload_env().copy()
-        # both upload_env and bootstrap_env define MOZ_SIGN_CMD
-        # the one from upload_env is taken from os.environ, the one from
-        # bootstrap_env is set with query_moz_sign_cmd()
-        # we need to use the value provided my query_moz_sign_cmd or make upload
-        # will fail (signtool.py path is wrong)
         l10n_env.update(self.query_bootstrap_env())
         return l10n_env
-
-    def _query_make_ident_output(self):
-        """Get |make ident| output from the objdir.
-        Only valid after setup is run.
-       """
-        if self.make_ident_output:
-            return self.make_ident_output
-        dirs = self.query_abs_dirs()
-        self.make_ident_output = self._get_output_from_make(
-            target=["ident"],
-            cwd=dirs['abs_locales_dir'],
-            env=self.query_bootstrap_env())
-        return self.make_ident_output
-
-    def _query_buildid(self):
-        """Get buildid from the objdir.
-        Only valid after setup is run.
-       """
-        if self.buildid:
-            return self.buildid
-        r = re.compile(r"buildid (\d+)")
-        output = self._query_make_ident_output()
-        for line in output.splitlines():
-            match = r.match(line)
-            if match:
-                self.buildid = match.groups()[0]
-        return self.buildid
-
-    def _query_revision(self):
-        """ Get the gecko revision in this order of precedence
-              * cached value
-              * command line arg --revision   (development, taskcluster)
-              * buildbot properties           (try with buildbot forced build)
-              * buildbot change               (try with buildbot scheduler)
-              * from the en-US build          (m-c & m-a)
-
-        This will fail the last case if the build hasn't been pulled yet.
-        """
-        if self.revision:
-            return self.revision
-
-        self.read_buildbot_config()
-        config = self.config
-        revision = None
-        if config.get("revision"):
-            revision = config["revision"]
-        elif 'revision' in self.buildbot_properties:
-            revision = self.buildbot_properties['revision']
-        elif (self.buildbot_config and
-              self.buildbot_config.get('sourcestamp', {}).get('revision')):
-            revision = self.buildbot_config['sourcestamp']['revision']
-        elif self.buildbot_config and self.buildbot_config.get('revision'):
-            revision = self.buildbot_config['revision']
-
-        if not revision:
-            self.fatal("Can't determine revision!")
-        self.revision = str(revision)
-        return self.revision
 
     def _query_make_variable(self, variable, make_args=None):
         """returns the value of make echo-variable-<variable>
@@ -495,19 +163,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
         self.info('echo-variable-%s: %s' % (variable, output))
         return output
 
-    def query_version(self):
-        """Gets the version from the objdir.
-        Only valid after setup is run."""
-        if self.version:
-            return self.version
-        config = self.config
-        if config.get('release_config_file'):
-            release_config = self.query_release_config()
-            self.version = release_config['version']
-        else:
-            self.version = self._query_make_variable("MOZ_APP_VERSION")
-        return self.version
-
     def _map(self, func, items):
         """runs func for any item in items, calls the add_failure() for each
            error. It assumes that function returns 0 when successful.
@@ -523,76 +178,10 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
             else:
                 #  func failed...
                 message = 'failure: %s(%s)' % (name, item)
-                self._add_failure(item, message)
+                self.add_failure(item, message)
         return (success_count, total_count)
 
-    def _add_failure(self, locale, message, **kwargs):
-        """marks current step as failed"""
-        self.locales_property[locale] = FAILURE_STR
-        prop_key = "%s_failure" % locale
-        prop_value = self.query_buildbot_property(prop_key)
-        if prop_value:
-            prop_value = "%s  %s" % (prop_value, message)
-        else:
-            prop_value = message
-        self.set_buildbot_property(prop_key, prop_value, write_to_file=True)
-        BaseScript.add_failure(self, locale, message=message, **kwargs)
-
-    def query_failed_locales(self):
-        return [l for l, res in self.locales_property.items() if
-                res == FAILURE_STR]
-
-    def summary(self):
-        """generates a summary"""
-        BaseScript.summary(self)
-        # TODO we probably want to make this configurable on/off
-        locales = self.query_locales()
-        for locale in locales:
-            self.locales_property.setdefault(locale, SUCCESS_STR)
-        self.set_buildbot_property("locales",
-                                   json.dumps(self.locales_property),
-                                   write_to_file=True)
-
     # Actions {{{2
-    def clobber(self):
-        """clobber"""
-        dirs = self.query_abs_dirs()
-        clobber_dirs = (dirs['abs_objdir'], dirs['abs_upload_dir'])
-        PurgeMixin.clobber(self, always_clobber_dirs=clobber_dirs)
-
-    def pull(self):
-        """pulls source code"""
-        config = self.config
-        dirs = self.query_abs_dirs()
-        repos = []
-        # replace dictionary for repos
-        # we need to interpolate some values:
-        # branch, branch_repo
-        # and user_repo_override if exists
-        replace_dict = {}
-        if config.get("user_repo_override"):
-            replace_dict['user_repo_override'] = config['user_repo_override']
-        # this is OK so early because we get it from buildbot, or
-        # the command line for local dev
-        replace_dict['revision'] = self._query_revision()
-
-        for repository in config['repos']:
-            current_repo = {}
-            for key, value in repository.iteritems():
-                try:
-                    current_repo[key] = value % replace_dict
-                except TypeError:
-                    # pass through non-interpolables, like booleans
-                    current_repo[key] = value
-                except KeyError:
-                    self.error('not all the values in "{0}" can be replaced. Check your '
-                               'configuration'.format(value))
-                    raise
-            repos.append(current_repo)
-        self.info("repositories: %s" % repos)
-        self.vcs_checkout_repos(repos, parent_dir=dirs['abs_work_dir'],
-                                tag_override=config.get('tag_override'))
-
     def clone_locales(self):
         self.pull_locale_source()
 
@@ -604,7 +193,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
         self._run_make_in_config_dir()
         self.make_wget_en_US()
         self.make_unpack_en_US()
-        self.download_mar_tools()
 
     def _run_make_in_config_dir(self):
         """this step creates nsinstall, needed my make_wget_en_US()
@@ -613,12 +201,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
         config_dir = os.path.join(dirs['abs_objdir'], 'config')
         env = self.query_bootstrap_env()
         return self._make(target=['export'], cwd=config_dir, env=env)
-
-    def _clobber_file(self):
-        """returns the full path of the clobber file"""
-        config = self.config
-        dirs = self.query_abs_dirs()
-        return os.path.join(dirs['abs_objdir'], config.get('clobber_file'))
 
     def _copy_mozconfig(self):
         """copies the mozconfig file into abs_mozilla_dir/.mozconfig
@@ -736,7 +318,7 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
                        glob.glob(os.path.join(upload_target, 'setup.exe')) +
                        glob.glob(os.path.join(upload_target, 'setup-stub.exe')))
             targets_exts = ["tar.bz2", "dmg", "langpack.xpi",
-                            "complete.mar", "checksums", "zip",
+                            "checksums", "zip",
                             "installer.exe", "installer-stub.exe"]
             targets = [(".%s" % (ext,), "target.%s" % (ext,)) for ext in targets_exts]
             targets.extend([(f, f) for f in 'setup.exe', 'setup-stub.exe'])
@@ -838,46 +420,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, BuildbotMixin,
                 abs_dirs[key] = dirs[key]
         self.abs_dirs = abs_dirs
         return self.abs_dirs
-
-    def submit_to_balrog(self):
-        """submit to balrog"""
-        self.info("Reading buildbot build properties...")
-        self.read_buildbot_config()
-        # get platform, appName and hashType from configuration
-        # common values across different locales
-        config = self.config
-        platform = config["platform"]
-        appName = config['appName']
-        branch = config['branch']
-        # values from configuration
-        self.set_buildbot_property("branch", branch)
-        self.set_buildbot_property("appName", appName)
-        # it's hardcoded to sha512 in balrog.py
-        self.set_buildbot_property("platform", platform)
-        # values common to the current repacks
-        self.set_buildbot_property("buildid", self._query_buildid())
-        self.set_buildbot_property("appVersion", self.query_version())
-
-        # YAY
-        def balrog_props_wrapper(locale):
-            env = self._query_upload_env()
-            props_path = os.path.join(env["UPLOAD_PATH"], locale,
-                                      'balrog_props.json')
-            self.generate_balrog_props(props_path)
-            return SUCCESS
-
-        self._map(balrog_props_wrapper, self.query_locales())
-
-    def _mar_binaries(self):
-        """returns a tuple with mar and mbsdiff paths"""
-        config = self.config
-        return (config['mar'], config['mbsdiff'])
-
-    def _mar_dir(self, dirname):
-        """returns the full path of dirname;
-            dirname is an entry in configuration"""
-        dirs = self.query_abs_dirs()
-        return os.path.join(dirs['abs_objdir'], self.config[dirname])
 
     # TODO: replace with ToolToolMixin
     def _get_tooltool_auth_file(self):

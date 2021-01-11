@@ -4,10 +4,9 @@
 config = {
     "taskcluster": {
         # use the relengapi proxy to talk to tooltool
-        "tooltool_servers": ['http://relengapi/tooltool/'],
-        "tooltool_url": 'http://relengapi/tooltool/',
+        "tooltool_servers": ['http://taskcluster/tooltool.mozilla-releng.net/'],
+        "tooltool_url": 'http://taskcluster/tooltool.mozilla-releng.net/',
         'upload_env': {
-            'UPLOAD_HOST': 'localhost',
             'UPLOAD_PATH': '/builds/worker/artifacts',
         },
     },

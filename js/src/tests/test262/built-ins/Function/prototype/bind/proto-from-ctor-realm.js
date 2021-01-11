@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-bound-function-exotic-objects-construct-argumentslist-newtarget
-es6id: 9.4.1.2
 description: Default [[Prototype]] value derived from realm of the constructor
 info: |
     [...]
@@ -23,7 +22,7 @@ var other = $262.createRealm().global;
 var C = new other.Function();
 C.prototype = null;
 
-var D = function(){}.bind();
+var D = function() {}.bind();
 
 var d = Reflect.construct(D, [], C);
 

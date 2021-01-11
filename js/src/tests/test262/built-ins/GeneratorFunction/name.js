@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-properties-of-the-generatorfunction-constructor
-es6id: 25.2.2
 description: Function "name" property
 info: |
   The value of the name property of the GeneratorFunction is
@@ -20,7 +19,7 @@ includes: [propertyHelper.js]
 features: [generators]
 ---*/
 
-var GeneratorFunction = Object.getPrototypeOf(function* () {}).constructor;
+var GeneratorFunction = Object.getPrototypeOf(function*() {}).constructor;
 
 assert.sameValue(GeneratorFunction.name, 'GeneratorFunction');
 

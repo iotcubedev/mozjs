@@ -1,3 +1,79 @@
+## [0.28.0] - 2019-02-17
+
+### Changed
+- Changed `llvm-config` to be first search candidate on macOS
+
+### Added
+- Added support for `clang` 8.0.x
+
+### Removed
+- Removed `assert-minimum` feature
+- Removed version detection for libraries without versions embedded in the filename
+
+## [0.27.0] - 2019-01-10
+
+### Changed
+- Added version detection for libraries without versions embedded in the filename
+
+### Added
+- Added `assert-minimum` feature (see `README.md` for details)
+
+## [0.26.4] - 2018-12-29
+
+### Changed
+- Added shared library path to `SharedLibrary` struct
+
+## [0.26.3] - 2018-11-14
+
+### Changed
+- Disable default features of `libc` dependency
+
+## [0.26.2] - 2018-11-03
+
+### Fixed
+- Fixed dynamic linking on macOS
+
+## [0.26.1] - 2018-10-10
+
+### Fixed
+- Fixed support for finding libraries in `bin` directories on Windows
+
+## [0.26.0] - 2018-10-07
+
+### Changed
+- Added support for finding libraries with version suffixes on Linux when using runtime linking (e.g., `libclang.so.1`)
+
+## [0.25.0] - 2018-10-06
+
+### Changed
+- Added support for versioned libraries on BSDs
+
+## [0.24.0] - 2018-09-15
+
+### Changed
+- Reworked finding of libraries (see `README.md` for details)
+
+### Added
+- Added support for `clang` 7.0.x
+
+## [0.23.0] - 2018-06-16
+
+### Changed
+- Changed `Clang::find` to skip dynamic libraries for an incorrect architecture on Windows
+
+## [0.22.0] - 2018-03-11
+
+### Added
+- Added support for `clang` 6.0.x
+- Bumped `libc` version to `0.2.39`
+- Bumped `libloading` version to `0.5.0`
+
+## [0.21.2] - 2018-02-17
+
+### Changed
+- Added original errors to error messages
+- Added support for searching for libraries in `LD_LIBRARY_PATH` directories
+
 ## [0.21.1] - 2017-11-24
 
 ### Changed

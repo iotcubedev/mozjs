@@ -6,63 +6,67 @@
 
 // Test dynamic updates in the storage inspector for localStorage.
 
-add_task(function* () {
-  yield openTabAndSetupStorage(MAIN_DOMAIN + "storage-updates.html");
+add_task(async function() {
+  const TEST_HOST = "http://test1.example.org";
+
+  await openTabAndSetupStorage(MAIN_DOMAIN + "storage-updates.html");
 
   gUI.tree.expandAll();
 
   ok(gUI.sidebar.hidden, "Sidebar is initially hidden");
 
-  yield checkState([
-    [
-      ["localStorage", "http://test1.example.org"],
-      ["ls1", "ls2", "ls3", "ls4", "ls5", "ls6", "ls7"]
-    ],
-  ]);
+  const expectedKeys = ["1", "2", "3", "4", "5", "null", "non-json-parsable"];
 
-  gWindow.localStorage.removeItem("ls4");
-
-  yield gUI.once("store-objects-updated");
-
-  yield checkState([
-    [
-      ["localStorage", "http://test1.example.org"],
-      ["ls1", "ls2", "ls3", "ls5", "ls6", "ls7"]
-    ],
-  ]);
-
-  gWindow.localStorage.setItem("ls4", "again");
-
-  yield gUI.once("store-objects-updated");
-  yield gUI.once("store-objects-updated");
-
-  yield checkState([
-    [
-      ["localStorage", "http://test1.example.org"],
-      ["ls1", "ls2", "ls3", "ls4", "ls5", "ls6", "ls7"]
-    ],
-  ]);
-  // Updating a row
-  gWindow.localStorage.setItem("ls2", "ls2-changed");
-
-  yield gUI.once("store-objects-updated");
-  yield gUI.once("store-objects-updated");
-
-  checkCell("ls2", "value", "ls2-changed");
+  // Test on string keys that JSON.parse can parse without throwing
+  // (to verify the issue fixed by Bug 1578447 doesn't regress).
+  await testRemoveAndChange("null", expectedKeys, TEST_HOST);
+  await testRemoveAndChange("4", expectedKeys, TEST_HOST);
+  // Test on a string that makes JSON.parse to throw.
+  await testRemoveAndChange("non-json-parsable", expectedKeys, TEST_HOST);
 
   // Clearing items.
-  yield ContentTask.spawn(gBrowser.selectedBrowser, null, function () {
+  await ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
     content.wrappedJSObject.clear();
   });
 
-  yield gUI.once("store-objects-cleared");
+  await gUI.once("store-objects-cleared");
 
-  yield checkState([
-    [
-      ["localStorage", "http://test1.example.org"],
-      [ ]
-    ],
+  await checkState([[["localStorage", TEST_HOST], []]]);
+
+  await finishTests();
+});
+
+async function testRemoveAndChange(targetKey, expectedKeys, host) {
+  await checkState([[["localStorage", host], expectedKeys]]);
+
+  await removeLocalStorageItem(targetKey);
+  await gUI.once("store-objects-edit");
+  await checkState([
+    [["localStorage", host], expectedKeys.filter(key => key !== targetKey)],
   ]);
 
-  yield finishTests();
-});
+  await setLocalStorageItem(targetKey, "again");
+  await gUI.once("store-objects-edit");
+  await checkState([[["localStorage", host], expectedKeys]]);
+
+  // Updating a row set to the string "null"
+  await setLocalStorageItem(targetKey, `key-${targetKey}-changed`);
+  await gUI.once("store-objects-edit");
+  checkCell(targetKey, "value", `key-${targetKey}-changed`);
+}
+
+async function setLocalStorageItem(key, value) {
+  await ContentTask.spawn(
+    gBrowser.selectedBrowser,
+    [key, value],
+    ([innerKey, innerValue]) => {
+      content.wrappedJSObject.localStorage.setItem(innerKey, innerValue);
+    }
+  );
+}
+
+async function removeLocalStorageItem(key) {
+  await ContentTask.spawn(gBrowser.selectedBrowser, key, innerKey => {
+    content.wrappedJSObject.localStorage.removeItem(innerKey);
+  });
+}

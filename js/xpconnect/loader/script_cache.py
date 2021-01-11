@@ -1,10 +1,17 @@
 #!/usr/bin/env python
+
+from __future__ import absolute_import, print_function
+
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
+# You can obtain one at http://mozilla.org/MPL/2.0/.
+
 import io
 import os
 import struct
 import sys
 
-MAGIC = b'mozXDRcachev001\0'
+MAGIC = b'mozXDRcachev002\0'
 
 
 def usage():
@@ -17,21 +24,27 @@ def usage():
 
 
 class ProcessTypes:
-    Default = 0
-    Web = 1
-    Extension = 2
+    Uninitialized = 0
+    Parent = 1
+    Web = 2
+    Extension = 3
+    Privileged = 4
 
     def __init__(self, val):
         self.val = val
 
     def __str__(self):
         res = []
-        if self.val & (1 << self.Default):
+        if self.val & (1 << self.Uninitialized):
+            raise Exception('Uninitialized process type')
+        if self.val & (1 << self.Parent):
             res.append('Parent')
         if self.val & (1 << self.Web):
             res.append('Web')
         if self.val & (1 << self.Extension):
             res.append('Extension')
+        if self.val & (1 << self.Privileged):
+            res.append('Privileged')
         return '|'.join(res)
 
 

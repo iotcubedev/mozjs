@@ -19,7 +19,7 @@ dictionary DynamicsCompressorOptions : AudioNodeOptions {
 };
 
 [Pref="dom.webaudio.enabled",
- Constructor(BaseAudioContext context, optional DynamicsCompressorOptions options)]
+ Constructor(BaseAudioContext context, optional DynamicsCompressorOptions options = {})]
 interface DynamicsCompressorNode : AudioNode {
 
     readonly attribute AudioParam threshold; // in Decibels
@@ -27,6 +27,7 @@ interface DynamicsCompressorNode : AudioNode {
     readonly attribute AudioParam ratio; // unit-less
     readonly attribute float reduction; // in Decibels
     readonly attribute AudioParam attack; // in Seconds
+    [BinaryName="getRelease"]
     readonly attribute AudioParam release; // in Seconds
 
 };

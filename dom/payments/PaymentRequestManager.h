@@ -22,70 +22,79 @@ class PaymentRequestChild;
 class IPCPaymentActionRequest;
 
 /*
- *  PaymentRequestManager is a singleton used to manage the created PaymentRequests.
- *  It is also the communication agent to chrome proces.
+ *  PaymentRequestManager is a singleton used to manage the created
+ * PaymentRequests. It is also the communication agent to chrome process.
  */
-class PaymentRequestManager final
-{
-public:
+class PaymentRequestManager final {
+ public:
   NS_INLINE_DECL_REFCOUNTING(PaymentRequestManager)
 
   static already_AddRefed<PaymentRequestManager> GetSingleton();
-
-  already_AddRefed<PaymentRequest>
-  GetPaymentRequestById(const nsAString& aRequestId);
 
   /*
    *  This method is used to create PaymentRequest object and send corresponding
    *  data to chrome process for internal payment creation, such that content
    *  process can ask specific task by sending requestId only.
    */
-  nsresult
-  CreatePayment(JSContext* aCx,
-                nsPIDOMWindowInner* aWindow,
-                nsIPrincipal* aTopLevelPrincipal,
-                const Sequence<PaymentMethodData>& aMethodData,
-                const PaymentDetailsInit& aDetails,
-                const PaymentOptions& aOptions,
-                PaymentRequest** aRequest);
+  nsresult CreatePayment(JSContext* aCx, nsPIDOMWindowInner* aWindow,
+                         nsIPrincipal* aTopLevelPrincipal,
+                         const Sequence<PaymentMethodData>& aMethodData,
+                         const PaymentDetailsInit& aDetails,
+                         const PaymentOptions& aOptions,
+                         PaymentRequest** aRequest);
 
-  nsresult CanMakePayment(const nsAString& aRequestId);
-  nsresult ShowPayment(const nsAString& aRequestId);
-  nsresult AbortPayment(const nsAString& aRequestId);
-  nsresult CompletePayment(const nsAString& aRequestId,
-                           const PaymentComplete& aComplete);
-  nsresult UpdatePayment(JSContext* aCx,
-                         const nsAString& aRequestId,
-                         const PaymentDetailsUpdate& aDetails);
+  nsresult CanMakePayment(PaymentRequest* aRequest);
+  nsresult ShowPayment(PaymentRequest* aRequest);
+  nsresult AbortPayment(PaymentRequest* aRequest);
+  nsresult CompletePayment(PaymentRequest* aRequest,
+                           const PaymentComplete& aComplete,
+                           bool aTimedOut = false);
+  nsresult UpdatePayment(JSContext* aCx, PaymentRequest* aRequest,
+                         const PaymentDetailsUpdate& aDetails,
+                         bool aRequestShipping);
+  nsresult ClosePayment(PaymentRequest* aRequest);
+  nsresult RetryPayment(JSContext* aCx, PaymentRequest* aRequest,
+                        const PaymentValidationErrors& aErrors);
 
-  nsresult RespondPayment(const IPCPaymentActionResponse& aResponse);
-  nsresult ChangeShippingAddress(const nsAString& aRequestId,
+  nsresult RespondPayment(PaymentRequest* aRequest,
+                          const IPCPaymentActionResponse& aResponse);
+  nsresult ChangeShippingAddress(PaymentRequest* aRequest,
                                  const IPCPaymentAddress& aAddress);
-  nsresult ChangeShippingOption(const nsAString& aRequestId,
+  nsresult ChangeShippingOption(PaymentRequest* aRequest,
                                 const nsAString& aOption);
+  nsresult ChangePayerDetail(PaymentRequest* aRequest,
+                             const nsAString& aPayerName,
+                             const nsAString& aPayerEmail,
+                             const nsAString& aPayerPhone);
+  nsresult ChangePaymentMethod(PaymentRequest* aRequest,
+                               const nsAString& aMethodName,
+                               const IPCMethodChangeDetails& aMethodDetails);
 
-  nsresult
-  ReleasePaymentChild(PaymentRequestChild* aPaymentChild);
+  bool IsRegionSupported(const nsAString& region) const;
 
-private:
-  PaymentRequestManager() = default;
-  ~PaymentRequestManager() = default;
+  // Called to ensure that we don't "leak" aRequest if we shut down while it had
+  // an active request to the parent.
+  void RequestIPCOver(PaymentRequest* aRequest);
 
-  nsresult GetPaymentChild(PaymentRequest* aRequest,
-                           PaymentRequestChild** aPaymentChild);
-  nsresult ReleasePaymentChild(PaymentRequest* aRequest);
+ private:
+  PaymentRequestManager();
+  ~PaymentRequestManager();
+
+  PaymentRequestChild* GetPaymentChild(PaymentRequest* aRequest);
 
   nsresult SendRequestPayment(PaymentRequest* aRequest,
                               const IPCPaymentActionRequest& action,
-                              bool aReleaseAfterSend = false);
+                              bool aResponseExpected = true);
 
-  // The container for the created PaymentRequests
-  nsTArray<RefPtr<PaymentRequest>> mRequestQueue;
-  nsRefPtrHashtable<nsRefPtrHashKey<PaymentRequest>, PaymentRequestChild> mPaymentChildHash;
-  RefPtr<PaymentRequest> mShowingRequest;
+  void NotifyRequestDone(PaymentRequest* aRequest);
+
+  // Strong pointer to requests with ongoing IPC messages to the parent.
+  nsDataHashtable<nsRefPtrHashKey<PaymentRequest>, uint32_t> mActivePayments;
+
+  nsTArray<nsString> mSupportedRegions;
 };
 
-} // end of namespace dom
-} // end of namespace mozilla
+}  // end of namespace dom
+}  // end of namespace mozilla
 
 #endif

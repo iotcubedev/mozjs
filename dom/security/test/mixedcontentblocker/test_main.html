@@ -7,7 +7,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=62178
 <head>
   <meta charset="utf-8">
   <title>Tests for Bug 62178</title>
-  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script src="/tests/SimpleTest/SimpleTest.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
 
   <script>
@@ -97,6 +97,12 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=62178
     if(firstTest) {
       log(`blockActive set to ${blockActive}, blockDisplay set to ${blockDisplay}, upgradeDisplay set to ${upgradeDisplay}.`);
       firstTest = false;
+    }
+
+    // Simple check from the iframe.
+    if (event.data.check) {
+      ok(event.data.status, event.data.msg);
+      return;
     }
 
     log("test: "+event.data.test+", msg: "+event.data.msg + " logging message.");

@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
 from firefox_puppeteer import PuppeteerMixin
 from marionette_driver import Wait
 from marionette_harness import MarionetteTestCase, skip_if_e10s
@@ -14,19 +15,14 @@ class TestSSLStatusAfterRestart(PuppeteerMixin, MarionetteTestCase):
 
         self.test_data = (
             {
-                'url': 'https://ssl-dv.mozqa.com',
+                'url': 'https://mozilla-intermediate.badssl.com',
                 'identity': '',
                 'type': 'secure'
             },
             {
-                'url': 'https://ssl-ev.mozqa.com/',
-                'identity': 'Mozilla Corporation',
+                'url': 'https://extended-validation.badssl.com',
+                'identity': 'Mozilla Foundation',
                 'type': 'secure-ev'
-            },
-            {
-                'url': 'https://ssl-ov.mozqa.com/',
-                'identity': '',
-                'type': 'secure'
             }
         )
 

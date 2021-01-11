@@ -6,16 +6,16 @@ package org.mozilla.gecko.sync.repositories.domain.test;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.sync.ExtendedJSONObject;
 import org.mozilla.gecko.sync.NonObjectJSONException;
 import org.mozilla.gecko.sync.repositories.domain.PasswordRecord;
+import org.robolectric.RobolectricTestRunner;
 
 import static org.junit.Assert.assertEquals;
 
 import java.io.IOException;
 
-@RunWith(TestRunner.class)
+@RunWith(RobolectricTestRunner.class)
 public class TestPasswordRecord {
     @Test
     public void testInitFromPayload() {
@@ -23,7 +23,7 @@ public class TestPasswordRecord {
         try {
             o = new ExtendedJSONObject("{" +
                     "\"hostname\": \"https://example.com\",\n" +
-                    "\"formSubmitURL\": \"https://example.com/login\",\n" +
+                    "\"formSubmitURL\": \"https://example.com\",\n" +
                     "\"httpRealm\": null,\n" +
                     "\"username\": \"johndoe\",\n" +
                     "\"password\": \"p4ssw0rd\",\n" +

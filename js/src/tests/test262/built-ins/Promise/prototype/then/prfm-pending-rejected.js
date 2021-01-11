@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -21,16 +22,18 @@ flags: [async]
 
 var value = {};
 var reject;
-var p = new Promise(function(_, _reject) { reject = _reject; });
+var p = new Promise(function(_, _reject) {
+  reject = _reject;
+});
 
 p.then(function() {
-    $DONE('The `onFulfilled` handler should not be invoked.');
-  }, function(x) {
-    if (x !== value) {
-      $DONE('The `onRejected` handler should be invoked with the promise result.');
-      return;
-    }
-    $DONE();
-  });
+  $DONE('The `onFulfilled` handler should not be invoked.');
+}, function(x) {
+  if (x !== value) {
+    $DONE('The `onRejected` handler should be invoked with the promise result.');
+    return;
+  }
+  $DONE();
+});
 
 reject(value);

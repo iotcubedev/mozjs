@@ -8,9 +8,10 @@
 #define mozilla_mscom_Utils_h
 
 #if defined(MOZILLA_INTERNAL_API)
-#include "nsString.h"
-#endif // defined(MOZILLA_INTERNAL_API)
+#  include "nsString.h"
+#endif  // defined(MOZILLA_INTERNAL_API)
 
+#include "mozilla/Attributes.h"
 #include <guiddef.h>
 
 struct IStream;
@@ -19,7 +20,10 @@ struct IUnknown;
 namespace mozilla {
 namespace mscom {
 
+bool IsCOMInitializedOnCurrentThread();
 bool IsCurrentThreadMTA();
+bool IsCurrentThreadExplicitMTA();
+bool IsCurrentThreadImplicitMTA();
 bool IsProxy(IUnknown* aUnknown);
 bool IsValidGUID(REFGUID aCheckGuid);
 uintptr_t GetContainingModuleHandle();
@@ -48,23 +52,51 @@ uint32_t CopySerializedProxy(IStream* aInStream, IStream** aOutStream);
 
 #if defined(MOZILLA_INTERNAL_API)
 void GUIDToString(REFGUID aGuid, nsAString& aOutString);
-#endif // defined(MOZILLA_INTERNAL_API)
+#endif  // defined(MOZILLA_INTERNAL_API)
 
 #if defined(ACCESSIBILITY)
 bool IsVtableIndexFromParentInterface(REFIID aInterface,
                                       unsigned long aVtableIndex);
 
-#if defined(MOZILLA_INTERNAL_API)
+#  if defined(MOZILLA_INTERNAL_API)
 bool IsCallerExternalProcess();
 
 bool IsInterfaceEqualToOrInheritedFrom(REFIID aInterface, REFIID aFrom,
                                        unsigned long aVtableIndexHint);
-#endif // defined(MOZILLA_INTERNAL_API)
+#  endif  // defined(MOZILLA_INTERNAL_API)
 
-#endif // defined(ACCESSIBILITY)
+#endif  // defined(ACCESSIBILITY)
 
-} // namespace mscom
-} // namespace mozilla
+/**
+ * Execute cleanup code when going out of scope if a condition is met.
+ * This is useful when, for example, particular cleanup needs to be performed
+ * whenever a call returns a failure HRESULT.
+ * Both the condition and cleanup code are provided as functions (usually
+ * lambdas).
+ */
+template <typename CondFnT, typename ExeFnT>
+class MOZ_RAII ExecuteWhen final {
+ public:
+  ExecuteWhen(CondFnT& aCondFn, ExeFnT& aExeFn)
+      : mCondFn(aCondFn), mExeFn(aExeFn) {}
 
-#endif // mozilla_mscom_Utils_h
+  ~ExecuteWhen() {
+    if (mCondFn()) {
+      mExeFn();
+    }
+  }
 
+  ExecuteWhen(const ExecuteWhen&) = delete;
+  ExecuteWhen(ExecuteWhen&&) = delete;
+  ExecuteWhen& operator=(const ExecuteWhen&) = delete;
+  ExecuteWhen& operator=(ExecuteWhen&&) = delete;
+
+ private:
+  CondFnT& mCondFn;
+  ExeFnT& mExeFn;
+};
+
+}  // namespace mscom
+}  // namespace mozilla
+
+#endif  // mozilla_mscom_Utils_h

@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -14,10 +15,10 @@ flags: [async]
 var obj = {};
 var p = Promise.reject(obj);
 
-p.then(undefined, undefined).then(function () {
-        $ERROR("Should not be called -- promise was rejected.");
-}, function (arg) {
-        if (arg !== obj) {
-            $ERROR("Expected resolution object to be passed through, got " + arg);
-        }
-    }).then($DONE, $DONE);
+p.then(undefined, undefined).then(function() {
+  $ERROR("Should not be called -- promise was rejected.");
+}, function(arg) {
+  if (arg !== obj) {
+    $ERROR("Expected resolution object to be passed through, got " + arg);
+  }
+}).then($DONE, $DONE);

@@ -6,29 +6,38 @@
 
 #include "ClientSourceOpParent.h"
 
+#include "ClientSourceParent.h"
+
 namespace mozilla {
 namespace dom {
 
 using mozilla::ipc::IPCResult;
 
-void
-ClientSourceOpParent::ActorDestroy(ActorDestroyReason aReason)
-{
+void ClientSourceOpParent::ActorDestroy(ActorDestroyReason aReason) {
   if (mPromise) {
     mPromise->Reject(NS_ERROR_ABORT, __func__);
     mPromise = nullptr;
   }
 }
 
-IPCResult
-ClientSourceOpParent::Recv__delete__(const ClientOpResult& aResult)
-{
+IPCResult ClientSourceOpParent::Recv__delete__(const ClientOpResult& aResult) {
   if (aResult.type() == ClientOpResult::Tnsresult &&
       NS_FAILED(aResult.get_nsresult())) {
+    // If a control message fails then clear the controller from
+    // the ClientSourceParent.  We eagerly marked it controlled at
+    // the start of the operation.
+    if (mArgs.type() == ClientOpConstructorArgs::TClientControlledArgs) {
+      auto source = static_cast<ClientSourceParent*>(Manager());
+      if (source) {
+        source->ClearController();
+      }
+    }
+
     mPromise->Reject(aResult.get_nsresult(), __func__);
     mPromise = nullptr;
     return IPC_OK();
   }
+
   mPromise->Resolve(aResult, __func__);
   mPromise = nullptr;
   return IPC_OK();
@@ -36,15 +45,13 @@ ClientSourceOpParent::Recv__delete__(const ClientOpResult& aResult)
 
 ClientSourceOpParent::ClientSourceOpParent(const ClientOpConstructorArgs& aArgs,
                                            ClientOpPromise::Private* aPromise)
-  : mPromise(aPromise)
-{
+    : mArgs(aArgs), mPromise(aPromise) {
   MOZ_DIAGNOSTIC_ASSERT(mPromise);
 }
 
-ClientSourceOpParent::~ClientSourceOpParent()
-{
+ClientSourceOpParent::~ClientSourceOpParent() {
   MOZ_DIAGNOSTIC_ASSERT(!mPromise);
 }
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla

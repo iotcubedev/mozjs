@@ -7,7 +7,7 @@
 
 from __future__ import absolute_import, print_function, unicode_literals
 
-from voluptuous import Any, Required, All
+from voluptuous import Any, Required, All, Optional
 from taskgraph.util.schema import (
     optionally_keyed_by,
     validate_schema,
@@ -28,15 +28,31 @@ cron_yml_schema = Schema({
         # what to run
 
         # Description of the job to run, keyed by 'type'
-        Required('job'): Any({
+        Required('job'): {
             Required('type'): 'decision-task',
 
             # Treeherder symbol for the cron task
             Required('treeherder-symbol'): basestring,
 
             # --target-tasks-method './mach taskgraph decision' argument
-            'target-tasks-method': basestring,
-        }),
+            Required('target-tasks-method'): basestring,
+
+            Optional(
+                'optimize-target-tasks',
+                description='If specified, this indicates whether the target '
+                            'tasks are eligible for optimization. Otherwise, '
+                            'the default for the project is used.',
+            ): bool,
+            Optional(
+                'include-push-tasks',
+                description='Whether tasks from the on-push graph should be re-used '
+                            'in the cron graph.',
+            ): bool,
+            Optional(
+                'rebuild-kinds',
+                description='Kinds that should not be re-used from the on-push graph.',
+            ): [basestring],
+        },
 
         # when to run it
 
@@ -52,7 +68,17 @@ cron_yml_schema = Schema({
         # for the same job.
         'when': optionally_keyed_by(
             'project',
-            [{'hour': int, 'minute': All(int, even_15_minutes)}]),
+            [
+                {
+                    'hour': int,
+                    'minute': All(int, even_15_minutes),
+                    # You probably don't want both day and weekday.
+                    'day': int,  # Day of the month, as used by datetime.
+                    'weekday': Any('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                                   'Saturday', 'Sunday')
+                }
+            ]
+        ),
     }],
 })
 

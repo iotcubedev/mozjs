@@ -30,21 +30,18 @@ namespace {
 // It would be nice to use a lambda instead of this class, but we cannot
 // move capture in lambdas yet and ContentParent cannot be AddRef'd off
 // the main thread.
-class KillContentParentRunnable final : public Runnable
-{
+class KillContentParentRunnable final : public Runnable {
   RefPtr<ContentParent> mContentParent;
 
-public:
+ public:
   explicit KillContentParentRunnable(RefPtr<ContentParent>&& aContentParent)
-    : Runnable("KillContentParentRunnable")
-    , mContentParent(Move(aContentParent))
-  {
+      : Runnable("KillContentParentRunnable"),
+        mContentParent(std::move(aContentParent)) {
     MOZ_ASSERT(mContentParent);
   }
 
   NS_IMETHOD
-  Run() override
-  {
+  Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     mContentParent->KillHard("invalid ClientSourceParent actor");
     mContentParent = nullptr;
@@ -52,14 +49,12 @@ public:
   }
 };
 
-} // anonymous namespace
+}  // anonymous namespace
 
-void
-ClientSourceParent::KillInvalidChild()
-{
+void ClientSourceParent::KillInvalidChild() {
   // Try to get the content process before we destroy the actor below.
   RefPtr<ContentParent> process =
-    BackgroundParent::GetContentParent(Manager()->Manager());
+      BackgroundParent::GetContentParent(Manager()->Manager());
 
   // First, immediately teardown the ClientSource actor.  No matter what
   // we want to start this process as soon as possible.
@@ -79,29 +74,24 @@ ClientSourceParent::KillInvalidChild()
   // trust that process any more.  We have to do this on the main thread, so
   // there is a small window of time before we kill the process.  This is why
   // we start the actor destruction immediately above.
-  nsCOMPtr<nsIRunnable> r = new KillContentParentRunnable(Move(process));
+  nsCOMPtr<nsIRunnable> r = new KillContentParentRunnable(std::move(process));
   MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
 }
 
-mozilla::ipc::IPCResult
-ClientSourceParent::RecvWorkerSyncPing()
-{
+mozilla::ipc::IPCResult ClientSourceParent::RecvWorkerSyncPing() {
   AssertIsOnBackgroundThread();
   // Do nothing here.  This is purely a sync message allowing the child to
   // confirm that the actor has been created on the parent process.
   return IPC_OK();
 }
 
-IPCResult
-ClientSourceParent::RecvTeardown()
-{
+IPCResult ClientSourceParent::RecvTeardown() {
   Unused << Send__delete__(this);
   return IPC_OK();
 }
 
-IPCResult
-ClientSourceParent::RecvExecutionReady(const ClientSourceExecutionReadyArgs& aArgs)
-{
+IPCResult ClientSourceParent::RecvExecutionReady(
+    const ClientSourceExecutionReadyArgs& aArgs) {
   // Now that we have the creation URL for the Client we can do some validation
   // to make sure the child actor is not giving us garbage.  Since we validate
   // on the child side as well we treat a failure here as fatal.
@@ -118,12 +108,12 @@ ClientSourceParent::RecvExecutionReady(const ClientSourceExecutionReadyArgs& aAr
     Unused << handle->SendExecutionReady(mClientInfo.ToIPC());
   }
 
+  mExecutionReadyPromise.ResolveIfExists(true, __func__);
+
   return IPC_OK();
 };
 
-IPCResult
-ClientSourceParent::RecvFreeze()
-{
+IPCResult ClientSourceParent::RecvFreeze() {
   MOZ_DIAGNOSTIC_ASSERT(!mFrozen);
   mFrozen = true;
 
@@ -137,17 +127,55 @@ ClientSourceParent::RecvFreeze()
   return IPC_OK();
 }
 
-IPCResult
-ClientSourceParent::RecvThaw()
-{
+IPCResult ClientSourceParent::RecvThaw() {
   MOZ_DIAGNOSTIC_ASSERT(mFrozen);
   mFrozen = false;
   return IPC_OK();
 }
 
-void
-ClientSourceParent::ActorDestroy(ActorDestroyReason aReason)
-{
+IPCResult ClientSourceParent::RecvInheritController(
+    const ClientControlledArgs& aArgs) {
+  mController.reset();
+  mController.emplace(aArgs.serviceWorker());
+
+  // In parent-side intercept mode we must tell the parent-side SWM about
+  // this controller inheritence.  In legacy client-side mode this is done
+  // from the ClientSource instead.
+  if (ServiceWorkerParentInterceptEnabled()) {
+    nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+        "ClientSourceParent::RecvInheritController",
+        [clientInfo = mClientInfo, controller = mController.ref()]() {
+          RefPtr<ServiceWorkerManager> swm =
+              ServiceWorkerManager::GetInstance();
+          NS_ENSURE_TRUE_VOID(swm);
+
+          swm->NoteInheritedController(clientInfo, controller);
+        });
+
+    MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
+  }
+
+  return IPC_OK();
+}
+
+IPCResult ClientSourceParent::RecvNoteDOMContentLoaded() {
+  if (mController.isSome() && ServiceWorkerParentInterceptEnabled()) {
+    nsCOMPtr<nsIRunnable> r =
+        NS_NewRunnableFunction("ClientSourceParent::RecvNoteDOMContentLoaded",
+                               [clientInfo = mClientInfo]() {
+                                 RefPtr<ServiceWorkerManager> swm =
+                                     ServiceWorkerManager::GetInstance();
+                                 NS_ENSURE_TRUE_VOID(swm);
+
+                                 swm->MaybeCheckNavigationUpdate(clientInfo);
+                               });
+
+    MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
+  }
+  return IPC_OK();
+}
+
+void ClientSourceParent::ActorDestroy(ActorDestroyReason aReason) {
   DebugOnly<bool> removed = mService->RemoveSource(this);
   MOZ_ASSERT(removed);
 
@@ -160,36 +188,36 @@ ClientSourceParent::ActorDestroy(ActorDestroyReason aReason)
   MOZ_DIAGNOSTIC_ASSERT(mHandleList.IsEmpty());
 }
 
-PClientSourceOpParent*
-ClientSourceParent::AllocPClientSourceOpParent(const ClientOpConstructorArgs& aArgs)
-{
-  MOZ_ASSERT_UNREACHABLE("ClientSourceOpParent should be explicitly constructed.");
+PClientSourceOpParent* ClientSourceParent::AllocPClientSourceOpParent(
+    const ClientOpConstructorArgs& aArgs) {
+  MOZ_ASSERT_UNREACHABLE(
+      "ClientSourceOpParent should be explicitly constructed.");
   return nullptr;
 }
 
-bool
-ClientSourceParent::DeallocPClientSourceOpParent(PClientSourceOpParent* aActor)
-{
+bool ClientSourceParent::DeallocPClientSourceOpParent(
+    PClientSourceOpParent* aActor) {
   delete aActor;
   return true;
 }
 
-ClientSourceParent::ClientSourceParent(const ClientSourceConstructorArgs& aArgs)
-  : mClientInfo(aArgs.id(), aArgs.type(), aArgs.principalInfo(), aArgs.creationTime())
-  , mService(ClientManagerService::GetOrCreateInstance())
-  , mExecutionReady(false)
-  , mFrozen(false)
-{
-}
+ClientSourceParent::ClientSourceParent(
+    const ClientSourceConstructorArgs& aArgs,
+    const Maybe<ContentParentId>& aContentParentId)
+    : mClientInfo(aArgs.id(), aArgs.type(), aArgs.principalInfo(),
+                  aArgs.creationTime()),
+      mContentParentId(aContentParentId),
+      mService(ClientManagerService::GetOrCreateInstance()),
+      mExecutionReady(false),
+      mFrozen(false) {}
 
-ClientSourceParent::~ClientSourceParent()
-{
+ClientSourceParent::~ClientSourceParent() {
   MOZ_DIAGNOSTIC_ASSERT(mHandleList.IsEmpty());
+
+  mExecutionReadyPromise.RejectIfExists(NS_ERROR_FAILURE, __func__);
 }
 
-void
-ClientSourceParent::Init()
-{
+void ClientSourceParent::Init() {
   // Ensure the principal is reasonable before adding ourself to the service.
   // Since we validate the principal on the child side as well, any failure
   // here is treated as fatal.
@@ -207,55 +235,50 @@ ClientSourceParent::Init()
   }
 }
 
-const ClientInfo&
-ClientSourceParent::Info() const
-{
-  return mClientInfo;
+const ClientInfo& ClientSourceParent::Info() const { return mClientInfo; }
+
+bool ClientSourceParent::IsFrozen() const { return mFrozen; }
+
+bool ClientSourceParent::ExecutionReady() const { return mExecutionReady; }
+
+RefPtr<GenericPromise> ClientSourceParent::ExecutionReadyPromise() {
+  // Only call if ClientSourceParent::ExecutionReady() is false; otherwise,
+  // the promise will never resolve
+  MOZ_ASSERT(!mExecutionReady);
+  return mExecutionReadyPromise.Ensure(__func__);
 }
 
-bool
-ClientSourceParent::IsFrozen() const
-{
-  return mFrozen;
-}
-
-bool
-ClientSourceParent::ExecutionReady() const
-{
-  return mExecutionReady;
-}
-
-const Maybe<ServiceWorkerDescriptor>&
-ClientSourceParent::GetController() const
-{
+const Maybe<ServiceWorkerDescriptor>& ClientSourceParent::GetController()
+    const {
   return mController;
 }
 
-void
-ClientSourceParent::AttachHandle(ClientHandleParent* aClientHandle)
-{
+void ClientSourceParent::ClearController() { mController.reset(); }
+
+void ClientSourceParent::AttachHandle(ClientHandleParent* aClientHandle) {
   MOZ_DIAGNOSTIC_ASSERT(aClientHandle);
   MOZ_DIAGNOSTIC_ASSERT(!mFrozen);
   MOZ_ASSERT(!mHandleList.Contains(aClientHandle));
   mHandleList.AppendElement(aClientHandle);
 }
 
-void
-ClientSourceParent::DetachHandle(ClientHandleParent* aClientHandle)
-{
+void ClientSourceParent::DetachHandle(ClientHandleParent* aClientHandle) {
   MOZ_DIAGNOSTIC_ASSERT(aClientHandle);
   MOZ_ASSERT(mHandleList.Contains(aClientHandle));
   mHandleList.RemoveElement(aClientHandle);
 }
 
-RefPtr<ClientOpPromise>
-ClientSourceParent::StartOp(const ClientOpConstructorArgs& aArgs)
-{
+RefPtr<ClientOpPromise> ClientSourceParent::StartOp(
+    const ClientOpConstructorArgs& aArgs) {
   RefPtr<ClientOpPromise::Private> promise =
-    new ClientOpPromise::Private(__func__);
+      new ClientOpPromise::Private(__func__);
 
   // If we are being controlled, remember that data before propagating
-  // on to the ClientSource.
+  // on to the ClientSource.  This must be set prior to triggering
+  // the controllerchange event from the ClientSource since some tests
+  // expect matchAll() to find the controlled client immediately after.
+  // If the control operation fails, then we reset the controller value
+  // to reflect the final state.
   if (aArgs.type() == ClientOpConstructorArgs::TClientControlledArgs) {
     mController.reset();
     mController.emplace(aArgs.get_ClientControlledArgs().serviceWorker());
@@ -268,5 +291,5 @@ ClientSourceParent::StartOp(const ClientOpConstructorArgs& aArgs)
   return promise.forget();
 }
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla

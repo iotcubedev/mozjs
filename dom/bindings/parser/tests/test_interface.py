@@ -376,30 +376,87 @@ def WebIDLTest(parser, harness):
                "Should not allow unknown extended attributes on interfaces")
 
     parser = parser.reset()
-    threw = False
-    try:
-        parser.parse("""
-            interface B {};
-            [ArrayClass]
-            interface A : B {
-            };
-        """)
-        results = parser.finish()
-    except:
-        threw = True
-    harness.ok(threw,
-               "Should not allow [ArrayClass] on interfaces with parents")
+    parser.parse("""
+        [Global] interface Window {};
+        [Exposed=Window, LegacyWindowAlias=A]
+        interface B {};
+        [Exposed=Window, LegacyWindowAlias=(C, D)]
+        interface E {};
+    """);
+    results = parser.finish();
+    harness.check(results[1].legacyWindowAliases, ["A"],
+                  "Should support a single identifier")
+    harness.check(results[2].legacyWindowAliases, ["C", "D"],
+                  "Should support an identifier list")
 
     parser = parser.reset()
     threw = False
     try:
         parser.parse("""
-            [ArrayClass]
-            interface A {
-            };
+            [LegacyWindowAlias]
+            interface A {};
         """)
         results = parser.finish()
     except:
         threw = True
-    harness.ok(not threw,
-               "Should allow [ArrayClass] on interfaces without parents")
+    harness.ok(threw,
+               "Should not allow [LegacyWindowAlias] with no value")
+
+    parser = parser.reset()
+    threw = False
+    try:
+        parser.parse("""
+            [Exposed=Worker, LegacyWindowAlias=B]
+            interface A {};
+        """)
+        results = parser.finish()
+    except:
+        threw = True
+    harness.ok(threw,
+               "Should not allow [LegacyWindowAlias] without Window exposure")
+
+    parser = parser.reset()
+    threw = False
+    try:
+        parser.parse("""
+            [Global] interface Window {};
+            interface A {};
+            [Exposed=Window, LegacyWindowAlias=A]
+            interface B {};
+        """)
+        results = parser.finish()
+    except:
+        threw = True
+    harness.ok(threw,
+               "Should not allow [LegacyWindowAlias] to conflict with other identifiers")
+
+    parser = parser.reset()
+    threw = False
+    try:
+        parser.parse("""
+            [Global] interface Window {};
+            [Exposed=Window, LegacyWindowAlias=A]
+            interface B {};
+            interface A {};
+        """)
+        results = parser.finish()
+    except:
+        threw = True
+    harness.ok(threw,
+               "Should not allow [LegacyWindowAlias] to conflict with other identifiers")
+
+    parser = parser.reset()
+    threw = False
+    try:
+        parser.parse("""
+            [Global] interface Window {};
+            [Exposed=Window, LegacyWindowAlias=A]
+            interface B {};
+            [Exposed=Window, LegacyWindowAlias=A]
+            interface C {};
+        """)
+        results = parser.finish()
+    except:
+        threw = True
+    harness.ok(threw,
+               "Should not allow [LegacyWindowAlias] to conflict with other identifiers")

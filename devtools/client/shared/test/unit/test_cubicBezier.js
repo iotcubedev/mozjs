@@ -1,5 +1,3 @@
-/* -*- Mode: Javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -7,8 +5,11 @@
 
 // Tests the CubicBezier API in the CubicBezierWidget module
 
-var {require} = ChromeUtils.import("resource://devtools/shared/Loader.jsm", {});
-var {CubicBezier, parseTimingFunction} = require("devtools/client/shared/widgets/CubicBezierWidget");
+var { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
+var {
+  CubicBezier,
+  parseTimingFunction,
+} = require("devtools/client/shared/widgets/CubicBezierWidget");
 
 function run_test() {
   throwsWhenMissingCoordinates();
@@ -51,11 +52,11 @@ function throwsWhenIncorrectCoordinates() {
 
 function convertsStringCoordinates() {
   info("Converts string coordinates to numbers");
-  let c = new CubicBezier(["0", "1", ".5", "-2"]);
+  const c = new CubicBezier(["0", "1", ".5", "-2"]);
 
   Assert.equal(c.coordinates[0], 0);
   Assert.equal(c.coordinates[1], 1);
-  Assert.equal(c.coordinates[2], .5);
+  Assert.equal(c.coordinates[2], 0.5);
   Assert.equal(c.coordinates[3], -2);
 }
 
@@ -74,17 +75,17 @@ function coordinatesToStringOutputsAString() {
 function pointGettersReturnPointCoordinatesArrays() {
   info("Points getters return arrays of coordinates");
 
-  let c = new CubicBezier([0, .2, .5, 1]);
+  const c = new CubicBezier([0, 0.2, 0.5, 1]);
   Assert.equal(c.P1[0], 0);
-  Assert.equal(c.P1[1], .2);
-  Assert.equal(c.P2[0], .5);
+  Assert.equal(c.P1[1], 0.2);
+  Assert.equal(c.P2[0], 0.5);
   Assert.equal(c.P2[1], 1);
 }
 
 function toStringOutputsCubicBezierValue() {
   info("toString() outputs the cubic-bezier() value");
 
-  let c = new CubicBezier([0, 1, 1, 0]);
+  const c = new CubicBezier([0, 1, 1, 0]);
   Assert.equal(c.toString(), "cubic-bezier(0,1,1,0)");
 }
 
@@ -110,25 +111,32 @@ function toStringOutputsCssPresetValues() {
 function testParseTimingFunction() {
   info("test parseTimingFunction");
 
-  for (let test of ["ease", "linear", "ease-in", "ease-out", "ease-in-out"]) {
+  for (const test of ["ease", "linear", "ease-in", "ease-out", "ease-in-out"]) {
     ok(parseTimingFunction(test), test);
   }
 
   ok(!parseTimingFunction("something"), "non-function token");
   ok(!parseTimingFunction("something()"), "non-cubic-bezier function");
-  ok(!parseTimingFunction("cubic-bezier(something)",
-                           "cubic-bezier with non-numeric argument"));
-  ok(!parseTimingFunction("cubic-bezier(1,2,3:7)",
-                           "did not see comma"));
-  ok(!parseTimingFunction("cubic-bezier(1,2,3,7:",
-                          "did not see close paren"));
+  ok(
+    !parseTimingFunction(
+      "cubic-bezier(something)",
+      "cubic-bezier with non-numeric argument"
+    )
+  );
+  ok(!parseTimingFunction("cubic-bezier(1,2,3:7)", "did not see comma"));
+  ok(!parseTimingFunction("cubic-bezier(1,2,3,7:", "did not see close paren"));
   ok(!parseTimingFunction("cubic-bezier(1,2", "early EOF after number"));
   ok(!parseTimingFunction("cubic-bezier(1,2,", "early EOF after comma"));
-  deepEqual(parseTimingFunction("cubic-bezier(1,2,3,7)"), [1, 2, 3, 7],
-            "correct invocation");
-  deepEqual(parseTimingFunction("cubic-bezier(1,  /* */ 2,3,   7  )"),
-            [1, 2, 3, 7],
-            "correct with comments and whitespace");
+  deepEqual(
+    parseTimingFunction("cubic-bezier(1,2,3,7)"),
+    [1, 2, 3, 7],
+    "correct invocation"
+  );
+  deepEqual(
+    parseTimingFunction("cubic-bezier(1,  /* */ 2,3,   7  )"),
+    [1, 2, 3, 7],
+    "correct with comments and whitespace"
+  );
 }
 
 function do_check_throws(cb, details) {

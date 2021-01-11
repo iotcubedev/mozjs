@@ -16,12 +16,12 @@ void InitThreadAnnotation();
 
 void ShutdownThreadAnnotation();
 
-void GetFlatThreadAnnotation(const std::function<void(const char*)>& aCallback);
+void GetFlatThreadAnnotation(const std::function<void(const char*)>& aCallback,
+                             bool aIsHandlingException = false);
 
 class InitThreadAnnotationRAII {
-public:
-  InitThreadAnnotationRAII()
-  {
+ public:
+  InitThreadAnnotationRAII() {
     if (GetEnabled()) {
       InitThreadAnnotation();
     }
@@ -34,6 +34,6 @@ public:
   }
 };
 
-}
+}  // namespace CrashReporter
 
 #endif

@@ -7,13 +7,13 @@
 #ifndef mozilla_InspectorFontFace_h
 #define mozilla_InspectorFontFace_h
 
+#include "mozilla/dom/CSSFontFaceRule.h"
 #include "mozilla/dom/InspectorUtilsBinding.h"
 #include "mozilla/dom/NonRefcountedDOMObject.h"
 #include "nsRange.h"
 
 class gfxFontEntry;
 class gfxFontGroup;
-class nsCSSFontFaceRule;
 
 namespace mozilla {
 namespace dom {
@@ -22,31 +22,18 @@ namespace dom {
  * Information on font face usage by a given DOM Range, as returned by
  * InspectorUtils.getUsedFontFaces.
  */
-class InspectorFontFace final : public NonRefcountedDOMObject
-{
-public:
-  InspectorFontFace(gfxFontEntry* aFontEntry,
-                    gfxFontGroup* aFontGroup,
-                    uint8_t aMatchType)
-    : mFontEntry(aFontEntry)
-    , mFontGroup(aFontGroup)
-    , mMatchType(aMatchType)
-  {
-    MOZ_COUNT_CTOR(InspectorFontFace);
-  }
+class InspectorFontFace final : public NonRefcountedDOMObject {
+ public:
+  InspectorFontFace(gfxFontEntry* aFontEntry, gfxFontGroup* aFontGroup,
+                    FontMatchType aMatchType);
 
-  ~InspectorFontFace()
-  {
-    MOZ_COUNT_DTOR(InspectorFontFace);
-  }
+  ~InspectorFontFace();
 
   gfxFontEntry* GetFontEntry() const { return mFontEntry; }
-  void AddMatchType(uint8_t aMatchType) { mMatchType |= aMatchType; }
+  void AddMatchType(FontMatchType aMatchType) { mMatchType |= aMatchType; }
 
   void AddRange(nsRange* aRange);
-  size_t RangeCount() const {
-    return mRanges.Length();
-  }
+  size_t RangeCount() const { return mRanges.Length(); }
 
   // Web IDL
   bool FromFontGroup();
@@ -54,7 +41,8 @@ public:
   bool FromSystemFallback();
   void GetName(nsAString& aName);
   void GetCSSFamilyName(nsAString& aCSSFamilyName);
-  nsCSSFontFaceRule* GetRule();
+  void GetCSSGeneric(nsAString& aGeneric);
+  CSSFontFaceRule* GetRule();
   int32_t SrcIndex();
   void GetURI(nsAString& aURI);
   void GetLocalName(nsAString& aLocalName);
@@ -65,27 +53,25 @@ public:
                         ErrorResult& aRV);
   void GetVariationInstances(nsTArray<InspectorVariationInstance>& aResult,
                              ErrorResult& aRV);
-  void GetFeatures(nsTArray<InspectorFontFeature>& aResult,
-                   ErrorResult& aRV);
+  void GetFeatures(nsTArray<InspectorFontFeature>& aResult, ErrorResult& aRV);
 
   void GetRanges(nsTArray<RefPtr<nsRange>>& aResult);
 
-  bool WrapObject(JSContext* aCx,
-                  JS::Handle<JSObject*> aGivenProto,
-                  JS::MutableHandle<JSObject*> aReflector)
-  {
-    return InspectorFontFaceBinding::Wrap(aCx, this, aGivenProto, aReflector);
+  bool WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto,
+                  JS::MutableHandle<JSObject*> aReflector) {
+    return InspectorFontFace_Binding::Wrap(aCx, this, aGivenProto, aReflector);
   }
 
-protected:
+ protected:
   RefPtr<gfxFontEntry> mFontEntry;
   RefPtr<gfxFontGroup> mFontGroup;
-  uint8_t mMatchType;
+  RefPtr<CSSFontFaceRule> mRule;
+  FontMatchType mMatchType;
 
   nsTArray<RefPtr<nsRange>> mRanges;
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_InspectorFontFace_h
+#endif  // mozilla_InspectorFontFace_h

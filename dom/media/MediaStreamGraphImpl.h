@@ -10,35 +10,34 @@
 
 #include "AudioMixer.h"
 #include "GraphDriver.h"
-#include "Latency.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Monitor.h"
-#include "mozilla/Services.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
-#include "nsDataHashtable.h"
+#include "nsClassHashtable.h"
 #include "nsIMemoryReporter.h"
 #include "nsINamed.h"
 #include "nsIRunnable.h"
 #include "nsIThread.h"
 #include "nsITimer.h"
+#include "AsyncLogger.h"
 
 namespace mozilla {
 
 namespace media {
-class ShutdownTicket;
+class ShutdownBlocker;
 }
 
 template <typename T>
 class LinkedList;
+class GraphRunner;
 
 /**
  * A per-stream update message passed from the media graph thread to the
  * main thread.
  */
-struct StreamUpdate
-{
+struct StreamUpdate {
   RefPtr<MediaStream> mStream;
   StreamTime mNextMainThreadCurrentTime;
   bool mNextMainThreadFinished;
@@ -51,18 +50,13 @@ struct StreamUpdate
  * RunMessageAfterProcessing().  A ControlMessage
  * always has a weak reference to a particular affected stream.
  */
-class ControlMessage
-{
-public:
-  explicit ControlMessage(MediaStream* aStream) : mStream(aStream)
-  {
+class ControlMessage {
+ public:
+  explicit ControlMessage(MediaStream* aStream) : mStream(aStream) {
     MOZ_COUNT_CTOR(ControlMessage);
   }
   // All these run on the graph thread
-  virtual ~ControlMessage()
-  {
-    MOZ_COUNT_DTOR(ControlMessage);
-  }
+  virtual ~ControlMessage() { MOZ_COUNT_DTOR(ControlMessage); }
   // Do the action of this message on the MediaStreamGraph thread. Any actions
   // affecting graph processing should take effect at mProcessedTime.
   // All stream data for times < mProcessedTime has already been
@@ -76,16 +70,15 @@ public:
   virtual void RunDuringShutdown() {}
   MediaStream* GetStream() { return mStream; }
 
-protected:
+ protected:
   // We do not hold a reference to mStream. The graph will be holding
   // a reference to the stream until the Destroy message is processed. The
   // last message referencing a stream is the Destroy message for that stream.
   MediaStream* mStream;
 };
 
-class MessageBlock
-{
-public:
+class MessageBlock {
+ public:
   nsTArray<UniquePtr<ControlMessage>> mMessages;
 };
 
@@ -101,9 +94,8 @@ public:
 class MediaStreamGraphImpl : public MediaStreamGraph,
                              public nsIMemoryReporter,
                              public nsITimerCallback,
-                             public nsINamed
-{
-public:
+                             public nsINamed {
+ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIMEMORYREPORTER
   NS_DECL_NSITIMERCALLBACK
@@ -118,8 +110,24 @@ public:
    * implement OfflineAudioContext.  They do not support MediaStream inputs.
    */
   explicit MediaStreamGraphImpl(GraphDriverType aGraphDriverRequested,
-                                TrackRate aSampleRate,
+                                GraphRunType aRunTypeRequested,
+                                TrackRate aSampleRate, uint32_t aChannelCount,
                                 AbstractThread* aWindow);
+
+  // Intended only for assertions, either on graph thread or not running (in
+  // which case we must be on the main thread).
+  bool OnGraphThreadOrNotRunning() const override;
+  bool OnGraphThread() const override;
+
+  bool Destroyed() const override;
+
+#ifdef DEBUG
+  /**
+   * True if we're on aDriver's thread, or if we're on mGraphRunner's thread
+   * and mGraphRunner is currently run by aDriver.
+   */
+  bool RunByGraphDriver(GraphDriver* aDriver);
+#endif
 
   /**
    * Unregisters memory reporting and deletes this instance. This should be
@@ -164,7 +172,19 @@ public:
    * and other state controlled by the media graph thread.
    * This is called during application shutdown.
    */
-  void ForceShutDown(media::ShutdownTicket* aShutdownTicket);
+  void ForceShutDown();
+
+  /**
+   * Sets mShutdownBlocker and makes it block shutdown.
+   * Main thread only. Not idempotent.
+   */
+  void AddShutdownBlocker();
+
+  /**
+   * Removes mShutdownBlocker and unblocks shutdown.
+   * Main thread only. Idempotent.
+   */
+  void RemoveShutdownBlocker();
 
   /**
    * Called before the thread runs.
@@ -174,16 +194,15 @@ public:
   /**
    * Respond to CollectReports with sizes collected on the graph thread.
    */
-  static void
-  FinishCollectReports(nsIHandleReportCallback* aHandleReport,
-                       nsISupports* aData,
-                       const nsTArray<AudioNodeSizes>& aAudioStreamSizes);
+  static void FinishCollectReports(
+      nsIHandleReportCallback* aHandleReport, nsISupports* aData,
+      const nsTArray<AudioNodeSizes>& aAudioStreamSizes);
 
   // The following methods run on the graph thread (or possibly the main thread
   // if mLifecycleState > LIFECYCLE_RUNNING)
   void CollectSizesForMemoryReport(
-         already_AddRefed<nsIHandleReportCallback> aHandleReport,
-         already_AddRefed<nsISupports> aHandlerData);
+      already_AddRefed<nsIHandleReportCallback> aHandleReport,
+      already_AddRefed<nsISupports> aHandlerData);
 
   /**
    * Returns true if this MediaStreamGraph should keep running
@@ -191,9 +210,17 @@ public:
   bool UpdateMainThreadState();
 
   /**
-   * Returns true if this MediaStreamGraph should keep running
+   * Proxy method called by GraphDriver to iterate the graph.
+   * If this graph was created with GraphRunType SINGLE_THREAD, mGraphRunner
+   * will take care of calling OneIterationImpl from its thread. Otherwise,
+   * OneIterationImpl is called directly.
    */
   bool OneIteration(GraphTime aStateEnd);
+
+  /**
+   * Returns true if this MediaStreamGraph should keep running
+   */
+  bool OneIterationImpl(GraphTime aStateEnd);
 
   /**
    * Called from the driver, when the graph thread is about to stop, to tell
@@ -202,11 +229,6 @@ public:
    * messages.
    */
   void SignalMainThreadCleanup();
-
-  bool Running() const
-  {
-    return LifecycleStateRef() == LIFECYCLE_RUNNING;
-  }
 
   /* This is the end of the current iteration, that is, the current time of the
    * graph. */
@@ -223,11 +245,6 @@ public:
    * mMonitor must be held.
    */
   void PrepareUpdatesToMainThreadState(bool aFinalUpdate);
-  /**
-   * Returns false if there is any stream that has finished but not yet finished
-   * playing out.
-   */
-  bool AllFinishedStreamsNotified();
   /**
    * If we are rendering in non-realtime mode, we don't want to send messages to
    * the main thread at each iteration for performance reasons. We instead
@@ -248,11 +265,9 @@ public:
    * Process chunks for the given stream and interval, and raise events for
    * properties that have changed, such as principalId.
    */
-  template<typename C, typename Chunk>
-  void ProcessChunkMetadataForInterval(MediaStream* aStream,
-                                       TrackID aTrackID,
-                                       C& aSegment,
-                                       StreamTime aStart,
+  template <typename C, typename Chunk>
+  void ProcessChunkMetadataForInterval(MediaStream* aStream, TrackID aTrackID,
+                                       C& aSegment, StreamTime aStart,
                                        StreamTime aEnd);
   /**
    * Process graph messages in mFrontMessageQueue.
@@ -264,9 +279,8 @@ public:
    */
   void UpdateGraph(GraphTime aEndBlockingDecisions);
 
-  void SwapMessageQueues()
-  {
-    MOZ_ASSERT(CurrentDriver()->OnThread());
+  void SwapMessageQueues() {
+    MOZ_ASSERT(OnGraphThread());
     MOZ_ASSERT(mFrontMessageQueue.IsEmpty());
     mMonitor.AssertCurrentThreadOwns();
     mFrontMessageQueue.SwapElements(mBackMessageQueue);
@@ -279,7 +293,7 @@ public:
 
   /**
    * For use during ProcessedMediaStream::ProcessInput() or
-   * MediaStreamListener callbacks, when graph state cannot be changed.
+   * MediaStreamTrackListener callbacks, when graph state cannot be changed.
    * Schedules |aMessage| to run after processing, at a time when graph state
    * can be changed.  Graph thread.
    */
@@ -289,9 +303,9 @@ public:
    * Called when a suspend/resume/close operation has been completed, on the
    * graph thread.
    */
-  void AudioContextOperationCompleted(MediaStream* aStream,
-                                      void* aPromise,
-                                      dom::AudioContextOperation aOperation);
+  void AudioContextOperationCompleted(MediaStream* aStream, void* aPromise,
+                                      dom::AudioContextOperation aOperation,
+                                      dom::AudioContextOperationFlags aFlags);
 
   /**
    * Apply and AudioContext operation (suspend/resume/closed), on the graph
@@ -300,7 +314,8 @@ public:
   void ApplyAudioContextOperationImpl(MediaStream* aDestinationStream,
                                       const nsTArray<MediaStream*>& aStreams,
                                       dom::AudioContextOperation aOperation,
-                                      void* aPromise);
+                                      void* aPromise,
+                                      dom::AudioContextOperationFlags aSource);
 
   /**
    * Increment suspend count on aStream and move it to mSuspendedStreams if
@@ -322,9 +337,8 @@ public:
 
   /**
    * Determine if we have any audio tracks, or are about to add any audiotracks.
-   * Also checks if we'll need the AEC running (i.e. microphone input tracks)
    */
-  bool AudioTrackPresent(bool& aNeedsAEC);
+  bool AudioTrackPresent();
 
   /**
    * Sort mStreams so that every stream not in a cycle is after any streams
@@ -337,12 +351,12 @@ public:
    * Returns smallest value of t such that t is a multiple of
    * WEBAUDIO_BLOCK_SIZE and t >= aTime.
    */
-  GraphTime RoundUpToEndOfAudioBlock(GraphTime aTime);
+  static GraphTime RoundUpToEndOfAudioBlock(GraphTime aTime);
   /**
    * Returns smallest value of t such that t is a multiple of
    * WEBAUDIO_BLOCK_SIZE and t > aTime.
    */
-  GraphTime RoundUpToNextAudioBlock(GraphTime aTime);
+  static GraphTime RoundUpToNextAudioBlock(GraphTime aTime);
   /**
    * Produce data for all streams >= aStreamIndex for the current time interval.
    * Advances block by block, each iteration producing data for all streams
@@ -362,12 +376,9 @@ public:
    * Given a graph time aTime, convert it to a stream time taking into
    * account the time during which aStream is scheduled to be blocked.
    */
-  StreamTime GraphTimeToStreamTimeWithBlocking(const MediaStream* aStream, GraphTime aTime) const;
+  StreamTime GraphTimeToStreamTimeWithBlocking(const MediaStream* aStream,
+                                               GraphTime aTime) const;
 
-  /**
-   * Call NotifyHaveCurrentData on aStream's listeners.
-   */
-  void NotifyHasCurrentData(MediaStream* aStream);
   /**
    * If aStream needs an audio stream but doesn't have one, create it.
    * If aStream doesn't need an audio stream but has one, destroy it.
@@ -378,17 +389,45 @@ public:
    * to the audio output stream. Returns the number of frames played.
    */
   StreamTime PlayAudio(MediaStream* aStream);
-  /**
-   * No more data will be forthcoming for aStream. The stream will end
-   * at the current buffer end point. The StreamTracks's tracks must be
-   * explicitly set to finished by the caller.
-   */
-  void OpenAudioInputImpl(int aID,
-                          AudioDataListener *aListener);
-  virtual nsresult OpenAudioInput(int aID,
-                                  AudioDataListener *aListener) override;
-  void CloseAudioInputImpl(AudioDataListener *aListener);
-  virtual void CloseAudioInput(AudioDataListener *aListener) override;
+  /* Runs off a message on the graph thread when something requests audio from
+   * an input audio device of ID aID, and delivers the input audio frames to
+   * aListener. */
+  void OpenAudioInputImpl(CubebUtils::AudioDeviceID aID,
+                          AudioDataListener* aListener);
+  /* Called on the main thread when something requests audio from an input
+   * audio device aID. */
+  virtual nsresult OpenAudioInput(CubebUtils::AudioDeviceID aID,
+                                  AudioDataListener* aListener) override;
+  /* Runs off a message on the graph when input audio from aID is not needed
+   * anymore, for a particular stream. It can be that other streams still need
+   * audio from this audio input device. */
+  void CloseAudioInputImpl(Maybe<CubebUtils::AudioDeviceID>& aID,
+                           AudioDataListener* aListener);
+  /* Called on the main thread when input audio from aID is not needed
+   * anymore, for a particular stream. It can be that other streams still need
+   * audio from this audio input device. */
+  virtual void CloseAudioInput(Maybe<CubebUtils::AudioDeviceID>& aID,
+                               AudioDataListener* aListener) override;
+  /* Called on the graph thread when the input device settings should be
+   * reevaluated, for example, if the channel count of the input stream should
+   * be changed. */
+  void ReevaluateInputDevice();
+
+  /* Called on the graph thread when there is new output data for listeners.
+   * This is the mixed audio output of this MediaStreamGraph. */
+  void NotifyOutputData(AudioDataValue* aBuffer, size_t aFrames,
+                        TrackRate aRate, uint32_t aChannels);
+  /* Called on the graph thread when there is new input data for listeners. This
+   * is the raw audio input for this MediaStreamGraph. */
+  void NotifyInputData(const AudioDataValue* aBuffer, size_t aFrames,
+                       TrackRate aRate, uint32_t aChannels);
+  /* Called every time there are changes to input/output audio devices like
+   * plug/unplug etc. This can be called on any thread, and posts a message to
+   * the main thread so that it can post a message to the graph thread. */
+  void DeviceChanged();
+  /* Called every time there are changes to input/output audio devices. This is
+   * called on the graph thread. */
+  void DeviceChangedImpl();
 
   /**
    * Compute how much stream data we would like to buffer for aStream.
@@ -397,11 +436,11 @@ public:
   /**
    * Returns true when there are no active streams.
    */
-  bool IsEmpty() const
-  {
-    MOZ_ASSERT(OnGraphThreadOrNotRunning() ||
-               (NS_IsMainThread() &&
-                LifecycleStateRef() >= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP));
+  bool IsEmpty() const {
+    MOZ_ASSERT(
+        OnGraphThreadOrNotRunning() ||
+        (NS_IsMainThread() &&
+         LifecycleStateRef() >= LIFECYCLE_WAITING_FOR_MAIN_THREAD_CLEANUP));
     return mStreams.IsEmpty() && mSuspendedStreams.IsEmpty() && mPortCount == 0;
   }
 
@@ -415,39 +454,96 @@ public:
    */
   void RemoveStreamGraphThread(MediaStream* aStream);
   /**
+   * Remove a stream from the graph. Main thread.
+   */
+  void RemoveStream(MediaStream* aStream);
+  /**
    * Remove aPort from the graph and release it.
    */
   void DestroyPort(MediaInputPort* aPort);
   /**
    * Mark the media stream order as dirty.
    */
-  void SetStreamOrderDirty()
-  {
+  void SetStreamOrderDirty() {
     MOZ_ASSERT(OnGraphThreadOrNotRunning());
     mStreamOrderDirty = true;
   }
 
-  uint32_t AudioChannelCount() const
-  {
-    return mOutputChannels;
+  uint32_t AudioOutputChannelCount() const { return mOutputChannels; }
+
+  double AudioOutputLatency();
+
+  /**
+   * The audio input channel count for a MediaStreamGraph is the max of all the
+   * channel counts requested by the listeners. The max channel count is
+   * delivered to the listeners themselves, and they take care of downmixing.
+   */
+  uint32_t AudioInputChannelCount() {
+    MOZ_ASSERT(OnGraphThreadOrNotRunning());
+
+#ifdef ANDROID
+    if (!mInputDeviceUsers.GetValue(mInputDeviceID)) {
+      return 0;
+    }
+#else
+    if (!mInputDeviceID) {
+      MOZ_ASSERT(mInputDeviceUsers.Count() == 0,
+                 "If running on a platform other than android,"
+                 "an explicit device id should be present");
+      return 0;
+    }
+#endif
+    uint32_t maxInputChannels = 0;
+    // When/if we decide to support multiple input device per graph, this needs
+    // loop over them.
+    nsTArray<RefPtr<AudioDataListener>>* listeners =
+        mInputDeviceUsers.GetValue(mInputDeviceID);
+    MOZ_ASSERT(listeners);
+    for (const auto& listener : *listeners) {
+      maxInputChannels = std::max(maxInputChannels,
+                                  listener->RequestedInputChannelCount(this));
+    }
+    return maxInputChannels;
   }
 
-  double MediaTimeToSeconds(GraphTime aTime) const
-  {
+  AudioInputType AudioInputDevicePreference() {
+    MOZ_ASSERT(OnGraphThreadOrNotRunning());
+
+    if (!mInputDeviceUsers.GetValue(mInputDeviceID)) {
+      return AudioInputType::Unknown;
+    }
+    bool voiceInput = false;
+    // When/if we decide to support multiple input device per graph, this needs
+    // loop over them.
+    nsTArray<RefPtr<AudioDataListener>>* listeners =
+        mInputDeviceUsers.GetValue(mInputDeviceID);
+    MOZ_ASSERT(listeners);
+
+    // If at least one stream is considered to be voice,
+    for (const auto& listener : *listeners) {
+      voiceInput |= listener->IsVoiceInput(this);
+    }
+    if (voiceInput) {
+      return AudioInputType::Voice;
+    }
+    return AudioInputType::Unknown;
+  }
+
+  CubebUtils::AudioDeviceID InputDeviceID() { return mInputDeviceID; }
+
+  double MediaTimeToSeconds(GraphTime aTime) const {
     NS_ASSERTION(aTime > -STREAM_TIME_MAX && aTime <= STREAM_TIME_MAX,
                  "Bad time");
-    return static_cast<double>(aTime)/GraphRate();
+    return static_cast<double>(aTime) / GraphRate();
   }
 
-  GraphTime SecondsToMediaTime(double aS) const
-  {
-    NS_ASSERTION(0 <= aS && aS <= TRACK_TICKS_MAX/TRACK_RATE_MAX,
+  GraphTime SecondsToMediaTime(double aS) const {
+    NS_ASSERTION(0 <= aS && aS <= TRACK_TICKS_MAX / TRACK_RATE_MAX,
                  "Bad seconds");
     return GraphRate() * aS;
   }
 
-  GraphTime MillisecondsToMediaTime(int32_t aMS) const
-  {
+  GraphTime MillisecondsToMediaTime(int32_t aMS) const {
     return RateConvertTicksRoundDown(GraphRate(), 1000, aMS);
   }
 
@@ -461,8 +557,7 @@ public:
   /**
    * Not safe to call off the MediaStreamGraph thread unless monitor is held!
    */
-  GraphDriver* CurrentDriver() const
-  {
+  GraphDriver* CurrentDriver() const {
 #ifdef DEBUG
     if (!OnGraphThreadOrNotRunning()) {
       mMonitor.AssertCurrentThreadOwns();
@@ -478,35 +573,33 @@ public:
    * should return and pass the control to the new driver shortly after.
    * We can also switch from Revive() (on MainThread). Monitor must be held.
    */
-  void SetCurrentDriver(GraphDriver* aDriver)
-  {
+  void SetCurrentDriver(GraphDriver* aDriver) {
+    MOZ_ASSERT(RunByGraphDriver(mDriver) || !mDriver->ThreadRunning());
 #ifdef DEBUG
     mMonitor.AssertCurrentThreadOwns();
 #endif
     mDriver = aDriver;
   }
 
-  Monitor& GetMonitor()
-  {
-    return mMonitor;
-  }
+  Monitor& GetMonitor() { return mMonitor; }
 
-  void EnsureNextIteration()
-  {
-    mNeedAnotherIteration = true; // atomic
+  void EnsureNextIteration() {
+    mNeedAnotherIteration = true;  // atomic
     // Note: GraphDriver must ensure that there's no race on setting
-    // mNeedAnotherIteration and mGraphDriverAsleep -- see WaitForNextIteration()
-    if (mGraphDriverAsleep) { // atomic
+    // mNeedAnotherIteration and mGraphDriverAsleep -- see
+    // WaitForNextIteration()
+    if (mGraphDriverAsleep) {  // atomic
       MonitorAutoLock mon(mMonitor);
-      CurrentDriver()->WakeUp(); // Might not be the same driver; might have woken already
+      CurrentDriver()
+          ->WakeUp();  // Might not be the same driver; might have woken already
     }
   }
 
-  void EnsureNextIterationLocked()
-  {
-    mNeedAnotherIteration = true; // atomic
-    if (mGraphDriverAsleep) { // atomic
-      CurrentDriver()->WakeUp(); // Might not be the same driver; might have woken already
+  void EnsureNextIterationLocked() {
+    mNeedAnotherIteration = true;  // atomic
+    if (mGraphDriverAsleep) {      // atomic
+      CurrentDriver()
+          ->WakeUp();  // Might not be the same driver; might have woken already
     }
   }
 
@@ -514,44 +607,40 @@ public:
   void RegisterCaptureStreamForWindow(uint64_t aWindowId,
                                       ProcessedMediaStream* aCaptureStream);
   void UnregisterCaptureStreamForWindow(uint64_t aWindowId);
-  already_AddRefed<MediaInputPort>
-  ConnectToCaptureStream(uint64_t aWindowId, MediaStream* aMediaStream);
+  already_AddRefed<MediaInputPort> ConnectToCaptureStream(
+      uint64_t aWindowId, MediaStream* aMediaStream);
+
+  Watchable<GraphTime>& CurrentTime() override;
 
   class StreamSet {
-  public:
+   public:
     class iterator {
-    public:
+     public:
       explicit iterator(MediaStreamGraphImpl& aGraph)
-        : mGraph(&aGraph), mArrayNum(-1), mArrayIndex(0)
-      {
+          : mGraph(&aGraph), mArrayNum(-1), mArrayIndex(0) {
         ++(*this);
       }
       iterator() : mGraph(nullptr), mArrayNum(2), mArrayIndex(0) {}
-      MediaStream* operator*()
-      {
-        return Array()->ElementAt(mArrayIndex);
-      }
-      iterator operator++()
-      {
+      MediaStream* operator*() { return Array()->ElementAt(mArrayIndex); }
+      iterator operator++() {
         ++mArrayIndex;
         while (mArrayNum < 2 &&
-          (mArrayNum < 0 || mArrayIndex >= Array()->Length())) {
+               (mArrayNum < 0 || mArrayIndex >= Array()->Length())) {
           ++mArrayNum;
           mArrayIndex = 0;
         }
         return *this;
       }
-      bool operator==(const iterator& aOther) const
-      {
-        return mArrayNum == aOther.mArrayNum && mArrayIndex == aOther.mArrayIndex;
+      bool operator==(const iterator& aOther) const {
+        return mArrayNum == aOther.mArrayNum &&
+               mArrayIndex == aOther.mArrayIndex;
       }
-      bool operator!=(const iterator& aOther) const
-      {
+      bool operator!=(const iterator& aOther) const {
         return !(*this == aOther);
       }
-    private:
-      nsTArray<MediaStream*>* Array()
-      {
+
+     private:
+      nsTArray<MediaStream*>* Array() {
         return mArrayNum == 0 ? &mGraph->mStreams : &mGraph->mSuspendedStreams;
       }
       MediaStreamGraphImpl* mGraph;
@@ -562,13 +651,38 @@ public:
     explicit StreamSet(MediaStreamGraphImpl& aGraph) : mGraph(aGraph) {}
     iterator begin() { return iterator(mGraph); }
     iterator end() { return iterator(); }
-  private:
+
+   private:
     MediaStreamGraphImpl& mGraph;
   };
   StreamSet AllStreams() { return StreamSet(*this); }
 
   // Data members
-  //
+
+  /*
+   * If set, the GraphRunner class handles handing over data from audio
+   * callbacks to a common single thread, shared across GraphDrivers.
+   */
+  const UniquePtr<GraphRunner> mGraphRunner;
+
+  /**
+   * Main-thread view of the number of streams in this graph, for lifetime
+   * management.
+   *
+   * When this becomes zero, the graph is marked as forbidden to add more
+   * streams to. It will be shut down shortly after.
+   */
+  size_t mMainThreadStreamCount = 0;
+
+  /**
+   * Main-thread view of the number of ports in this graph, to catch bugs.
+   *
+   * When this becomes zero, and mMainThreadStreamCount is 0, the graph is
+   * marked as forbidden to add more ControlMessages to. It will be shut down
+   * shortly after.
+   */
+  size_t mMainThreadPortCount = 0;
+
   /**
    * Graphs own owning references to their driver, until shutdown. When a driver
    * switch occur, previous driver is either deleted, or it's ownership is
@@ -616,6 +730,10 @@ public:
    */
   GraphTime mProcessedTime = 0;
   /**
+   * The graph should stop processing at this time.
+   */
+  GraphTime mEndTime;
+  /**
    * Date of the last time we updated the main thread with the graph state.
    */
   TimeStamp mLastMainThreadUpdate;
@@ -623,18 +741,29 @@ public:
    * Number of active MediaInputPorts
    */
   int32_t mPortCount;
+  /**
+   * Runnables to run after the next update to main thread state, but that are
+   * still waiting for the next iteration to finish.
+   */
+  nsTArray<nsCOMPtr<nsIRunnable>> mPendingUpdateRunnables;
 
   /**
-   * Devices to use for cubeb input & output, or NULL for no input (void*),
-   * and boolean to control if we want input/output
+   * Devices to use for cubeb input & output, or nullptr for default device.
+   * A MediaStreamGraph always has an output (even if silent).
+   * If `mInputDeviceUsers.Count() != 0`, this MediaStreamGraph wants audio
+   * input.
+   *
+   * In any case, the number of channels to use can be queried (on the graph
+   * thread) by AudioInputChannelCount() and AudioOutputChannelCount().
    */
-  bool mInputWanted;
-  int mInputDeviceID;
-  bool mOutputWanted;
-  int mOutputDeviceID;
-  // Maps AudioDataListeners to a usecount of streams using the listener
-  // so we can know when it's no longer in use.
-  nsDataHashtable<nsPtrHashKey<AudioDataListener>, uint32_t> mInputDeviceUsers;
+  CubebUtils::AudioDeviceID mInputDeviceID;
+  CubebUtils::AudioDeviceID mOutputDeviceID;
+  // Maps AudioDeviceID to an array of their users (that are listeners). This is
+  // used to deliver audio input frames and to notify the listeners that the
+  // audio device that delivers the audio frames has changed.
+  // This is only touched on the graph thread.
+  nsDataHashtable<nsVoidPtrHashKey, nsTArray<RefPtr<AudioDataListener>>>
+      mInputDeviceUsers;
 
   // True if the graph needs another iteration after the current iteration.
   Atomic<bool> mNeedAnotherIteration;
@@ -658,7 +787,7 @@ public:
   /**
    * Runnables to run after the next update to main thread state.
    */
-  nsTArray<nsCOMPtr<nsIRunnable> > mUpdateRunnables;
+  nsTArray<nsCOMPtr<nsIRunnable>> mUpdateRunnables;
   /**
    * A list of batches of messages to process. Each batch is processed
    * as an atomic unit.
@@ -675,8 +804,7 @@ public:
   nsTArray<MessageBlock> mBackMessageQueue;
 
   /* True if there will messages to process if we swap the message queues. */
-  bool MessagesQueued() const
-  {
+  bool MessagesQueued() const {
     mMonitor.AssertCurrentThreadOwns();
     return !mBackMessageQueue.IsEmpty();
   }
@@ -703,8 +831,7 @@ public:
    * This should be kept in sync with the LifecycleState_str array in
    * MediaStreamGraph.cpp
    */
-  enum LifecycleState
-  {
+  enum LifecycleState {
     // The graph thread hasn't started yet.
     LIFECYCLE_THREAD_NOT_STARTED,
     // RunThread() is running normally.
@@ -732,8 +859,7 @@ public:
    * the end of an iteration.  All other transitions occur on the main thread.
    */
   LifecycleState mLifecycleState;
-  LifecycleState& LifecycleStateRef()
-  {
+  LifecycleState& LifecycleStateRef() {
 #if DEBUG
     if (!mDetectedNotRunning) {
       mMonitor.AssertCurrentThreadOwns();
@@ -741,8 +867,7 @@ public:
 #endif
     return mLifecycleState;
   }
-  const LifecycleState& LifecycleStateRef() const
-  {
+  const LifecycleState& LifecycleStateRef() const {
 #if DEBUG
     if (!mDetectedNotRunning) {
       mMonitor.AssertCurrentThreadOwns();
@@ -750,25 +875,21 @@ public:
 #endif
     return mLifecycleState;
   }
-  /**
-   * The graph should stop processing at or after this time.
-   * Only set on main thread. Read on both main and MSG thread.
-   */
-  Atomic<GraphTime> mEndTime;
 
   /**
-   * True when we need to do a forced shutdown during application shutdown.
-   * Only set on main thread.
-   * Can be read safely on the main thread, on all other threads mMonitor must
-   * be held.
+   * True when we need to do a forced shutdown, during application shutdown or
+   * when shutting down a non-realtime graph.
+   * Only set on the graph thread.
+   * Can be read safely on the thread currently owning the graph, as indicated
+   * by mLifecycleState.
    */
   bool mForceShutDown;
 
   /**
-   * Drop this reference during shutdown to unblock shutdown.
+   * Remove this blocker to unblock shutdown.
    * Only accessed on the main thread.
    **/
-  RefPtr<media::ShutdownTicket> mForceShutdownTicket;
+  RefPtr<media::ShutdownBlocker> mShutdownBlocker;
 
   /**
    * True when we have posted an event to the main thread to run
@@ -799,33 +920,23 @@ public:
    */
   bool mPostedRunInStableState;
   /**
-   * True when processing real-time audio/video.  False when processing non-realtime
-   * audio.
+   * True when processing real-time audio/video.  False when processing
+   * non-realtime audio.
    */
   const bool mRealtime;
-  /**
-   * True when a non-realtime MediaStreamGraph has started to process input.  This
-   * value is only accessed on the main thread.
-   */
-  bool mNonRealtimeProcessing;
   /**
    * True when a change has happened which requires us to recompute the stream
    * blocking order.
    */
   bool mStreamOrderDirty;
-  /**
-   * Hold a ref to the Latency logger
-   */
-  RefPtr<AsyncLatencyLogger> mLatencyLog;
   AudioMixer mMixer;
   const RefPtr<AbstractThread> mAbstractMainThread;
-  RefPtr<SharedThreadPool> mThreadPool;
 
   // used to limit graph shutdown time
   // Only accessed on the main thread.
   nsCOMPtr<nsITimer> mShutdownTimer;
 
-private:
+ private:
   virtual ~MediaStreamGraphImpl();
 
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
@@ -839,8 +950,7 @@ private:
    */
   RefPtr<MediaStreamGraphImpl> mSelfRef;
 
-  struct WindowAndStream
-  {
+  struct WindowAndStream {
     uint64_t mWindowId;
     RefPtr<ProcessedMediaStream> mCaptureStreamSink;
   };
@@ -854,14 +964,38 @@ private:
    */
   const uint32_t mOutputChannels;
 
+  /**
+   * Global volume scale. Used when running tests so that the output is not too
+   * loud.
+   */
+  const float mGlobalVolume;
+
 #ifdef DEBUG
   /**
    * Used to assert when AppendMessage() runs ControlMessages synchronously.
    */
   bool mCanRunMessagesSynchronously;
 #endif
+
+  /**
+   * The graph's main-thread observable graph time.
+   * Updated by the stable state runnable after each iteration.
+   */
+  Watchable<GraphTime> mMainThreadGraphTime;
+
+  /**
+   * Set based on mProcessedTime at end of iteration.
+   * Read by stable state runnable on main thread. Protected by mMonitor.
+   */
+  GraphTime mNextMainThreadGraphTime = 0;
+
+  /**
+   * Cached audio output latency, in seconds. Main thread only. This is reset
+   * whenever the audio device running this MediaStreamGraph changes.
+   */
+  double mAudioOutputLatency;
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
 #endif /* MEDIASTREAMGRAPHIMPL_H_ */

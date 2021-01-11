@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -5,7 +6,6 @@ description: >
     Rejected promises ignore resolution after deferred invocation of the
     provided reject function
 esid: sec-promise-executor
-es6id: 25.4.3.1
 info: |
     [...]
     9. Let completion be Call(executor, undefined,
@@ -31,10 +31,10 @@ var p = new Promise(function(_resolve, _reject) {
 });
 
 p.then(function() {
-    $DONE('The promise should not be fulfilled.');
-  }, function() {
-    $DONE();
-  });
+  $DONE('The promise should not be fulfilled.');
+}, function() {
+  $DONE();
+});
 
 reject(thenable);
 returnValue = resolve();

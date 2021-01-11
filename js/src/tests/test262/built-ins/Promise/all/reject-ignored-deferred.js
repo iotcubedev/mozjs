@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -30,7 +31,9 @@ flags: [async]
 
 var fulfiller = {
   then: function(resolve) {
-    new Promise(function(resolve) { resolve(); })
+    new Promise(function(resolve) {
+        resolve();
+      })
       .then(function() {
         resolve();
       });
@@ -38,7 +41,9 @@ var fulfiller = {
 };
 var rejector = {
   then: function(resolve, reject) {
-    new Promise(function(resolve) { resolve(); })
+    new Promise(function(resolve) {
+        resolve();
+      })
       .then(function() {
         resolve();
         reject();

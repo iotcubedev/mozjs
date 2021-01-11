@@ -19,26 +19,24 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/CryptoKey.h"
 #include "mozilla/dom/RTCCertificateBinding.h"
-#include "mtransport/dtlsidentity.h"
 #include "js/StructuredClone.h"
 #include "js/TypeDecls.h"
 
 namespace mozilla {
+class DtlsIdentity;
 namespace dom {
 
 class ObjectOrString;
 
-class RTCCertificate final : public nsISupports
-                           , public nsWrapperCache
-{
-public:
+class RTCCertificate final : public nsISupports, public nsWrapperCache {
+ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(RTCCertificate)
 
   // WebIDL method that implements RTCPeerConnection.generateCertificate.
   static already_AddRefed<Promise> GenerateCertificate(
       const GlobalObject& aGlobal, const ObjectOrString& aOptions,
-      ErrorResult& aRv, JSCompartment* aCompartment = nullptr);
+      ErrorResult& aRv, JS::Compartment* aCompartment = nullptr);
 
   explicit RTCCertificate(nsIGlobalObject* aGlobal);
   RTCCertificate(nsIGlobalObject* aGlobal, SECKEYPrivateKey* aPrivateKey,
@@ -51,20 +49,20 @@ public:
 
   // WebIDL expires attribute.  Note: JS dates are milliseconds since epoch;
   // NSPR PRTime is in microseconds since the same epoch.
-  uint64_t Expires() const
-  {
-    return mExpires / PR_USEC_PER_MSEC;
-  }
+  uint64_t Expires() const { return mExpires / PR_USEC_PER_MSEC; }
 
   // Accessors for use by PeerConnectionImpl.
   RefPtr<DtlsIdentity> CreateDtlsIdentity() const;
   const UniqueCERTCertificate& Certificate() const { return mCertificate; }
 
   // Structured clone methods
-  bool WriteStructuredClone(JSStructuredCloneWriter* aWriter) const;
-  bool ReadStructuredClone(JSStructuredCloneReader* aReader);
+  bool WriteStructuredClone(JSContext* aCx,
+                            JSStructuredCloneWriter* aWriter) const;
+  static already_AddRefed<RTCCertificate> ReadStructuredClone(
+      JSContext* aCx, nsIGlobalObject* aGlobal,
+      JSStructuredCloneReader* aReader);
 
-private:
+ private:
   ~RTCCertificate() {}
   void operator=(const RTCCertificate&) = delete;
   RTCCertificate(const RTCCertificate&) = delete;
@@ -81,7 +79,7 @@ private:
   PRTime mExpires;
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_dom_RTCCertificate_h
+#endif  // mozilla_dom_RTCCertificate_h

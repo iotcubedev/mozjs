@@ -12,29 +12,33 @@
 
 enum RecordingState { "inactive", "recording", "paused" };
 
-[Constructor(MediaStream stream, optional MediaRecorderOptions options),
+[Constructor(MediaStream stream, optional MediaRecorderOptions options = {}),
  Constructor(AudioNode node, optional unsigned long output = 0,
-             optional MediaRecorderOptions options)]
+             optional MediaRecorderOptions options = {})]
 interface MediaRecorder : EventTarget {
 
   readonly attribute MediaStream stream;
 
-  readonly attribute RecordingState state;
-
   readonly attribute DOMString mimeType;
 
-  attribute EventHandler ondataavailable;
-
-  attribute EventHandler onerror;
+  readonly attribute RecordingState state;
 
   attribute EventHandler onstart;
 
   attribute EventHandler onstop;
 
+  attribute EventHandler ondataavailable;
+
+  attribute EventHandler onpause;
+
+  attribute EventHandler onresume;
+
+  attribute EventHandler onerror;
+
   attribute EventHandler onwarning;
 
   [Throws]
-  void start(optional long timeSlice);
+  void start(optional unsigned long timeslice);
 
   [Throws]
   void stop();

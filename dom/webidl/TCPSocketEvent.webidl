@@ -9,9 +9,9 @@
  * the type of event, and the data associated with the event if the event is a "data" event.
  */
 
-[Constructor(DOMString type, optional TCPSocketEventInit eventInitDict),
+[Constructor(DOMString type, optional TCPSocketEventInit eventInitDict = {}),
  Func="mozilla::dom::TCPSocket::ShouldTCPSocketExist",
- Exposed=(Window,System)]
+ Exposed=Window]
 interface TCPSocketEvent : Event {
   /**
    * If the event is a "data" event, data will be the bytes read from the network;

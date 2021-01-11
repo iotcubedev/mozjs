@@ -3,8 +3,6 @@
 
 /*---
 info: Operator remove leading StrWhiteSpaceChar
-es5id: 15.1.2.3_A2_T10
-es6id: 18.2.4
 esid: sec-parsefloat-string
 description: "StrWhiteSpaceChar :: USP"
 ---*/
@@ -19,20 +17,20 @@ for (var index = 0; index < uspU.length; index++) {
   var result = true;
   n = false;
   if (parseFloat(uspU[index] + "1.1") !== parseFloat("1.1")) {
-    $ERROR('#1.' +  uspS[index] + ' ');
+    $ERROR('#1.' + uspS[index] + ' ');
     result = false;
   }
-   if (parseFloat(uspU[index] + uspU[index] + uspU[index] + "1.1") !== parseFloat("1.1")) {
-    $ERROR('#2.' +  uspS[index] + ' ');
+  if (parseFloat(uspU[index] + uspU[index] + uspU[index] + "1.1") !== parseFloat("1.1")) {
+    $ERROR('#2.' + uspS[index] + ' ');
     result = false;
   }
   n = parseFloat(uspU[index]);
   if (!(n !== n)) {
-    $ERROR('#3.' +  uspS[index] + ' ');
+    $ERROR('#3.' + uspS[index] + ' ');
     result = false;
   }
   if (result !== true) {
-      errorCount++;
+    errorCount++;
   }
   count++;
 }

@@ -24,6 +24,7 @@ def add_dependencies(config, jobs):
         if product is None:
             continue
 
+        required_signoffs = set(job.setdefault('attributes', {}).get('required_signoffs', []))
         for dep_task in config.kind_dependencies_tasks:
             # Weed out unwanted tasks.
             # XXX we have run-on-projects which specifies the on-push behavior;
@@ -33,9 +34,6 @@ def add_dependencies(config, jobs):
                 # Don't ship single locale fennec anymore - Bug 1408083
                 attr = dep_task.attributes.get
                 if attr("locale") or attr("chunk_locales"):
-                    continue
-                # Skip old-id
-                if 'old-id' in dep_task.label:
                     continue
             # We can only depend on tasks in the current or previous phases
             dep_phase = dep_task.attributes.get('shipping_phase')
@@ -50,7 +48,10 @@ def add_dependencies(config, jobs):
             if dep_task.task.get('shipping-product') == product or \
                     dep_task.attributes.get('shipping_product') == product:
                 dependencies[dep_task.label] = dep_task.label
+                required_signoffs.update(dep_task.attributes.get('required_signoffs', []))
 
         job.setdefault('dependencies', {}).update(dependencies)
+        if required_signoffs:
+            job['attributes']['required_signoffs'] = sorted(required_signoffs)
 
         yield job

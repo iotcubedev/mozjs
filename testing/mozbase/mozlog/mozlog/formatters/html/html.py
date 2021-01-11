@@ -9,10 +9,12 @@ import base64
 import cgi
 from datetime import datetime
 import os
+import json
 
 from .. import base
 
 from collections import defaultdict
+import six
 
 html = None
 raw = None
@@ -75,8 +77,8 @@ class HTMLFormatter(base.BaseFormatter):
                 if version_info.get("application_repository"):
                     self.env["Gecko revision"] = html.a(
                         version_info.get("application_changeset"),
-                        href="/".join([version_info.get("application_repository"),
-                                       version_info.get("application_changeset")]),
+                        href="/rev/".join([version_info.get("application_repository"),
+                                           version_info.get("application_changeset")]),
                         target="_blank")
 
             if version_info.get("gaia_changeset"):
@@ -120,9 +122,12 @@ class HTMLFormatter(base.BaseFormatter):
 
         status = status_name = data["status"]
         expected = data.get("expected", status)
+        known_intermittent = data.get("known_intermittent", [])
 
-        if status != expected:
+        if status != expected and status not in known_intermittent:
             status_name = "UNEXPECTED_" + status
+        elif status in known_intermittent:
+            status_name = "KNOWN_INTERMITTENT"
         elif status not in ("PASS", "SKIP"):
             status_name = "EXPECTED_" + status
 
@@ -157,12 +162,31 @@ class HTMLFormatter(base.BaseFormatter):
                     else:
                         href = content
                 else:
+                    if not isinstance(content, (six.text_type, six.binary_type)):
+                        # All types must be json serializable
+                        content = json.dumps(content)
+                        # Decode to text type if JSON output is byte string
+                        if not isinstance(content, six.text_type):
+                            content = content.decode('utf-8')
                     # Encode base64 to avoid that some browsers (such as Firefox, Opera)
                     # treats '#' as the start of another link if it is contained in the data URL.
-                    # Use 'charset=utf-8' to show special characters like Chinese.
-                    utf_encoded = unicode(content).encode('utf-8', 'xmlcharrefreplace')
-                    href = 'data:text/html;charset=utf-8;base64,%s' % base64.b64encode(utf_encoded)
+                    if isinstance(content, six.text_type):
+                        is_known_utf8 = True
+                        content_bytes = six.text_type(content).encode('utf-8',
+                                                                      'xmlcharrefreplace')
+                    else:
+                        is_known_utf8 = False
+                        content_bytes = content
 
+                    meta = ["text/html"]
+                    if is_known_utf8:
+                        meta.append("charset=utf-8")
+
+                    # base64 is ascii only, which means we don't have to care about encoding
+                    # in the case where we don't know the encoding of the input
+                    b64_bytes = base64.b64encode(content_bytes)
+                    b64_text = b64_bytes.decode()
+                    href = "data:%s;base64,%s" % (";".join(meta), b64_text)
                 links_html.append(html.a(
                     name.title(),
                     class_=name,
@@ -210,7 +234,7 @@ class HTMLFormatter(base.BaseFormatter):
                         id='environment'),
 
                     html.h2('Summary'),
-                    html.p('%i tests ran in %.1f seconds.' % (sum(self.test_count.itervalues()),
+                    html.p('%i tests ran in %.1f seconds.' % (sum(six.itervalues(self.test_count)),
                                                               (self.suite_times["end"] -
                                                                self.suite_times["start"]) / 1000.),
                            html.br(),
@@ -224,7 +248,10 @@ class HTMLFormatter(base.BaseFormatter):
                            html.span('%i expected failures' % self.test_count["EXPECTED_FAIL"],
                                      class_='expected_fail'), ', ',
                            html.span('%i unexpected passes' % self.test_count["UNEXPECTED_PASS"],
-                                     class_='unexpected_pass'), '.'),
+                                     class_='unexpected_pass'), ', ',
+                           html.span('%i known intermittent results' %
+                                     self.test_count["KNOWN_INTERMITTENT"],
+                                     class_='known_intermittent'), '.'),
                     html.h2('Results'),
                     html.table([html.thead(
                         html.tr([

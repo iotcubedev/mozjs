@@ -6,13 +6,51 @@
 #ifndef _mozilla_dom_ServiceWorkerUtils_h
 #define _mozilla_dom_ServiceWorkerUtils_h
 
+#include "mozilla/MozPromise.h"
+#include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
+#include "nsTArray.h"
+
+class nsIURI;
+
 namespace mozilla {
+
+class CopyableErrorResult;
+
 namespace dom {
 
-bool
-ServiceWorkerParentInterceptEnabled();
+class ClientInfo;
+class ServiceWorkerRegistrationData;
+class ServiceWorkerRegistrationDescriptor;
 
-} // namespace dom
-} // namespace mozilla
+typedef MozPromise<ServiceWorkerRegistrationDescriptor, CopyableErrorResult,
+                   false>
+    ServiceWorkerRegistrationPromise;
 
-#endif // _mozilla_dom_ServiceWorkerUtils_h
+typedef MozPromise<nsTArray<ServiceWorkerRegistrationDescriptor>,
+                   CopyableErrorResult, false>
+    ServiceWorkerRegistrationListPromise;
+
+typedef std::function<void(const ServiceWorkerRegistrationDescriptor&)>
+    ServiceWorkerRegistrationCallback;
+
+typedef std::function<void(
+    const nsTArray<ServiceWorkerRegistrationDescriptor>&)>
+    ServiceWorkerRegistrationListCallback;
+
+typedef std::function<void(bool)> ServiceWorkerBoolCallback;
+
+typedef std::function<void(ErrorResult&)> ServiceWorkerFailureCallback;
+
+bool ServiceWorkerParentInterceptEnabled();
+
+bool ServiceWorkerRegistrationDataIsValid(
+    const ServiceWorkerRegistrationData& aData);
+
+nsresult ServiceWorkerScopeAndScriptAreValid(const ClientInfo& aClientInfo,
+                                             nsIURI* aScopeURI,
+                                             nsIURI* aScriptURI);
+
+}  // namespace dom
+}  // namespace mozilla
+
+#endif  // _mozilla_dom_ServiceWorkerUtils_h

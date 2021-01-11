@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -15,8 +16,8 @@ var obj = {};
 var p = Promise.resolve(obj);
 
 p.then(undefined, undefined)
-    .then(function (arg) {
-        if (arg !== obj) {
-            $ERROR("Expected resolution object to be passed through, got " + arg);
-        }
-    }).then($DONE, $DONE);
+  .then(function(arg) {
+    if (arg !== obj) {
+      $ERROR("Expected resolution object to be passed through, got " + arg);
+    }
+  }).then($DONE, $DONE);

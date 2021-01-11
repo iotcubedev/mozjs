@@ -3,13 +3,12 @@
 
 /*---
 esid: sec-array.prototype.some
-es5id: 15.4.4.17-1-2
 description: Array.prototype.some applied to null throws a TypeError
 ---*/
 
 
 assert.throws(TypeError, function() {
-            Array.prototype.some.call(null);
+  Array.prototype.some.call(null);
 });
 
 reportCompare(0, 0);

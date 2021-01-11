@@ -4,7 +4,14 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+SPHINX_TREES['/toolkit'] = 'docs'
+
+EXTRA_COMPONENTS += [
+    'l10n-registry.manifest',
+]
+
 DIRS += [
+    'actors',
     'components',
     'content',
     'crashreporter',
@@ -13,10 +20,10 @@ DIRS += [
     'modules',
     'mozapps/downloads',
     'mozapps/extensions',
-    'mozapps/handling',
     'mozapps/preferences',
     'pluginproblem',
     'profile',
+    'recordreplay',
     'themes',
 ]
 
@@ -35,12 +42,15 @@ if CONFIG['MOZ_MAINTENANCE_SERVICE']:
 
 DIRS += ['xre']
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk3':
+if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'android':
+    DIRS += ['mozapps/handling']
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
     DIRS += ['system/unixproxy']
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     DIRS += ['system/osxproxy']
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
-    DIRS += ['system/windowsproxy']
+    DIRS += ['system/windowsproxy',
+            'system/windowsDHCPClient']
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
     DIRS += ['system/androidproxy']
 
@@ -48,17 +58,20 @@ TEST_HARNESS_FILES.testing.mochitest.browser.toolkit.crashreporter.test.browser 
     'crashreporter/test/browser/crashreport.sjs',
 ]
 
+with Files('docs/**'):
+    BUG_COMPONENT = ('Toolkit', 'General')
+
 with Files('moz.*'):
-    BUG_COMPONENT = ('Core', 'Build Config')
+    BUG_COMPONENT = ('Firefox Build System', 'General')
 
 with Files('toolkit.mozbuild'):
-    BUG_COMPONENT = ('Core', 'Build Config')
+    BUG_COMPONENT = ('Firefox Build System', 'General')
 
 with Files('nss.configure'):
-    BUG_COMPONENT = ('Core', 'Build Config')
+    BUG_COMPONENT = ('Firefox Build System', 'General')
 
 with Files('library/**'):
-    BUG_COMPONENT = ('Core', 'Build Config')
+    BUG_COMPONENT = ('Firefox Build System', 'General')
 
 with Files('mozapps/installer/windows/**'):
     BUG_COMPONENT = ('Toolkit', 'NSIS Installer')
@@ -69,3 +82,5 @@ with Files('mozapps/preferences/**'):
 with Files('pluginproblem/**'):
     BUG_COMPONENT = ('Core', 'Plug-ins')
 
+with Files('l10n-registry.manifest'):
+    BUG_COMPONENT = ('Core', 'Localization')

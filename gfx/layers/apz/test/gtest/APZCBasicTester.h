@@ -12,24 +12,27 @@
  */
 
 #include "APZTestCommon.h"
-#include "gfxPrefs.h"
+
+#include "mozilla/layers/APZSampler.h"
+#include "mozilla/layers/APZUpdater.h"
 
 class APZCBasicTester : public APZCTesterBase {
-public:
-  explicit APZCBasicTester(AsyncPanZoomController::GestureBehavior aGestureBehavior = AsyncPanZoomController::DEFAULT_GESTURES)
-    : mGestureBehavior(aGestureBehavior)
-  {
-  }
+ public:
+  explicit APZCBasicTester(
+      AsyncPanZoomController::GestureBehavior aGestureBehavior =
+          AsyncPanZoomController::DEFAULT_GESTURES)
+      : mGestureBehavior(aGestureBehavior) {}
 
-protected:
-  virtual void SetUp()
-  {
-    gfxPrefs::GetSingleton();
+ protected:
+  virtual void SetUp() {
     APZThreadUtils::SetThreadAssertionsEnabled(false);
     APZThreadUtils::SetControllerThread(MessageLoop::current());
 
     tm = new TestAPZCTreeManager(mcc);
-    apzc = new TestAsyncPanZoomController(0, mcc, tm, mGestureBehavior);
+    updater = new APZUpdater(tm, false);
+    sampler = new APZSampler(tm, false);
+    apzc = new TestAsyncPanZoomController(
+        LayersId{0}, mcc, tm, wr::RenderRoot::Default, mGestureBehavior);
     apzc->SetFrameMetrics(TestFrameMetrics());
     apzc->GetScrollMetadata().SetIsLayersIdRoot(true);
   }
@@ -37,35 +40,32 @@ protected:
   /**
    * Get the APZC's scroll range in CSS pixels.
    */
-  CSSRect GetScrollRange() const
-  {
+  CSSRect GetScrollRange() const {
     const FrameMetrics& metrics = apzc->GetFrameMetrics();
-    return CSSRect(
-        metrics.GetScrollableRect().TopLeft(),
-        metrics.GetScrollableRect().Size() - metrics.CalculateCompositedSizeInCssPixels());
+    return CSSRect(metrics.GetScrollableRect().TopLeft(),
+                   metrics.GetScrollableRect().Size() -
+                       metrics.CalculateCompositedSizeInCssPixels());
   }
 
-  virtual void TearDown()
-  {
-    while (mcc->RunThroughDelayedTasks());
+  virtual void TearDown() {
+    while (mcc->RunThroughDelayedTasks())
+      ;
     apzc->Destroy();
     tm->ClearTree();
     tm->ClearContentController();
   }
 
-  void MakeApzcWaitForMainThread()
-  {
-    apzc->SetWaitForMainThread();
+  void MakeApzcWaitForMainThread() { apzc->SetWaitForMainThread(); }
+
+  void MakeApzcZoomable() {
+    apzc->UpdateZoomConstraints(ZoomConstraints(
+        true, true, CSSToParentLayerScale(0.25f), CSSToParentLayerScale(4.0f)));
   }
 
-  void MakeApzcZoomable()
-  {
-    apzc->UpdateZoomConstraints(ZoomConstraints(true, true, CSSToParentLayerScale(0.25f), CSSToParentLayerScale(4.0f)));
-  }
-
-  void MakeApzcUnzoomable()
-  {
-    apzc->UpdateZoomConstraints(ZoomConstraints(false, false, CSSToParentLayerScale(1.0f), CSSToParentLayerScale(1.0f)));
+  void MakeApzcUnzoomable() {
+    apzc->UpdateZoomConstraints(ZoomConstraints(false, false,
+                                                CSSToParentLayerScale(1.0f),
+                                                CSSToParentLayerScale(1.0f)));
   }
 
   void PanIntoOverscroll();
@@ -73,8 +73,7 @@ protected:
   /**
    * Sample animations once, 1 ms later than the last sample.
    */
-  void SampleAnimationOnce()
-  {
+  void SampleAnimationOnce() {
     const TimeDuration increment = TimeDuration::FromMilliseconds(1);
     ParentLayerPoint pointOut;
     AsyncTransform viewTransformOut;
@@ -87,8 +86,8 @@ protected:
    * @param aExpectedScrollOffset the expected reported scroll offset
    *                              throughout the animation
    */
-  void SampleAnimationUntilRecoveredFromOverscroll(const ParentLayerPoint& aExpectedScrollOffset)
-  {
+  void SampleAnimationUntilRecoveredFromOverscroll(
+      const ParentLayerPoint& aExpectedScrollOffset) {
     const TimeDuration increment = TimeDuration::FromMilliseconds(1);
     bool recoveredFromOverscroll = false;
     ParentLayerPoint pointOut;
@@ -115,7 +114,9 @@ protected:
 
   AsyncPanZoomController::GestureBehavior mGestureBehavior;
   RefPtr<TestAPZCTreeManager> tm;
+  RefPtr<APZSampler> sampler;
+  RefPtr<APZUpdater> updater;
   RefPtr<TestAsyncPanZoomController> apzc;
 };
 
-#endif // mozilla_layers_APZCBasicTester_h
+#endif  // mozilla_layers_APZCBasicTester_h

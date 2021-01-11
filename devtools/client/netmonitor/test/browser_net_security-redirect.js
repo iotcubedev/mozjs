@@ -8,32 +8,53 @@
  * request.
  */
 
-add_task(async function () {
-  let { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL);
-  let { document, store, windowRequire } = monitor.panelWin;
-  let Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+add_task(async function() {
+  const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL);
+  const { document, store, windowRequire } = monitor.panelWin;
+  const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
 
   store.dispatch(Actions.batchEnable(false));
 
-  let wait = waitForNetworkEvents(monitor, 2);
-  await ContentTask.spawn(tab.linkedBrowser, HTTPS_REDIRECT_SJS, async function (url) {
+  const wait = waitForNetworkEvents(monitor, 2);
+  await ContentTask.spawn(tab.linkedBrowser, HTTPS_REDIRECT_SJS, async function(
+    url
+  ) {
     content.wrappedJSObject.performRequests(1, url);
   });
   await wait;
 
-  is(store.getState().requests.requests.size, 2,
-     "There were two requests due to redirect.");
+  is(
+    store.getState().requests.requests.size,
+    2,
+    "There were two requests due to redirect."
+  );
 
-  let [
-    initialSecurityIcon,
-    redirectSecurityIcon,
+  const [
+    initialDomainSecurityIcon,
+    initialUrlSecurityIcon,
+    redirectDomainSecurityIcon,
+    redirectUrlSecurityIcon,
   ] = document.querySelectorAll(".requests-security-state-icon");
 
-  ok(initialSecurityIcon.classList.contains("security-state-insecure"),
-     "Initial request was marked insecure.");
+  ok(
+    initialDomainSecurityIcon.classList.contains("security-state-insecure"),
+    "Initial request was marked insecure for domain column."
+  );
 
-  ok(redirectSecurityIcon.classList.contains("security-state-secure"),
-     "Redirected request was marked secure.");
+  ok(
+    redirectDomainSecurityIcon.classList.contains("security-state-secure"),
+    "Redirected request was marked secure for domain column."
+  );
+
+  ok(
+    initialUrlSecurityIcon.classList.contains("security-state-insecure"),
+    "Initial request was marked insecure for URL column."
+  );
+
+  ok(
+    redirectUrlSecurityIcon.classList.contains("security-state-secure"),
+    "Redirected request was marked secure for URL column."
+  );
 
   await teardown(monitor);
 });

@@ -4,131 +4,351 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "MediaStreamGraph.h"
 #include "OutputStreamManager.h"
+
+#include "DOMMediaStream.h"
+#include "../MediaStreamGraph.h"
+#include "mozilla/dom/MediaStreamTrack.h"
+#include "mozilla/dom/AudioStreamTrack.h"
+#include "mozilla/dom/VideoStreamTrack.h"
+#include "nsContentUtils.h"
 
 namespace mozilla {
 
-OutputStreamData::~OutputStreamData()
-{
+#define LOG(level, msg, ...) \
+  MOZ_LOG(gMediaDecoderLog, level, (msg, ##__VA_ARGS__))
+
+class DecodedStreamTrackSource : public dom::MediaStreamTrackSource {
+ public:
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DecodedStreamTrackSource,
+                                           dom::MediaStreamTrackSource)
+
+  explicit DecodedStreamTrackSource(SourceMediaStream* aSourceStream,
+                                    nsIPrincipal* aPrincipal)
+      : dom::MediaStreamTrackSource(aPrincipal, nsString()),
+        mStream(aSourceStream->Graph()->CreateTrackUnionStream()),
+        mPort(mStream->AllocateInputPort(aSourceStream)) {
+    MOZ_ASSERT(NS_IsMainThread());
+  }
+
+  dom::MediaSourceEnum GetMediaSource() const override {
+    return dom::MediaSourceEnum::Other;
+  }
+
+  void Stop() override {
+    MOZ_ASSERT(NS_IsMainThread());
+
+    // We don't notify the source that a track was stopped since it will keep
+    // producing tracks until the element ends. The decoder also needs the
+    // tracks it created to be live at the source since the decoder's clock is
+    // based on MediaStreams during capture. We do however, disconnect this
+    // track's underlying stream.
+    if (!mStream->IsDestroyed()) {
+      mStream->Destroy();
+      mPort->Destroy();
+    }
+  }
+
+  void Disable() override {}
+
+  void Enable() override {}
+
+  void SetPrincipal(nsIPrincipal* aPrincipal) {
+    MOZ_ASSERT(NS_IsMainThread());
+    mPrincipal = aPrincipal;
+    PrincipalChanged();
+  }
+
+  void ForceEnded() { OverrideEnded(); }
+
+  const RefPtr<ProcessedMediaStream> mStream;
+  const RefPtr<MediaInputPort> mPort;
+
+ protected:
+  virtual ~DecodedStreamTrackSource() {
+    MOZ_ASSERT(NS_IsMainThread());
+    MOZ_ASSERT(mStream->IsDestroyed());
+  }
+};
+
+NS_IMPL_ADDREF_INHERITED(DecodedStreamTrackSource, dom::MediaStreamTrackSource)
+NS_IMPL_RELEASE_INHERITED(DecodedStreamTrackSource, dom::MediaStreamTrackSource)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DecodedStreamTrackSource)
+NS_INTERFACE_MAP_END_INHERITING(dom::MediaStreamTrackSource)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(DecodedStreamTrackSource,
+                                   dom::MediaStreamTrackSource)
+
+OutputStreamData::OutputStreamData(OutputStreamManager* aManager,
+                                   AbstractThread* aAbstractMainThread,
+                                   DOMMediaStream* aDOMStream)
+    : mManager(aManager),
+      mAbstractMainThread(aAbstractMainThread),
+      mDOMStream(aDOMStream) {
   MOZ_ASSERT(NS_IsMainThread());
-  // Break the connection to the input stream if necessary.
-  if (mPort) {
-    mPort->Destroy();
-  }
 }
 
-void
-OutputStreamData::Init(OutputStreamManager* aOwner, ProcessedMediaStream* aStream)
-{
-  mOwner = aOwner;
-  mStream = aStream;
-}
+OutputStreamData::~OutputStreamData() = default;
 
-bool
-OutputStreamData::Connect(MediaStream* aStream)
-{
+void OutputStreamData::AddTrack(SourceMediaStream* aStream,
+                                MediaSegment::Type aType,
+                                nsIPrincipal* aPrincipal, bool aAsyncAddTrack) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!mPort, "Already connected?");
+  MOZ_DIAGNOSTIC_ASSERT(mDOMStream);
 
-  if (mStream->IsDestroyed()) {
-    return false;
+  LOG(LogLevel::Debug,
+      "Adding output %s track sourced from stream %p to MediaStream %p%s",
+      aType == MediaSegment::AUDIO ? "audio" : "video", aStream,
+      mDOMStream.get(), aAsyncAddTrack ? " (async)" : "");
+
+  auto source = MakeRefPtr<DecodedStreamTrackSource>(aStream, aPrincipal);
+  RefPtr<dom::MediaStreamTrack> track;
+  if (aType == MediaSegment::AUDIO) {
+    track = new dom::AudioStreamTrack(mDOMStream->GetParentObject(),
+                                      source->mStream,
+                                      OutputStreamManager::sTrackID, source);
+  } else {
+    MOZ_ASSERT(aType == MediaSegment::VIDEO);
+    track = new dom::VideoStreamTrack(mDOMStream->GetParentObject(),
+                                      source->mStream,
+                                      OutputStreamManager::sTrackID, source);
   }
-
-  mPort = mStream->AllocateInputPort(aStream);
-  return true;
+  mTracks.AppendElement(track.get());
+  if (aAsyncAddTrack) {
+    GetMainThreadEventTarget()->Dispatch(
+        NewRunnableMethod<RefPtr<dom::MediaStreamTrack>>(
+            "DOMMediaStream::AddTrackInternal", mDOMStream.get(),
+            &DOMMediaStream::AddTrackInternal, track));
+  } else {
+    mDOMStream->AddTrackInternal(track);
+  }
 }
 
-bool
-OutputStreamData::Disconnect()
-{
+void OutputStreamData::RemoveTrack(SourceMediaStream* aStream) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_DIAGNOSTIC_ASSERT(mDOMStream);
+
+  LOG(LogLevel::Debug,
+      "Removing output track sourced by stream %p from MediaStream %p", aStream,
+      mDOMStream.get());
+
+  for (const auto& t : nsTArray<WeakPtr<dom::MediaStreamTrack>>(mTracks)) {
+    mTracks.RemoveElement(t);
+    if (!t || t->Ended()) {
+      continue;
+    }
+    DecodedStreamTrackSource& source =
+        static_cast<DecodedStreamTrackSource&>(t->GetSource());
+    GetMainThreadEventTarget()->Dispatch(
+        NewRunnableMethod("DecodedStreamTrackSource::ForceEnded", &source,
+                          &DecodedStreamTrackSource::ForceEnded));
+  }
+}
+
+void OutputStreamData::SetPrincipal(nsIPrincipal* aPrincipal) {
+  MOZ_DIAGNOSTIC_ASSERT(mDOMStream);
+  for (const WeakPtr<dom::MediaStreamTrack>& track : mTracks) {
+    if (!track || track->Ended()) {
+      continue;
+    }
+    DecodedStreamTrackSource& source =
+        static_cast<DecodedStreamTrackSource&>(track->GetSource());
+    source.SetPrincipal(aPrincipal);
+  }
+}
+
+OutputStreamManager::OutputStreamManager(SharedDummyStream* aDummyStream,
+                                         nsIPrincipal* aPrincipal,
+                                         AbstractThread* aAbstractMainThread)
+    : mAbstractMainThread(aAbstractMainThread),
+      mDummyStream(aDummyStream),
+      mPrincipalHandle(
+          aAbstractMainThread,
+          aPrincipal ? MakePrincipalHandle(aPrincipal) : PRINCIPAL_HANDLE_NONE,
+          "OutputStreamManager::mPrincipalHandle (Canonical)") {
+  MOZ_ASSERT(NS_IsMainThread());
+}
+
+void OutputStreamManager::Add(DOMMediaStream* aDOMStream) {
   MOZ_ASSERT(NS_IsMainThread());
 
-  // During cycle collection, DOMMediaStream can be destroyed and send
-  // its Destroy message before this decoder is destroyed. So we have to
-  // be careful not to send any messages after the Destroy().
-  if (mStream->IsDestroyed()) {
-    return false;
+  LOG(LogLevel::Info, "Adding MediaStream %p", aDOMStream);
+
+  OutputStreamData* p = mStreams
+                            .AppendElement(new OutputStreamData(
+                                this, mAbstractMainThread, aDOMStream))
+                            ->get();
+  for (const auto& lt : mLiveTracks) {
+    p->AddTrack(lt->mSourceStream, lt->mType, mPrincipalHandle.Ref(), false);
   }
-
-  // Disconnect the existing port if necessary.
-  if (mPort) {
-    mPort->Destroy();
-    mPort = nullptr;
-  }
-  return true;
 }
 
-bool
-OutputStreamData::Equals(MediaStream* aStream) const
-{
-  return mStream == aStream;
-}
-
-MediaStreamGraph*
-OutputStreamData::Graph() const
-{
-  return mStream->Graph();
-}
-
-void
-OutputStreamManager::Add(ProcessedMediaStream* aStream, bool aFinishWhenEnded)
-{
+void OutputStreamManager::Remove(DOMMediaStream* aDOMStream) {
   MOZ_ASSERT(NS_IsMainThread());
-  // All streams must belong to the same graph.
-  MOZ_ASSERT(!Graph() || Graph() == aStream->Graph());
 
-  // Ensure that aStream finishes the moment mDecodedStream does.
-  if (aFinishWhenEnded) {
-    aStream->QueueSetAutofinish(true);
-  }
+  LOG(LogLevel::Info, "Removing MediaStream %p", aDOMStream);
 
-  OutputStreamData* p = mStreams.AppendElement();
-  p->Init(this, aStream);
-
-  // Connect to the input stream if we have one. Otherwise the output stream
-  // will be connected in Connect().
-  if (mInputStream) {
-    p->Connect(mInputStream);
-  }
+  AutoRemoveDestroyedStreams();
+  mStreams.ApplyIf(
+      aDOMStream, 0, StreamComparator(),
+      [&](const UniquePtr<OutputStreamData>& aData) {
+        for (const auto& lt : mLiveTracks) {
+          aData->RemoveTrack(lt->mSourceStream);
+        }
+      },
+      []() { MOZ_ASSERT_UNREACHABLE("Didn't exist"); });
+  DebugOnly<bool> rv = mStreams.RemoveElement(aDOMStream, StreamComparator());
+  MOZ_ASSERT(rv);
 }
 
-void
-OutputStreamManager::Remove(MediaStream* aStream)
-{
+bool OutputStreamManager::HasTrackType(MediaSegment::Type aType) {
   MOZ_ASSERT(NS_IsMainThread());
-  for (int32_t i = mStreams.Length() - 1; i >= 0; --i) {
-    if (mStreams[i].Equals(aStream)) {
-      mStreams.RemoveElementAt(i);
-      break;
+
+  return mLiveTracks.Contains(aType, TrackTypeComparator());
+}
+
+bool OutputStreamManager::HasTracks(SourceMediaStream* aAudioStream,
+                                    SourceMediaStream* aVideoStream) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  size_t nrExpectedTracks = 0;
+  bool asExpected = true;
+  if (aAudioStream) {
+    Unused << ++nrExpectedTracks;
+    asExpected = asExpected && mLiveTracks.Contains(
+                                   MakePair(aAudioStream, MediaSegment::AUDIO),
+                                   TrackComparator());
+  }
+  if (aVideoStream) {
+    Unused << ++nrExpectedTracks;
+    asExpected = asExpected && mLiveTracks.Contains(
+                                   MakePair(aVideoStream, MediaSegment::VIDEO),
+                                   TrackComparator());
+  }
+  asExpected = asExpected && mLiveTracks.Length() == nrExpectedTracks;
+  return asExpected;
+}
+
+SourceMediaStream* OutputStreamManager::GetPrecreatedTrackOfType(
+    MediaSegment::Type aType) const {
+  auto i = mLiveTracks.IndexOf(aType, 0, PrecreatedTrackTypeComparator());
+  return i == nsTArray<UniquePtr<LiveTrack>>::NoIndex
+             ? nullptr
+             : mLiveTracks[i]->mSourceStream.get();
+}
+
+size_t OutputStreamManager::NumberOfTracks() {
+  MOZ_ASSERT(NS_IsMainThread());
+  return mLiveTracks.Length();
+}
+
+already_AddRefed<SourceMediaStream> OutputStreamManager::AddTrack(
+    MediaSegment::Type aType) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(!HasTrackType(aType),
+             "Cannot have two tracks of the same type at the same time");
+
+  RefPtr<SourceMediaStream> stream =
+      mDummyStream->mStream->Graph()->CreateSourceStream();
+  if (!mPlaying) {
+    stream->Suspend();
+  }
+
+  LOG(LogLevel::Info, "Adding %s track sourced by stream %p",
+      aType == MediaSegment::AUDIO ? "audio" : "video", stream.get());
+
+  mLiveTracks.AppendElement(MakeUnique<LiveTrack>(stream, aType));
+  AutoRemoveDestroyedStreams();
+  for (const auto& data : mStreams) {
+    data->AddTrack(stream, aType, mPrincipalHandle.Ref(), true);
+  }
+
+  return stream.forget();
+}
+
+OutputStreamManager::LiveTrack::~LiveTrack() { mSourceStream->Destroy(); }
+
+void OutputStreamManager::AutoRemoveDestroyedStreams() {
+  MOZ_ASSERT(NS_IsMainThread());
+  for (size_t i = mStreams.Length(); i > 0; --i) {
+    const auto& data = mStreams[i - 1];
+    if (!data->mDOMStream) {
+      // If the mDOMStream WeakPtr is now null, mDOMStream has been destructed.
+      mStreams.RemoveElementAt(i - 1);
     }
   }
 }
 
-void
-OutputStreamManager::Connect(MediaStream* aStream)
-{
+void OutputStreamManager::RemoveTrack(SourceMediaStream* aStream) {
   MOZ_ASSERT(NS_IsMainThread());
-  mInputStream = aStream;
-  for (int32_t i = mStreams.Length() - 1; i >= 0; --i) {
-    if (!mStreams[i].Connect(aStream)) {
-      // Probably the DOMMediaStream was GCed. Clean up.
-      mStreams.RemoveElementAt(i);
+  LOG(LogLevel::Info, "Removing track with source stream %p", aStream);
+  DebugOnly<bool> rv =
+      mLiveTracks.RemoveElement(aStream, TrackStreamComparator());
+  MOZ_ASSERT(rv);
+  AutoRemoveDestroyedStreams();
+  for (const auto& data : mStreams) {
+    data->RemoveTrack(aStream);
+  }
+}
+
+void OutputStreamManager::RemoveTracks() {
+  MOZ_ASSERT(NS_IsMainThread());
+  for (size_t i = mLiveTracks.Length(); i > 0; --i) {
+    RemoveTrack(mLiveTracks[i - 1]->mSourceStream);
+  }
+}
+
+void OutputStreamManager::Disconnect() {
+  MOZ_ASSERT(NS_IsMainThread());
+  RemoveTracks();
+  MOZ_ASSERT(mLiveTracks.IsEmpty());
+  AutoRemoveDestroyedStreams();
+  nsTArray<RefPtr<DOMMediaStream>> domStreams(mStreams.Length());
+  for (const auto& data : mStreams) {
+    domStreams.AppendElement(data->mDOMStream);
+  }
+  for (auto& domStream : domStreams) {
+    Remove(domStream);
+  }
+  MOZ_ASSERT(mStreams.IsEmpty());
+}
+
+AbstractCanonical<PrincipalHandle>*
+OutputStreamManager::CanonicalPrincipalHandle() {
+  return &mPrincipalHandle;
+}
+
+void OutputStreamManager::SetPrincipal(nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(NS_IsMainThread());
+  nsCOMPtr<nsIPrincipal> principal = GetPrincipalFromHandle(mPrincipalHandle);
+  if (nsContentUtils::CombineResourcePrincipals(&principal, aPrincipal)) {
+    AutoRemoveDestroyedStreams();
+    for (const UniquePtr<OutputStreamData>& data : mStreams) {
+      data->SetPrincipal(principal);
+    }
+    mPrincipalHandle = MakePrincipalHandle(principal);
+  }
+}
+
+void OutputStreamManager::SetPlaying(bool aPlaying) {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mPlaying == aPlaying) {
+    return;
+  }
+
+  mPlaying = aPlaying;
+  for (auto& lt : mLiveTracks) {
+    if (mPlaying) {
+      lt->mSourceStream->Resume();
+      lt->mEverPlayed = true;
+    } else {
+      lt->mSourceStream->Suspend();
     }
   }
 }
 
-void
-OutputStreamManager::Disconnect()
-{
-  MOZ_ASSERT(NS_IsMainThread());
-  mInputStream = nullptr;
-  for (int32_t i = mStreams.Length() - 1; i >= 0; --i) {
-    if (!mStreams[i].Disconnect()) {
-      // Probably the DOMMediaStream was GCed. Clean up.
-      mStreams.RemoveElementAt(i);
-    }
-  }
-}
+OutputStreamManager::~OutputStreamManager() = default;
 
-} // namespace mozilla
+#undef LOG
+
+}  // namespace mozilla

@@ -21,7 +21,7 @@ enum MediaSourceEndOfStreamError {
   "decode"
 };
 
-[Constructor, Func="mozilla::dom::MediaSource::Enabled"]
+[Constructor, Pref="media.mediasource.enabled"]
 interface MediaSource : EventTarget {
   readonly attribute SourceBufferList sourceBuffers;
   readonly attribute SourceBufferList activeSourceBuffers;
@@ -42,6 +42,6 @@ interface MediaSource : EventTarget {
   [Throws]
   void clearLiveSeekableRange();
   static boolean isTypeSupported(DOMString type);
-  [ChromeOnly]
-  readonly attribute DOMString mozDebugReaderData;
+  [Throws, ChromeOnly]
+  Promise<MediaSourceDecoderDebugInfo> mozDebugReaderData();
 };

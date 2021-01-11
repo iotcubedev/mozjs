@@ -27,13 +27,13 @@ pushed to vcs.
 Task Images (build-on-push)
 :::::::::::::::::::::::::::
 
-Images can be uploaded as a task artifact, [indexed](#task-image-index-namespace) under
+Images can be uploaded as a task artifact, :ref:`indexed <task-image-index-namespace>` under
 a given namespace, and used in other tasks by referencing the task ID.
 
 Important to note, these images do not require building and pushing to a docker registry, and are
 built per push (if necessary) and uploaded as task artifacts.
 
-The decision task that is run per push will [determine](#context-directory-hashing)
+The decision task that is run per push will :ref:`determine <context-directory-hashing>`
 if the image needs to be built based on the hash of the context directory and if the image
 exists under the namespace for a given branch.
 
@@ -45,12 +45,14 @@ pushes to any branch will use that already built image.
 
 To use within an in-tree task definition, the format is:
 
-```yaml
-image:
-  type: 'task-image'
-  path: 'public/image.tar.zst'
-  taskId: '{{#task_id_for_image}}builder{{/task_id_for_image}}'
-```
+.. code-block:: yaml
+
+    image:
+        type: 'task-image'
+        path: 'public/image.tar.zst'
+        taskId: '<task_id_for_image_builder>'
+
+.. _context-directory-hashing:
 
 Context Directory Hashing
 .........................
@@ -63,14 +65,17 @@ Note: this is the contents of *only* the context directory, not the
 image contents.
 
 The decision task will:
+
 1. Recursively collect the paths of all files within the context directory
 2. Sort the filenames alphabetically to ensure the hash is consistently calculated
-3. Generate a sha256 hash of the contents of each file.
-4. All file hashes will then be combined with their path and used to update the hash
-of the context directory.
+3. Generate a sha256 hash of the contents of each file
+4. All file hashes will then be combined with their path and used to update the
+   hash of the context directory
 
 This ensures that the hash is consistently calculated and path changes will result
 in different hashes being generated.
+
+.. _task-image-index-namespace:
 
 Task Image Index Namespace
 ..........................
@@ -89,8 +94,8 @@ for docker images that are pushed to a registry.
 Docker Registry Images (prebuilt)
 :::::::::::::::::::::::::::::::::
 
-***Warning: Use of prebuilt images should only be used for base images (those that other images
-will inherit from), or private images that must be stored in a private docker registry account.***
+***Warning: Registry images are only used for ``decision`` and
+``image_builder`` images.***
 
 These are images that are intended to be pushed to a docker registry and used
 by specifying the docker image name in task definitions.  They are generally
@@ -102,19 +107,16 @@ Example:
 
     image: taskcluster/decision:0.1.10@sha256:c5451ee6c655b3d97d4baa3b0e29a5115f23e0991d4f7f36d2a8f793076d6854
 
-Each image has a repo digest, an image hash, and a version. The repo digest is
-stored in the ``HASH`` file in the image directory  and used to refer to the
-image as above.  The version is in ``VERSION``.  The image hash is used in
-`chain-of-trust verification <http://scriptworker.readthedocs.io/en/latest/chain_of_trust.html>`
-in `scriptworker <https://github.com/mozilla-releng/scriptworker>`_.
+Such images must always be referred to with both a version and a repo digest.
+For the decision image, the repo digest is stored in the ``HASH`` file in the
+image directory and used to refer to the image as above.  The version for both
+images is in ``VERSION``.
 
-The version file only serves to provide convenient names, such that old
-versions are easy to discover in the registry (and ensuring old versions aren't
-deleted by garbage-collection).
+The version file serves to help users identify which image is being used, and makes old
+versions easy to discover in the registry.
 
-Each image directory also has a ``REGISTRY``, defaulting to the ``REGISTRY`` in
-the ``taskcluster/docker`` directory, and specifying the image registry to
-which the completed image should be uploaded.
+The file ``taskcluster/docker/REGISTRY`` specifies the image registry to which
+the completed image should be uploaded.
 
 Docker Hashes and Digests
 .........................
@@ -161,17 +163,18 @@ Docker Registry Images
 
 Landing docker registry images takes a little more care.
 
-Once a new version of the image has been built and tested locally, push it to
-the docker registry and make note of the resulting repo digest.  Put this value
-in the ``HASH`` file, and update any references to the image in the code or
-task definitions.
+Begin by bumping the ``VERSION``.  Once the new version of the image has been
+built and tested locally, push it to the docker registry and make note of the
+resulting repo digest.  Put this value in the ``HASH`` file for the
+``decision`` image and in ``taskcluster/taskgraph/transforms/docker_image.py``
+for the ``image_builder`` image.
 
-The change is now safe to use in Try pushes.  However, if the image is used in
-building releases then it is *not* safe to land to an integration branch until
-the whitelists in `scriptworker
-<https://github.com/mozilla-releng/scriptworker/blob/master/scriptworker/constants.py>`_
-have also been updated. These whitelists use the image hash, not the repo
-digest.
+The change is now safe to use in Try pushes.
+
+Note that ``image_builder`` change can be tested directly in try pushes without
+using a registry, as the in-registry ``image_builder`` image is used to build a
+task image which is then used to build other images.  It is referenced by hash
+in ``taskcluster/taskgraph/transforms/docker_image.py``.
 
 Special Dockerfile Syntax
 -------------------------

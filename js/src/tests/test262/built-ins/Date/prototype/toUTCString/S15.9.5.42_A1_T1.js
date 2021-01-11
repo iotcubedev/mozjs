@@ -4,12 +4,11 @@
 /*---
 info: The Date.prototype property "toUTCString" has { DontEnum } attributes
 esid: sec-date.prototype.toutcstring
-es5id: 15.9.5.42_A1_T1
 description: Checking absence of ReadOnly attribute
 ---*/
 
 var x = Date.prototype.toUTCString;
-if(x === 1)
+if (x === 1)
   Date.prototype.toUTCString = 2;
 else
   Date.prototype.toUTCString = 1;

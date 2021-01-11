@@ -12,13 +12,16 @@
 
 using mozilla::dom::DocGroup;
 
-DocGroup*
-nsICSSDeclaration::GetDocGroup()
-{
+DocGroup* nsICSSDeclaration::GetDocGroup() {
   nsINode* parentNode = GetParentObject();
   if (!parentNode) {
     return nullptr;
   }
 
   return parentNode->GetDocGroup();
+}
+
+bool nsICSSDeclaration::IsReadOnly() {
+  mozilla::css::Rule* rule = GetParentRule();
+  return rule && rule->IsReadOnly();
 }

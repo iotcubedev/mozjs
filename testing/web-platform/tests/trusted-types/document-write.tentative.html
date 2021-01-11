@@ -1,14 +1,14 @@
 <!DOCTYPE html>
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
-<script src="./support/helper.js"></script>
+<script src="support/helper.sub.js"></script>
 <body>
 <script>
-  promise_test(t => {
-    var html = TrustedHTML.escape(STRINGS.unescapedHTML);
-    return createFrameAndWrite(html).then(i => {
-      assert_equals(i.contentDocument.body.innerText, STRINGS.unescapedHTML, "innerText");
-      i.remove();
-    });
-  }, "document.write(TrustedHTML).");
+  // TrustedHTML assignments do not throw.
+  test(t => {
+    let p = createHTML_policy(window, 1);
+    let html = p.createHTML(INPUTS.HTML);
+    document.write(html);
+    assert_true(document.body.innerText.indexOf(RESULTS.HTML) !== -1);
+  }, "document.write with html assigned via policy (successful transformation).");
 </script>

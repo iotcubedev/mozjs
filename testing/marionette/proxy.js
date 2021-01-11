@@ -4,26 +4,32 @@
 
 "use strict";
 
-ChromeUtils.import("resource://gre/modules/Log.jsm");
-ChromeUtils.import("resource://gre/modules/Services.jsm");
-ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
+);
 
-const {
-  error,
-  WebDriverError,
-} = ChromeUtils.import("chrome://marionette/content/error.js", {});
-ChromeUtils.import("chrome://marionette/content/evaluate.js");
-ChromeUtils.import("chrome://marionette/content/modal.js");
+const { error, WebDriverError } = ChromeUtils.import(
+  "chrome://marionette/content/error.js"
+);
+const { evaluate } = ChromeUtils.import(
+  "chrome://marionette/content/evaluate.js"
+);
+const { Log } = ChromeUtils.import("chrome://marionette/content/log.js");
+const { modal } = ChromeUtils.import("chrome://marionette/content/modal.js");
+const { MessageManagerDestroyedPromise } = ChromeUtils.import(
+  "chrome://marionette/content/sync.js"
+);
 
 this.EXPORTED_SYMBOLS = ["proxy"];
 
+XPCOMUtils.defineLazyGetter(this, "log", Log.get);
 XPCOMUtils.defineLazyServiceGetter(
-    this, "uuidgen", "@mozilla.org/uuid-generator;1", "nsIUUIDGenerator");
-XPCOMUtils.defineLazyServiceGetter(
-    this, "globalMessageManager", "@mozilla.org/globalmessagemanager;1",
-    "nsIMessageBroadcaster");
-
-const log = Log.repository.getLogger("Marionette");
+  this,
+  "uuidgen",
+  "@mozilla.org/uuid-generator;1",
+  "nsIUUIDGenerator"
+);
 
 // Proxy handler that traps requests to get a property.  Will prioritise
 // properties that exist on the object's own prototype.
@@ -79,7 +85,7 @@ proxy.AsyncMessageChannel = class {
     this.activeMessageId = null;
 
     this.listeners_ = new Map();
-    this.dialogueObserver_ = null;
+    this.dialogHandler = null;
     this.closeHandler = null;
   }
 
@@ -123,7 +129,7 @@ proxy.AsyncMessageChannel = class {
       let path = proxy.AsyncMessageChannel.makePath(uuid);
       let cb = msg => {
         this.activeMessageId = null;
-        let {data, type} = msg.json;
+        let { data, type } = msg.json;
 
         switch (msg.json.type) {
           case proxy.AsyncMessageChannel.ReplyType.Ok:
@@ -142,25 +148,34 @@ proxy.AsyncMessageChannel = class {
         }
       };
 
-      // The currently selected tab or window has been closed. No clean-up
-      // is necessary to do because all loaded listeners are gone.
-      this.closeHandler = ({type, target}) => {
-        log.debug(`Received DOM event ${type} for ${target}`);
+      // The currently selected tab or window is closing. Make sure to wait
+      // until it's fully gone.
+      this.closeHandler = async ({ type, target }) => {
+        log.trace(`Received DOM event ${type} for ${target}`);
 
+        let messageManager;
         switch (type) {
-          case "TabClose":
           case "unload":
-            this.removeHandlers();
-            resolve();
+            messageManager = this.browser.window.messageManager;
+            break;
+          case "TabClose":
+            messageManager = this.browser.messageManager;
             break;
         }
+
+        await new MessageManagerDestroyedPromise(messageManager);
+        this.removeHandlers();
+        resolve();
       };
 
       // A modal or tab modal dialog has been opened. To be able to handle it,
       // the active command has to be aborted. Therefore remove all handlers,
       // and cancel any ongoing requests in the listener.
-      this.dialogueObserver_ = (subject, topic) => {
-        log.debug(`Received observer notification ${topic}`);
+      this.dialogHandler = (action, dialogRef, win) => {
+        // Only care about modals of the currently selected window.
+        if (win !== this.browser.window) {
+          return;
+        }
 
         this.removeAllListeners_();
         // TODO(ato): It's not ideal to have listener specific behaviour here:
@@ -184,7 +199,7 @@ proxy.AsyncMessageChannel = class {
    * Add all necessary handlers for events and observer notifications.
    */
   addHandlers() {
-    modal.addHandler(this.dialogueObserver_);
+    this.browser.driver.dialogObserver.add(this.dialogHandler.bind(this));
 
     // Register event handlers in case the command closes the current
     // tab or window, and the promise has to be escaped.
@@ -192,8 +207,9 @@ proxy.AsyncMessageChannel = class {
       this.browser.window.addEventListener("unload", this.closeHandler);
 
       if (this.browser.tab) {
-        let node = this.browser.tab.addEventListener ?
-            this.browser.tab : this.browser.contentBrowser;
+        let node = this.browser.tab.addEventListener
+          ? this.browser.tab
+          : this.browser.contentBrowser;
         node.addEventListener("TabClose", this.closeHandler);
       }
     }
@@ -203,15 +219,18 @@ proxy.AsyncMessageChannel = class {
    * Remove all registered handlers for events and observer notifications.
    */
   removeHandlers() {
-    modal.removeHandler(this.dialogueObserver_);
+    this.browser.driver.dialogObserver.remove(this.dialogHandler.bind(this));
 
     if (this.browser) {
       this.browser.window.removeEventListener("unload", this.closeHandler);
 
       if (this.browser.tab) {
-        let node = this.browser.tab.addEventListener ?
-            this.browser.tab : this.browser.contentBrowser;
-        node.removeEventListener("TabClose", this.closeHandler);
+        let node = this.browser.tab.addEventListener
+          ? this.browser.tab
+          : this.browser.contentBrowser;
+        if (node) {
+          node.removeEventListener("TabClose", this.closeHandler);
+        }
       }
     }
   }
@@ -261,7 +280,7 @@ proxy.AsyncMessageChannel = class {
     const path = proxy.AsyncMessageChannel.makePath(uuid);
 
     let data = evaluate.toJSON(payload);
-    const msg = {type, data};
+    const msg = { type, data };
 
     // here sendAsync is actually the content frame's
     // sendAsyncMessage(path, message) global
@@ -289,7 +308,7 @@ proxy.AsyncMessageChannel = class {
       callback(msg);
     };
 
-    globalMessageManager.addMessageListener(path, autoRemover);
+    Services.mm.addMessageListener(path, autoRemover);
     this.listeners_.set(path, autoRemover);
   }
 
@@ -299,7 +318,7 @@ proxy.AsyncMessageChannel = class {
     }
 
     let l = this.listeners_.get(path);
-    globalMessageManager.removeMessageListener(path, l[1]);
+    Services.mm.removeMessageListener(path, l);
     return this.listeners_.delete(path);
   }
 

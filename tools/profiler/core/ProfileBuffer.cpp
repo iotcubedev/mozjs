@@ -6,77 +6,61 @@
 
 #include "ProfileBuffer.h"
 
-#include "mozilla/MathAlgorithms.h"
-
 #include "ProfilerMarker.h"
+
+#include "BaseProfiler.h"
 #include "jsfriendapi.h"
-#include "nsScriptSecurityManager.h"
+#include "mozilla/MathAlgorithms.h"
 #include "nsJSPrincipals.h"
+#include "nsScriptSecurityManager.h"
 
 using namespace mozilla;
 
-ProfileBuffer::ProfileBuffer(uint32_t aEntrySize)
-  : mEntryIndexMask(0)
-  , mRangeStart(0)
-  , mRangeEnd(0)
-  , mEntrySize(0)
-{
-  // Round aEntrySize up to the nearest power of two, so that we can index
-  // mEntries with a simple mask and don't need to do a slow modulo operation.
-  const uint32_t UINT32_MAX_POWER_OF_TWO = 1 << 31;
-  MOZ_RELEASE_ASSERT(aEntrySize <= UINT32_MAX_POWER_OF_TWO,
-                     "aEntrySize is larger than what we support");
-  mEntrySize = RoundUpPow2(aEntrySize);
-  mEntryIndexMask = mEntrySize - 1;
-  mEntries = MakeUnique<ProfileBufferEntry[]>(mEntrySize);
-}
+ProfileBuffer::ProfileBuffer(PowerOfTwo32 aCapacity)
+    : mEntries(MakeUnique<ProfileBufferEntry[]>(aCapacity.Value())),
+      mEntryIndexMask(aCapacity.Mask()),
+      mRangeStart(0),
+      mRangeEnd(0) {}
 
-ProfileBuffer::~ProfileBuffer()
-{
+ProfileBuffer::~ProfileBuffer() {
   while (mStoredMarkers.peek()) {
     delete mStoredMarkers.popHead();
   }
 }
 
 // Called from signal, call only reentrant functions
-void
-ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry)
-{
+void ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry) {
   GetEntry(mRangeEnd++) = aEntry;
 
   // The distance between mRangeStart and mRangeEnd must never exceed
-  // mEntrySize, so advance mRangeStart if necessary.
-  if (mRangeEnd - mRangeStart > mEntrySize) {
+  // capacity, so advance mRangeStart if necessary.
+  if (mRangeEnd - mRangeStart > mEntryIndexMask.MaskValue() + 1) {
     mRangeStart++;
   }
 }
 
-uint64_t
-ProfileBuffer::AddThreadIdEntry(int aThreadId)
-{
+uint64_t ProfileBuffer::AddThreadIdEntry(int aThreadId) {
   uint64_t pos = mRangeEnd;
   AddEntry(ProfileBufferEntry::ThreadId(aThreadId));
   return pos;
 }
 
-void
-ProfileBuffer::AddStoredMarker(ProfilerMarker *aStoredMarker)
-{
+void ProfileBuffer::AddStoredMarker(ProfilerMarker* aStoredMarker) {
   aStoredMarker->SetPositionInBuffer(mRangeEnd);
   mStoredMarkers.insert(aStoredMarker);
 }
 
-void
-ProfileBuffer::CollectCodeLocation(
-  const char* aLabel, const char* aStr, int aLineNumber,
-  const Maybe<js::ProfileEntry::Category>& aCategory)
-{
+void ProfileBuffer::CollectCodeLocation(
+    const char* aLabel, const char* aStr, uint32_t aFrameFlags,
+    const Maybe<uint32_t>& aLineNumber, const Maybe<uint32_t>& aColumnNumber,
+    const Maybe<JS::ProfilingCategoryPair>& aCategoryPair) {
   AddEntry(ProfileBufferEntry::Label(aLabel));
+  AddEntry(ProfileBufferEntry::FrameFlags(uint64_t(aFrameFlags)));
 
   if (aStr) {
     // Store the string using one or more DynamicStringFragment entries.
-    size_t strLen = strlen(aStr) + 1;   // +1 for the null terminator
-    for (size_t j = 0; j < strLen; ) {
+    size_t strLen = strlen(aStr) + 1;  // +1 for the null terminator
+    for (size_t j = 0; j < strLen;) {
       // Store up to kNumChars characters in the entry.
       char chars[ProfileBufferEntry::kNumChars];
       size_t len = ProfileBufferEntry::kNumChars;
@@ -90,18 +74,22 @@ ProfileBuffer::CollectCodeLocation(
     }
   }
 
-  if (aLineNumber != -1) {
-    AddEntry(ProfileBufferEntry::LineNumber(aLineNumber));
+  if (aLineNumber) {
+    AddEntry(ProfileBufferEntry::LineNumber(*aLineNumber));
   }
 
-  if (aCategory.isSome()) {
-    AddEntry(ProfileBufferEntry::Category(int(*aCategory)));
+  if (aColumnNumber) {
+    AddEntry(ProfileBufferEntry::ColumnNumber(*aColumnNumber));
+  }
+
+  if (aCategoryPair.isSome()) {
+    AddEntry(ProfileBufferEntry::CategoryPair(int(*aCategoryPair)));
   }
 }
 
-void
-ProfileBuffer::DeleteExpiredStoredMarkers()
-{
+void ProfileBuffer::DeleteExpiredStoredMarkers() {
+  AUTO_PROFILER_STATS(gecko_ProfileBuffer_DeleteExpiredStoredMarkers);
+
   // Delete markers of samples that have been overwritten due to circular
   // buffer wraparound.
   while (mStoredMarkers.peek() &&
@@ -110,9 +98,8 @@ ProfileBuffer::DeleteExpiredStoredMarkers()
   }
 }
 
-size_t
-ProfileBuffer::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
-{
+size_t ProfileBuffer::SizeOfIncludingThis(
+    mozilla::MallocSizeOf aMallocSizeOf) const {
   size_t n = aMallocSizeOf(this);
   n += aMallocSizeOf(mEntries.get());
 
@@ -124,49 +111,81 @@ ProfileBuffer::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
   return n;
 }
 
-/* ProfileBufferCollector */
+void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
+                                         TimeDuration aLocking,
+                                         TimeDuration aCleaning,
+                                         TimeDuration aCounters,
+                                         TimeDuration aThreads) {
+  double time = aSamplingTime.ToMilliseconds() * 1000.0;
+  if (mFirstSamplingTimeNs == 0.0) {
+    mFirstSamplingTimeNs = time;
+  } else {
+    // Note that we'll have 1 fewer interval than other numbers (because
+    // we need both ends of an interval to know its duration). The final
+    // difference should be insignificant over the expected many thousands
+    // of iterations.
+    mIntervalsNs.Count(time - mLastSamplingTimeNs);
+  }
+  mLastSamplingTimeNs = time;
+  double locking = aLocking.ToMilliseconds() * 1000.0;
+  double cleaning = aCleaning.ToMilliseconds() * 1000.0;
+  double counters = aCounters.ToMilliseconds() * 1000.0;
+  double threads = aThreads.ToMilliseconds() * 1000.0;
 
-static bool
-IsChromeJSScript(JSScript* aScript)
-{
-  // WARNING: this function runs within the profiler's "critical section".
-  auto compartment = js::GetScriptCompartment(aScript);
-  return js::IsSystemCompartment(compartment);
+  mOverheadsNs.Count(locking + cleaning + counters + threads);
+  mLockingsNs.Count(locking);
+  mCleaningsNs.Count(cleaning);
+  mCountersNs.Count(counters);
+  mThreadsNs.Count(threads);
+
+  AddEntry(ProfileBufferEntry::ProfilerOverheadTime(time));
+  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(locking));
+  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(cleaning));
+  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(counters));
+  AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(threads));
 }
 
-void
-ProfileBufferCollector::CollectNativeLeafAddr(void* aAddr)
-{
+ProfilerBufferInfo ProfileBuffer::GetProfilerBufferInfo() const {
+  return {mRangeStart,  mRangeEnd,    mEntryIndexMask.MaskValue() + 1,
+          mIntervalsNs, mOverheadsNs, mLockingsNs,
+          mCleaningsNs, mCountersNs,  mThreadsNs};
+}
+
+/* ProfileBufferCollector */
+
+static bool IsChromeJSScript(JSScript* aScript) {
+  // WARNING: this function runs within the profiler's "critical section".
+  auto realm = js::GetScriptRealm(aScript);
+  return js::IsSystemRealm(realm);
+}
+
+void ProfileBufferCollector::CollectNativeLeafAddr(void* aAddr) {
   mBuf.AddEntry(ProfileBufferEntry::NativeLeafAddr(aAddr));
 }
 
-void
-ProfileBufferCollector::CollectJitReturnAddr(void* aAddr)
-{
+void ProfileBufferCollector::CollectJitReturnAddr(void* aAddr) {
   mBuf.AddEntry(ProfileBufferEntry::JitReturnAddr(aAddr));
 }
 
-void
-ProfileBufferCollector::CollectWasmFrame(const char* aLabel)
-{
-  mBuf.CollectCodeLocation("", aLabel, -1, Nothing());
+void ProfileBufferCollector::CollectWasmFrame(const char* aLabel) {
+  mBuf.CollectCodeLocation("", aLabel, 0, Nothing(), Nothing(), Nothing());
 }
 
-void
-ProfileBufferCollector::CollectPseudoEntry(const js::ProfileEntry& aEntry)
-{
+void ProfileBufferCollector::CollectProfilingStackFrame(
+    const js::ProfilingStackFrame& aFrame) {
   // WARNING: this function runs within the profiler's "critical section".
 
-  MOZ_ASSERT(aEntry.kind() == js::ProfileEntry::Kind::CPP_NORMAL ||
-             aEntry.kind() == js::ProfileEntry::Kind::JS_NORMAL);
+  MOZ_ASSERT(aFrame.isLabelFrame() ||
+             (aFrame.isJsFrame() && !aFrame.isOSRFrame()));
 
-  const char* label = aEntry.label();
-  const char* dynamicString = aEntry.dynamicString();
+  const char* label = aFrame.label();
+  const char* dynamicString = aFrame.dynamicString();
   bool isChromeJSEntry = false;
-  int lineno = -1;
+  Maybe<uint32_t> line;
+  Maybe<uint32_t> column;
 
-  if (aEntry.isJs()) {
-    // There are two kinds of JS frames that get pushed onto the PseudoStack.
+  if (aFrame.isJsFrame()) {
+    // There are two kinds of JS frames that get pushed onto the ProfilingStack.
     //
     // - label = "", dynamic string = <something>
     // - label = "js::RunScript", dynamic string = nullptr
@@ -176,12 +195,14 @@ ProfileBufferCollector::CollectPseudoEntry(const js::ProfileEntry& aEntry)
     if (label[0] == '\0') {
       MOZ_ASSERT(dynamicString);
 
-      // We call aEntry.script() repeatedly -- rather than storing the result in
+      // We call aFrame.script() repeatedly -- rather than storing the result in
       // a local variable in order -- to avoid rooting hazards.
-      if (aEntry.script()) {
-        isChromeJSEntry = IsChromeJSScript(aEntry.script());
-        if (aEntry.pc()) {
-          lineno = JS_PCToLineNumber(aEntry.script(), aEntry.pc());
+      if (aFrame.script()) {
+        isChromeJSEntry = IsChromeJSScript(aFrame.script());
+        if (aFrame.pc()) {
+          unsigned col = 0;
+          line = Some(JS_PCToLineNumber(aFrame.script(), aFrame.pc(), &col));
+          column = Some(col);
         }
       }
 
@@ -189,8 +210,7 @@ ProfileBufferCollector::CollectPseudoEntry(const js::ProfileEntry& aEntry)
       MOZ_ASSERT(strcmp(label, "js::RunScript") == 0 && !dynamicString);
     }
   } else {
-    MOZ_ASSERT(aEntry.isCpp());
-    lineno = aEntry.line();
+    MOZ_ASSERT(aFrame.isLabelFrame());
   }
 
   if (dynamicString) {
@@ -202,6 +222,6 @@ ProfileBufferCollector::CollectPseudoEntry(const js::ProfileEntry& aEntry)
     }
   }
 
-  mBuf.CollectCodeLocation(label, dynamicString, lineno,
-                           Some(aEntry.category()));
+  mBuf.CollectCodeLocation(label, dynamicString, aFrame.flags(), line, column,
+                           Some(aFrame.categoryPair()));
 }

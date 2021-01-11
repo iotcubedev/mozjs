@@ -13,16 +13,16 @@ if [ -f /etc/lsb-release ]; then
     # shellcheck disable=SC1091
     . /etc/lsb-release
 
-    if [ "${DISTRIB_ID}" = "Ubuntu" ] && [[ "${DISTRIB_RELEASE}" = "16.04" || "${DISTRIB_RELEASE}" = "17.10" ]]
+    if [ "${DISTRIB_ID}" = "Ubuntu" ] && [[ "${DISTRIB_RELEASE}" = "16.04" || "${DISTRIB_RELEASE}" = "17.10" || "${DISTRIB_RELEASE}" = "18.04" ]]
     then
         HG_DEB=1
-        HG_DIGEST=458746bd82b4732c72c611f1041f77a47a683bc75ff3f6ab7ed86ea394f48d94cd7e2d3d1d5b020906318a9a24bea27401a3a63d7e645514dbc2cb581621977f
-        HG_SIZE=193710
-        HG_FILENAME=mercurial_4.4.2_amd64.deb
+        HG_DIGEST=54a215232a340139707a968b58943c2903a8297f0da32f96622d1acab47de6013a5b96d2ca4ba241b1fee142b4098a6cdd236b308a1657c31f42807d7385d327
+        HG_SIZE=278440
+        HG_FILENAME=mercurial_4.8.1_amd64.deb
 
-        HG_COMMON_DIGEST=8074efbfff974f0bbdd0c3be3d272cc7a634456921e04db31369fbec1c9256ddaf44bdbe120f6f33113d2be9324a1537048028ebaaf205c6659e476a757358fd
-        HG_COMMON_SIZE=2097892
-        HG_COMMON_FILENAME=mercurial-common_4.4.2_all.deb
+        HG_COMMON_DIGEST=5577fec8d0f6643d17751b3f6be76b0c2bb888ae1920a8b085245e05110e3d5cfe1c4e9d51e334ab0dd0865fe553c63c704e72852e00b71eb668980cb6b33fa4
+        HG_COMMON_SIZE=2439436
+        HG_COMMON_FILENAME=mercurial-common_4.8.1_all.deb
     elif [ "${DISTRIB_ID}" = "Ubuntu" ] && [ "${DISTRIB_RELEASE}" = "12.04" ]
     then
         echo "Ubuntu 12.04 not supported"
@@ -88,7 +88,7 @@ tooltool_fetch <<EOF
 ]
 EOF
 
-    dpkg -i ${HG_COMMON_FILENAME} ${HG_FILENAME}
+    dpkg -i --auto-deconfigure ${HG_COMMON_FILENAME} ${HG_FILENAME}
 elif [ -n "${HG_RPM}" ]; then
 tooltool_fetch <<EOF
 [
@@ -106,15 +106,15 @@ elif [ -n "${PIP_PATH}" ]; then
 tooltool_fetch <<EOF
 [
   {
-    "size": 5647013,
-    "digest": "3d1d103689eac4f50cc1005be44144b37d75ebfac3ff3b4fc90d6f41fbee46e107a168d04f2c366ce7cca2733ea4e5b5127df462af8e253f61a72f8938833993",
+    "size": 6869733,
+    "digest": "a4485c22f9bb0bb752bf42941f613cb3542c66cbec5d7d49be2090ac544f5dca0f476e4535a56e3f4f4f5fc02fb12739e6d1c7b407264fc2ba4b19b0230b9f93",
     "algorithm": "sha512",
-    "filename": "mercurial-4.4.2.tar.gz"
+    "filename": "mercurial-4.8.1.tar.gz"
   }
 ]
 EOF
 
-   ${PIP_PATH} install mercurial-4.4.2.tar.gz
+   ${PIP_PATH} install mercurial-4.8.1.tar.gz
 else
     echo "Do not know how to install Mercurial on this OS"
     exit 1

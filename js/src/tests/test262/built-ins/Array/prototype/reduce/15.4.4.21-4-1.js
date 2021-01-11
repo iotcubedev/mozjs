@@ -3,13 +3,12 @@
 
 /*---
 esid: sec-array.prototype.reduce
-es5id: 15.4.4.21-4-1
 description: Array.prototype.reduce throws TypeError if callbackfn is undefined
 ---*/
 
-  var arr = new Array(10);
+var arr = new Array(10);
 assert.throws(TypeError, function() {
-    arr.reduce();
+  arr.reduce();
 });
 
 reportCompare(0, 0);

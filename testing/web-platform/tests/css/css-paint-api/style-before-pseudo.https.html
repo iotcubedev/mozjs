@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html class="reftest-wait">
+<link rel="help" href="https://drafts.css-houdini.org/css-paint-api/">
 <link rel="match" href="style-before-pseudo-ref.html">
+<link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
 <style>
 div {
-    border-radius: 3px;
+    margin-left: 3px;
 }
 
 div::before {
@@ -13,7 +15,7 @@ div::before {
     color: rgba(0, 0, 0, 0);
 
     background-image: paint(geometry);
-    border-radius: 2px;
+    margin-left: 2px;
     --foo: bar;
 }
 </style>
@@ -28,11 +30,11 @@ registerPaint('geometry', class {
         return [
             '--bar',
             '--foo',
-            'border-top-left-radius',
+            'margin-left',
         ];
     }
     paint(ctx, geom, styleMap) {
-        const properties = styleMap.getProperties().sort();
+        const properties = [...styleMap.keys()].sort();
         var serializedStrings = [];
         for (let i = 0; i < properties.length; i++) {
             const value = styleMap.get(properties[i]);
@@ -48,7 +50,7 @@ registerPaint('geometry', class {
             ctx.strokeStyle = 'red';
         if (serializedStrings[1] != "--foo: [CSSUnparsedValue= bar]")
             ctx.strokeStyle = 'blue';
-        if (serializedStrings[2] != "border-top-left-radius: [CSSUnitValue=2px]")
+        if (serializedStrings[2] != "margin-left: [CSSUnitValue=2px]")
             ctx.strokeStyle = 'yellow';
         ctx.lineWidth = 4;
         ctx.strokeRect(0, 0, geom.width, geom.height);

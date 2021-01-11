@@ -12,13 +12,13 @@
 
 dictionary AnalyserOptions : AudioNodeOptions {
              unsigned long fftSize = 2048;
-             float         maxDecibels = -30;
-             float         minDecibels = -100;
-             float         smoothingTimeConstant = 0.8;
+             double        maxDecibels = -30;
+             double        minDecibels = -100;
+             double        smoothingTimeConstant = 0.8;
 };
 
 [Pref="dom.webaudio.enabled",
- Constructor(BaseAudioContext context, optional AnalyserOptions options)]
+ Constructor(BaseAudioContext context, optional AnalyserOptions options = {})]
 interface AnalyserNode : AudioNode {
 
     // Real-time frequency-domain data

@@ -15,43 +15,62 @@ namespace dom {
 // ClientSource, and ClientManager.  Currently it provides a common set
 // of code for handling activation and shutdown of IPC actors.
 template <typename ActorType>
-class ClientThing
-{
+class ClientThing {
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+  static const uint32_t kMagic1 = 0xC9FE2C9C;
+  static const uint32_t kMagic2 = 0x832072D4;
+#endif
+
   ActorType* mActor;
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+  uint32_t mMagic1;
+  uint32_t mMagic2;
+#endif
   bool mShutdown;
 
-protected:
+ protected:
   ClientThing()
-    : mActor(nullptr)
-    , mShutdown(false)
-  {
+      : mActor(nullptr)
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+        ,
+        mMagic1(kMagic1),
+        mMagic2(kMagic2)
+#endif
+        ,
+        mShutdown(false) {
   }
 
-  ~ClientThing()
-  {
+  ~ClientThing() {
+    AssertIsValid();
     ShutdownThing();
+#ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
+    mMagic1 = 0;
+    mMagic2 = 0;
+#endif
+  }
+
+  void AssertIsValid() const {
+    MOZ_DIAGNOSTIC_ASSERT(mMagic1 == kMagic1);
+    MOZ_DIAGNOSTIC_ASSERT(mMagic2 == kMagic2);
   }
 
   // Return the current actor.
-  ActorType*
-  GetActor() const
-  {
+  ActorType* GetActor() const {
+    AssertIsValid();
     return mActor;
   }
 
   // Returns true if ShutdownThing() has been called.
-  bool
-  IsShutdown() const
-  {
+  bool IsShutdown() const {
+    AssertIsValid();
     return mShutdown;
   }
 
   // Conditionally execute the given callable based on the current state.
-  template<typename Callable>
-  void
-  MaybeExecute(const Callable& aSuccess,
-               const std::function<void()>& aFailure = []{})
-  {
+  template <typename Callable>
+  void MaybeExecute(
+      const Callable& aSuccess, const std::function<void()>& aFailure = [] {}) {
+    AssertIsValid();
     if (mShutdown) {
       aFailure();
       return;
@@ -64,9 +83,8 @@ protected:
   // will make the thing register as the actor's owner as well.  The actor
   // must call RevokeActor() to clear this weak back reference before its
   // destroyed.
-  void
-  ActivateThing(ActorType* aActor)
-  {
+  void ActivateThing(ActorType* aActor) {
+    AssertIsValid();
     MOZ_DIAGNOSTIC_ASSERT(aActor);
     MOZ_DIAGNOSTIC_ASSERT(!mActor);
     MOZ_DIAGNOSTIC_ASSERT(!mShutdown);
@@ -75,9 +93,8 @@ protected:
   }
 
   // Start destroying the underlying actor and disconnect the thing.
-  void
-  ShutdownThing()
-  {
+  void ShutdownThing() {
+    AssertIsValid();
     if (mShutdown) {
       return;
     }
@@ -95,17 +112,14 @@ protected:
   }
 
   // Allow extending classes to take action when shutdown.
-  virtual void
-  OnShutdownThing()
-  {
+  virtual void OnShutdownThing() {
     // by default do nothing
   }
 
-public:
+ public:
   // Clear the weak references between the thing and its IPC actor.
-  void
-  RevokeActor(ActorType* aActor)
-  {
+  void RevokeActor(ActorType* aActor) {
+    AssertIsValid();
     MOZ_DIAGNOSTIC_ASSERT(mActor);
     MOZ_DIAGNOSTIC_ASSERT(mActor == aActor);
     mActor->RevokeOwner(this);
@@ -120,7 +134,7 @@ public:
   }
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // _mozilla_dom_ClientThing_h
+#endif  // _mozilla_dom_ClientThing_h

@@ -1,19 +1,17 @@
 # coding=utf8
 from __future__ import unicode_literals
+from __future__ import absolute_import
 
 import os
 import codecs
+from functools import partial
 import logging
-
-try:
-    from itertools import zip_longest
-except ImportError:
-    from itertools import izip_longest as zip_longest
+from six.moves import zip_longest
 
 import fluent.syntax.ast as FTL
 from fluent.syntax.parser import FluentParser
 from fluent.syntax.serializer import FluentSerializer
-from fluent.util import fold
+from fluent.migrate.util import fold
 from compare_locales.parser import getParser
 from compare_locales.plurals import CATEGORIES_BY_LOCALE
 
@@ -21,7 +19,9 @@ from .transforms import Source
 from .merge import merge_resource
 from .util import get_message
 from .errors import (
-    EmptyLocalizationError, NotSupportedError, UnreadableReferenceError)
+    EmptyLocalizationError,
+    UnreadableReferenceError,
+)
 
 
 class MergeContext(object):
@@ -41,10 +41,10 @@ class MergeContext(object):
           language.  The translations from these files will be transformed
           into FTL and merged into the existing FTL files for this language.
 
-        - A list of `FTL.Message` objects some of whose nodes are special
-          helper or transform nodes:
+        - A list of `FTL.Message` or `FTL.Term` objects some of whose nodes
+          are special helper or transform nodes:
 
-              helpers: EXTERNAL_ARGUMENT, MESSAGE_REFERENCE
+              helpers: VARIABLE_REFERENCE, MESSAGE_REFERENCE, TERM_REFERENCE
               transforms: COPY, REPLACE_IN_TEXT, REPLACE, PLURALS, CONCAT
     """
 
@@ -56,8 +56,11 @@ class MergeContext(object):
         # language.  E.g. ('one', 'other') for English.
         try:
             self.plural_categories = CATEGORIES_BY_LOCALE[lang]
-        except IndexError as e:
-            logging.getLogger('migrate').warn(e)
+        except KeyError as locale_key:
+            logger = logging.getLogger('migrate')
+            logger.warning(
+                'Plural rule for "{}" is not defined in '
+                'compare-locales'.format(locale_key))
             self.plural_categories = ('one', 'other')
 
         # Paths to directories with input data, relative to CWD.
@@ -67,6 +70,7 @@ class MergeContext(object):
         # Parsed input resources stored by resource path.
         self.reference_resources = {}
         self.localization_resources = {}
+        self.target_resources = {}
 
         # An iterable of `FTL.Message` objects some of whose nodes can be the
         # transform operations.
@@ -84,7 +88,7 @@ class MergeContext(object):
             contents = f.read()
         except UnicodeDecodeError as err:
             logger = logging.getLogger('migrate')
-            logger.warn('Unable to read file {}: {}'.format(path, err))
+            logger.warning('Unable to read file {}: {}'.format(path, err))
             raise err
         finally:
             f.close()
@@ -94,6 +98,7 @@ class MergeContext(object):
         annots = [
             annot
             for entry in ast.body
+            if isinstance(entry, FTL.Junk)
             for annot in entry.annotations
         ]
 
@@ -101,7 +106,7 @@ class MergeContext(object):
             logger = logging.getLogger('migrate')
             for annot in annots:
                 msg = annot.message
-                logger.warn('Syntax error in {}: {}'.format(path, msg))
+                logger.warning('Syntax error in {}: {}'.format(path, msg))
 
         return ast
 
@@ -121,7 +126,7 @@ class MergeContext(object):
         fullpath = os.path.join(self.reference_dir, path)
         try:
             return self.read_ftl_resource(fullpath)
-        except IOError as err:
+        except IOError:
             error_message = 'Missing reference file: {}'.format(fullpath)
             logging.getLogger('migrate').error(error_message)
             raise UnreadableReferenceError(error_message)
@@ -147,7 +152,7 @@ class MergeContext(object):
             return FTL.Resource()
         except UnicodeDecodeError:
             logger = logging.getLogger('migrate')
-            logger.warn(
+            logger.warning(
                 'Localization file {} has broken encoding. '
                 'It will be re-created and some translations '
                 'may be lost'.format(path))
@@ -156,25 +161,19 @@ class MergeContext(object):
     def maybe_add_localization(self, path):
         """Add a localization resource to migrate translations from.
 
-        Only legacy resources can be added as migration sources.  The resource
-        may be missing on disk.
-
         Uses a compare-locales parser to create a dict of (key, string value)
         tuples.
+        For Fluent sources, we store the AST.
         """
-        if path.endswith('.ftl'):
-            error_message = (
-                'Migrating translations from Fluent files is not supported '
-                '({})'.format(path))
-            logging.getLogger('migrate').error(error_message)
-            raise NotSupportedError(error_message)
-
         try:
             fullpath = os.path.join(self.localization_dir, path)
-            collection = self.read_legacy_resource(fullpath)
+            if not fullpath.endswith('.ftl'):
+                collection = self.read_legacy_resource(fullpath)
+            else:
+                collection = self.read_ftl_resource(fullpath)
         except IOError:
             logger = logging.getLogger('migrate')
-            logger.warn('Missing localization file: {}'.format(path))
+            logger.warning('Missing localization file: {}'.format(path))
         else:
             self.localization_resources[path] = collection
 
@@ -213,7 +212,7 @@ class MergeContext(object):
             # it doesn't, it's probably a typo.
             if get_message(reference_ast.body, ident) is None:
                 logger = logging.getLogger('migrate')
-                logger.warn(
+                logger.warning(
                     '{} "{}" was not found in {}'.format(
                         type(node).__name__, ident, reference))
 
@@ -241,17 +240,40 @@ class MergeContext(object):
         path_transforms = self.transforms.setdefault(target, [])
         path_transforms += transforms
 
-        if target not in self.localization_resources:
+        if target not in self.target_resources:
             target_ast = self.read_localization_ftl(target)
-            self.localization_resources[target] = target_ast
+            self.target_resources[target] = target_ast
 
-    def get_source(self, path, key):
+    def get_legacy_source(self, path, key):
         """Get an entity value from a localized legacy source.
 
         Used by the `Source` transform.
         """
         resource = self.localization_resources[path]
         return resource.get(key, None)
+
+    def get_fluent_source_pattern(self, path, key):
+        """Get a pattern from a localized Fluent source.
+
+        If the key contains a `.`, does an attribute lookup.
+        Used by the `COPY_PATTERN` transform.
+        """
+        resource = self.localization_resources[path]
+        msg_key, _, attr_key = key.partition('.')
+        found = None
+        for entry in resource.body:
+            if isinstance(entry, (FTL.Message, FTL.Term)):
+                if entry.id.name == msg_key:
+                    found = entry
+                    break
+        if found is None:
+            return None
+        if not attr_key:
+            return found.value
+        for attribute in found.attributes:
+            if attribute.id.name == attr_key:
+                return attribute.value
+        return None
 
     def messages_equal(self, res1, res2):
         """Compare messages and terms of two FTL resources.
@@ -290,11 +312,8 @@ class MergeContext(object):
         all legacy translations will be allowed to be migrated in a single
         changeset.
 
-        The inner `in_changeset` function is used to determine if a message
-        should be migrated for the given changeset. It compares the legacy
-        dependencies of the transform defined for the message with legacy
-        translations available in the changeset. If all dependencies are
-        present, the message will be migrated.
+        We use the `in_changeset` method to determine if a message should be
+        migrated for the given changeset.
 
         Given `changeset`, return a dict whose keys are resource paths and
         values are `FTL.Resource` instances.  The values will also be used to
@@ -305,53 +324,19 @@ class MergeContext(object):
             # Merge all known legacy translations. Used in tests.
             changeset = {
                 (path, key)
-                for path, strings in self.localization_resources.iteritems()
+                for path, strings in self.localization_resources.items()
                 if not path.endswith('.ftl')
-                for key in strings.iterkeys()
+                for key in strings.keys()
             }
 
         if known_translations is None:
             known_translations = changeset
 
-        for path, reference in self.reference_resources.iteritems():
-            current = self.localization_resources[path]
+        for path, reference in self.reference_resources.items():
+            current = self.target_resources[path]
             transforms = self.transforms.get(path, [])
-
-            def in_changeset(ident):
-                """Check if a message should be migrated.
-
-                A message will be migrated only if all of its dependencies
-                are present in the currently processed changeset.
-
-                If a transform defined for this message points to a missing
-                legacy translation, this message will not be merged. The
-                missing legacy dependency won't be present in the changeset.
-
-                This also means that partially translated messages (e.g.
-                constructed from two legacy strings out of which only one is
-                avaiable) will never be migrated.
-                """
-                message_deps = self.dependencies.get((path, ident), None)
-
-                # Don't merge if we don't have a transform for this message.
-                if message_deps is None:
-                    return False
-
-                # As a special case, if a transform exists but has no
-                # dependecies, it's a hardcoded `FTL.Node` which doesn't
-                # migrate any existing translation but rather creates a new
-                # one.  Merge it.
-                if len(message_deps) == 0:
-                    return True
-
-                # Make sure all the dependencies are present in the current
-                # changeset. Partial migrations are not currently supported.
-                # See https://bugzilla.mozilla.org/show_bug.cgi?id=1321271
-                # We only return True if our current changeset touches
-                # the transform, and we have all of the dependencies.
-                active_deps = message_deps & changeset
-                available_deps = message_deps & known_translations
-                return active_deps and message_deps == available_deps
+            in_changeset = partial(
+                self.in_changeset, changeset, known_translations, path)
 
             # Merge legacy translations with the existing ones using the
             # reference as a template.
@@ -371,10 +356,49 @@ class MergeContext(object):
 
             # Store the merged snapshot on the context so that the next merge
             # already takes it into account as the existing localization.
-            self.localization_resources[path] = snapshot
+            self.target_resources[path] = snapshot
 
             # The result for this path is a complete `FTL.Resource`.
             yield path, snapshot
+
+    def in_changeset(self, changeset, known_translations, path, ident):
+        """Check if a message should be migrated in this changeset.
+
+        The message is identified by path and ident.
+
+
+        A message will be migrated only if all of its dependencies
+        are present in the currently processed changeset.
+
+        If a transform defined for this message points to a missing
+        legacy translation, this message will not be merged. The
+        missing legacy dependency won't be present in the changeset.
+
+        This also means that partially translated messages (e.g.
+        constructed from two legacy strings out of which only one is
+        avaiable) will never be migrated.
+        """
+        message_deps = self.dependencies.get((path, ident), None)
+
+        # Don't merge if we don't have a transform for this message.
+        if message_deps is None:
+            return False
+
+        # As a special case, if a transform exists but has no
+        # dependecies, it's a hardcoded `FTL.Node` which doesn't
+        # migrate any existing translation but rather creates a new
+        # one.  Merge it.
+        if len(message_deps) == 0:
+            return True
+
+        # Make sure all the dependencies are present in the current
+        # changeset. Partial migrations are not currently supported.
+        # See https://bugzilla.mozilla.org/show_bug.cgi?id=1321271
+        # We only return True if our current changeset touches
+        # the transform, and we have all of the dependencies.
+        active_deps = message_deps & changeset
+        available_deps = message_deps & known_translations
+        return active_deps and message_deps == available_deps
 
     def serialize_changeset(self, changeset, known_translations=None):
         """Return a dict of serialized FTLs for the changeset.

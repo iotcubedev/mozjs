@@ -13,9 +13,7 @@
 namespace mozilla {
 namespace net {
 
-already_AddRefed<nsIEventTarget>
-NeckoTargetHolder::GetNeckoTarget()
-{
+already_AddRefed<nsIEventTarget> NeckoTargetHolder::GetNeckoTarget() {
   nsCOMPtr<nsIEventTarget> target = mNeckoTarget;
 
   if (!target) {
@@ -24,19 +22,17 @@ NeckoTargetHolder::GetNeckoTarget()
   return target.forget();
 }
 
-nsresult
-NeckoTargetHolder::Dispatch(already_AddRefed<nsIRunnable>&& aRunnable,
-                            uint32_t aDispatchFlags)
-{
+nsresult NeckoTargetHolder::Dispatch(already_AddRefed<nsIRunnable>&& aRunnable,
+                                     uint32_t aDispatchFlags) {
   if (mNeckoTarget) {
-    return mNeckoTarget->Dispatch(Move(aRunnable), aDispatchFlags);
+    return mNeckoTarget->Dispatch(std::move(aRunnable), aDispatchFlags);
   }
 
   nsCOMPtr<nsIEventTarget> mainThreadTarget = GetMainThreadEventTarget();
   MOZ_ASSERT(mainThreadTarget);
 
-  return mainThreadTarget->Dispatch(Move(aRunnable), aDispatchFlags);
+  return mainThreadTarget->Dispatch(std::move(aRunnable), aDispatchFlags);
 }
 
-} // namespace net
-} // namespace mozilla
+}  // namespace net
+}  // namespace mozilla

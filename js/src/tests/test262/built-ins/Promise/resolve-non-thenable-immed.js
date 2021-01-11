@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2016 the V8 project authors. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -22,7 +23,9 @@ flags: [async]
 ---*/
 
 var returnValue = null;
-var nonThenable = { then: null };
+var nonThenable = {
+  then: null
+};
 var promise = new Promise(function(resolve) {
   returnValue = resolve(nonThenable);
 });
@@ -30,12 +33,12 @@ var promise = new Promise(function(resolve) {
 assert.sameValue(returnValue, undefined, '"resolve" return value');
 
 promise.then(function(value) {
-    if (value !== nonThenable) {
-      $DONE('The promise should be fulfilled with the provided value.');
-      return;
-    }
+  if (value !== nonThenable) {
+    $DONE('The promise should be fulfilled with the provided value.');
+    return;
+  }
 
-    $DONE();
-  }, function() {
-    $DONE('The promise should not be rejected.');
-  });
+  $DONE();
+}, function() {
+  $DONE('The promise should not be rejected.');
+});

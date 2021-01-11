@@ -11,10 +11,11 @@ locally, so they should be limited to changes that do not modify the meaning of
 the graph.
 """
 
-# Note that the translation of `{'task-reference': '..'}` is handled in the
-# optimization phase (since optimization involves dealing with taskIds
-# directly).  Similarly, `{'relative-datestamp': '..'}` is handled at the last
-# possible moment during task creation.
+# Note that the translation of `{'task-reference': '..'}` and
+# `artifact-reference` are handled in the optimization phase (since
+# optimization involves dealing with taskIds directly).  Similarly,
+# `{'relative-datestamp': '..'}` is handled at the last possible moment during
+# task creation.
 
 from __future__ import absolute_import, print_function, unicode_literals
 
@@ -23,11 +24,11 @@ import os
 import re
 
 import jsone
-import yaml
 from slugid import nice as slugid
 from .task import Task
 from .graph import Graph
 from .taskgraph import TaskGraph
+from .util.yaml import load_yaml
 
 here = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ MAX_ROUTES = 10
 def amend_taskgraph(taskgraph, label_to_taskid, to_add):
     """Add the given tasks to the taskgraph, returning a new taskgraph"""
     new_tasks = taskgraph.tasks.copy()
-    new_edges = taskgraph.graph.edges.copy()
+    new_edges = set(taskgraph.graph.edges)
     for task in to_add:
         new_tasks[task.task_id] = task
         assert task.label not in label_to_taskid
@@ -83,7 +84,7 @@ def derive_misc_task(task, purpose, image, taskgraph, label_to_taskid):
                 'taskclusterProxy': True,
             },
             'maxRunTime': 600,
-        }
+        },
     }
 
     # only include the docker-image dependency here if it is actually in the
@@ -103,10 +104,9 @@ def derive_misc_task(task, purpose, image, taskgraph, label_to_taskid):
 # scope, allowing them to be summarized.  Each should correspond to a star scope
 # in each Gecko `assume:repo:hg.mozilla.org/...` role.
 SCOPE_SUMMARY_REGEXPS = [
-    re.compile(r'(index:insert-task:buildbot\.branches\.[^.]*\.).*'),
-    re.compile(r'(index:insert-task:buildbot\.revisions\.).*'),
     re.compile(r'(index:insert-task:docker\.images\.v1\.[^.]*\.).*'),
     re.compile(r'(index:insert-task:gecko\.v2\.[^.]*\.).*'),
+    re.compile(r'(index:insert-task:comm\.v2\.[^.]*\.).*'),
 ]
 
 
@@ -134,7 +134,10 @@ def make_index_task(parent_task, taskgraph, label_to_taskid):
     task.task['scopes'] = sorted(scopes)
 
     task.task['payload']['command'] = ['insert-indexes.js'] + index_paths
-    task.task['payload']['env'] = {"TARGET_TASKID": parent_task.task_id}
+    task.task['payload']['env'] = {
+        'TARGET_TASKID': parent_task.task_id,
+        'INDEX_RANK': parent_task.task.get('extra', {}).get('index', {}).get('rank', 0),
+    }
     return task
 
 
@@ -158,90 +161,6 @@ def add_index_tasks(taskgraph, label_to_taskid):
             taskgraph, label_to_taskid, added)
         logger.info('Added {} index tasks'.format(len(added)))
 
-    return taskgraph, label_to_taskid
-
-
-def make_s3_uploader_task(parent_task):
-    if parent_task.task['payload']['sourcestamp']['branch'] == 'try':
-        worker_type = 'buildbot-try'
-    else:
-        worker_type = 'buildbot'
-
-    task_def = {
-        # The null-provisioner and buildbot worker type don't actually exist.
-        # So this task doesn't actually run - we just need to create the task so
-        # we have something to attach artifacts to.
-        "provisionerId": "null-provisioner",
-        "workerType": worker_type,
-        "created": {'relative-datestamp': '0 seconds'},
-        "deadline": parent_task.task['deadline'],
-        "routes": parent_task.task['routes'],
-        "payload": {},
-        "extra": {
-            "index": {
-                "rank": 1493912914,
-            }
-        },
-        "metadata": {
-            "name": "Buildbot/mozharness S3 uploader",
-            "description": "Upload outputs of buildbot/mozharness builds to S3",
-            "owner": "mshal@mozilla.com",
-            "source": "http://hg.mozilla.org/build/mozharness/",
-        }
-    }
-    parent_task.task['routes'] = []
-    label = 's3-uploader-{}'.format(parent_task.label)
-    dependencies = {}
-    task = Task(kind='misc', label=label, attributes={}, task=task_def,
-                dependencies=dependencies)
-    task.task_id = parent_task.task['payload']['properties']['upload_to_task_id']
-    return task
-
-
-def update_test_tasks(taskid, build_taskid, taskgraph):
-    """Tests task must download artifacts from uploader task."""
-    # Notice we handle buildbot-bridge, native, and generic-worker payloads
-    # We can do better here in terms of graph searching
-    # We could do post order search and stop as soon as we
-    # reach the build task. Not worring about it because this is
-    # (supposed to be) a temporary solution.
-    for task in taskgraph.tasks.itervalues():
-        if build_taskid in task.task.get('dependencies', []):
-            payload = task.task['payload']
-            task.task['dependencies'].append(taskid)
-            taskgraph.graph.edges.add((task.task_id, taskid, 'uploader'))
-            if 'command' in payload:
-                try:
-                    payload['command'] = [
-                        cmd.replace(build_taskid, taskid) for cmd in payload['command']
-                    ]
-                except AttributeError:
-                    # generic-worker command attribute is an list of lists
-                    payload['command'] = [
-                        [cmd.replace(build_taskid, taskid) for cmd in x]
-                        for x in payload['command']
-                    ]
-            if 'mounts' in payload:
-                for mount in payload['mounts']:
-                    if mount.get('content', {}).get('taskId', '') == build_taskid:
-                        mount['content']['taskId'] = taskid
-            if 'env' in payload:
-                payload['env'] = {
-                    k: v.replace(build_taskid, taskid) for k, v in payload['env'].iteritems()
-                }
-            if 'properties' in payload:
-                payload['properties']['parent_task_id'] = taskid
-
-
-def add_s3_uploader_task(taskgraph, label_to_taskid):
-    """The S3 uploader task is used by mozharness to upload buildbot artifacts."""
-    for task in taskgraph.tasks.itervalues():
-        if 'upload_to_task_id' in task.task.get('payload', {}).get('properties', {}):
-            added = make_s3_uploader_task(task)
-            taskgraph, label_to_taskid = amend_taskgraph(
-                taskgraph, label_to_taskid, [added])
-            update_test_tasks(added.task_id, task.task_id, taskgraph)
-            logger.info('Added s3-uploader task for %s' % task.task_id)
     return taskgraph, label_to_taskid
 
 
@@ -275,9 +194,7 @@ class apply_jsone_templates(object):
                     'target_tasks': self.target_tasks,
                 }
 
-                template_path = os.path.join(self.template_dir, template + '.yml')
-                with open(template_path) as f:
-                    template = yaml.load(f)
+                template = load_yaml(self.template_dir, template + '.yml')
                 result = jsone.render(template, context) or {}
                 for attr in ('task', 'attributes'):
                     if attr in result:
@@ -290,7 +207,6 @@ def morph(taskgraph, label_to_taskid, parameters):
     """Apply all morphs"""
     morphs = [
         add_index_tasks,
-        add_s3_uploader_task,
     ]
     if parameters['try_mode'] == 'try_task_config':
         morphs.append(apply_jsone_templates(parameters['try_task_config']))

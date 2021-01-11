@@ -11,6 +11,9 @@
 #include "DanglingOnTemporaryChecker.h"
 #include "ExplicitImplicitChecker.h"
 #include "ExplicitOperatorBoolChecker.h"
+#ifdef _WIN32
+#include "LoadLibraryUsageChecker.h"
+#endif
 #include "KungFuDeathGripChecker.h"
 #include "MustOverrideChecker.h"
 #include "MustReturnFromCallerChecker.h"
@@ -32,4 +35,5 @@
 #include "ScopeChecker.h"
 #include "SprintfLiteralChecker.h"
 #include "TrivialCtorDtorChecker.h"
+#include "TrivialDtorChecker.h"
 

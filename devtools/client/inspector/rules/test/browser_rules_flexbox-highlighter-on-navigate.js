@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -17,21 +16,21 @@ const TEST_URI = `
 
 const TEST_URI_2 = "data:text/html,<html><body>test</body></html>";
 
-add_task(function* () {
-  yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  let {inspector, view} = yield openRuleView();
-  let {highlighters} = view;
+add_task(async function() {
+  await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
+  const { inspector, view } = await openRuleView();
+  const { highlighters } = view;
 
-  yield selectNode("#flex", inspector);
-  let container = getRuleViewProperty(view, "#flex", "display").valueSpan;
-  let flexboxToggle = container.querySelector(".ruleview-flex");
+  await selectNode("#flex", inspector);
+  const container = getRuleViewProperty(view, "#flex", "display").valueSpan;
+  const flexboxToggle = container.querySelector(".ruleview-flex");
 
   info("Toggling ON the flexbox highlighter from the rule-view.");
-  let onHighlighterShown = highlighters.once("flexbox-highlighter-shown");
+  const onHighlighterShown = highlighters.once("flexbox-highlighter-shown");
   flexboxToggle.click();
-  yield onHighlighterShown;
+  await onHighlighterShown;
   ok(highlighters.flexboxHighlighterShown, "Flexbox highlighter is shown.");
 
-  yield navigateTo(inspector, TEST_URI_2);
+  await navigateTo(inspector, TEST_URI_2);
   ok(!highlighters.flexboxHighlighterShown, "Flexbox highlighter is hidden.");
 });

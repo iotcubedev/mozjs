@@ -7,29 +7,28 @@
 #ifndef mozilla_KeyframeUtils_h
 #define mozilla_KeyframeUtils_h
 
-#include "mozilla/KeyframeEffectParams.h" // For CompositeOperation
+#include "mozilla/KeyframeEffectParams.h"  // For CompositeOperation
 #include "nsCSSPropertyID.h"
-#include "nsTArrayForwardDeclare.h" // For nsTArray
-#include "js/RootingAPI.h" // For JS::Handle
+#include "nsTArrayForwardDeclare.h"  // For nsTArray
+#include "js/RootingAPI.h"           // For JS::Handle
 
 struct JSContext;
 class JSObject;
-class nsIDocument;
-class nsStyleContext;
+class ComputedStyle;
 struct RawServoDeclarationBlock;
 
 namespace mozilla {
 struct AnimationProperty;
-enum class CSSPseudoElementType : uint8_t;
+enum class PseudoStyleType : uint8_t;
 class ErrorResult;
 struct Keyframe;
 struct PropertyStyleAnimationValuePair;
 
 namespace dom {
+class Document;
 class Element;
-} // namespace dom
-} // namespace mozilla
-
+}  // namespace dom
+}  // namespace mozilla
 
 namespace mozilla {
 
@@ -40,9 +39,8 @@ using ComputedKeyframeValues = nsTArray<PropertyStyleAnimationValuePair>;
 /**
  * Utility methods for processing keyframes.
  */
-class KeyframeUtils
-{
-public:
+class KeyframeUtils {
+ public:
   /**
    * Converts a JS value representing a property-indexed keyframe or a sequence
    * of keyframes to an array of Keyframe objects.
@@ -57,17 +55,16 @@ public:
    *   filled-in with the appropriate error code and an empty array will be
    *   returned.
    */
-  static nsTArray<Keyframe>
-  GetKeyframesFromObject(JSContext* aCx,
-                         nsIDocument* aDocument,
-                         JS::Handle<JSObject*> aFrames,
-                         ErrorResult& aRv);
+  static nsTArray<Keyframe> GetKeyframesFromObject(
+      JSContext* aCx, dom::Document* aDocument, JS::Handle<JSObject*> aFrames,
+      ErrorResult& aRv);
 
   /**
    * Calculate the computed offset of keyframes by evenly distributing keyframes
    * with a missing offset.
    *
-   * @see https://drafts.csswg.org/web-animations/#calculating-computed-keyframes
+   * @see
+   * https://drafts.csswg.org/web-animations/#calculating-computed-keyframes
    *
    * @param aKeyframes The set of keyframes to adjust.
    */
@@ -81,20 +78,16 @@ public:
    *
    * @param aKeyframes The input keyframes.
    * @param aElement The context element.
-   * @param aStyleType The |ServoStyleContext| or |GeckoStyleContext| to use
-   *   when computing values.
+   * @param aStyle The computed style values.
    * @param aEffectComposite The composite operation specified on the effect.
    *   For any keyframes in |aKeyframes| that do not specify a composite
    *   operation, this value will be used.
    * @return The set of animation properties. If an error occurs, the returned
    *   array will be empty.
    */
-  template<typename StyleType>
   static nsTArray<AnimationProperty> GetAnimationPropertiesFromKeyframes(
-    const nsTArray<Keyframe>& aKeyframes,
-    dom::Element* aElement,
-    StyleType* aStyleType,
-    dom::CompositeOperation aEffectComposite);
+      const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
+      const ComputedStyle* aStyle, dom::CompositeOperation aEffectComposite);
 
   /**
    * Check if the property or, for shorthands, one or more of
@@ -105,10 +98,9 @@ public:
    *                  if the property is animatable or not.
    * @return true if |aProperty| is animatable.
    */
-  static bool IsAnimatableProperty(nsCSSPropertyID aProperty,
-                                   StyleBackendType aBackend);
+  static bool IsAnimatableProperty(nsCSSPropertyID aProperty);
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // mozilla_KeyframeUtils_h
+#endif  // mozilla_KeyframeUtils_h

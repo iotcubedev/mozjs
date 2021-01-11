@@ -1,3 +1,4 @@
+// |reftest| skip-if(!Array.hasOwnProperty("slice"))
 /* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -14,24 +15,6 @@ var voids = [null, undefined];
 function noop() { }
 
 var generics = {
-String: [{ substring: [] },
-{ toLowerCase: [] },
-{ toUpperCase: [] },
-{ charAt: [] },
-{ charCodeAt: [] },
-{ indexOf: [] },
-{ lastIndexOf: [] },
-{ toLocaleLowerCase: [] },
-{ toLocaleUpperCase: [] },
-{ localeCompare: [] },
-{ match: [/(?:)/] }, // match(regexp)
-{ search: [] },
-{ replace: [] },
-{ split: [] },
-{ substr: [] },
-{ concat: [] },
-{ slice: [] }],
-
   Array:  [{ join: [] },
 { reverse: [] },
 { sort: [] },

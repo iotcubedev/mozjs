@@ -12,22 +12,21 @@
 #include "mozilla/Mutex.h"
 
 #ifdef MOZILLA_INTERNAL_API
-#include "GeckoProfiler.h"
-#endif //MOZILLA_INTERNAL_API
+#  include "GeckoProfiler.h"
+#endif  // MOZILLA_INTERNAL_API
 
 namespace mozilla {
 
-
 /**
- * CondVar
- * Vanilla condition variable.  Please don't use this unless you have a
- * compelling reason --- Monitor provides a simpler API.
+ * Similarly to OffTheBooksMutex, OffTheBooksCondvar is identical to CondVar,
+ * except that OffTheBooksCondVar doesn't include leak checking.  Sometimes
+ * you want to intentionally "leak" a CondVar until shutdown; in these cases,
+ * OffTheBooksCondVar is for you.
  */
-class CondVar : BlockingResourceBase
-{
-public:
+class OffTheBooksCondVar : BlockingResourceBase {
+ public:
   /**
-   * CondVar
+   * OffTheBooksCondVar
    *
    * The CALLER owns |aLock|.
    *
@@ -37,50 +36,44 @@ public:
    *          If success, a valid Monitor* which must be destroyed
    *          by Monitor::DestroyMonitor()
    **/
-  CondVar(Mutex& aLock, const char* aName)
-    : BlockingResourceBase(aName, eCondVar)
-    , mLock(&aLock)
-  {
-    MOZ_COUNT_CTOR(CondVar);
-  }
+  OffTheBooksCondVar(OffTheBooksMutex& aLock, const char* aName)
+      : BlockingResourceBase(aName, eCondVar), mLock(&aLock) {}
 
   /**
-   * ~CondVar
-   * Clean up after this CondVar, but NOT its associated Mutex.
+   * ~OffTheBooksCondVar
+   * Clean up after this OffTheBooksCondVar, but NOT its associated Mutex.
    **/
-  ~CondVar()
-  {
-    MOZ_COUNT_DTOR(CondVar);
-  }
+  ~OffTheBooksCondVar() {}
 
-#ifndef DEBUG
   /**
    * Wait
    * @see prcvar.h
    **/
-  nsresult Wait(PRIntervalTime aInterval = PR_INTERVAL_NO_TIMEOUT)
-  {
-
-#ifdef MOZILLA_INTERNAL_API
+#ifndef DEBUG
+  void Wait() {
+#  ifdef MOZILLA_INTERNAL_API
     AUTO_PROFILER_THREAD_SLEEP;
-#endif //MOZILLA_INTERNAL_API
-    if (aInterval == PR_INTERVAL_NO_TIMEOUT) {
-      mImpl.wait(*mLock);
-    } else {
-      mImpl.wait_for(*mLock, TimeDuration::FromMilliseconds(double(aInterval)));
-    }
-    return NS_OK;
+#  endif  // MOZILLA_INTERNAL_API
+    mImpl.wait(*mLock);
+  }
+
+  CVStatus Wait(TimeDuration aDuration) {
+#  ifdef MOZILLA_INTERNAL_API
+    AUTO_PROFILER_THREAD_SLEEP;
+#  endif  // MOZILLA_INTERNAL_API
+    return mImpl.wait_for(*mLock, aDuration);
   }
 #else
-  nsresult Wait(PRIntervalTime aInterval = PR_INTERVAL_NO_TIMEOUT);
-#endif // ifndef DEBUG
+  // NOTE: debug impl is in BlockingResourceBase.cpp
+  void Wait();
+  CVStatus Wait(TimeDuration aDuration);
+#endif
 
   /**
    * Notify
    * @see prcvar.h
    **/
-  nsresult Notify()
-  {
+  nsresult Notify() {
     mImpl.notify_one();
     return NS_OK;
   }
@@ -89,8 +82,7 @@ public:
    * NotifyAll
    * @see prcvar.h
    **/
-  nsresult NotifyAll()
-  {
+  nsresult NotifyAll() {
     mImpl.notify_all();
     return NS_OK;
   }
@@ -100,17 +92,13 @@ public:
    * AssertCurrentThreadOwnsMutex
    * @see Mutex::AssertCurrentThreadOwns
    **/
-  void AssertCurrentThreadOwnsMutex()
-  {
-    mLock->AssertCurrentThreadOwns();
-  }
+  void AssertCurrentThreadOwnsMutex() { mLock->AssertCurrentThreadOwns(); }
 
   /**
    * AssertNotCurrentThreadOwnsMutex
    * @see Mutex::AssertNotCurrentThreadOwns
    **/
-  void AssertNotCurrentThreadOwnsMutex()
-  {
+  void AssertNotCurrentThreadOwnsMutex() {
     mLock->AssertNotCurrentThreadOwns();
   }
 
@@ -120,17 +108,35 @@ public:
 
 #endif  // ifdef DEBUG
 
-private:
-  CondVar();
-  CondVar(const CondVar&) = delete;
-  CondVar& operator=(const CondVar&) = delete;
+ private:
+  OffTheBooksCondVar();
+  OffTheBooksCondVar(const OffTheBooksCondVar&) = delete;
+  OffTheBooksCondVar& operator=(const OffTheBooksCondVar&) = delete;
 
-  Mutex* mLock;
+  OffTheBooksMutex* mLock;
   detail::ConditionVariableImpl mImpl;
 };
 
+/**
+ * CondVar
+ * Vanilla condition variable.  Please don't use this unless you have a
+ * compelling reason --- Monitor provides a simpler API.
+ */
+class CondVar : public OffTheBooksCondVar {
+ public:
+  CondVar(OffTheBooksMutex& aLock, const char* aName)
+      : OffTheBooksCondVar(aLock, aName) {
+    MOZ_COUNT_CTOR(CondVar);
+  }
 
-} // namespace mozilla
+  ~CondVar() { MOZ_COUNT_DTOR(CondVar); }
 
+ private:
+  CondVar();
+  CondVar(const CondVar&);
+  CondVar& operator=(const CondVar&);
+};
+
+}  // namespace mozilla
 
 #endif  // ifndef mozilla_CondVar_h

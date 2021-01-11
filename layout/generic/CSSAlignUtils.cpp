@@ -11,41 +11,37 @@
 
 namespace mozilla {
 
-static nscoord
-SpaceToFill(WritingMode aWM, const LogicalSize& aSize, nscoord aMargin,
-            LogicalAxis aAxis, nscoord aCBSize)
-{
-  nscoord size = aAxis == eLogicalAxisBlock ? aSize.BSize(aWM)
-                                            : aSize.ISize(aWM);
+static nscoord SpaceToFill(WritingMode aWM, const LogicalSize& aSize,
+                           nscoord aMargin, LogicalAxis aAxis,
+                           nscoord aCBSize) {
+  nscoord size = aSize.Size(aAxis, aWM);
   return aCBSize - (size + aMargin);
 }
 
-nscoord
-CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
-                                AlignJustifyFlags aFlags,
-                                nscoord aBaselineAdjust, nscoord aCBSize,
-                                const ReflowInput& aRI,
-                                const LogicalSize& aChildSize)
-{
+nscoord CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
+                                        AlignJustifyFlags aFlags,
+                                        nscoord aBaselineAdjust,
+                                        nscoord aCBSize, const ReflowInput& aRI,
+                                        const LogicalSize& aChildSize) {
   MOZ_ASSERT(aAlignment != NS_STYLE_ALIGN_AUTO,
              "auto values should have resolved already");
-  MOZ_ASSERT(aAlignment != NS_STYLE_ALIGN_LEFT &&
-             aAlignment != NS_STYLE_ALIGN_RIGHT,
-             "caller should map that to the corresponding START/END");
+  MOZ_ASSERT(
+      aAlignment != NS_STYLE_ALIGN_LEFT && aAlignment != NS_STYLE_ALIGN_RIGHT,
+      "caller should map that to the corresponding START/END");
 
   // Promote aFlags to convenience bools:
-  const bool isOverflowSafe = !!(aFlags & AlignJustifyFlags::eOverflowSafe);
-  const bool isSameSide = !!(aFlags & AlignJustifyFlags::eSameSide);
+  const bool isOverflowSafe = !!(aFlags & AlignJustifyFlags::OverflowSafe);
+  const bool isSameSide = !!(aFlags & AlignJustifyFlags::SameSide);
 
   // Map some alignment values to 'start' / 'end'.
   switch (aAlignment) {
-    case NS_STYLE_ALIGN_SELF_START: // align/justify-self: self-start
-      aAlignment = MOZ_LIKELY(isSameSide) ? NS_STYLE_ALIGN_START
-                                          : NS_STYLE_ALIGN_END;
+    case NS_STYLE_ALIGN_SELF_START:  // align/justify-self: self-start
+      aAlignment =
+          MOZ_LIKELY(isSameSide) ? NS_STYLE_ALIGN_START : NS_STYLE_ALIGN_END;
       break;
-    case NS_STYLE_ALIGN_SELF_END: // align/justify-self: self-end
-      aAlignment = MOZ_LIKELY(isSameSide) ? NS_STYLE_ALIGN_END
-                                          : NS_STYLE_ALIGN_START;
+    case NS_STYLE_ALIGN_SELF_END:  // align/justify-self: self-end
+      aAlignment =
+          MOZ_LIKELY(isSameSide) ? NS_STYLE_ALIGN_END : NS_STYLE_ALIGN_START;
       break;
     // flex-start/flex-end are the same as start/end, in most contexts.
     // (They have special behavior in flex containers, so flex containers
@@ -86,16 +82,16 @@ CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
   const auto& styleMargin = aRI.mStyleMargin->mMargin;
   bool hasAutoMarginStart;
   bool hasAutoMarginEnd;
-  if (aFlags & AlignJustifyFlags::eIgnoreAutoMargins) {
+  if (aFlags & AlignJustifyFlags::IgnoreAutoMargins) {
     // (Note: ReflowInput will have treated "auto" margins as 0, so we
     // don't need to do anything special to avoid expanding them.)
     hasAutoMarginStart = hasAutoMarginEnd = false;
   } else if (aAxis == eLogicalAxisBlock) {
-    hasAutoMarginStart = styleMargin.GetBStartUnit(wm) == eStyleUnit_Auto;
-    hasAutoMarginEnd = styleMargin.GetBEndUnit(wm) == eStyleUnit_Auto;
+    hasAutoMarginStart = styleMargin.GetBStart(wm).IsAuto();
+    hasAutoMarginEnd = styleMargin.GetBEnd(wm).IsAuto();
   } else { /* aAxis == eLogicalAxisInline */
-    hasAutoMarginStart = styleMargin.GetIStartUnit(wm) == eStyleUnit_Auto;
-    hasAutoMarginEnd = styleMargin.GetIEndUnit(wm) == eStyleUnit_Auto;
+    hasAutoMarginStart = styleMargin.GetIStart(wm).IsAuto();
+    hasAutoMarginEnd = styleMargin.GetIEnd(wm).IsAuto();
   }
 
   // https://drafts.csswg.org/css-align-3/#overflow-values
@@ -103,8 +99,8 @@ CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
   // And auto-margins: https://drafts.csswg.org/css-grid/#auto-margins
   if ((MOZ_UNLIKELY(isOverflowSafe) && aAlignment != NS_STYLE_ALIGN_START) ||
       hasAutoMarginStart || hasAutoMarginEnd) {
-    nscoord space = SpaceToFill(wm, aChildSize, marginStart + marginEnd,
-                                aAxis, aCBSize);
+    nscoord space =
+        SpaceToFill(wm, aChildSize, marginStart + marginEnd, aAxis, aCBSize);
     // XXX we might want to include == 0 here as an optimization -
     // I need to see what the baseline/last baseline code looks like first.
     if (space < 0) {
@@ -129,25 +125,22 @@ CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
       if (MOZ_LIKELY(isSameSide == (aAlignment == NS_STYLE_ALIGN_BASELINE))) {
         offset = marginStart + aBaselineAdjust;
       } else {
-        nscoord size = aAxis == eLogicalAxisBlock ? aChildSize.BSize(wm)
-                                                  : aChildSize.ISize(wm);
+        nscoord size = aChildSize.Size(aAxis, wm);
         offset = aCBSize - (size + marginEnd) - aBaselineAdjust;
       }
       break;
     case NS_STYLE_ALIGN_STRETCH:
-      MOZ_FALLTHROUGH; // ComputeSize() deals with it
+      MOZ_FALLTHROUGH;  // ComputeSize() deals with it
     case NS_STYLE_ALIGN_START:
       offset = marginStart;
       break;
     case NS_STYLE_ALIGN_END: {
-      nscoord size = aAxis == eLogicalAxisBlock ? aChildSize.BSize(wm)
-                                                : aChildSize.ISize(wm);
+      nscoord size = aChildSize.Size(aAxis, wm);
       offset = aCBSize - (size + marginEnd);
       break;
     }
     case NS_STYLE_ALIGN_CENTER: {
-      nscoord size = aAxis == eLogicalAxisBlock ? aChildSize.BSize(wm)
-                                                : aChildSize.ISize(wm);
+      nscoord size = aChildSize.Size(aAxis, wm);
       offset = (aCBSize - size + marginStart - marginEnd) / 2;
       break;
     }
@@ -158,4 +151,4 @@ CSSAlignUtils::AlignJustifySelf(uint8_t aAlignment, LogicalAxis aAxis,
   return offset;
 }
 
-} // namespace mozilla
+}  // namespace mozilla

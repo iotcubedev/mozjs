@@ -5,7 +5,6 @@
 
 /*---
 esid: sec-array.prototype.concat
-es6id: 22.1.3.1_3
 description: Array.prototype.concat Symbol.isConcatSpreadable boolean wrapper
 includes: [compareArray.js]
 features: [Symbol.isConcatSpreadable]
@@ -27,7 +26,7 @@ Boolean.prototype[0] = 1;
 Boolean.prototype[1] = 2;
 Boolean.prototype[2] = 3;
 Boolean.prototype.length = 3;
-assert(compareArray([1,2,3], [].concat(new Boolean(true))));
+assert(compareArray([1, 2, 3], [].concat(new Boolean(true))));
 
 // Boolean values are never concat-spreadable
 assert(compareArray([true], [].concat(true)));

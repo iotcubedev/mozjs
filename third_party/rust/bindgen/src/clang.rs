@@ -7,12 +7,13 @@
 use cexpr;
 use clang_sys::*;
 use regex;
+use ir::context::BindgenContext;
 use std::{mem, ptr, slice};
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::os::raw::{c_char, c_int, c_uint, c_ulong};
+use std::os::raw::{c_char, c_int, c_uint, c_ulong, c_longlong, c_ulonglong};
 
 /// A cursor into the Clang AST, pointing to an AST node.
 ///
@@ -48,13 +49,6 @@ impl Cursor {
     /// Is this cursor's referent a declaration?
     pub fn is_declaration(&self) -> bool {
         unsafe { clang_isDeclaration(self.kind()) != 0 }
-    }
-
-    /// Get the null cursor, which has no referent.
-    pub fn null() -> Self {
-        Cursor {
-            x: unsafe { clang_getNullCursor() },
-        }
     }
 
     /// Get this cursor's referent's spelling.
@@ -506,6 +500,29 @@ impl Cursor {
         }
     }
 
+    /// Does this cursor have the given simple attribute?
+    ///
+    /// Note that this will only work for attributes that don't have an existing libclang
+    /// CursorKind, e.g. pure, const, etc.
+    pub fn has_simple_attr(&self, attr: &str) -> bool {
+        let mut found_attr = false;
+        self.visit(|cur| {
+            if cur.kind() == CXCursor_UnexposedAttr {
+                found_attr = cur.tokens().iter().any(|t| {
+                    t.kind == CXToken_Identifier && t.spelling() == attr.as_bytes()
+                });
+
+                if found_attr {
+                    return CXChildVisit_Break;
+                }
+            }
+
+            CXChildVisit_Continue
+        });
+
+        found_attr
+    }
+
     /// Given that this cursor's referent is a `typedef`, get the `Type` that is
     /// being aliased.
     pub fn typedef_type(&self) -> Option<Type> {
@@ -534,33 +551,27 @@ impl Cursor {
 
     /// Given that this cursor's referent is a function, return cursors to its
     /// parameters.
+    ///
+    /// Returns None if the cursor's referent is not a function/method call or
+    /// declaration.
     pub fn args(&self) -> Option<Vec<Cursor>> {
-        // XXX: We might want to use and keep num_args
         // match self.kind() {
         // CXCursor_FunctionDecl |
         // CXCursor_CXXMethod => {
-        unsafe {
-            let w = clang_Cursor_getNumArguments(self.x);
-            if w == -1 {
-                None
-            } else {
-                let num = w as u32;
-
-                let mut args = vec![];
-                for i in 0..num {
-                    args.push(Cursor {
-                        x: clang_Cursor_getArgument(self.x, i as c_uint),
-                    });
+        self.num_args().ok().map(|num| {
+            (0..num).map(|i| {
+                Cursor {
+                    x: unsafe { clang_Cursor_getArgument(self.x, i as c_uint) },
                 }
-                Some(args)
-            }
-        }
+            })
+            .collect()
+        })
     }
 
     /// Given that this cursor's referent is a function/method call or
     /// declaration, return the number of arguments it takes.
     ///
-    /// Returns -1 if the cursor's referent is not a function/method call or
+    /// Returns Err if the cursor's referent is not a function/method call or
     /// declaration.
     pub fn num_args(&self) -> Result<u32, ()> {
         unsafe {
@@ -635,64 +646,126 @@ impl Cursor {
     }
 
     /// Gets the tokens that correspond to that cursor.
-    pub fn tokens(&self) -> Option<Vec<Token>> {
-        let range = self.extent();
-        let mut tokens = vec![];
-        unsafe {
-            let tu = clang_Cursor_getTranslationUnit(self.x);
-            let mut token_ptr = ptr::null_mut();
-            let mut num_tokens: c_uint = 0;
-            clang_tokenize(tu, range, &mut token_ptr, &mut num_tokens);
-            if token_ptr.is_null() {
-                return None;
-            }
-
-            let token_array =
-                slice::from_raw_parts(token_ptr, num_tokens as usize);
-            for &token in token_array.iter() {
-                let kind = clang_getTokenKind(token);
-                let spelling =
-                    cxstring_into_string(clang_getTokenSpelling(tu, token));
-
-                tokens.push(Token {
-                    kind: kind,
-                    spelling: spelling,
-                });
-            }
-            clang_disposeTokens(tu, token_ptr, num_tokens);
-        }
-        Some(tokens)
+    pub fn tokens(&self) -> RawTokens {
+        RawTokens::new(self)
     }
 
     /// Gets the tokens that correspond to that cursor as  `cexpr` tokens.
-    pub fn cexpr_tokens(self) -> Option<Vec<cexpr::token::Token>> {
+    pub fn cexpr_tokens(self) -> Vec<cexpr::token::Token> {
         use cexpr::token;
 
-        self.tokens().map(|tokens| {
-            tokens
-                .into_iter()
-                .filter_map(|token| {
-                    let kind = match token.kind {
-                        CXToken_Punctuation => token::Kind::Punctuation,
-                        CXToken_Literal => token::Kind::Literal,
-                        CXToken_Identifier => token::Kind::Identifier,
-                        CXToken_Keyword => token::Kind::Keyword,
-                        // NB: cexpr is not too happy about comments inside
-                        // expressions, so we strip them down here.
-                        CXToken_Comment => return None,
-                        _ => {
-                            error!("Found unexpected token kind: {:?}", token);
-                            return None;
-                        }
-                    };
+        self.tokens().iter().filter_map(|token| {
+            let kind = match token.kind {
+                CXToken_Punctuation => token::Kind::Punctuation,
+                CXToken_Literal => token::Kind::Literal,
+                CXToken_Identifier => token::Kind::Identifier,
+                CXToken_Keyword => token::Kind::Keyword,
+                // NB: cexpr is not too happy about comments inside
+                // expressions, so we strip them down here.
+                CXToken_Comment => return None,
+                _ => {
+                    error!("Found unexpected token kind: {:?}", token);
+                    return None;
+                }
+            };
 
-                    Some(token::Token {
-                        kind: kind,
-                        raw: token.spelling.into_bytes().into_boxed_slice(),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
+            Some(token::Token {
+                kind,
+                raw: token.spelling().to_vec().into_boxed_slice(),
+            })
+        }).collect()
+    }
+}
+
+/// A struct that owns the tokenizer result from a given cursor.
+pub struct RawTokens<'a> {
+    cursor: &'a Cursor,
+    tu: CXTranslationUnit,
+    tokens: *mut CXToken,
+    token_count: c_uint,
+}
+
+impl<'a> RawTokens<'a> {
+    fn new(cursor: &'a Cursor) -> Self {
+        let mut tokens = ptr::null_mut();
+        let mut token_count = 0;
+        let range = cursor.extent();
+        let tu = unsafe {
+            clang_Cursor_getTranslationUnit(cursor.x)
+        };
+        unsafe { clang_tokenize(tu, range, &mut tokens, &mut token_count) };
+        Self { cursor, tu, tokens, token_count }
+    }
+
+    fn as_slice(&self) -> &[CXToken] {
+        if self.tokens.is_null() {
+            return &[];
+        }
+        unsafe { slice::from_raw_parts(self.tokens, self.token_count as usize) }
+    }
+
+    /// Get an iterator over these tokens.
+    pub fn iter(&self) -> ClangTokenIterator {
+        ClangTokenIterator {
+            tu: self.tu,
+            raw: self.as_slice().iter(),
+        }
+    }
+}
+
+impl<'a> Drop for RawTokens<'a> {
+    fn drop(&mut self) {
+        if !self.tokens.is_null() {
+            unsafe {
+                clang_disposeTokens(self.tu, self.tokens, self.token_count as c_uint);
+            }
+        }
+    }
+}
+
+/// A raw clang token, that exposes only the kind and spelling. This is a
+/// slightly more convenient version of `CXToken` which owns the spelling
+/// string.
+#[derive(Debug)]
+pub struct ClangToken {
+    spelling: CXString,
+    /// The kind of token, this is the same as the relevant member from
+    /// `CXToken`.
+    pub kind: CXTokenKind,
+}
+
+impl ClangToken {
+    /// Get the token spelling, without being converted to utf-8.
+    pub fn spelling(&self) -> &[u8] {
+        let c_str = unsafe {
+            CStr::from_ptr(clang_getCString(self.spelling) as *const _)
+        };
+        c_str.to_bytes()
+    }
+}
+
+impl Drop for ClangToken {
+    fn drop(&mut self) {
+        unsafe { clang_disposeString(self.spelling) }
+    }
+}
+
+/// An iterator over a set of Tokens.
+pub struct ClangTokenIterator<'a> {
+    tu: CXTranslationUnit,
+    raw: slice::Iter<'a, CXToken>,
+}
+
+impl<'a> Iterator for ClangTokenIterator<'a> {
+    type Item = ClangToken;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.raw.next()?;
+        unsafe {
+            let kind = clang_getTokenKind(*raw);
+            let spelling = clang_getTokenSpelling(self.tu, *raw);
+            Some(ClangToken { kind, spelling })
+        }
     }
 }
 
@@ -859,18 +932,46 @@ impl Type {
         unsafe { clang_isConstQualifiedType(self.x) != 0 }
     }
 
-    /// What is the size of this type? Paper over invalid types by returning `0`
-    /// for them.
-    pub fn size(&self) -> usize {
-        unsafe {
-            let val = clang_Type_getSizeOf(self.x);
-            if val < 0 { 0 } else { val as usize }
+    #[inline]
+    fn is_non_deductible_auto_type(&self) -> bool {
+        debug_assert_eq!(self.kind(), CXType_Auto);
+        self.canonical_type() == *self
+    }
+
+    #[inline]
+    fn clang_size_of(&self, ctx: &BindgenContext) -> c_longlong {
+        match self.kind() {
+            // Work-around https://bugs.llvm.org/show_bug.cgi?id=40975
+            CXType_RValueReference |
+            CXType_LValueReference => ctx.target_pointer_size() as c_longlong,
+            // Work-around https://bugs.llvm.org/show_bug.cgi?id=40813
+            CXType_Auto if self.is_non_deductible_auto_type() => return -6,
+            _ => unsafe { clang_Type_getSizeOf(self.x) },
         }
     }
 
+    #[inline]
+    fn clang_align_of(&self, ctx: &BindgenContext) -> c_longlong {
+        match self.kind() {
+            // Work-around https://bugs.llvm.org/show_bug.cgi?id=40975
+            CXType_RValueReference |
+            CXType_LValueReference => ctx.target_pointer_size() as c_longlong,
+            // Work-around https://bugs.llvm.org/show_bug.cgi?id=40813
+            CXType_Auto if self.is_non_deductible_auto_type() => return -6,
+            _ => unsafe { clang_Type_getAlignOf(self.x) },
+        }
+    }
+
+    /// What is the size of this type? Paper over invalid types by returning `0`
+    /// for them.
+    pub fn size(&self, ctx: &BindgenContext) -> usize {
+        let val = self.clang_size_of(ctx);
+        if val < 0 { 0 } else { val as usize }
+    }
+
     /// What is the size of this type?
-    pub fn fallible_size(&self) -> Result<usize, LayoutError> {
-        let val = unsafe { clang_Type_getSizeOf(self.x) };
+    pub fn fallible_size(&self, ctx: &BindgenContext) -> Result<usize, LayoutError> {
+        let val = self.clang_size_of(ctx);
         if val < 0 {
             Err(LayoutError::from(val as i32))
         } else {
@@ -880,37 +981,40 @@ impl Type {
 
     /// What is the alignment of this type? Paper over invalid types by
     /// returning `0`.
-    pub fn align(&self) -> usize {
-        unsafe {
-            let val = clang_Type_getAlignOf(self.x);
-            if val < 0 { 0 } else { val as usize }
-        }
+    pub fn align(&self, ctx: &BindgenContext) -> usize {
+        let val = self.clang_align_of(ctx);
+        if val < 0 { 0 } else { val as usize }
     }
 
     /// What is the alignment of this type?
-    pub fn fallible_align(&self) -> Result<usize, LayoutError> {
-        unsafe {
-            let val = clang_Type_getAlignOf(self.x);
-            if val < 0 {
-                Err(LayoutError::from(val as i32))
-            } else {
-                Ok(val as usize)
-            }
+    pub fn fallible_align(&self, ctx: &BindgenContext) -> Result<usize, LayoutError> {
+        let val = self.clang_align_of(ctx);
+        if val < 0 {
+            Err(LayoutError::from(val as i32))
+        } else {
+            Ok(val as usize)
         }
     }
 
     /// Get the layout for this type, or an error describing why it does not
     /// have a valid layout.
-    pub fn fallible_layout(&self) -> Result<::ir::layout::Layout, LayoutError> {
+    pub fn fallible_layout(&self, ctx: &BindgenContext) -> Result<::ir::layout::Layout, LayoutError> {
         use ir::layout::Layout;
-        let size = try!(self.fallible_size());
-        let align = try!(self.fallible_align());
+        let size = self.fallible_size(ctx)?;
+        let align = self.fallible_align(ctx)?;
         Ok(Layout::new(size, align))
     }
 
     /// Get the number of template arguments this type has, or `None` if it is
     /// not some kind of template.
     pub fn num_template_args(&self) -> Option<u32> {
+        // If an old libclang is loaded, we have no hope of answering this
+        // question correctly. However, that's no reason to panic when
+        // generating bindings for simple C headers with an old libclang.
+        if !clang_Type_getNumTemplateArguments::is_loaded() {
+            return None
+        }
+
         let n = unsafe { clang_Type_getNumTemplateArguments(self.x) };
         if n >= 0 {
             Some(n as u32)
@@ -932,6 +1036,31 @@ impl Type {
         })
     }
 
+    /// Given that this type is a function prototype, return the types of its parameters.
+    ///
+    /// Returns None if the type is not a function prototype.
+    pub fn args(&self) -> Option<Vec<Type>> {
+        self.num_args().ok().map(|num| {
+            (0..num).map(|i| {
+                Type {
+                    x: unsafe { clang_getArgType(self.x, i as c_uint) },
+                }
+            })
+            .collect()
+        })
+    }
+
+    /// Given that this type is a function prototype, return the number of arguments it takes.
+    ///
+    /// Returns Err if the type is not a function prototype.
+    pub fn num_args(&self) -> Result<u32, ()> {
+        unsafe {
+            let w = clang_getNumArgTypes(self.x);
+            if w == -1 { Err(()) } else { Ok(w as u32) }
+        }
+    }
+
+
     /// Given that this type is a pointer type, return the type that it points
     /// to.
     pub fn pointee_type(&self) -> Option<Type> {
@@ -940,6 +1069,7 @@ impl Type {
             CXType_RValueReference |
             CXType_LValueReference |
             CXType_MemberPointer |
+            CXType_BlockPointer |
             CXType_ObjCObjectPointer => {
                 let ret = Type {
                     x: unsafe { clang_getPointeeType(self.x) },
@@ -975,7 +1105,7 @@ impl Type {
         }
     }
 
-    /// Get the canonical version of this type. This sees through `typdef`s and
+    /// Get the canonical version of this type. This sees through `typedef`s and
     /// aliases to get the underlying, canonical type.
     pub fn canonical_type(&self) -> Type {
         unsafe {
@@ -1639,8 +1769,11 @@ pub fn ast_dump(c: &Cursor, depth: isize) -> CXChildVisitResult {
             depth,
             format!(" {}spelling = \"{}\"", prefix, ty.spelling()),
         );
-        let num_template_args =
-            unsafe { clang_Type_getNumTemplateArguments(ty.x) };
+        let num_template_args = if clang_Type_getNumTemplateArguments::is_loaded() {
+            unsafe { clang_Type_getNumTemplateArguments(ty.x) }
+        } else {
+            -1
+        };
         if num_template_args >= 0 {
             print_indent(
                 depth,
@@ -1742,27 +1875,25 @@ impl EvalResult {
             return None;
         }
 
-        // Clang has an internal assertion we can trigger if we try to evaluate
-        // a cursor containing a variadic template type reference. Triggering
-        // the assertion aborts the process, and we don't want that. Clang
-        // *also* doesn't expose any API for finding variadic vs non-variadic
-        // template type references, let alone whether a type referenced is a
-        // template type, instead they seem to show up as type references to an
-        // unexposed type. Our solution is to just flat out ban all
-        // `CXType_Unexposed` from evaluation.
-        let mut found_cant_eval = false;
-        cursor.visit(|c| if c.kind() == CXCursor_TypeRef &&
-            c.cur_type().kind() == CXType_Unexposed
+        // Work around https://bugs.llvm.org/show_bug.cgi?id=42532, see:
+        //  * https://github.com/rust-lang/rust-bindgen/issues/283
+        //  * https://github.com/rust-lang/rust-bindgen/issues/1590
         {
-            found_cant_eval = true;
-            CXChildVisit_Break
-        } else {
-            CXChildVisit_Recurse
-        });
-        if found_cant_eval {
-            return None;
-        }
+            let mut found_cant_eval = false;
+            cursor.visit(|c| {
+                if c.kind() == CXCursor_TypeRef &&
+                    c.cur_type().canonical_type().kind() == CXType_Unexposed {
+                    found_cant_eval = true;
+                    return CXChildVisit_Break;
+                }
 
+                CXChildVisit_Recurse
+            });
+
+            if found_cant_eval {
+                return None;
+            }
+        }
         Some(EvalResult {
             x: unsafe { clang_Cursor_Evaluate(cursor.x) },
         })
@@ -1783,13 +1914,34 @@ impl EvalResult {
     }
 
     /// Try to get back the result as an integer.
-    pub fn as_int(&self) -> Option<i32> {
-        match self.kind() {
-            CXEval_Int => {
-                Some(unsafe { clang_EvalResult_getAsInt(self.x) } as i32)
-            }
-            _ => None,
+    pub fn as_int(&self) -> Option<i64> {
+        if self.kind() != CXEval_Int {
+            return None;
         }
+
+        if !clang_EvalResult_isUnsignedInt::is_loaded() {
+            // FIXME(emilio): There's no way to detect underflow here, and clang
+            // will just happily give us a value.
+            return Some(unsafe { clang_EvalResult_getAsInt(self.x) } as i64)
+        }
+
+        if unsafe { clang_EvalResult_isUnsignedInt(self.x) } != 0 {
+            let value = unsafe { clang_EvalResult_getAsUnsigned(self.x) };
+            if value > i64::max_value() as c_ulonglong {
+                return None;
+            }
+
+            return Some(value as i64)
+        }
+
+        let value = unsafe { clang_EvalResult_getAsLongLong(self.x) };
+        if value > i64::max_value() as c_longlong {
+            return None;
+        }
+        if value < i64::min_value() as c_longlong {
+            return None;
+        }
+        Some(value as i64)
     }
 
     /// Evaluates the expression as a literal string, that may or may not be
@@ -1810,5 +1962,37 @@ impl EvalResult {
 impl Drop for EvalResult {
     fn drop(&mut self) {
         unsafe { clang_EvalResult_dispose(self.x) };
+    }
+}
+
+/// Target information obtained from libclang.
+#[derive(Debug)]
+pub struct TargetInfo {
+    /// The target triple.
+    pub triple: String,
+    /// The width of the pointer _in bits_.
+    pub pointer_width: usize,
+}
+
+impl TargetInfo {
+    /// Tries to obtain target information from libclang.
+    pub fn new(tu: &TranslationUnit) -> Option<Self> {
+        if !clang_getTranslationUnitTargetInfo::is_loaded() {
+            return None;
+        }
+        let triple;
+        let pointer_width;
+        unsafe {
+            let ti = clang_getTranslationUnitTargetInfo(tu.x);
+            triple = cxstring_into_string(clang_TargetInfo_getTriple(ti));
+            pointer_width = clang_TargetInfo_getPointerWidth(ti);
+            clang_TargetInfo_dispose(ti);
+        }
+        assert!(pointer_width > 0);
+        assert_eq!(pointer_width % 8, 0);
+        Some(TargetInfo {
+            triple,
+            pointer_width: pointer_width as usize,
+        })
     }
 }

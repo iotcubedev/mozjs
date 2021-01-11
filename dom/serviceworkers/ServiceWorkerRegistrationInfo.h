@@ -7,30 +7,40 @@
 #ifndef mozilla_dom_serviceworkerregistrationinfo_h
 #define mozilla_dom_serviceworkerregistrationinfo_h
 
+#include <functional>
+
 #include "mozilla/dom/ServiceWorkerInfo.h"
 #include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
 #include "nsProxyRelease.h"
+#include "nsTObserverArray.h"
 
 namespace mozilla {
 namespace dom {
 
+class ServiceWorkerRegistrationListener;
+
 class ServiceWorkerRegistrationInfo final
-  : public nsIServiceWorkerRegistrationInfo
-{
+    : public nsIServiceWorkerRegistrationInfo {
   nsCOMPtr<nsIPrincipal> mPrincipal;
   ServiceWorkerRegistrationDescriptor mDescriptor;
   nsTArray<nsCOMPtr<nsIServiceWorkerRegistrationInfoListener>> mListeners;
+  nsTObserverArray<ServiceWorkerRegistrationListener*> mInstanceList;
+
+  struct VersionEntry {
+    const ServiceWorkerRegistrationDescriptor mDescriptor;
+    TimeStamp mTimeStamp;
+
+    explicit VersionEntry(
+        const ServiceWorkerRegistrationDescriptor& aDescriptor)
+        : mDescriptor(aDescriptor), mTimeStamp(TimeStamp::Now()) {}
+  };
+  nsTArray<UniquePtr<VersionEntry>> mVersionList;
 
   uint32_t mControlledClientsCounter;
   uint32_t mDelayMultiplier;
 
-  enum
-  {
-    NoUpdate,
-    NeedTimeCheckAndUpdate,
-    NeedUpdate
-  } mUpdateState;
+  enum { NoUpdate, NeedTimeCheckAndUpdate, NeedUpdate } mUpdateState;
 
   // Timestamp to track SWR's last update time
   PRTime mCreationTime;
@@ -45,37 +55,41 @@ class ServiceWorkerRegistrationInfo final
 
   virtual ~ServiceWorkerRegistrationInfo();
 
-  // When unregister() is called on a registration, it is not immediately
-  // removed since documents may be controlled. It is marked as
-  // pendingUninstall and when all controlling documents go away, removed.
-  bool mPendingUninstall;
+  // When unregister() is called on a registration, it is removed from the
+  // "scope to registration map" but not immediately "cleared" (i.e. its workers
+  // terminated, updated to the redundant state, etc.) because it may still be
+  // controlling clients. It is marked as unregistered and when all controlled
+  // clients go away, cleared. This way we can tell if a registration
+  // is unregistered by querying the object itself rather than incurring a table
+  // lookup (in the case when the registrations are passed around as pointers).
+  bool mUnregistered;
 
-public:
+  bool mCorrupt;
+
+ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSISERVICEWORKERREGISTRATIONINFO
+
+  typedef std::function<void()> TryToActivateCallback;
 
   ServiceWorkerRegistrationInfo(const nsACString& aScope,
                                 nsIPrincipal* aPrincipal,
                                 ServiceWorkerUpdateViaCache aUpdateViaCache);
 
-  const nsCString&
-  Scope() const;
+  void AddInstance(ServiceWorkerRegistrationListener* aInstance,
+                   const ServiceWorkerRegistrationDescriptor& aDescriptor);
 
-  nsIPrincipal*
-  Principal() const;
+  void RemoveInstance(ServiceWorkerRegistrationListener* aInstance);
 
-  bool
-  IsPendingUninstall() const;
+  const nsCString& Scope() const;
 
-  void
-  SetPendingUninstall();
+  nsIPrincipal* Principal() const;
 
-  void
-  ClearPendingUninstall();
+  bool IsUnregistered() const;
 
-  already_AddRefed<ServiceWorkerInfo>
-  Newest() const
-  {
+  void SetUnregistered();
+
+  already_AddRefed<ServiceWorkerInfo> Newest() const {
     RefPtr<ServiceWorkerInfo> newest;
     if (mInstallingWorker) {
       newest = mInstallingWorker;
@@ -88,153 +102,134 @@ public:
     return newest.forget();
   }
 
-  already_AddRefed<ServiceWorkerInfo>
-  GetServiceWorkerInfoById(uint64_t aId);
+  already_AddRefed<ServiceWorkerInfo> GetServiceWorkerInfoById(uint64_t aId);
 
-  void
-  StartControllingClient()
-  {
+  void StartControllingClient() {
     ++mControlledClientsCounter;
     mDelayMultiplier = 0;
   }
 
-  void
-  StopControllingClient()
-  {
+  void StopControllingClient() {
     MOZ_ASSERT(mControlledClientsCounter);
     --mControlledClientsCounter;
   }
 
-  bool
-  IsControllingClients() const
-  {
+  bool IsControllingClients() const {
     return mActiveWorker && mControlledClientsCounter;
   }
 
-  void
-  Clear();
+  void Clear();
 
-  void
-  TryToActivateAsync();
+  void ClearAsCorrupt();
 
-  void
-  TryToActivate();
+  bool IsCorrupt() const;
 
-  void
-  Activate();
+  void TryToActivateAsync(TryToActivateCallback&& aCallback = nullptr);
 
-  void
-  FinishActivate(bool aSuccess);
+  void TryToActivate(TryToActivateCallback&& aCallback);
 
-  void
-  RefreshLastUpdateCheckTime();
+  void Activate();
 
-  bool
-  IsLastUpdateCheckTimeOverOneDay() const;
+  void FinishActivate(bool aSuccess);
 
-  void
-  MaybeScheduleTimeCheckAndUpdate();
+  void RefreshLastUpdateCheckTime();
 
-  void
-  MaybeScheduleUpdate();
+  bool IsLastUpdateCheckTimeOverOneDay() const;
 
-  bool
-  CheckAndClearIfUpdateNeeded();
+  void MaybeScheduleTimeCheckAndUpdate();
 
-  ServiceWorkerInfo*
-  GetEvaluating() const;
+  void MaybeScheduleUpdate();
 
-  ServiceWorkerInfo*
-  GetInstalling() const;
+  bool CheckAndClearIfUpdateNeeded();
 
-  ServiceWorkerInfo*
-  GetWaiting() const;
+  ServiceWorkerInfo* GetEvaluating() const;
 
-  ServiceWorkerInfo*
-  GetActive() const;
+  ServiceWorkerInfo* GetInstalling() const;
 
-  ServiceWorkerInfo*
-  GetByDescriptor(const ServiceWorkerDescriptor& aDescriptor) const;
+  ServiceWorkerInfo* GetWaiting() const;
+
+  ServiceWorkerInfo* GetActive() const;
+
+  ServiceWorkerInfo* GetByDescriptor(
+      const ServiceWorkerDescriptor& aDescriptor) const;
 
   // Set the given worker as the evaluating service worker.  The worker
   // state is not changed.
-  void
-  SetEvaluating(ServiceWorkerInfo* aServiceWorker);
+  void SetEvaluating(ServiceWorkerInfo* aServiceWorker);
 
   // Remove an existing evaluating worker, if present.  The worker will
   // be transitioned to the Redundant state.
-  void
-  ClearEvaluating();
+  void ClearEvaluating();
 
   // Remove an existing installing worker, if present.  The worker will
   // be transitioned to the Redundant state.
-  void
-  ClearInstalling();
+  void ClearInstalling();
 
   // Transition the current evaluating worker to be the installing worker.  The
   // worker's state is update to Installing.
-  void
-  TransitionEvaluatingToInstalling();
+  void TransitionEvaluatingToInstalling();
 
   // Transition the current installing worker to be the waiting worker.  The
   // worker's state is updated to Installed.
-  void
-  TransitionInstallingToWaiting();
+  void TransitionInstallingToWaiting();
 
   // Override the current active worker.  This is used during browser
   // initialization to load persisted workers.  Its also used to propagate
   // active workers across child processes in e10s.  This second use will
   // go away once the ServiceWorkerManager moves to the parent process.
   // The worker is transitioned to the Activated state.
-  void
-  SetActive(ServiceWorkerInfo* aServiceWorker);
+  void SetActive(ServiceWorkerInfo* aServiceWorker);
 
   // Transition the current waiting worker to be the new active worker.  The
   // worker is updated to the Activating state.
-  void
-  TransitionWaitingToActive();
+  void TransitionWaitingToActive();
 
   // Determine if the registration is actively performing work.
-  bool
-  IsIdle() const;
+  bool IsIdle() const;
 
-  ServiceWorkerUpdateViaCache
-  GetUpdateViaCache() const;
+  ServiceWorkerUpdateViaCache GetUpdateViaCache() const;
 
-  void
-  SetUpdateViaCache(ServiceWorkerUpdateViaCache aUpdateViaCache);
+  void SetUpdateViaCache(ServiceWorkerUpdateViaCache aUpdateViaCache);
 
-  int64_t
-  GetLastUpdateTime() const;
+  int64_t GetLastUpdateTime() const;
 
-  void
-  SetLastUpdateTime(const int64_t aTime);
+  void SetLastUpdateTime(const int64_t aTime);
 
-  const ServiceWorkerRegistrationDescriptor&
-  Descriptor() const;
+  const ServiceWorkerRegistrationDescriptor& Descriptor() const;
 
-  uint32_t
-  GetUpdateDelay();
+  uint64_t Id() const;
 
-private:
+  uint64_t Version() const;
+
+  uint32_t GetUpdateDelay(const bool aWithMultiplier = true);
+
+  void FireUpdateFound();
+
+  void NotifyCleared();
+
+  void ClearWhenIdle();
+
+ private:
   // Roughly equivalent to [[Update Registration State algorithm]]. Make sure
   // this is called *before* updating SW instances' state, otherwise they
   // may get CC-ed.
-  void
-  UpdateRegistrationState();
+  void UpdateRegistrationState();
 
-  // Used by devtools to track changes to the properties of *nsIServiceWorkerRegistrationInfo*.
-  // Note, this doesn't necessarily need to be in sync with the DOM registration objects, but
-  // it does need to be called in the same task that changed |mInstallingWorker|,
-  // |mWaitingWorker| or |mActiveWorker|.
-  void
-  NotifyChromeRegistrationListeners();
+  void UpdateRegistrationState(ServiceWorkerUpdateViaCache aUpdateViaCache);
 
-  static uint64_t
-  GetNextId();
+  // Used by devtools to track changes to the properties of
+  // *nsIServiceWorkerRegistrationInfo*. Note, this doesn't necessarily need to
+  // be in sync with the DOM registration objects, but it does need to be called
+  // in the same task that changed |mInstallingWorker|, |mWaitingWorker| or
+  // |mActiveWorker|.
+  void NotifyChromeRegistrationListeners();
+
+  static uint64_t GetNextId();
+
+  static uint64_t GetNextVersion();
 };
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla
 
-#endif // mozilla_dom_serviceworkerregistrationinfo_h
+#endif  // mozilla_dom_serviceworkerregistrationinfo_h

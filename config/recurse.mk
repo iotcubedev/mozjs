@@ -28,7 +28,8 @@ include root.mk
 
 # Main rules (export, compile, libs and tools) call recurse_* rules.
 # This wrapping is only really useful for build status.
-$(TIERS)::
+$(RUNNABLE_TIERS)::
+	$(if $(filter $@,$(MAKECMDGOALS)),$(call BUILDSTATUS,TIERS $@),)
 	$(call BUILDSTATUS,TIER_START $@)
 	+$(MAKE) recurse_$@
 	$(call BUILDSTATUS,TIER_FINISH $@)
@@ -40,7 +41,7 @@ binaries::
 # Carefully avoid $(eval) type of rule generation, which makes pymake slower
 # than necessary.
 # Get current tier and corresponding subtiers from the data in root.mk.
-CURRENT_TIER := $(filter $(foreach tier,$(TIERS),recurse_$(tier) $(tier)-deps),$(MAKECMDGOALS))
+CURRENT_TIER := $(filter $(foreach tier,$(RUNNABLE_TIERS) $(non_default_tiers),recurse_$(tier) $(tier)-deps),$(MAKECMDGOALS))
 ifneq (,$(filter-out 0 1,$(words $(CURRENT_TIER))))
 $(error $(CURRENT_TIER) not supported on the same make command line)
 endif
@@ -76,7 +77,7 @@ $(syms_targets): %/syms: %/target
 
 # Only hook symbols targets into the main compile graph in automation.
 ifdef MOZ_AUTOMATION
-ifdef MOZ_CRASHREPORTER
+ifeq (1,$(MOZ_AUTOMATION_BUILD_SYMBOLS))
 recurse_compile: $(syms_targets)
 endif
 endif
@@ -128,7 +129,7 @@ else
 # Don't recurse if MAKELEVEL is NO_RECURSE_MAKELEVEL as defined above
 ifeq ($(NO_RECURSE_MAKELEVEL),$(MAKELEVEL))
 
-$(TIERS)::
+$(RUNNABLE_TIERS)::
 
 else
 #########################
@@ -143,7 +144,7 @@ $(1):: $$(SUBMAKEFILES)
 
 endef
 
-$(foreach subtier,$(filter-out compile,$(TIERS)),$(eval $(call CREATE_SUBTIER_TRAVERSAL_RULE,$(subtier))))
+$(foreach subtier,$(filter-out compile,$(RUNNABLE_TIERS)),$(eval $(call CREATE_SUBTIER_TRAVERSAL_RULE,$(subtier))))
 
 ifndef TOPLEVEL_BUILD
 ifdef COMPILE_ENVIRONMENT
@@ -165,27 +166,54 @@ ifeq (.,$(DEPTH))
 js/xpconnect/src/export: dom/bindings/export xpcom/xpidl/export
 accessible/xpcom/export: xpcom/xpidl/export
 
-# The widget binding generator code is part of the annotationProcessors.
-widget/android/bindings/export: build/annotationProcessors/export
+# The Android SDK bindings needs to build the Java generator code
+# source code in order to write the SDK bindings.
+widget/android/bindings/export: mobile/android/base/export
+
+# The widget JNI wrapper generator code needs to build the GeckoView
+# and Fennec source code in order to find JNI wrapper annotations.
+widget/android/fennec/export: mobile/android/base/export
+widget/android/export: mobile/android/base/export
 
 # .xpt generation needs the xpidl lex/yacc files
 xpcom/xpidl/export: xpcom/idl-parser/xpidl/export
 
+# CSS2Properties.webidl needs ServoCSSPropList.py from layout/style
+dom/bindings/export: layout/style/export
+
+# Various telemetry histogram files need ServoCSSPropList.py from layout/style
+toolkit/components/telemetry/export: layout/style/export
+
 ifdef ENABLE_CLANG_PLUGIN
-$(filter-out config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets)): build/clang-plugin/target build/clang-plugin/tests/target
-build/clang-plugin/tests/target: build/clang-plugin/target
+$(filter-out config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets)): build/clang-plugin/host build/clang-plugin/tests/target-objects
+build/clang-plugin/tests/target-objects: build/clang-plugin/host
 endif
 
 # Interdependencies that moz.build world don't know about yet for compilation.
 # Note some others are hardcoded or "guessed" in recursivemake.py and emitter.py
-ifeq ($(MOZ_WIDGET_TOOLKIT),gtk3)
+ifeq ($(MOZ_WIDGET_TOOLKIT),gtk)
 toolkit/library/target: widget/gtk/mozgtk/gtk3/target
 endif
-ifdef MOZ_LDAP_XPCOM
-ldap/target: security/target mozglue/build/target
-toolkit/library/target: ldap/target
-endif
-endif
+
 # Most things are built during compile (target/host), but some things happen during export
 # Those need to depend on config/export for system wrappers.
-$(addprefix build/unix/stdc++compat/,target host) build/clang-plugin/target: config/export
+$(addprefix build/unix/stdc++compat/,target host) build/clang-plugin/host: config/export
+
+# Rust targets need $topobjdir/.cargo/config to be preprocessed first. Ideally,
+# we'd only set it as a dependency of the rust targets, but unfortunately, that
+# pushes Make to execute them much later than we'd like them to be when the file
+# doesn't exist prior to Make running. So we also set it as a dependency of
+# export, which ensures it exists before recursing the rust targets, tricking
+# Make into keeping them early.
+$(rust_targets): $(DEPTH)/.cargo/config
+export:: $(DEPTH)/.cargo/config
+
+# When building gtest as part of the build (LINK_GTEST_DURING_COMPILE),
+# force the build system to get to it first, so that it can be linked
+# quickly without LTO, allowing the build system to go ahead with
+# plain gkrust and libxul while libxul-gtest is being linked and
+# dump-sym'ed.
+ifneq (,$(filter toolkit/library/gtest/rust/target,$(compile_targets)))
+toolkit/library/rust/target: toolkit/library/gtest/rust/target
+endif
+endif

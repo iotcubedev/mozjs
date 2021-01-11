@@ -10,7 +10,7 @@ from copy import deepcopy
 
 from taskgraph.transforms.base import TransformSequence
 import taskgraph.transforms.release_deps as release_deps
-from taskgraph.util.treeherder import split_symbol, join_symbol
+from taskgraph.util.treeherder import add_suffix
 from taskgraph import MAX_DEPENDENCIES
 
 transforms = TransformSequence()
@@ -21,10 +21,8 @@ def yield_job(orig_job, deps, count):
     job['dependencies'] = deps
     job['name'] = "{}-{}".format(orig_job['name'], count)
     if 'treeherder' in job:
-        groupSymbol, symbol = split_symbol(job['treeherder']['symbol'])
-        symbol += '-'
-        symbol += str(count)
-        job['treeherder']['symbol'] = join_symbol(groupSymbol, symbol)
+        job['treeherder']['symbol'] = add_suffix(
+            job['treeherder']['symbol'], "-{}".format(count))
 
     return job
 
@@ -35,7 +33,8 @@ def add_dependencies(config, jobs):
         count = 1
         deps = {}
 
-        for dep_label in job['dependencies'].keys():
+        # sort for deterministic chunking
+        for dep_label in sorted(job['dependencies'].keys()):
             deps[dep_label] = dep_label
             if len(deps) == MAX_DEPENDENCIES:
                 yield yield_job(job, deps, count)

@@ -12,9 +12,12 @@ DIRS += [
     'selectors',
     'utils',
     'widgets',
+    'workers',
 ]
 
 DevToolsModules(
+    'api.js',
+    'app.js',
     'constants.js',
     'create-store.js',
 )

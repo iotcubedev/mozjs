@@ -285,8 +285,9 @@ class BaseMarionetteArguments(ArgumentParser):
                           help='profile to use when launching the gecko process. If not passed, '
                                'then a profile will be constructed and used',
                           type=dir_path)
-        self.add_argument('--pref',
+        self.add_argument('--setpref',
                           action='append',
+                          metavar='PREF=VALUE',
                           dest='prefs_args',
                           help="A preference to set. Must be a key-value pair separated by a ':'.")
         self.add_argument('--preferences',
@@ -361,6 +362,11 @@ class BaseMarionetteArguments(ArgumentParser):
                           dest='e10s',
                           default=True,
                           help='Disable e10s when running marionette tests.')
+        self.add_argument('--enable-webrender',
+                          action='store_true',
+                          dest='enable_webrender',
+                          default=False,
+                          help='Enable the WebRender compositor in Gecko.')
         self.add_argument("-z", "--headless",
                           action="store_true",
                           dest="headless",
@@ -409,7 +415,7 @@ class BaseMarionetteArguments(ArgumentParser):
             for prefs_file in prefs_files:
                 prefs.add_file(prefs_file)
 
-        separator = ':'
+        separator = '='
         cli_prefs = []
         if prefs_args:
             misformatted = []
@@ -520,7 +526,8 @@ class BaseMarionetteTestRunner(object):
                  socket_timeout=None,
                  startup_timeout=None,
                  addons=None, workspace=None,
-                 verbose=0, e10s=True, emulator=False, headless=False, **kwargs):
+                 verbose=0, e10s=True, emulator=False, headless=False,
+                 enable_webrender=False, **kwargs):
         self._appName = None
         self._capabilities = None
         self._filename_pattern = None
@@ -562,6 +569,7 @@ class BaseMarionetteTestRunner(object):
         self.workspace_path = workspace or os.getcwd()
         self.verbose = verbose
         self.headless = headless
+        self.enable_webrender = enable_webrender
 
         # self.e10s stores the desired configuration, whereas
         # self._e10s_from_browser is the cached value from querying e10s
@@ -571,7 +579,6 @@ class BaseMarionetteTestRunner(object):
         if self.e10s:
             self.prefs.update({
                 'browser.tabs.remote.autostart': True,
-                'browser.tabs.remote.force-enable': True,
             })
 
         # If no repeat has been set, default to 30 extra runs
@@ -725,10 +732,11 @@ class BaseMarionetteTestRunner(object):
             'startup_timeout': self.startup_timeout,
             'verbose': self.verbose,
             'symbols_path': self.symbols_path,
+            'enable_webrender': self.enable_webrender,
         }
         if self.bin or self.emulator:
             kwargs.update({
-                'host': 'localhost',
+                'host': '127.0.0.1',
                 'port': 2828,
                 'app': self.app,
                 'app_args': self.app_args,
@@ -872,7 +880,7 @@ class BaseMarionetteTestRunner(object):
         device_info = None
         if self.marionette.instance and self.emulator:
             try:
-                device_info = self.marionette.instance.runner.device.dm.getInfo()
+                device_info = self.marionette.instance.runner.device.device.get_info()
             except Exception:
                 self.logger.warning('Could not get device info', exc_info=True)
 
@@ -892,6 +900,9 @@ class BaseMarionetteTestRunner(object):
                                 name='marionette-test',
                                 version_info=self.version_info,
                                 device_info=device_info)
+
+        if self.shuffle:
+            self.logger.info("Using shuffle seed: %d" % self.shuffle_seed)
 
         self._log_skipped_tests()
 
@@ -925,8 +936,6 @@ class BaseMarionetteTestRunner(object):
 
             for run_tests in self.mixin_run_tests:
                 run_tests(tests)
-            if self.shuffle:
-                self.logger.info("Using shuffle seed: %d" % self.shuffle_seed)
 
             self.logger.suite_end()
         except Exception:

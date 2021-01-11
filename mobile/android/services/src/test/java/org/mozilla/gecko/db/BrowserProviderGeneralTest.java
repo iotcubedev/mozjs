@@ -16,8 +16,9 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mozilla.gecko.background.db.DelegatingTestContentProvider;
-import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.sync.repositories.android.BrowserContractHelpers;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowContentResolver;
 
 import java.util.ArrayList;
@@ -29,7 +30,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-@RunWith(TestRunner.class)
+@RunWith(RobolectricTestRunner.class)
 public class BrowserProviderGeneralTest {
     final static long INVALID_TIMESTAMP = -1;
     final static Uri bookmarksTestUri = withTest(BrowserContract.Bookmarks.CONTENT_URI);
@@ -48,8 +49,8 @@ public class BrowserProviderGeneralTest {
     public void setUp() throws Exception {
         provider = DelegatingTestContentProvider.createDelegatingBrowserProvider();
 
-        ShadowContentResolver contentResolver = new ShadowContentResolver();
-        browserClient = contentResolver.acquireContentProviderClient(BrowserContractHelpers.BOOKMARKS_CONTENT_URI);
+        browserClient = RuntimeEnvironment.application.getContentResolver()
+                .acquireContentProviderClient(BrowserContractHelpers.BOOKMARKS_CONTENT_URI);
     }
 
     @After

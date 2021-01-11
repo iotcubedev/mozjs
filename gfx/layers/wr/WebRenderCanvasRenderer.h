@@ -12,53 +12,30 @@
 namespace mozilla {
 namespace layers {
 
-class WebRenderLayerManager;
+class RenderRootStateManager;
 
-class WebRenderCanvasRenderer : public ShareableCanvasRenderer
-{
-public:
-  explicit WebRenderCanvasRenderer(WebRenderLayerManager* aManager)
-    : mManager(aManager)
-  { }
+class WebRenderCanvasRenderer : public ShareableCanvasRenderer {
+ public:
+  explicit WebRenderCanvasRenderer(RenderRootStateManager* aManager)
+      : mManager(aManager) {}
 
   void Initialize(const CanvasInitializeData& aData) override;
 
   CompositableForwarder* GetForwarder() override;
 
-protected:
-  WebRenderLayerManager* mManager;
+ protected:
+  RenderRootStateManager* mManager;
 };
 
-class WebRenderCanvasRendererSync : public WebRenderCanvasRenderer
-{
-public:
-  explicit WebRenderCanvasRendererSync(WebRenderLayerManager* aManager)
-    : WebRenderCanvasRenderer(aManager)
-  { }
-  virtual ~WebRenderCanvasRendererSync();
-
-  WebRenderCanvasRendererSync* AsWebRenderCanvasRendererSync() override { return this; }
-
-  void Initialize(const CanvasInitializeData& aData) override;
-  bool CreateCompositable() override;
-
-  void ClearCachedResources() override;
-  void Destroy() override;
-
-  wr::MaybeExternalImageId GetExternalImageId() { return mExternalImageId; }
-protected:
-  wr::MaybeExternalImageId mExternalImageId;
-};
-
-class WebRenderCanvasRendererAsync : public WebRenderCanvasRenderer
-{
-public:
-  explicit WebRenderCanvasRendererAsync(WebRenderLayerManager* aManager)
-    : WebRenderCanvasRenderer(aManager)
-  { }
+class WebRenderCanvasRendererAsync : public WebRenderCanvasRenderer {
+ public:
+  explicit WebRenderCanvasRendererAsync(RenderRootStateManager* aManager)
+      : WebRenderCanvasRenderer(aManager) {}
   virtual ~WebRenderCanvasRendererAsync();
 
-  WebRenderCanvasRendererAsync* AsWebRenderCanvasRendererAsync() override { return this; }
+  WebRenderCanvasRendererAsync* AsWebRenderCanvasRendererAsync() override {
+    return this;
+  }
 
   void Initialize(const CanvasInitializeData& aData) override;
   bool CreateCompositable() override;
@@ -66,12 +43,15 @@ public:
   void ClearCachedResources() override;
   void Destroy() override;
 
+  void UpdateCompositableClientForEmptyTransaction();
+
   Maybe<wr::PipelineId> GetPipelineId() { return mPipelineId; }
-protected:
+
+ protected:
   Maybe<wr::PipelineId> mPipelineId;
 };
 
-} // namespace layers
-} // namespace mozilla
+}  // namespace layers
+}  // namespace mozilla
 
 #endif

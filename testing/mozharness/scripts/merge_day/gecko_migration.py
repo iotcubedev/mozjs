@@ -26,8 +26,7 @@ sys.path.insert(1, os.path.dirname(os.path.dirname(sys.path[0])))
 from mozharness.base.errors import HgErrorList
 from mozharness.base.python import VirtualenvMixin, virtualenv_config_options
 from mozharness.base.vcs.vcsbase import MercurialScript
-from mozharness.mozilla.updates.balrog import BalrogMixin
-from mozharness.mozilla.buildbot import BuildbotMixin
+from mozharness.mozilla.automation import AutomationMixin
 from mozharness.mozilla.repo_manipulation import MercurialRepoManipulationMixin
 
 VALID_MIGRATION_BEHAVIORS = (
@@ -37,8 +36,8 @@ VALID_MIGRATION_BEHAVIORS = (
 
 
 # GeckoMigration {{{1
-class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
-                     BuildbotMixin, MercurialRepoManipulationMixin):
+class GeckoMigration(MercurialScript, VirtualenvMixin,
+                     AutomationMixin, MercurialRepoManipulationMixin):
     config_options = [
         [['--hg-user', ], {
             "action": "store",
@@ -47,23 +46,12 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
             "default": "ffxbld <release@mozilla.com>",
             "help": "Specify what user to use to commit to hg.",
         }],
-        [['--balrog-api-root', ], {
+        [['--ssh-user', ], {
             "action": "store",
-            "dest": "balrog_api_root",
+            "dest": "ssh_user",
             "type": "string",
-            "help": "Specify Balrog API root URL.",
-        }],
-        [['--balrog-username', ], {
-            "action": "store",
-            "dest": "balrog_username",
-            "type": "string",
-            "help": "Specify what user to connect to Balrog with.",
-        }],
-        [['--balrog-credentials-file', ], {
-            "action": "store",
-            "dest": "balrog_credentials_file",
-            "type": "string",
-            "help": "The file containing the Balrog credentials.",
+            "default": None,
+            "help": "The user to push to hg.mozilla.org as.",
         }],
         [['--remove-locale', ], {
             "action": "extend",
@@ -82,7 +70,6 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
                 'create-virtualenv',
                 'clean-repos',
                 'pull',
-                'lock-update-paths',
                 'set_push_to_ssh',
                 'migrate',
                 'bump_second_digit',
@@ -125,12 +112,6 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
         if self.abs_dirs:
             return self.abs_dirs
         dirs = super(GeckoMigration, self).query_abs_dirs()
-        self.abs_dirs['abs_tools_dir'] = os.path.join(
-            dirs['abs_work_dir'], 'tools'
-        )
-        self.abs_dirs['abs_tools_lib_dir'] = os.path.join(
-            dirs['abs_work_dir'], 'tools', 'lib', 'python'
-        )
         for k in ('from', 'to'):
             url = self.config.get("%s_repo_url" % k)
             if url:
@@ -189,9 +170,15 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
             return ['-r', '.']
 
     def set_push_to_ssh(self):
-        for cwd in self.query_push_dirs():
+        push_dirs = [d for d in self.query_push_dirs() if d is not None]
+        for cwd in push_dirs:
             repo_url = self.read_repo_hg_rc(cwd).get('paths', 'default')
-            push_dest = repo_url.replace('https://', 'ssh://')
+            username = self.config.get('ssh_user', '')
+            # Add a trailing @ to the username if it exists, otherwise it gets
+            # mushed up with the hostname.
+            if username:
+                username += '@'
+            push_dest = repo_url.replace('https://', 'ssh://' + username)
 
             if not push_dest.startswith('ssh://'):
                 raise Exception('Warning: path "{}" is not supported. Protocol must be ssh')
@@ -401,38 +388,16 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
     def release_to_esr(self, *args, **kwargs):
         """ mozilla-release -> mozilla-esrNN behavior. """
         dirs = self.query_abs_dirs()
-        for to_graft in self.config.get("graft_patches", []):
-            self.graft(repo=to_graft["repo"], changeset=to_graft["changeset"],
-                       cwd=dirs['abs_to_dir'])
         self.apply_replacements()
         self.touch_clobber_file(dirs['abs_to_dir'])
+        next_esr_version = self.get_version(dirs['abs_to_dir'])[0]
+        self.bump_version(dirs['abs_to_dir'], next_esr_version, next_esr_version, "", "",
+                          use_config_suffix=True)
 
     def apply_replacements(self):
         dirs = self.query_abs_dirs()
         for f, from_, to in self.config["replacements"]:
             self.replace(os.path.join(dirs['abs_to_dir'], f), from_, to)
-
-    def graft(self, repo, changeset, cwd):
-        """Graft a Mercurial changeset from a remote repository."""
-        hg = self.query_exe("hg", return_type="list")
-        self.info("Pulling %s from %s" % (changeset, repo))
-        pull_cmd = hg + ["pull", "-r", changeset, repo]
-        status = self.run_command(
-            pull_cmd,
-            cwd=cwd,
-            error_list=HgErrorList,
-        )
-        if status != 0:
-            self.fatal("Cannot pull %s from %s properly" % (changeset, repo))
-        cmd = hg + ["graft", changeset]
-        self.info("Grafting %s from %s" % (changeset, repo))
-        status = self.run_command(
-            cmd,
-            cwd=cwd,
-            error_list=HgErrorList,
-        )
-        if status != 0:
-            self.fatal("Cannot graft %s from %s properly" % (changeset, repo))
 
     def pull_from_repo(self, from_dir, to_dir, revision=None, branch=None):
         """ Pull from one repo to another. """
@@ -477,18 +442,9 @@ class GeckoMigration(MercurialScript, BalrogMixin, VirtualenvMixin,
         self.touch_clobber_file(dirs['abs_to_dir'])
 
     def pull(self):
-        """ Pull tools first, then clone the gecko repos
-            """
-        repos = [{
-            "repo": self.config["tools_repo_url"],
-            "branch": self.config["tools_repo_branch"],
-            "dest": "tools",
-            "vcs": "hg",
-        }] + self.query_repos()
+        """Clone the gecko repos"""
+        repos = self.query_repos()
         super(GeckoMigration, self).pull(repos=repos)
-
-    def lock_update_paths(self):
-        self.lock_balrog_rules(self.config["balrog_rules_to_lock"])
 
     def migrate(self):
         """ Perform the migration.

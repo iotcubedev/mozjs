@@ -23,11 +23,10 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
 
     nsXPTCMiniVariant paramBuffer[PARAM_BUFFER_COUNT];
     nsXPTCMiniVariant* dispatchParams = nullptr;
-    nsIInterfaceInfo* iface_info = nullptr;
+    const nsXPTInterfaceInfo* iface_info = nullptr;
     const nsXPTMethodInfo* info;
     uint8_t paramCount;
     uint8_t i;
-    nsresult result = NS_ERROR_FAILURE;
 
     NS_ASSERTION(self,"no self");
 
@@ -46,8 +45,6 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
         dispatchParams = paramBuffer;
 
     NS_ASSERTION(dispatchParams,"no place for params");
-    if (!dispatchParams)
-        return NS_ERROR_OUT_OF_MEMORY;
 
     uint32_t* ap = args;
     for(i = 0; i < paramCount; i++, ap++)
@@ -89,9 +86,8 @@ PrepareAndDispatch(nsXPTCStubBase* self, uint32_t methodIndex, uint32_t* args)
         }
     }
 
-    result = self->CallMethod((uint16_t)methodIndex, info, dispatchParams);
-
-    NS_RELEASE(iface_info);
+    nsresult result = self->CallMethod((uint16_t)methodIndex, info,
+                                       dispatchParams);
 
     if(dispatchParams != paramBuffer)
         delete [] dispatchParams;

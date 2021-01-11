@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-arraybuffer-length
-es6id: 24.1.2.1
 description: >
   [[Prototype]] defaults to %ArrayBufferPrototype% if NewTarget.prototype is not an object.
 info: |
@@ -22,7 +21,7 @@ info: |
 features: [Reflect.construct, Symbol]
 ---*/
 
-function newTarget() { }
+function newTarget() {}
 
 newTarget.prototype = undefined;
 var arrayBuffer = Reflect.construct(ArrayBuffer, [1], newTarget);

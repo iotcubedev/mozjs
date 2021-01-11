@@ -101,17 +101,16 @@ class BackgroundHangManager;
  *    }
  *  }
  */
-class BackgroundHangMonitor
-{
-private:
+class BackgroundHangMonitor {
+ private:
   friend BackgroundHangManager;
 
   RefPtr<BackgroundHangThread> mThread;
 
-  static bool ShouldDisableOnBeta(const nsCString &);
+  static bool ShouldDisableOnBeta(const nsCString&);
   static bool DisableOnBeta();
 
-public:
+ public:
   static const uint32_t kNoTimeout = 0;
   enum ThreadType {
     // For a new BackgroundHangMonitor for thread T, only create a new
@@ -153,8 +152,7 @@ public:
    *  The ThreadType type of monitoring thread that should be created
    *  for this monitor. See the documentation for ThreadType.
    */
-  BackgroundHangMonitor(const char* aName,
-                        uint32_t aTimeoutMs,
+  BackgroundHangMonitor(const char* aName, uint32_t aTimeoutMs,
                         uint32_t aMaxTimeoutMs,
                         ThreadType aThreadType = THREAD_SHARED);
 
@@ -189,7 +187,7 @@ public:
    * @param aAnnotator annotator to register
    * @return true if the annotator was registered, otherwise false.
    */
-  static bool RegisterAnnotator(HangMonitor::Annotator& aAnnotator);
+  static bool RegisterAnnotator(BackgroundHangAnnotator& aAnnotator);
 
   /**
    * Unregister an annotator that was previously registered via
@@ -197,9 +195,9 @@ public:
    * @param aAnnotator annotator to unregister
    * @return true if there are still remaining annotators registered
    */
-  static bool UnregisterAnnotator(HangMonitor::Annotator& aAnnotator);
+  static bool UnregisterAnnotator(BackgroundHangAnnotator& aAnnotator);
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // mozilla_BackgroundHangMonitor_h
+#endif  // mozilla_BackgroundHangMonitor_h

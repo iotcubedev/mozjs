@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -11,13 +12,13 @@ flags: [async]
 ---*/
 
 var thenable = {
-    then: function(onResolve, onReject) {
-        return onResolve('resolved');
-    }
+  then: function(onResolve, onReject) {
+    return onResolve('resolved');
+  }
 };
 
 var p = Promise.resolve(thenable);
 
-p.then(function (r) {
-    assert.sameValue(r, 'resolved');
+p.then(function(r) {
+  assert.sameValue(r, 'resolved');
 }).then($DONE, $DONE);

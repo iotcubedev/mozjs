@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-dataview.prototype.setint32
-es6id: 24.2.4.17
 description: >
   ToIndex conversions on byteOffset
 info: |
@@ -107,4 +106,5 @@ assert.sameValue(sample.getInt32(0), 42, "undefined");
 sample.setInt32(0, 7);
 sample.setInt32();
 assert.sameValue(sample.getInt32(0), 0, "no arg");
+
 reportCompare(0, 0);

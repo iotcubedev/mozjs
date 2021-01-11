@@ -1,41 +1,12 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
 
-const { getRootBindingParent } = require("devtools/shared/layout/utils");
-const { getTabPrefs } = require("devtools/shared/indentation");
 const InspectorUtils = require("InspectorUtils");
 
 const MAX_DATA_URL_LENGTH = 40;
-
-/*
- * About the objects defined in this file:
- * - CssLogic contains style information about a view context. It provides
- *   access to 2 sets of objects: Css[Sheet|Rule|Selector] provide access to
- *   information that does not change when the selected element changes while
- *   Css[Property|Selector]Info provide information that is dependent on the
- *   selected element.
- *   Its key methods are highlight(), getPropertyInfo() and forEachSheet(), etc
- *   It also contains a number of static methods for l10n, naming, etc
- *
- * - CssSheet provides a more useful API to a DOM CSSSheet for our purposes,
- *   including shortSource and href.
- * - CssRule a more useful API to a DOM CSSRule including access to the group
- *   of CssSelectors that the rule provides properties for
- * - CssSelector A single selector - i.e. not a selector group. In other words
- *   a CssSelector does not contain ','. This terminology is different from the
- *   standard DOM API, but more inline with the definition in the spec.
- *
- * - CssPropertyInfo contains style information for a single property for the
- *   highlighted element.
- * - CssSelectorInfo is a wrapper around CssSelector, which adds sorting with
- *   reference to the selected element.
- */
-
 /**
  * Provide access to the style information in a page.
  * CssLogic uses the standard DOM API, and the Gecko InspectorUtils API to
@@ -48,12 +19,34 @@ const MAX_DATA_URL_LENGTH = 40;
 
 const Services = require("Services");
 
-loader.lazyImporter(this, "findCssSelector", "resource://gre/modules/css-selector.js");
+loader.lazyImporter(
+  this,
+  "findCssSelector",
+  "resource://gre/modules/css-selector.js"
+);
+loader.lazyImporter(
+  this,
+  "getCssPath",
+  "resource://gre/modules/css-selector.js"
+);
+loader.lazyImporter(this, "getXPath", "resource://gre/modules/css-selector.js");
+loader.lazyRequireGetter(
+  this,
+  "getCSSLexer",
+  "devtools/shared/css/lexer",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "getTabPrefs",
+  "devtools/shared/indentation",
+  true
+);
 
-const CSSLexer = require("devtools/shared/css/lexer");
-const {LocalizationHelper} = require("devtools/shared/l10n");
-const styleInspectorL10N =
-  new LocalizationHelper("devtools/shared/locales/styleinspector.properties");
+const { LocalizationHelper } = require("devtools/shared/l10n");
+const styleInspectorL10N = new LocalizationHelper(
+  "devtools/shared/locales/styleinspector.properties"
+);
 
 /**
  * Special values for filter, in addition to an href these values can be used
@@ -82,6 +75,26 @@ exports.STATUS = {
 };
 
 /**
+ * Mapping of CSSRule type value to CSSRule type name.
+ * @see https://developer.mozilla.org/en-US/docs/Web/API/CSSRule
+ */
+exports.CSSRuleTypeName = {
+  1: "", // Regular CSS style rule has no name
+  3: "@import",
+  4: "@media",
+  5: "@font-face",
+  6: "@page",
+  7: "@keyframes",
+  8: "@keyframe",
+  10: "@namespace",
+  11: "@counter-style",
+  12: "@supports",
+  13: "@document",
+  14: "@font-feature-values",
+  15: "@viewport",
+};
+
+/**
  * Lookup a l10n string in the shared styleinspector string bundle.
  *
  * @param {String} name
@@ -91,14 +104,36 @@ exports.STATUS = {
 exports.l10n = name => styleInspectorL10N.getStr(name);
 
 /**
- * Is the given property sheet a content stylesheet?
+ * Is the given property sheet an author stylesheet?
  *
  * @param {CSSStyleSheet} sheet a stylesheet
- * @return {boolean} true if the given stylesheet is a content stylesheet,
+ * @return {boolean} true if the given stylesheet is an author stylesheet,
  * false otherwise.
  */
-exports.isContentStylesheet = function (sheet) {
-  return sheet.parsingMode !== "agent";
+exports.isAuthorStylesheet = function(sheet) {
+  return sheet.parsingMode === "author";
+};
+
+/**
+ * Is the given property sheet a user stylesheet?
+ *
+ * @param {CSSStyleSheet} sheet a stylesheet
+ * @return {boolean} true if the given stylesheet is a user stylesheet,
+ * false otherwise.
+ */
+exports.isUserStylesheet = function(sheet) {
+  return sheet.parsingMode === "user";
+};
+
+/**
+ * Is the given property sheet a agent stylesheet?
+ *
+ * @param {CSSStyleSheet} sheet a stylesheet
+ * @return {boolean} true if the given stylesheet is a agent stylesheet,
+ * false otherwise.
+ */
+exports.isAgentStylesheet = function(sheet) {
+  return sheet.parsingMode === "agent";
 };
 
 /**
@@ -106,17 +141,18 @@ exports.isContentStylesheet = function (sheet) {
  *
  * @param {CSSStyleSheet} sheet the DOM object for the style sheet.
  */
-exports.shortSource = function (sheet) {
+exports.shortSource = function(sheet) {
   // Use a string like "inline" if there is no source href
   if (!sheet || !sheet.href) {
     return exports.l10n("rule.sourceInline");
   }
 
   // If the sheet is a data URL, return a trimmed version of it.
-  let dataUrl = sheet.href.trim().match(/^data:.*?,((?:.|\r|\n)*)$/);
+  const dataUrl = sheet.href.trim().match(/^data:.*?,((?:.|\r|\n)*)$/);
   if (dataUrl) {
-    return dataUrl[1].length > MAX_DATA_URL_LENGTH ?
-      `${dataUrl[1].substr(0, MAX_DATA_URL_LENGTH - 1)}…` : dataUrl[1];
+    return dataUrl[1].length > MAX_DATA_URL_LENGTH
+      ? `${dataUrl[1].substr(0, MAX_DATA_URL_LENGTH - 1)}…`
+      : dataUrl[1];
   }
 
   // We try, in turn, the filename, filePath, query string, whole thing
@@ -128,7 +164,7 @@ exports.shortSource = function (sheet) {
   }
 
   if (url.pathname) {
-    let index = url.pathname.lastIndexOf("/");
+    const index = url.pathname.lastIndexOf("/");
     if (index !== -1 && index < url.pathname.length) {
       return url.pathname.slice(index + 1);
     }
@@ -145,33 +181,67 @@ exports.shortSource = function (sheet) {
 const TAB_CHARS = "\t";
 const SPACE_CHARS = " ";
 
+function getLineCountInComments(text) {
+  let count = 0;
+
+  for (const comment of text.match(/\/\*(?:.|\n)*?\*\//gm) || []) {
+    count += comment.split("\n").length + 1;
+  }
+
+  return count;
+}
+
 /**
  * Prettify minified CSS text.
  * This prettifies CSS code where there is no indentation in usual places while
  * keeping original indentation as-is elsewhere.
- * @param string text The CSS source to prettify.
- * @return string Prettified CSS source
+ *
+ * Returns an object with the resulting prettified source and a list of mappings of
+ * token positions between the original and the prettified source. Each single mapping
+ * is an object that looks like this:
+ *
+ * {
+ *  original: {line: {Number}, column: {Number}},
+ *  generated: {line: {Number}, column: {Number}},
+ * }
+ *
+ * @param  {String} text
+ *         The CSS source to prettify.
+ * @param  {Number} ruleCount
+ *         The number of CSS rules expected in the CSS source.
+ *
+ * @return {Object}
+ *         Object with the prettified source and source mappings.
+ *          {
+ *            result: {String}  // Prettified source
+ *            mappings: {Array} // List of objects with mappings for lines and columns
+ *                              // between the original source and prettified source
+ *          }
  */
+/* eslint-disable complexity */
 function prettifyCSS(text, ruleCount) {
   if (prettifyCSS.LINE_SEPARATOR == null) {
-    let os = Services.appinfo.OS;
-    prettifyCSS.LINE_SEPARATOR = (os === "WINNT" ? "\r\n" : "\n");
+    const os = Services.appinfo.OS;
+    prettifyCSS.LINE_SEPARATOR = os === "WINNT" ? "\r\n" : "\n";
   }
 
   // Stylesheets may start and end with HTML comment tags (possibly with whitespaces
   // before and after). Remove those first. Don't do anything there aren't any.
-  let trimmed = text.trim();
+  const trimmed = text.trim();
   if (trimmed.startsWith("<!--")) {
-    text = trimmed.replace(/^<!--/, "").replace(/-->$/, "").trim();
+    text = trimmed
+      .replace(/^<!--/, "")
+      .replace(/-->$/, "")
+      .trim();
   }
 
-  let originalText = text;
+  const originalText = text;
   text = text.trim();
 
-  // don't attempt to prettify if there's more than one line per rule.
-  let lineCount = text.split("\n").length - 1;
+  // don't attempt to prettify if there's more than one line per rule, excluding comments.
+  const lineCount = text.split("\n").length - 1 - getLineCountInComments(text);
   if (ruleCount !== null && lineCount >= ruleCount) {
-    return originalText;
+    return { result: originalText, mappings: [] };
   }
 
   // We reformat the text using a simple state machine.  The
@@ -189,7 +259,13 @@ function prettifyCSS(text, ruleCount) {
   // minified file.
   let indent = "";
   let indentLevel = 0;
-  let tokens = CSSLexer.getCSSLexer(text);
+  const tokens = getCSSLexer(text);
+  // List of mappings of token positions from original source to prettified source.
+  const mappings = [];
+  // Line and column offsets used to shift the token positions after prettyfication.
+  let lineOffset = 0;
+  let columnOffset = 0;
+  let indentOffset = 0;
   let result = "";
   let pushbackToken = undefined;
 
@@ -198,16 +274,16 @@ function prettifyCSS(text, ruleCount) {
   // are appended to |result|.  If this encounters EOF, it returns
   // null.  Otherwise it returns the last whitespace token that was
   // seen.  This function also updates |pushbackToken|.
-  let readUntilSignificantToken = () => {
+  const readUntilSignificantToken = () => {
     while (true) {
-      let token = tokens.nextToken();
+      const token = tokens.nextToken();
       if (!token || token.tokenType !== "whitespace") {
         pushbackToken = token;
         return token;
       }
       // Saw whitespace.  Before committing to it, check the next
       // token.
-      let nextToken = tokens.nextToken();
+      const nextToken = tokens.nextToken();
       if (!nextToken || nextToken.tokenType !== "comment") {
         pushbackToken = nextToken;
         return token;
@@ -230,6 +306,10 @@ function prettifyCSS(text, ruleCount) {
   // True if the token just before the terminating token was
   // whitespace.
   let lastWasWS;
+  // True if the current token is inside a CSS selector.
+  let isInSelector = true;
+  // True if the current token is inside an at-rule definition.
+  let isInAtRuleDefinition = false;
 
   // A helper function that reads tokens until there is a reason to
   // insert a newline.  This updates the state variables as needed.
@@ -237,7 +317,7 @@ function prettifyCSS(text, ruleCount) {
   // the final token read.  Note that if the returned token is "{",
   // then it will not be included in the computed start/end token
   // range.  This is used to handle whitespace insertion before a "{".
-  let readUntilNewlineNeeded = () => {
+  const readUntilNewlineNeeded = () => {
     let token;
     while (true) {
       if (pushbackToken) {
@@ -251,12 +331,37 @@ function prettifyCSS(text, ruleCount) {
         break;
       }
 
+      const line = tokens.lineNumber;
+      const column = tokens.columnNumber;
+      mappings.push({
+        original: {
+          line,
+          column,
+        },
+        generated: {
+          line: lineOffset + line,
+          column: columnOffset,
+        },
+      });
+      // Shift the column offset for the next token by the current token's length.
+      columnOffset += token.endOffset - token.startOffset;
+
+      if (token.tokenType === "at") {
+        isInAtRuleDefinition = true;
+      }
+
       // A "}" symbol must be inserted later, to deal with indentation
       // and newline.
       if (token.tokenType === "symbol" && token.text === "}") {
+        isInSelector = true;
         isCloseBrace = true;
         break;
       } else if (token.tokenType === "symbol" && token.text === "{") {
+        if (isInAtRuleDefinition) {
+          isInAtRuleDefinition = false;
+        } else {
+          isInSelector = false;
+        }
         break;
       }
 
@@ -270,6 +375,15 @@ function prettifyCSS(text, ruleCount) {
       endIndex = token.endOffset;
 
       if (token.tokenType === "symbol" && token.text === ";") {
+        break;
+      }
+
+      if (
+        token.tokenType === "symbol" &&
+        token.text === "," &&
+        isInSelector &&
+        !isInAtRuleDefinition
+      ) {
         break;
       }
 
@@ -298,13 +412,14 @@ function prettifyCSS(text, ruleCount) {
         result = result + indent + text.substring(startIndex, endIndex);
         if (isCloseBrace) {
           result += prettifyCSS.LINE_SEPARATOR;
+          lineOffset = lineOffset + 1;
         }
       }
     }
 
     // Get preference of the user regarding what to use for indentation,
     // spaces or tabs.
-    let tabPrefs = getTabPrefs();
+    const tabPrefs = getTabPrefs();
 
     if (isCloseBrace) {
       // Even if the stylesheet contains extra closing braces, the indent level should
@@ -313,8 +428,10 @@ function prettifyCSS(text, ruleCount) {
 
       if (tabPrefs.indentWithTabs) {
         indent = TAB_CHARS.repeat(indentLevel);
+        indentOffset = 4 * indentLevel;
       } else {
         indent = SPACE_CHARS.repeat(indentLevel);
+        indentOffset = 1 * indentLevel;
       }
       result = result + indent + "}";
     }
@@ -326,12 +443,15 @@ function prettifyCSS(text, ruleCount) {
     if (token.tokenType === "symbol" && token.text === "{") {
       if (!lastWasWS) {
         result += " ";
+        columnOffset++;
       }
       result += "{";
       if (tabPrefs.indentWithTabs) {
         indent = TAB_CHARS.repeat(++indentLevel);
+        indentOffset = 4 * indentLevel;
       } else {
         indent = SPACE_CHARS.repeat(++indentLevel);
+        indentOffset = 1 * indentLevel;
       }
     }
 
@@ -342,13 +462,21 @@ function prettifyCSS(text, ruleCount) {
     // "Early" bail-out if the text does not appear to be minified.
     // Here we ignore the case where whitespace appears at the end of
     // the text.
-    if (pushbackToken && token && token.tokenType === "whitespace" &&
-        /\n/g.test(text.substring(token.startOffset, token.endOffset))) {
-      return originalText;
+    if (
+      pushbackToken &&
+      token &&
+      token.tokenType === "whitespace" &&
+      /\n/g.test(text.substring(token.startOffset, token.endOffset))
+    ) {
+      return { result: originalText, mappings: [] };
     }
 
     // Finally time for that newline.
     result = result + prettifyCSS.LINE_SEPARATOR;
+
+    // Update line and column offsets for the new line.
+    lineOffset = lineOffset + 1;
+    columnOffset = 0 + indentOffset;
 
     // Maybe we hit EOF.
     if (!pushbackToken) {
@@ -356,8 +484,9 @@ function prettifyCSS(text, ruleCount) {
     }
   }
 
-  return result;
+  return { result, mappings };
 }
+/* eslint-enable complexity */
 
 exports.prettifyCSS = prettifyCSS;
 
@@ -374,48 +503,6 @@ exports.findCssSelector = findCssSelector;
  * match the element uniquely. It does however, represent the full path from the root
  * node to the element.
  */
-function getCssPath(ele) {
-  ele = getRootBindingParent(ele);
-  const document = ele.ownerDocument;
-  if (!document || !document.contains(ele)) {
-    throw new Error("getCssPath received element not inside document");
-  }
-
-  const getElementSelector = element => {
-    if (!element.localName) {
-      return "";
-    }
-
-    let label = element.nodeName == element.nodeName.toUpperCase()
-                ? element.localName.toLowerCase()
-                : element.localName;
-
-    if (element.id) {
-      label += "#" + element.id;
-    }
-
-    if (element.classList) {
-      for (let cl of element.classList) {
-        label += "." + cl;
-      }
-    }
-
-    return label;
-  };
-
-  let paths = [];
-
-  while (ele) {
-    if (!ele || ele.nodeType !== Node.ELEMENT_NODE) {
-      break;
-    }
-
-    paths.splice(0, 0, getElementSelector(ele));
-    ele = ele.parentNode;
-  }
-
-  return paths.length ? paths.join(" ") : "";
-}
 exports.getCssPath = getCssPath;
 
 /**
@@ -423,75 +510,25 @@ exports.getCssPath = getCssPath;
  * @param {DomNode} ele
  * @returns a string that can be used as an XPath to find the element uniquely.
  */
-function getXPath(ele) {
-  ele = getRootBindingParent(ele);
-  const document = ele.ownerDocument;
-  if (!document || !document.contains(ele)) {
-    throw new Error("getXPath received element not inside document");
-  }
-
-  // Create a short XPath for elements with IDs.
-  if (ele.id) {
-    return `//*[@id="${ele.id}"]`;
-  }
-
-  // Otherwise walk the DOM up and create a part for each ancestor.
-  const parts = [];
-
-  // Use nodeName (instead of localName) so namespace prefix is included (if any).
-  while (ele && ele.nodeType === Node.ELEMENT_NODE) {
-    let nbOfPreviousSiblings = 0;
-    let hasNextSiblings = false;
-
-    // Count how many previous same-name siblings the element has.
-    let sibling = ele.previousSibling;
-    while (sibling) {
-      // Ignore document type declaration.
-      if (sibling.nodeType !== Node.DOCUMENT_TYPE_NODE &&
-          sibling.nodeName == ele.nodeName) {
-        nbOfPreviousSiblings++;
-      }
-
-      sibling = sibling.previousSibling;
-    }
-
-    // Check if the element has at least 1 next same-name sibling.
-    sibling = ele.nextSibling;
-    while (sibling) {
-      if (sibling.nodeName == ele.nodeName) {
-        hasNextSiblings = true;
-        break;
-      }
-      sibling = sibling.nextSibling;
-    }
-
-    const prefix = ele.prefix ? ele.prefix + ":" : "";
-    const nth = nbOfPreviousSiblings || hasNextSiblings
-                ? `[${nbOfPreviousSiblings + 1}]` : "";
-
-    parts.push(prefix + ele.localName + nth);
-
-    ele = ele.parentNode;
-  }
-
-  return parts.length ? "/" + parts.reverse().join("/") : "";
-}
 exports.getXPath = getXPath;
 
 /**
- * Given a node, check to see if it is a ::before or ::after element.
+ * Given a node, check to see if it is a ::marker, ::before, or ::after element.
  * If so, return the node that is accessible from within the document
  * (the parent of the anonymous node), along with which pseudo element
  * it was.  Otherwise, return the node itself.
  *
  * @returns {Object}
  *            - {DOMNode} node The non-anonymous node
- *            - {string} pseudo One of ':before', ':after', or null.
+ *            - {string} pseudo One of ':marker', ':before', ':after', or null.
  */
 function getBindingElementAndPseudo(node) {
   let bindingElement = node;
   let pseudo = null;
-  if (node.nodeName == "_moz_generated_content_before") {
+  if (node.nodeName == "_moz_generated_content_marker") {
+    bindingElement = node.parentNode;
+    pseudo = ":marker";
+  } else if (node.nodeName == "_moz_generated_content_before") {
     bindingElement = node.parentNode;
     pseudo = ":before";
   } else if (node.nodeName == "_moz_generated_content_after") {
@@ -500,7 +537,7 @@ function getBindingElementAndPseudo(node) {
   }
   return {
     bindingElement: bindingElement,
-    pseudo: pseudo
+    pseudo: pseudo,
   };
 }
 exports.getBindingElementAndPseudo = getBindingElementAndPseudo;
@@ -511,7 +548,8 @@ exports.getBindingElementAndPseudo = getBindingElementAndPseudo;
  * normal element.
  */
 function getCSSStyleRules(node) {
-  let { bindingElement, pseudo } = getBindingElementAndPseudo(node);
-  return InspectorUtils.getCSSStyleRules(bindingElement, pseudo);
+  const { bindingElement, pseudo } = getBindingElementAndPseudo(node);
+  const rules = InspectorUtils.getCSSStyleRules(bindingElement, pseudo);
+  return rules;
 }
 exports.getCSSStyleRules = getCSSStyleRules;

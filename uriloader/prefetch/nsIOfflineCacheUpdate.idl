@@ -7,14 +7,13 @@
 
 interface mozIDOMWindow;
 interface nsIURI;
-interface nsIDOMNode;
-interface nsIDOMDocument;
 interface nsIOfflineCacheUpdate;
 interface nsIPrincipal;
 interface nsIPrefBranch;
 interface nsIApplicationCache;
 interface nsIFile;
 interface nsIObserver;
+webidl Document;
 
 [scriptable, uuid(47360d57-8ef4-4a5d-8865-1a27a739ad1a)]
 interface nsIOfflineCacheUpdateObserver : nsISupports {
@@ -42,7 +41,7 @@ interface nsIOfflineCacheUpdateObserver : nsISupports {
    * Informs the observer about an application being available to associate.
    *
    * @param applicationCache
-   *        The application cache instance that has been created or found by the 
+   *        The application cache instance that has been created or found by the
    *        update to associate with
    */
   void applicationCacheAvailable(in nsIApplicationCache applicationCache);
@@ -62,7 +61,7 @@ interface nsIOfflineCacheUpdateObserver : nsISupports {
 interface nsIOfflineCacheUpdate : nsISupports {
   /**
    * Fetch the status of the running update.  This will return a value
-   * defined in nsIDOMOfflineResourceList.
+   * defined in OfflineResourceList.webidl.
    */
   readonly attribute unsigned short status;
 
@@ -107,11 +106,11 @@ interface nsIOfflineCacheUpdate : nsISupports {
   void init(in nsIURI aManifestURI,
             in nsIURI aDocumentURI,
             in nsIPrincipal aLoadingPrincipal,
-            in nsIDOMDocument aDocument,
+            in Document aDocument,
             [optional] in nsIFile aCustomProfileDir);
 
   /**
-   * Initialize the update for partial processing. 
+   * Initialize the update for partial processing.
    *
    * @param aManifestURI
    *        The manifest URI of the related cache.
@@ -120,7 +119,7 @@ interface nsIOfflineCacheUpdate : nsISupports {
    *        must be ID of cache in the cache group identified by
    *        the manifest URI passed in the first parameter.
    * @param aDocumentURI
-   *        The page that is requesting the update. May be null 
+   *        The page that is requesting the update. May be null
    *        when this information is unknown.
    */
   void initPartial(in nsIURI aManifestURI, in ACString aClientID,
@@ -224,9 +223,9 @@ interface nsIOfflineCacheUpdateService : nsISupports {
 
     /**
      * Schedule a cache update for a given offline manifest using app cache
-     * bound to the given appID+inIsolatedMozBrowser flag.  If an existing update
-     * is scheduled or running, that update will be returned. Otherwise a new
-     * update will be scheduled.
+     * bound to the given appID flag.  If an existing update is scheduled or
+     * running, that update will be returned. Otherwise a new update will be
+     * scheduled.
      */
     nsIOfflineCacheUpdate scheduleAppUpdate(in nsIURI aManifestURI,
                                             in nsIURI aDocumentURI,
@@ -240,7 +239,7 @@ interface nsIOfflineCacheUpdateService : nsISupports {
     void scheduleOnDocumentStop(in nsIURI aManifestURI,
                                 in nsIURI aDocumentURI,
                                 in nsIPrincipal aLoadingPrincipal,
-                                in nsIDOMDocument aDocument);
+                                in Document aDocument);
 
     /**
      * Schedule a check to see if an update is available.

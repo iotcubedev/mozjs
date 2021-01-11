@@ -3,13 +3,12 @@
 
 /*---
 esid: sec-array.prototype.filter
-es5id: 15.4.4.20-4-3
 description: Array.prototype.filter throws TypeError if callbackfn is null
 ---*/
 
-  var arr = new Array(10);
+var arr = new Array(10);
 assert.throws(TypeError, function() {
-    arr.filter(null);
+  arr.filter(null);
 });
 
 reportCompare(0, 0);

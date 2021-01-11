@@ -12,19 +12,16 @@ config = {
     'tooltool_cache': "/builds/tooltool_cache",
     'exes': {
         'gittool.py': [os.path.join(external_tools_path, 'gittool.py')],
-        'python2.7': "/tools/python27/bin/python2.7",
+        'python2.7': "python2.7",
     },
     'dump_syms_binary': 'dump_syms',
     'arch': 'x64',
-    'use_mock': True,
     'avoid_avx2': True,
-    'mock_target': 'mozilla-centos6-x86_64',
-    'mock_packages': ['make', 'git', 'nasm', 'glibc-devel.i686',
-                      'libstdc++-devel.i686', 'zip', 'yasm',
-                      'mozilla-python27'],
-    'mock_files': [
-        ('/home/cltbld/.ssh', '/home/mock_mozilla/.ssh'),
-        ('/builds/relengapi.tok', '/builds/relengapi.tok'),
-    ],
     'operating_system': 'linux',
+    'partial_env': {
+        'PATH': ('{MOZ_FETCHES_DIR}/clang/bin:'
+                 '{MOZ_FETCHES_DIR}/binutils/bin:'
+                 '{MOZ_FETCHES_DIR}/nasm:%(PATH)s'
+                 .format(MOZ_FETCHES_DIR=os.environ['MOZ_FETCHES_DIR'])),
+    },
 }

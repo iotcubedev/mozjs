@@ -17,7 +17,8 @@
 
 #define GTEST_HAS_RTTI 0
 #include "gtest/gtest.h"
-#include "scoped_ptrs.h"
+#include "nss_scoped_ptrs.h"
+#include "scoped_ptrs_ssl.h"
 
 extern bool g_ssl_gtest_verbose;
 
@@ -64,6 +65,7 @@ class TlsAgent : public PollTarget {
 
   static const std::string kClient;     // the client key is sign only
   static const std::string kRsa2048;    // bigger sign and encrypt for either
+  static const std::string kRsa8192;    // biggest sign and encrypt for either
   static const std::string kServerRsa;  // both sign and encrypt
   static const std::string kServerRsaSign;
   static const std::string kServerRsaPss;
@@ -74,6 +76,7 @@ class TlsAgent : public PollTarget {
   static const std::string kServerEcdhEcdsa;
   static const std::string kServerEcdhRsa;
   static const std::string kServerDsa;
+  static const std::string kDelegatorEcdsa256;  // draft-ietf-tls-subcerts
 
   TlsAgent(const std::string& name, Role role, SSLProtocolVariant variant);
   virtual ~TlsAgent();
@@ -106,9 +109,31 @@ class TlsAgent : public PollTarget {
   void PrepareForRenegotiate();
   // Prepares for renegotiation, then actually triggers it.
   void StartRenegotiate();
+  void SetAntiReplayContext(ScopedSSLAntiReplayContext& ctx);
+
   static bool LoadCertificate(const std::string& name,
                               ScopedCERTCertificate* cert,
                               ScopedSECKEYPrivateKey* priv);
+  static bool LoadKeyPairFromCert(const std::string& name,
+                                  ScopedSECKEYPublicKey* pub,
+                                  ScopedSECKEYPrivateKey* priv);
+
+  // Delegated credentials.
+  //
+  // Generate a delegated credential and sign it using the certificate
+  // associated with |name|.
+  static void DelegateCredential(const std::string& name,
+                                 const ScopedSECKEYPublicKey& dcPub,
+                                 SSLSignatureScheme dcCertVerifyAlg,
+                                 PRUint32 dcValidFor, PRTime now, SECItem* dc);
+  // Indicate support for the delegated credentials extension.
+  void EnableDelegatedCredentials();
+  // Generate and configure a delegated credential to use in the handshake with
+  // clients that support this extension..
+  void AddDelegatedCredential(const std::string& dc_name,
+                              SSLSignatureScheme dcCertVerifyAlg,
+                              PRUint32 dcValidFor, PRTime now);
+
   bool ConfigServerCert(const std::string& name, bool updateKeyBits = false,
                         const SSLExtraServerCertData* serverCertData = nullptr);
   bool ConfigServerCertWithChain(const std::string& name);
@@ -137,14 +162,14 @@ class TlsAgent : public PollTarget {
                  const std::string& expected = "") const;
   void EnableSrtp();
   void CheckSrtp() const;
+  void CheckEpochs(uint16_t expected_read, uint16_t expected_write) const;
   void CheckErrorCode(int32_t expected) const;
   void WaitForErrorCode(int32_t expected, uint32_t delay) const;
   // Send data on the socket, encrypting it.
   void SendData(size_t bytes, size_t blocksize = 1024);
   void SendBuffer(const DataBuffer& buf);
   bool SendEncryptedRecord(const std::shared_ptr<TlsCipherSpec>& spec,
-                           uint16_t wireVersion, uint64_t seq, uint8_t ct,
-                           const DataBuffer& buf);
+                           uint64_t seq, uint8_t ct, const DataBuffer& buf);
   // Send data directly to the underlying socket, skipping the TLS layer.
   void SendDirect(const DataBuffer& buf);
   void SendRecordDirect(const TlsRecord& record);
@@ -198,21 +223,22 @@ class TlsAgent : public PollTarget {
   PRFileDesc* ssl_fd() const { return ssl_fd_.get(); }
   std::shared_ptr<DummyPrSocket>& adapter() { return adapter_; }
 
+  const SSLChannelInfo& info() const {
+    EXPECT_EQ(STATE_CONNECTED, state_);
+    return info_;
+  }
   bool is_compressed() const {
-    return info_.compressionMethod != ssl_compression_null;
+    return info().compressionMethod != ssl_compression_null;
   }
   uint16_t server_key_bits() const { return server_key_bits_; }
   uint16_t min_version() const { return vrange_.min; }
   uint16_t max_version() const { return vrange_.max; }
-  uint16_t version() const {
-    EXPECT_EQ(STATE_CONNECTED, state_);
-    return info_.protocolVersion;
-  }
+  uint16_t version() const { return info().protocolVersion; }
 
-  bool cipher_suite(uint16_t* cipher_suite) const {
+  bool cipher_suite(uint16_t* suite) const {
     if (state_ != STATE_CONNECTED) return false;
 
-    *cipher_suite = info_.cipherSuite;
+    *suite = info_.cipherSuite;
     return true;
   }
 
@@ -227,17 +253,17 @@ class TlsAgent : public PollTarget {
                                 info_.sessionID + info_.sessionIDLength);
   }
 
-  bool auth_type(SSLAuthType* auth_type) const {
+  bool auth_type(SSLAuthType* a) const {
     if (state_ != STATE_CONNECTED) return false;
 
-    *auth_type = info_.authType;
+    *a = info_.authType;
     return true;
   }
 
-  bool kea_type(SSLKEAType* kea_type) const {
+  bool kea_type(SSLKEAType* k) const {
     if (state_ != STATE_CONNECTED) return false;
 
-    *kea_type = info_.keaType;
+    *k = info_.keaType;
     return true;
   }
 
@@ -263,6 +289,8 @@ class TlsAgent : public PollTarget {
 
   void ExpectReceiveAlert(uint8_t alert, uint8_t level = 0);
   void ExpectSendAlert(uint8_t alert, uint8_t level = 0);
+
+  std::string alpn_value_to_use_ = "";
 
  private:
   const static char* states[];
@@ -443,6 +471,7 @@ class TlsAgentTestBase : public ::testing::Test {
                                     size_t hs_len, DataBuffer* out,
                                     uint64_t seq_num, uint32_t fragment_offset,
                                     uint32_t fragment_length) const;
+  DataBuffer MakeCannedTls13ServerHello();
   static void MakeTrivialHandshakeRecord(uint8_t hs_type, size_t hs_len,
                                          DataBuffer* out);
   static inline TlsAgent::Role ToRole(const std::string& str) {

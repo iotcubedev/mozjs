@@ -4,15 +4,14 @@
 /*---
 info: "[[Get]] from not an inherited property"
 esid: sec-array.prototype.splice
-es5id: 15.4.4.12_A4_T2
 description: >
     [[Prototype]] of Array instance is Array.prototype, [[Prototype]
     of Array.prototype is Object.prototype
 ---*/
 
 Array.prototype[1] = -1;
-var x = [0,1];
-var arr = x.splice(1,1,2);
+var x = [0, 1];
+var arr = x.splice(1, 1, 2);
 
 //CHECK#1
 if (arr.length !== 1) {
@@ -48,8 +47,11 @@ if (x[1] !== 2) {
 Object.prototype[1] = -1;
 Object.prototype.length = 2;
 Object.prototype.splice = Array.prototype.splice;
-x = {0:0, 1:1};
-var arr = x.splice(1,1,2);
+x = {
+  0: 0,
+  1: 1
+};
+var arr = x.splice(1, 1, 2);
 
 //CHECK#7
 if (arr.length !== 1) {

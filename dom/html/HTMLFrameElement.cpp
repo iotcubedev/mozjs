@@ -7,33 +7,24 @@
 #include "mozilla/dom/HTMLFrameElement.h"
 #include "mozilla/dom/HTMLFrameElementBinding.h"
 
-class nsIDOMDocument;
-
 NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Frame)
 
 namespace mozilla {
 namespace dom {
 
-HTMLFrameElement::HTMLFrameElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
-                                   FromParser aFromParser)
-  : nsGenericHTMLFrameElement(aNodeInfo, aFromParser)
-{
-}
+HTMLFrameElement::HTMLFrameElement(
+    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+    FromParser aFromParser)
+    : nsGenericHTMLFrameElement(std::move(aNodeInfo), aFromParser) {}
 
-HTMLFrameElement::~HTMLFrameElement()
-{
-}
-
+HTMLFrameElement::~HTMLFrameElement() {}
 
 NS_IMPL_ELEMENT_CLONE(HTMLFrameElement)
 
-bool
-HTMLFrameElement::ParseAttribute(int32_t aNamespaceID,
-                                 nsAtom* aAttribute,
-                                 const nsAString& aValue,
-                                 nsIPrincipal* aMaybeScriptedPrincipal,
-                                 nsAttrValue& aResult)
-{
+bool HTMLFrameElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
+                                      const nsAString& aValue,
+                                      nsIPrincipal* aMaybeScriptedPrincipal,
+                                      nsAttrValue& aResult) {
   if (aNamespaceID == kNameSpaceID_None) {
     if (aAttribute == nsGkAtoms::bordercolor) {
       return aResult.ParseColor(aValue);
@@ -42,25 +33,24 @@ HTMLFrameElement::ParseAttribute(int32_t aNamespaceID,
       return ParseFrameborderValue(aValue, aResult);
     }
     if (aAttribute == nsGkAtoms::marginwidth) {
-      return aResult.ParseSpecialIntValue(aValue);
+      return aResult.ParseNonNegativeIntValue(aValue);
     }
     if (aAttribute == nsGkAtoms::marginheight) {
-      return aResult.ParseSpecialIntValue(aValue);
+      return aResult.ParseNonNegativeIntValue(aValue);
     }
     if (aAttribute == nsGkAtoms::scrolling) {
       return ParseScrollingValue(aValue, aResult);
     }
   }
 
-  return nsGenericHTMLFrameElement::ParseAttribute(aNamespaceID, aAttribute,
-                                                   aValue, aMaybeScriptedPrincipal, aResult);
+  return nsGenericHTMLFrameElement::ParseAttribute(
+      aNamespaceID, aAttribute, aValue, aMaybeScriptedPrincipal, aResult);
 }
 
-JSObject*
-HTMLFrameElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
-{
-  return HTMLFrameElementBinding::Wrap(aCx, this, aGivenProto);
+JSObject* HTMLFrameElement::WrapNode(JSContext* aCx,
+                                     JS::Handle<JSObject*> aGivenProto) {
+  return HTMLFrameElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla

@@ -24,6 +24,7 @@ EXPORTS.mozilla.gfx += [
     'CriticalSection.h',
     'DataSurfaceHelpers.h',
     'DrawEventRecorder.h',
+    'DrawTargetOffset.h',
     'DrawTargetRecording.h',
     'DrawTargetTiled.h',
     'DrawTargetWrapAndRecord.h',
@@ -101,18 +102,23 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'windows':
         'JobScheduler_posix.cpp',
     ]
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk3'):
+if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk'):
     EXPORTS.mozilla.gfx += [
         'UnscaledFontFreeType.h',
     ]
     SOURCES += [
+        'NativeFontResourceFreeType.cpp',
         'UnscaledFontFreeType.cpp',
     ]
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk3':
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
     SOURCES += [
-        'NativeFontResourceFontconfig.cpp',
         'ScaledFontFontconfig.cpp',
+    ]
+
+if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
+    SOURCES += [
+        'ScaledFontFreeType.cpp',
     ]
 
 if CONFIG['MOZ_ENABLE_SKIA']:
@@ -157,6 +163,8 @@ elif CONFIG['CPU_ARCH'].startswith('mips'):
 UNIFIED_SOURCES += [
     'BezierUtils.cpp',
     'Blur.cpp',
+    'BufferEdgePad.cpp',
+    'BufferUnrotate.cpp',
     'CaptureCommandList.cpp',
     'DataSourceSurface.cpp',
     'DataSurfaceHelpers.cpp',
@@ -166,6 +174,7 @@ UNIFIED_SOURCES += [
     'DrawTargetCairo.cpp',
     'DrawTargetCapture.cpp',
     'DrawTargetDual.cpp',
+    'DrawTargetOffset.cpp',
     'DrawTargetRecording.cpp',
     'DrawTargetTiled.cpp',
     'DrawTargetWrapAndRecord.cpp',
@@ -178,13 +187,13 @@ UNIFIED_SOURCES += [
     'Matrix.cpp',
     'Path.cpp',
     'PathCairo.cpp',
+    'PathCapture.cpp',
     'PathHelpers.cpp',
     'PathRecording.cpp',
     'Quaternion.cpp',
     'RecordedEvent.cpp',
     'Scale.cpp',
     'ScaledFontBase.cpp',
-    'ScaledFontCairo.cpp',
     'SFNTData.cpp',
     'SFNTNameTable.cpp',
     'SourceSurfaceCairo.cpp',
@@ -213,12 +222,13 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
         'QuartzSupport.mm',
     ]
 
-if CONFIG['CPU_ARCH'] == 'arm' and CONFIG['BUILD_ARM_NEON']:
+if CONFIG['CPU_ARCH'] == 'aarch64' or CONFIG['BUILD_ARM_NEON']:
     SOURCES += [
         'BlurNEON.cpp',
         'LuminanceNEON.cpp',
         'SwizzleNEON.cpp',
     ]
+    DEFINES['USE_NEON'] = True
     SOURCES['BlurNEON.cpp'].flags += CONFIG['NEON_FLAGS']
     SOURCES['LuminanceNEON.cpp'].flags += CONFIG['NEON_FLAGS']
     SOURCES['SwizzleNEON.cpp'].flags += CONFIG['NEON_FLAGS']
@@ -230,12 +240,12 @@ FINAL_LIBRARY = 'xul'
 for var in ('USE_CAIRO', 'MOZ2D_HAS_MOZ_CAIRO'):
     DEFINES[var] = True
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk3'):
+if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk'):
     DEFINES['MOZ_ENABLE_FREETYPE'] = True
 
 CXXFLAGS += CONFIG['MOZ_CAIRO_CFLAGS']
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk3'):
+if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk'):
     CXXFLAGS += CONFIG['CAIRO_FT_CFLAGS']
 
 LOCAL_INCLUDES += CONFIG['SKIA_INCLUDES']
@@ -250,4 +260,3 @@ if CONFIG['MOZ_ENABLE_SKIA_GPU']:
     LOCAL_INCLUDES += [
         '/gfx/skia/skia/src/gpu',
     ]
-

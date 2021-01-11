@@ -6,7 +6,6 @@ info: |
     If length equal zero, call the [[Put]] method of this object
     with arguments "length" and 0 and return undefined
 esid: sec-array.prototype.pop
-es5id: 15.4.4.6_A1.1_T1
 description: Checking this algorithm
 ---*/
 
@@ -23,7 +22,7 @@ if (x.length !== 0) {
 }
 
 //CHECK#3
-var x = Array(1,2,3);
+var x = Array(1, 2, 3);
 x.length = 0;
 var pop = x.pop();
 if (pop !== undefined) {

@@ -55,11 +55,6 @@ union SurfaceDescriptor {
   null_t;
 };
 
-union OptionalShmem {
-  Shmem;
-  null_t;
-};
-
 intr protocol PPluginInstance
 {
   manager PPluginModule;
@@ -71,7 +66,7 @@ intr protocol PPluginInstance
   manages PPluginSurface;
 
 child:
-  intr __delete__();
+  async __delete__();
 
   // This is only used on Windows and, for windowed plugins, must be called
   // before the first call to NPP_SetWindow.
@@ -263,6 +258,11 @@ parent:
   // @param aPosition  position information of candidate window
   async SetCandidateWindow(CandidateWindowPosition aPosition);
   async RequestCommitOrCancel(bool aCommitted);
+
+  // Control IME can enable or disable
+  //
+  // @param aEanble  whether IME is enabled or disabled
+  async EnableIME(bool aEnable);
 
   // Notifies the parent process of a plugin instance receiving key event
   // directly.

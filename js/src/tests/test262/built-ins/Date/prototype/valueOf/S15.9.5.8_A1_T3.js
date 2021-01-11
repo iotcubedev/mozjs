@@ -4,7 +4,6 @@
 /*---
 info: The Date.prototype property "valueOf" has { DontEnum } attributes
 esid: sec-date.prototype.valueof
-es5id: 15.9.5.8_A1_T3
 description: Checking DontEnum attribute
 ---*/
 
@@ -12,8 +11,8 @@ if (Date.prototype.propertyIsEnumerable('valueOf')) {
   $ERROR('#1: The Date.prototype.valueOf property has the attribute DontEnum');
 }
 
-for(var x in Date.prototype) {
-  if(x === "valueOf") {
+for (var x in Date.prototype) {
+  if (x === "valueOf") {
     $ERROR('#2: The Date.prototype.valueOf has the attribute DontEnum');
   }
 }

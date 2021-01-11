@@ -10,18 +10,18 @@
 #include <stdint.h>
 
 #include "mozilla/HangAnnotations.h"
+#include "mozilla/BackgroundHangMonitor.h"
 
 // We only support OSX and Windows, because on Linux we're forced to read
 // from /proc/stat in order to get global CPU values. We would prefer to not
 // eat that cost for this.
 #if defined(NIGHTLY_BUILD) && (defined(XP_WIN) || defined(XP_MACOSX))
-#define CPU_USAGE_WATCHER_ACTIVE
+#  define CPU_USAGE_WATCHER_ACTIVE
 #endif
 
 namespace mozilla {
 
-enum CPUUsageWatcherError : uint8_t
-{
+enum CPUUsageWatcherError : uint8_t {
   ClockGetTimeError,
   GetNumberOfProcessorsError,
   GetProcessTimesError,
@@ -30,26 +30,22 @@ enum CPUUsageWatcherError : uint8_t
   ProcStatError,
 };
 
-class CPUUsageHangAnnotator
-  : public HangMonitor::Annotator
-{
-public:
+class CPUUsageHangAnnotator : public BackgroundHangAnnotator {
+ public:
 };
 
-class CPUUsageWatcher
-  : public HangMonitor::Annotator
-{
-public:
+class CPUUsageWatcher : public BackgroundHangAnnotator {
+ public:
 #ifdef CPU_USAGE_WATCHER_ACTIVE
   CPUUsageWatcher()
-    : mInitialized(false)
-    , mExternalUsageThreshold(0)
-    , mExternalUsageRatio(0)
-    , mProcessUsageTime(0)
-    , mProcessUpdateTime(0)
-    , mGlobalUsageTime(0)
-    , mGlobalUpdateTime(0)
-  {}
+      : mInitialized(false),
+        mExternalUsageThreshold(0),
+        mExternalUsageRatio(0),
+        mProcessUsageTime(0),
+        mProcessUpdateTime(0),
+        mGlobalUsageTime(0),
+        mGlobalUpdateTime(0),
+        mNumCPUs(0) {}
 #endif
 
   Result<Ok, CPUUsageWatcherError> Init();
@@ -61,8 +57,9 @@ public:
   // usage values between now and the last time it was called.
   Result<Ok, CPUUsageWatcherError> CollectCPUUsage();
 
-  void AnnotateHang(HangMonitor::HangAnnotations& aAnnotations) final;
-private:
+  void AnnotateHang(BackgroundHangAnnotations& aAnnotations) final;
+
+ private:
 #ifdef CPU_USAGE_WATCHER_ACTIVE
   bool mInitialized;
   // The threshold above which we will mark a hang as occurring under high
@@ -88,6 +85,6 @@ private:
 #endif
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // mozilla_CPUUsageWatcher_h
+#endif  // mozilla_CPUUsageWatcher_h

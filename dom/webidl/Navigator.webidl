@@ -16,11 +16,14 @@
  * http://wicg.github.io/netinfo/#extensions-to-the-navigator-interface
  * https://w3c.github.io/webappsec-credential-management/#framework-credential-management
  * https://w3c.github.io/webdriver/webdriver-spec.html#interface
+ * https://wicg.github.io/media-capabilities/#idl-index
  *
  * © Copyright 2004-2011 Apple Computer, Inc., Mozilla Foundation, and
  * Opera Software ASA. You are granted a license to use, reproduce
  * and create derivative works of this document.
  */
+
+interface URI;
 
 // http://www.whatwg.org/specs/web-apps/current-work/#the-navigator-object
 [HeaderFile="Navigator.h"]
@@ -79,6 +82,8 @@ interface NavigatorOnLine {
 [NoInterfaceObject]
 interface NavigatorContentUtils {
   // content handler registration
+  [Throws, ChromeOnly]
+  void checkProtocolHandlerAllowed(DOMString scheme, URI handlerURI, URI documentURI);
   [Throws, Func="nsGlobalWindowInner::RegisterProtocolHandlerAllowedForContext"]
   void registerProtocolHandler(DOMString scheme, DOMString url, DOMString title);
   [Pref="dom.registerContentHandler.enabled", Throws]
@@ -92,7 +97,7 @@ interface NavigatorContentUtils {
 
 [SecureContext, NoInterfaceObject, Exposed=(Window,Worker)]
 interface NavigatorStorage {
-  [Func="mozilla::dom::DOMPrefs::StorageManagerEnabled"]
+  [Pref="dom.storageManager.enabled"]
   readonly attribute StorageManager storage;
 };
 
@@ -146,8 +151,15 @@ partial interface Navigator {
 
 // http://www.w3.org/TR/pointerevents/#extensions-to-the-navigator-interface
 partial interface Navigator {
-    [Pref="dom.w3c_pointer_events.enabled"]
+    [Pref="dom.w3c_pointer_events.enabled", NeedsCallerType]
     readonly attribute long maxTouchPoints;
+};
+
+// https://wicg.github.io/media-capabilities/#idl-index
+[Exposed=Window]
+partial interface Navigator {
+  [SameObject, Func="mozilla::dom::MediaCapabilities::Enabled"]
+  readonly attribute MediaCapabilities mediaCapabilities;
 };
 
 // Mozilla-specific extensions
@@ -161,14 +173,6 @@ partial interface Navigator {
     [ChromeOnly]
     void setVibrationPermission(boolean permitted,
                                 optional boolean persistent = true);
-};
-
-callback interface MozIdleObserver {
-  // Time is in seconds and is read only when idle observers are added
-  // and removed.
-  readonly attribute unsigned long time;
-  void onidle();
-  void onactive();
 };
 
 partial interface Navigator {
@@ -186,20 +190,14 @@ partial interface Navigator {
   readonly attribute DOMString buildID;
 
   // WebKit/Blink/Trident/Presto support this.
-  [Throws, NeedsCallerType]
+  [Affects=Nothing, DependsOn=Nothing]
   boolean javaEnabled();
+};
 
-  /**
-   * Navigator requests to add an idle observer to the existing window.
-   */
-  [Throws, ChromeOnly]
-  void addIdleObserver(MozIdleObserver aIdleObserver);
-
-  /**
-   * Navigator requests to remove an idle observer from the existing window.
-   */
-  [Throws, ChromeOnly]
-  void removeIdleObserver(MozIdleObserver aIdleObserver);
+// Addon manager bits
+partial interface Navigator {
+  [Throws, Func="mozilla::AddonManagerWebAPI::IsAPIEnabled"]
+  readonly attribute AddonManager mozAddonManager;
 };
 
 // NetworkInformation
@@ -232,14 +230,14 @@ partial interface Navigator {
   void requestVRPresentation(VRDisplay display);
 };
 partial interface Navigator {
-  [Pref="dom.vr.test.enabled"]
+  [Pref="dom.vr.puppet.enabled"]
   VRServiceTest requestVRServiceTest();
 };
 
 // http://webaudio.github.io/web-midi-api/#requestmidiaccess
 partial interface Navigator {
   [Throws, Pref="dom.webmidi.enabled"]
-  Promise<MIDIAccess> requestMIDIAccess(optional MIDIOptions options);
+  Promise<MIDIAccess> requestMIDIAccess(optional MIDIOptions options = {});
 };
 
 callback NavigatorUserMediaSuccessCallback = void (MediaStream stream);
@@ -252,7 +250,8 @@ partial interface Navigator {
   // Deprecated. Use mediaDevices.getUserMedia instead.
   [Deprecated="NavigatorGetUserMedia", Throws,
    Func="Navigator::HasUserMediaSupport",
-   NeedsCallerType]
+   NeedsCallerType,
+   UseCounter]
   void mozGetUserMedia(MediaStreamConstraints constraints,
                        NavigatorUserMediaSuccessCallback successCallback,
                        NavigatorUserMediaErrorCallback errorCallback);
@@ -322,4 +321,10 @@ partial interface Navigator {
 interface NavigatorAutomationInformation {
   [Pref="dom.webdriver.enabled"]
   readonly attribute boolean webdriver;
+};
+
+// https://www.w3.org/TR/clipboard-apis/#navigator-interface
+partial interface Navigator {
+  [Pref="dom.events.asyncClipboard", SecureContext, SameObject]
+  readonly attribute Clipboard clipboard;
 };

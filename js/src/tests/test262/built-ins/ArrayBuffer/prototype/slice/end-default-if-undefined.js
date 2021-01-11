@@ -3,7 +3,6 @@
 
 /*---
 esid: sec-arraybuffer.prototype.slice
-es6id: 24.1.4.3
 description: >
   The `end` index defaults to [[ArrayBufferByteLength]] if undefined.
 info: |
@@ -17,7 +16,8 @@ info: |
 
 var arrayBuffer = new ArrayBuffer(8);
 
-var start = 6, end = undefined;
+var start = 6,
+  end = undefined;
 var result = arrayBuffer.slice(start, end);
 assert.sameValue(result.byteLength, 2);
 

@@ -6,8 +6,9 @@
  * The origin of this IDL file is:
  * http://www.whatwg.org/specs/web-apps/current-work/#the-datatransfer-interface
  */
+interface ContentSecurityPolicy;
 
-[ChromeConstructor(DOMString eventType, boolean isExternal)]
+[Constructor]
 interface DataTransfer {
            attribute DOMString dropEffect;
            attribute DOMString effectAllowed;
@@ -26,7 +27,7 @@ interface DataTransfer {
   void setData(DOMString format, DOMString data);
   [Throws, NeedsSubjectPrincipal]
   void clearData(optional DOMString format);
-  [Throws, NeedsSubjectPrincipal]
+  [NeedsSubjectPrincipal]
   readonly attribute FileList? files;
 };
 
@@ -54,7 +55,7 @@ partial interface DataTransfer {
   /**
    * The number of items being dragged.
    */
-  [UseCounter]
+  [Func="DataTransfer::MozAtAPIsEnabled"]
   readonly attribute unsigned long mozItemCount;
 
   /**
@@ -77,7 +78,7 @@ partial interface DataTransfer {
    * at the specified index. If the index is not in the range from 0 to
    * itemCount - 1, an empty string list is returned.
    */
-  [Throws, NeedsCallerType, UseCounter]
+  [Throws, NeedsCallerType, Func="DataTransfer::MozAtAPIsEnabled"]
   DOMStringList mozTypesAt(unsigned long index);
 
   /**
@@ -94,7 +95,7 @@ partial interface DataTransfer {
    * @throws NS_ERROR_DOM_INDEX_SIZE_ERR if index is greater or equal than itemCount
    * @throws NO_MODIFICATION_ALLOWED_ERR if the item cannot be modified
    */
-  [Throws, NeedsSubjectPrincipal, UseCounter]
+  [Throws, NeedsSubjectPrincipal, Func="DataTransfer::MozAtAPIsEnabled"]
   void mozClearDataAt(DOMString format, unsigned long index);
 
   /*
@@ -118,7 +119,7 @@ partial interface DataTransfer {
    * @throws NS_ERROR_DOM_INDEX_SIZE_ERR if index is greater than itemCount
    * @throws NO_MODIFICATION_ALLOWED_ERR if the item cannot be modified
    */
-  [Throws, NeedsSubjectPrincipal, UseCounter]
+  [Throws, NeedsSubjectPrincipal, Func="DataTransfer::MozAtAPIsEnabled"]
   void mozSetDataAt(DOMString format, any data, unsigned long index);
 
   /**
@@ -130,7 +131,7 @@ partial interface DataTransfer {
    * @returns the data of the given format, or null if it doesn't exist.
    * @throws NS_ERROR_DOM_INDEX_SIZE_ERR if index is greater or equal than itemCount
    */
-  [Throws, NeedsSubjectPrincipal, UseCounter]
+  [Throws, NeedsSubjectPrincipal, Func="DataTransfer::MozAtAPIsEnabled"]
   any mozGetDataAt(DOMString format, unsigned long index);
 
   /**
@@ -163,6 +164,9 @@ partial interface DataTransfer {
    */
   [ChromeOnly]
   readonly attribute DOMString mozTriggeringPrincipalURISpec;
+
+  [ChromeOnly] 
+  readonly attribute ContentSecurityPolicy? mozCSP;
 
   /**
    * Copy the given DataTransfer for the given event. Used by testing code for

@@ -18,18 +18,17 @@ using dom::MediaTrackSettings;
 const unsigned int MediaEngineSource::kMaxDeviceNameLength;
 const unsigned int MediaEngineSource::kMaxUniqueIdLength;
 
-/* static */ bool
-MediaEngineSource::IsVideo(MediaSourceEnum aSource)
-{
+/* static */
+bool MediaEngineSource::IsVideo(MediaSourceEnum aSource) {
   switch (aSource) {
     case MediaSourceEnum::Camera:
     case MediaSourceEnum::Screen:
-    case MediaSourceEnum::Application:
     case MediaSourceEnum::Window:
     case MediaSourceEnum::Browser:
       return true;
     case MediaSourceEnum::Microphone:
     case MediaSourceEnum::AudioCapture:
+    case MediaSourceEnum::Other:
       return false;
     default:
       MOZ_ASSERT_UNREACHABLE("Unknown type");
@@ -37,42 +36,20 @@ MediaEngineSource::IsVideo(MediaSourceEnum aSource)
   }
 }
 
-bool
-MediaEngineSource::RequiresSharing() const
-{
-  return false;
+bool MediaEngineSource::IsFake() const { return false; }
+
+bool MediaEngineSource::GetScary() const { return false; }
+
+nsresult MediaEngineSource::FocusOnSelectedSource() {
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
-bool
-MediaEngineSource::IsFake() const
-{
-  return false;
-}
+void MediaEngineSource::Shutdown() {}
 
-bool
-MediaEngineSource::GetScary() const
-{
-  return false;
-}
-
-void
-MediaEngineSource::Shutdown()
-{
-}
-
-nsresult
-MediaEngineSource::TakePhoto(MediaEnginePhotoCallback* aCallback)
-{
+nsresult MediaEngineSource::TakePhoto(MediaEnginePhotoCallback* aCallback) {
   return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-void
-MediaEngineSource::GetSettings(MediaTrackSettings& aOutSettings) const
-{
-  MediaTrackSettings empty;
-  aOutSettings = empty;
 }
 
 MediaEngineSource::~MediaEngineSource() = default;
 
-} // namespace mozilla
+}  // namespace mozilla

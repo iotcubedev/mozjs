@@ -4,7 +4,6 @@
 /*---
 info: "[[Get]], [[Delete]] from not an inherited property"
 esid: sec-array.prototype.shift
-es5id: 15.4.4.9_A4_T1
 description: >
     [[Prototype]] of Array instance is Array.prototype, [[Prototype]
     of Array.prototype is Object.prototype
@@ -33,7 +32,9 @@ if (x[1] !== 1) {
 Object.prototype[1] = 1;
 Object.prototype.length = 2;
 Object.prototype.shift = Array.prototype.shift;
-x = {0:0};
+x = {
+  0: 0
+};
 
 //CHECK#4
 var shift = x.shift();

@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -14,10 +15,10 @@ flags: [async]
 
 var nonIterable = 3;
 
-Promise.all(nonIterable).then(function () {
-    $ERROR('Promise unexpectedly resolved: Promise.all(nonIterable) should throw TypeError');
-},function (err) {
-    if (!(err instanceof TypeError)) {
-        $ERROR('Expected TypeError, got ' + err);
-    }
+Promise.all(nonIterable).then(function() {
+  $ERROR('Promise unexpectedly resolved: Promise.all(nonIterable) should throw TypeError');
+}, function(err) {
+  if (!(err instanceof TypeError)) {
+    $ERROR('Expected TypeError, got ' + err);
+  }
 }).then($DONE, $DONE);

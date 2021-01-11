@@ -6,7 +6,6 @@ info: |
     The push function is intentionally generic.
     It does not require that its this value be an Array object
 esid: sec-array.prototype.push
-es5id: 15.4.4.7_A2_T2
 description: >
     The arguments are appended to the end of the array, in  the order
     in which they appear. The new length of the array is returned  as
@@ -35,7 +34,9 @@ if (obj["0"] !== -1) {
 
 //CHECK#4
 obj.length = Number.POSITIVE_INFINITY;
-assert.throws(TypeError, function() { obj.push(-4); });
+assert.throws(TypeError, function() {
+  obj.push(-4);
+});
 
 //CHECK#5
 if (obj.length !== Number.POSITIVE_INFINITY) {

@@ -6,7 +6,6 @@ info: |
     The Date.prototype.getUTCMinutes property "length" has { ReadOnly,
     DontDelete, DontEnum } attributes
 esid: sec-date.prototype.getutcminutes
-es5id: 15.9.5.21_A3_T3
 description: Checking DontEnum attribute
 ---*/
 
@@ -14,8 +13,8 @@ if (Date.prototype.getUTCMinutes.propertyIsEnumerable('length')) {
   $ERROR('#1: The Date.prototype.getUTCMinutes.length property has the attribute DontEnum');
 }
 
-for(var x in Date.prototype.getUTCMinutes) {
-  if(x === "length") {
+for (var x in Date.prototype.getUTCMinutes) {
+  if (x === "length") {
     $ERROR('#2: The Date.prototype.getUTCMinutes.length has the attribute DontEnum');
   }
 }

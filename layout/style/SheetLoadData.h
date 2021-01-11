@@ -11,8 +11,8 @@
 #include "mozilla/css/SheetParsingMode.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/NotNull.h"
-#include "nsIUnicharStreamLoader.h"
 #include "nsIThreadInternal.h"
+#include "nsProxyRelease.h"
 
 namespace mozilla {
 class StyleSheet;
@@ -20,8 +20,8 @@ class StyleSheet;
 class nsICSSLoaderObserver;
 class nsINode;
 class nsIPrincipal;
-class nsIStyleLinkingElement;
 class nsIURI;
+class nsIReferrerInfo;
 
 namespace mozilla {
 namespace css {
@@ -31,65 +31,55 @@ namespace css {
  *********************************************/
 
 static_assert(eAuthorSheetFeatures == 0 && eUserSheetFeatures == 1 &&
-                eAgentSheetFeatures == 2,
+                  eAgentSheetFeatures == 2,
               "sheet parsing mode constants won't fit "
               "in SheetLoadData::mParsingMode");
 
-class SheetLoadData final
-  : public nsIRunnable
-  , public nsIUnicharStreamLoaderObserver
-  , public nsIThreadObserver
-{
-protected:
-  virtual ~SheetLoadData(void);
+class SheetLoadData final : public nsIRunnable, public nsIThreadObserver {
+  typedef nsIStyleSheetLinkingElement::MediaMatched MediaMatched;
+  typedef nsIStyleSheetLinkingElement::IsAlternate IsAlternate;
 
-public:
+ protected:
+  virtual ~SheetLoadData();
+
+ public:
   // Data for loading a sheet linked from a document
-  SheetLoadData(Loader* aLoader,
-                const nsAString& aTitle,
-                nsIURI* aURI,
-                StyleSheet* aSheet,
+  SheetLoadData(Loader* aLoader, const nsAString& aTitle, nsIURI* aURI,
+                StyleSheet* aSheet, bool aSyncLoad,
                 nsIStyleSheetLinkingElement* aOwningElement,
-                bool aIsAlternate,
-                nsICSSLoaderObserver* aObserver,
-                nsIPrincipal* aLoaderPrincipal,
-                nsINode* aRequestingNode);
+                IsAlternate aIsAlternate, MediaMatched aMediaMatched,
+                nsICSSLoaderObserver* aObserver, nsIPrincipal* aLoaderPrincipal,
+                nsIReferrerInfo* aReferrerInfo, nsINode* aRequestingNode);
 
   // Data for loading a sheet linked from an @import rule
-  SheetLoadData(Loader* aLoader,
-                nsIURI* aURI,
-                StyleSheet* aSheet,
-                SheetLoadData* aParentData,
-                nsICSSLoaderObserver* aObserver,
-                nsIPrincipal* aLoaderPrincipal,
+  SheetLoadData(Loader* aLoader, nsIURI* aURI, StyleSheet* aSheet,
+                SheetLoadData* aParentData, nsICSSLoaderObserver* aObserver,
+                nsIPrincipal* aLoaderPrincipal, nsIReferrerInfo* aReferrerInfo,
                 nsINode* aRequestingNode);
 
   // Data for loading a non-document sheet
-  SheetLoadData(Loader* aLoader,
-                nsIURI* aURI,
-                StyleSheet* aSheet,
-                bool aSyncLoad,
-                bool aUseSystemPrincipal,
+  SheetLoadData(Loader* aLoader, nsIURI* aURI, StyleSheet* aSheet,
+                bool aSyncLoad, bool aUseSystemPrincipal,
                 const Encoding* aPreloadEncoding,
-                nsICSSLoaderObserver* aObserver,
-                nsIPrincipal* aLoaderPrincipal,
-                nsINode* aRequestingNode);
+                nsICSSLoaderObserver* aObserver, nsIPrincipal* aLoaderPrincipal,
+                nsIReferrerInfo* aReferrerInfo, nsINode* aRequestingNode);
 
-  already_AddRefed<nsIURI> GetReferrerURI();
+  nsIReferrerInfo* ReferrerInfo() { return mReferrerInfo; }
 
   void ScheduleLoadEventIfNeeded();
 
   NotNull<const Encoding*> DetermineNonBOMEncoding(nsACString const& aSegment,
                                                    nsIChannel* aChannel);
 
-  nsresult VerifySheetReadyToParse(nsresult aStatus,
-                                   const nsACString& aBytes,
+  // The caller may have the bytes for the stylesheet split across two strings,
+  // so aBytes1 and aBytes2 refer to those pieces.
+  nsresult VerifySheetReadyToParse(nsresult aStatus, const nsACString& aBytes1,
+                                   const nsACString& aBytes2,
                                    nsIChannel* aChannel);
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIRUNNABLE
   NS_DECL_NSITHREADOBSERVER
-  NS_DECL_NSIUNICHARSTREAMLOADEROBSERVER
 
   // Hold a ref to the CSSLoader so we can call back to it to let it
   // know the load finished
@@ -111,8 +101,8 @@ public:
   // The sheet we're loading data for
   RefPtr<StyleSheet> mSheet;
 
-  // Linked list of datas for the same URI as us
-  SheetLoadData* mNext; // strong ref
+  // Linked list of datas for the same URI as us.
+  RefPtr<SheetLoadData> mNext;
 
   // Load data for the sheet that @import-ed us if we were @import-ed
   // during the parse
@@ -121,8 +111,9 @@ public:
   // Number of sheets we @import-ed that are still loading
   uint32_t mPendingChildren;
 
-  // mSyncLoad is true when the load needs to be synchronous -- right
-  // now only for LoadSheetSync and children of sync loads.
+  // mSyncLoad is true when the load needs to be synchronous.
+  // For LoadSheetSync, <link> to chrome stylesheets in UA Widgets,
+  // and children of sync loads.
   bool mSyncLoad : 1;
 
   // mIsNonDocumentSheet is true if the load was triggered by LoadSheetSync or
@@ -155,6 +146,10 @@ public:
   // mWasAlternate is true if the sheet was an alternate when the load data was
   // created.
   bool mWasAlternate : 1;
+
+  // mMediaMatched is true if the sheet matched its medialist when the load data
+  // was created.
+  bool mMediaMatched : 1;
 
   // mUseSystemPrincipal is true if the system principal should be used for
   // this sheet, no matter what the channel principal is.  Only true for sync
@@ -191,6 +186,9 @@ public:
   // The principal that identifies who started loading us.
   nsCOMPtr<nsIPrincipal> mLoaderPrincipal;
 
+  // Referrer info of the load.
+  nsCOMPtr<nsIReferrerInfo> mReferrerInfo;
+
   // The node that identifies who started loading us.
   nsCOMPtr<nsINode> mRequestingNode;
 
@@ -198,11 +196,23 @@ public:
   // is non-null.
   const Encoding* mPreloadEncoding;
 
-private:
+  bool ShouldDefer() const { return mWasAlternate || !mMediaMatched; }
+
+ private:
   void FireLoadEvent(nsIThreadInternal* aThread);
 };
 
-} // namespace css
-} // namespace mozilla
+typedef nsMainThreadPtrHolder<SheetLoadData> SheetLoadDataHolder;
 
-#endif // mozilla_css_SheetLoadData_h
+}  // namespace css
+}  // namespace mozilla
+
+/**
+ * Casting SheetLoadData to nsISupports is ambiguous.
+ * This method handles that.
+ */
+inline nsISupports* ToSupports(mozilla::css::SheetLoadData* p) {
+  return NS_ISUPPORTS_CAST(nsIRunnable*, p);
+}
+
+#endif  // mozilla_css_SheetLoadData_h

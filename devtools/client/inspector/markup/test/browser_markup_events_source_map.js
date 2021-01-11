@@ -1,4 +1,3 @@
-/* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -20,10 +19,7 @@ const TEST_DATA = [
       {
         type: "click",
         filename: "webpack:///events_original.js:7",
-        attributes: [
-          "Bubbling",
-          "DOM2"
-        ],
+        attributes: ["Bubbling", "DOM2"],
         handler: `function clickme() {
   console.log("clickme");
 }`,
@@ -32,27 +28,29 @@ const TEST_DATA = [
   },
 ];
 
-add_task(function* () {
+add_task(async function() {
   // Load some other URL before opening the toolbox, then navigate to
   // the test URL.  This ensures that source map service will see the
   // sources as they are loaded, avoiding any races.
-  let {toolbox, inspector, testActor} = yield openInspectorForURL(INITIAL_URL);
+  const { toolbox, inspector, testActor } = await openInspectorForURL(
+    INITIAL_URL
+  );
 
   // Ensure the source map service is operating.  This looks a bit
   // funny, but sourceMapURLService is a getter, and we don't need the
   // result.
   toolbox.sourceMapURLService;
 
-  yield navigateTo(inspector, TEST_URL);
+  await navigateTo(inspector, TEST_URL);
 
-  yield inspector.markup.expandAll();
+  await inspector.markup.expandAll();
 
-  for (let test of TEST_DATA) {
-    yield checkEventsForNode(test, inspector, testActor);
+  for (const test of TEST_DATA) {
+    await checkEventsForNode(test, inspector, testActor);
   }
 
   // Wait for promises to avoid leaks when running this as a single test.
   // We need to do this because we have opened a bunch of popups and don't them
   // to affect other test runs when they are GCd.
-  yield promiseNextTick();
+  await promiseNextTick();
 });

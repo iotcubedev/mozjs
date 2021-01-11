@@ -5,6 +5,9 @@
 from __future__ import absolute_import
 
 import inspect
+import six
+from six.moves import range
+from six.moves import zip
 
 convertor_registry = {}
 missing = object()
@@ -18,6 +21,7 @@ class log_action(object):
 
         self.args_no_default = []
         self.args_with_default = []
+        self.optional_args = set()
 
         # These are the required fields in a log message that usually aren't
         # supplied by the caller, but can be in the case of log_raw
@@ -34,6 +38,9 @@ class log_action(object):
                 self.args_no_default.append(arg.name)
             else:
                 self.args_with_default.append(arg.name)
+
+            if arg.optional:
+                self.optional_args.add(arg.name)
 
             if arg.name in self.args:
                 raise ValueError("Repeated argument name %s" % arg.name)
@@ -87,18 +94,22 @@ class log_action(object):
             if name not in values:
                 values[name] = self.args[name].default
 
-        for key, value in values.iteritems():
+        for key, value in six.iteritems(values):
             if key in self.args:
                 out_value = self.args[key](value)
                 if out_value is not missing:
-                    data[key] = out_value
+                    if (key in self.optional_args and
+                            value == self.args[key].default):
+                        pass
+                    else:
+                        data[key] = out_value
             else:
                 raise TypeError("Unrecognised argument %s" % key)
 
         return data
 
     def convert_known(self, **kwargs):
-        known_kwargs = {name: value for name, value in kwargs.iteritems()
+        known_kwargs = {name: value for name, value in six.iteritems(kwargs)
                         if name in self.args}
         return self.convert(**known_kwargs)
 
@@ -155,17 +166,17 @@ class ContainerType(DataType):
 class Unicode(DataType):
 
     def convert(self, data):
-        if isinstance(data, unicode):
+        if isinstance(data, six.text_type):
             return data
         if isinstance(data, str):
             return data.decode("utf8", "replace")
-        return unicode(data)
+        return six.text_type(data)
 
 
 class TestId(DataType):
 
     def convert(self, data):
-        if isinstance(data, unicode):
+        if isinstance(data, six.text_type):
             return data
         elif isinstance(data, bytes):
             return data.decode("utf-8", "replace")
@@ -200,7 +211,7 @@ class Dict(ContainerType):
         if isinstance(item_type, dict):
             if len(item_type) != 1:
                 raise ValueError("Dict item type specifier must contain a single entry.")
-            key_type, value_type = item_type.items()[0]
+            key_type, value_type = list(item_type.items())[0]
             return superfmt(key_type), superfmt(value_type)
         return Any(None), superfmt(item_type)
 
@@ -214,7 +225,7 @@ class List(ContainerType):
     def convert(self, data):
         # while dicts and strings _can_ be cast to lists,
         # doing so is likely not intentional behaviour
-        if isinstance(data, (basestring, dict)):
+        if isinstance(data, (six.string_types, dict)):
             raise ValueError("Expected list but got %s" % type(data))
         return [self.item_type.convert(item) for item in data]
 
@@ -242,6 +253,12 @@ class Any(DataType):
         return data
 
 
+class Boolean(DataType):
+
+    def convert(self, data):
+        return bool(data)
+
+
 class Tuple(ContainerType):
 
     def _format_item_type(self, item_type):
@@ -256,3 +273,10 @@ class Tuple(ContainerType):
             raise ValueError("Expected %i items got %i" % (len(self.item_type), len(data)))
         return tuple(item_type.convert(value)
                      for item_type, value in zip(self.item_type, data))
+
+
+class Nullable(ContainerType):
+    def convert(self, data):
+        if data is None:
+            return data
+        return self.item_type.convert(data)

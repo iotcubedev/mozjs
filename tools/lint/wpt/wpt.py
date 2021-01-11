@@ -4,6 +4,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import, print_function
+
 import json
 import os
 import platform
@@ -24,13 +26,15 @@ def lint(files, config, **kwargs):
             data = json.loads(line)
         except ValueError:
             return
+
         data["level"] = "error"
         data["path"] = os.path.relpath(os.path.join(tests_dir, data["path"]), kwargs['root'])
+        data.setdefault("lineno", 0)
         results.append(result.from_config(config, **data))
 
     if files == [tests_dir]:
-        print >> sys.stderr, ("No specific files specified, running the full wpt lint"
-                              " (this is slow)")
+        print("No specific files specified, running the full wpt lint"
+              " (this is slow)", file=sys.stderr)
         files = ["--all"]
     cmd = [os.path.join(tests_dir, 'wpt'), 'lint', '--json'] + files
     if platform.system() == 'Windows':

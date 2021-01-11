@@ -15,16 +15,21 @@ from textwrap import dedent
 
 from taskgraph.util.schema import Schema
 from voluptuous import Required, Optional, Any
+from voluptuous.validators import Match
 
-from taskgraph.transforms.job import run_job_using
+from taskgraph.transforms.job import (
+    configure_taskdesc_for_run,
+    run_job_using,
+)
 from taskgraph.transforms.job.common import (
     docker_worker_add_workspace_cache,
-    docker_worker_add_gecko_vcs_env_vars,
-    docker_worker_setup_secrets,
+    setup_secrets,
     docker_worker_add_artifacts,
-    docker_worker_add_tooltool,
     generic_worker_add_artifacts,
-    support_vcs_checkout,
+)
+from taskgraph.transforms.task import (
+    get_branch_repo,
+    get_branch_rev,
 )
 
 mozharness_run_schema = Schema({
@@ -44,10 +49,16 @@ mozharness_run_schema = Schema({
     Required('config'): [basestring],
 
     # any additional actions to pass to the mozharness command
-    Optional('actions'): [basestring],
+    Optional('actions'): [Match(
+        '^[a-z0-9-]+$',
+        "actions must be `-` seperated alphanumeric strings"
+    )],
 
     # any additional options (without leading --) to be passed to mozharness
-    Optional('options'): [basestring],
+    Optional('options'): [Match(
+        '^[a-z0-9-]+(=[^ ]+)?$',
+        "options must be `-` seperated alphanumeric strings (with optional argument)"
+    )],
 
     # --custom-build-variant-cfg value
     Optional('custom-build-variant-cfg'): basestring,
@@ -90,17 +101,23 @@ mozharness_run_schema = Schema({
 
     Required('requires-signed-builds'): bool,
 
+    # Whether or not to use caches.
+    Optional('use-caches'): bool,
+
     # If false, don't set MOZ_SIMPLE_PACKAGE_NAME
     # Only disableable on windows
     Required('use-simple-package'): bool,
 
-    # If false don't pass --branch or --skip-buildbot-actions to mozharness script
+    # If false don't pass --branch mozharness script
     # Only disableable on windows
     Required('use-magic-mh-args'): bool,
 
     # if true, perform a checkout of a comm-central based branch inside the
     # gecko checkout
     Required('comm-checkout'): bool,
+
+    # Base work directory used to set up the task.
+    Required('workdir'): basestring,
 })
 
 
@@ -122,53 +139,58 @@ mozharness_defaults = {
 def mozharness_on_docker_worker_setup(config, job, taskdesc):
     run = job['run']
 
-    worker = taskdesc['worker']
-    worker['implementation'] = job['worker']['implementation']
+    worker = taskdesc['worker'] = job['worker']
 
-    if not run['use-simple-package']:
+    if not run.pop('use-simple-package', None):
         raise NotImplementedError("Simple packaging cannot be disabled via"
                                   "'use-simple-package' on docker-workers")
-    if not run['use-magic-mh-args']:
+    if not run.pop('use-magic-mh-args', None):
         raise NotImplementedError("Cannot disabled mh magic arg passing via"
                                   "'use-magic-mh-args' on docker-workers")
 
     # Running via mozharness assumes an image that contains build.sh:
     # by default, debian7-amd64-build, but it could be another image (like
     # android-build).
-    taskdesc['worker'].setdefault('docker-image', {'in-tree': 'debian7-amd64-build'})
+    worker.setdefault('docker-image', {'in-tree': 'debian7-amd64-build'})
 
-    worker['taskcluster-proxy'] = run.get('taskcluster-proxy')
-
+    worker.setdefault('artifacts', []).append({
+        'name': 'public/logs',
+        'path': '{workdir}/logs/'.format(**run),
+        'type': 'directory'
+    })
+    worker['taskcluster-proxy'] = run.pop('taskcluster-proxy', None)
     docker_worker_add_artifacts(config, job, taskdesc)
     docker_worker_add_workspace_cache(config, job, taskdesc,
-                                      extra=run.get('extra-workspace-cache-key'))
-    support_vcs_checkout(config, job, taskdesc)
+                                      extra=run.pop('extra-workspace-cache-key', None))
 
     env = worker.setdefault('env', {})
     env.update({
-        'MOZHARNESS_CONFIG': ' '.join(run['config']),
-        'MOZHARNESS_SCRIPT': run['script'],
+        'GECKO_PATH': '{workdir}/workspace/build/src'.format(**run),
+        'MOZHARNESS_CONFIG': ' '.join(run.pop('config')),
+        'MOZHARNESS_SCRIPT': run.pop('script'),
         'MH_BRANCH': config.params['project'],
+        'MOZ_SOURCE_CHANGESET': get_branch_rev(config),
+        'MOZ_SOURCE_REPO': get_branch_repo(config),
         'MH_BUILD_POOL': 'taskcluster',
         'MOZ_BUILD_DATE': config.params['moz_build_date'],
         'MOZ_SCM_LEVEL': config.params['level'],
-        'MOZ_AUTOMATION': '1',
+        'PYTHONUNBUFFERED': '1',
     })
 
     if 'actions' in run:
-        env['MOZHARNESS_ACTIONS'] = ' '.join(run['actions'])
+        env['MOZHARNESS_ACTIONS'] = ' '.join(run.pop('actions'))
 
     if 'options' in run:
-        env['MOZHARNESS_OPTIONS'] = ' '.join(run['options'])
+        env['MOZHARNESS_OPTIONS'] = ' '.join(run.pop('options'))
 
     if 'config-paths' in run:
-        env['MOZHARNESS_CONFIG_PATHS'] = ' '.join(run['config-paths'])
+        env['MOZHARNESS_CONFIG_PATHS'] = ' '.join(run.pop('config-paths'))
 
     if 'custom-build-variant-cfg' in run:
-        env['MH_CUSTOM_BUILD_VARIANT_CFG'] = run['custom-build-variant-cfg']
+        env['MH_CUSTOM_BUILD_VARIANT_CFG'] = run.pop('custom-build-variant-cfg')
 
     if 'extra-config' in run:
-        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run['extra-config'])
+        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run.pop('extra-config'))
 
     if 'job-script' in run:
         env['JOB_SCRIPT'] = run['job-script']
@@ -180,77 +202,79 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
     # that will cause the build process to skip copying the results to the
     # artifacts directory.  This will have no effect for operations that are
     # not builds.
-    if not run['keep-artifacts']:
+    if not run.pop('keep-artifacts'):
         env['DIST_TARGET_UPLOADS'] = ''
         env['DIST_UPLOADS'] = ''
 
     # Xvfb
-    if run['need-xvfb']:
+    if run.pop('need-xvfb'):
         env['NEED_XVFB'] = 'true'
-
-    if run['tooltool-downloads']:
-        internal = run['tooltool-downloads'] == 'internal'
-        docker_worker_add_tooltool(config, job, taskdesc, internal=internal)
+    else:
+        env['NEED_XVFB'] = 'false'
 
     # Retry if mozharness returns TBPL_RETRY
     worker['retry-exit-status'] = [4]
 
-    docker_worker_setup_secrets(config, job, taskdesc)
+    setup_secrets(config, job, taskdesc)
 
-    command = [
-        '/builds/worker/bin/run-task',
-        '--vcs-checkout', '/builds/worker/workspace/build/src',
-        '--tools-checkout', '/builds/worker/workspace/build/tools',
-    ]
-    if run['comm-checkout']:
-        command.append('--comm-checkout=/builds/worker/workspace/build/src/comm')
-
-    command += [
-        '--',
-        '/builds/worker/workspace/build/src/{}'.format(
-            run.get('job-script', 'taskcluster/scripts/builder/build-linux.sh')
+    run['using'] = 'run-task'
+    run['command'] = [
+        '{workdir}/workspace/build/src/{script}'.format(
+            workdir=run['workdir'],
+            script=run.pop('job-script', 'taskcluster/scripts/builder/build-linux.sh'),
         ),
     ]
+    run.pop('secrets')
+    run.pop('requires-signed-builds')
 
-    worker['command'] = command
+    configure_taskdesc_for_run(config, job, taskdesc, worker['implementation'])
 
 
 @run_job_using("generic-worker", "mozharness", schema=mozharness_run_schema,
                defaults=mozharness_defaults)
 def mozharness_on_generic_worker(config, job, taskdesc):
-    assert job['worker']['os'] == 'windows', 'only supports windows right now'
+    assert (
+        job["worker"]["os"] == "windows"
+    ), "only supports windows right now: {}".format(job["label"])
 
     run = job['run']
 
     # fail if invalid run options are included
     invalid = []
-    for prop in ['tooltool-downloads',
-                 'secrets', 'taskcluster-proxy', 'need-xvfb']:
-        if prop in run and run[prop]:
+    for prop in ['tooltool-downloads', 'taskcluster-proxy', 'need-xvfb']:
+        if prop in run and run.pop(prop):
             invalid.append(prop)
-    if not run.get('keep-artifacts', True):
+    if not run.pop('keep-artifacts', True):
         invalid.append('keep-artifacts')
     if invalid:
         raise Exception("Jobs run using mozharness on Windows do not support properties " +
                         ', '.join(invalid))
 
-    worker = taskdesc['worker']
+    worker = taskdesc['worker'] = job['worker']
 
-    generic_worker_add_artifacts(config, job, taskdesc)
+    setup_secrets(config, job, taskdesc)
 
-    docker_worker_add_gecko_vcs_env_vars(config, job, taskdesc)
+    taskdesc['worker'].setdefault('artifacts', []).append({
+        'name': 'public/logs',
+        'path': 'logs',
+        'type': 'directory'
+    })
+    if not worker.get('skip-artifacts', False):
+        generic_worker_add_artifacts(config, job, taskdesc)
 
     env = worker['env']
     env.update({
         'MOZ_BUILD_DATE': config.params['moz_build_date'],
         'MOZ_SCM_LEVEL': config.params['level'],
-        'MOZ_AUTOMATION': '1',
+        'MH_BRANCH': config.params['project'],
+        'MOZ_SOURCE_CHANGESET': get_branch_rev(config),
+        'MOZ_SOURCE_REPO': get_branch_repo(config),
     })
-    if run['use-simple-package']:
+    if run.pop('use-simple-package'):
         env.update({'MOZ_SIMPLE_PACKAGE_NAME': 'target'})
 
     if 'extra-config' in run:
-        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run['extra-config'])
+        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run.pop('extra-config'))
 
     # The windows generic worker uses batch files to pass environment variables
     # to commands.  Setting a variable to empty in a batch file unsets, so if
@@ -264,72 +288,50 @@ def mozharness_on_generic_worker(config, job, taskdesc):
             "Task generation for mozharness build jobs currently only supported on Windows"
         )
 
-    mh_command = [r'c:\mozilla-build\python\python.exe']
-    mh_command.append('\\'.join([r'.\build\src\testing', run['script'].replace('/', '\\')]))
+    mh_command = [
+            'c:/mozilla-build/python/python.exe',
+            '%GECKO_PATH%/testing/{}'.format(run.pop('script')),
+    ]
 
-    if 'config-paths' in run:
-        for path in run['config-paths']:
-            mh_command.append(r'--extra-config-path '
-                              r'.\build\src\{}'.format(path.replace('/', '\\')))
+    for path in run.pop('config-paths', []):
+        mh_command.append('--extra-config-path %GECKO_PATH%/{}'.format(path))
 
-    for cfg in run['config']:
-        mh_command.append('--config ' + cfg.replace('/', '\\'))
-    if run['use-magic-mh-args']:
+    for cfg in run.pop('config'):
+        mh_command.append('--config ' + cfg)
+    if run.pop('use-magic-mh-args'):
         mh_command.append('--branch ' + config.params['project'])
-        mh_command.append(r'--skip-buildbot-actions')
     mh_command.append(r'--work-dir %cd:Z:=z:%\build')
-    for action in run.get('actions', []):
-        assert ' ' not in action
+    for action in run.pop('actions', []):
         mh_command.append('--' + action)
 
-    for option in run.get('options', []):
-        assert ' ' not in option
+    for option in run.pop('options', []):
         mh_command.append('--' + option)
     if run.get('custom-build-variant-cfg'):
         mh_command.append('--custom-build-variant')
-        mh_command.append(run['custom-build-variant-cfg'])
+        mh_command.append(run.pop('custom-build-variant-cfg'))
 
-    def checkout_repo(base_repo, head_repo, head_rev, path):
-        hg_command = ['"c:\\Program Files\\Mercurial\\hg.exe"']
-        hg_command.append('robustcheckout')
-        hg_command.extend(['--sharebase', 'y:\\hg-shared'])
-        hg_command.append('--purge')
-        hg_command.extend(['--upstream', base_repo])
-        hg_command.extend(['--revision', head_rev])
-        hg_command.append(head_repo)
-        hg_command.append(path)
+    run['using'] = 'run-task'
+    run['command'] = mh_command
+    run.pop('secrets')
+    run.pop('requires-signed-builds')
+    run.pop('job-script', None)
+    run.pop('extra-workspace-cache-key', None)
+    configure_taskdesc_for_run(config, job, taskdesc, worker['implementation'])
 
-        logging_command = [
-            b":: TinderboxPrint:<a href={source_repo}/rev/{revision} "
-            b"title='Built from {repo_name} revision {revision}'>{revision}</a>\n".format(
-                revision=head_rev,
-                source_repo=head_repo,
-                repo_name=head_repo.split('/')[-1],
-            )]
+    # TODO We should run the mozharness script with `mach python` so these
+    # modules are automatically available, but doing so somehow caused hangs in
+    # Windows ccov builds (see bug 1543149).
+    mozbase_dir = "{}/testing/mozbase".format(env['GECKO_PATH'])
+    env['PYTHONPATH'] = ';'.join([
+        "{}/manifestparser".format(mozbase_dir),
+        "{}/mozinfo".format(mozbase_dir),
+        "{}/mozfile".format(mozbase_dir),
+        "{}/mozprocess".format(mozbase_dir),
+        "{}/third_party/python/six".format(env['GECKO_PATH']),
+    ])
 
-        return [
-            ' '.join(hg_command),
-            ' '.join(logging_command),
-        ]
-
-    hg_commands = checkout_repo(
-        base_repo=env['GECKO_BASE_REPOSITORY'],
-        head_repo=env['GECKO_HEAD_REPOSITORY'],
-        head_rev=env['GECKO_HEAD_REV'],
-        path='.\\build\\src')
-
-    if run['comm-checkout']:
-        hg_commands.extend(
-            checkout_repo(
-                base_repo=env['COMM_BASE_REPOSITORY'],
-                head_repo=env['COMM_HEAD_REPOSITORY'],
-                head_rev=env['COMM_HEAD_REV'],
-                path='.\\build\\src\\comm')
-        )
-
-    worker['command'] = []
     if taskdesc.get('needs-sccache'):
-        worker['command'].extend([
+        worker['command'] = [
             # Make the comment part of the first command, as it will help users to
             # understand what is going on, and why these steps are implemented.
             dedent('''\
@@ -341,9 +343,4 @@ def mozharness_on_generic_worker(config, job, taskdesc):
             # Grant delete permission on the link to everyone.
             r'icacls z:\build /grant *S-1-1-0:D /L',
             r'cd /d z:\build',
-        ])
-
-    worker['command'].extend(hg_commands)
-    worker['command'].extend([
-        ' '.join(mh_command)
-    ])
+        ] + worker['command']

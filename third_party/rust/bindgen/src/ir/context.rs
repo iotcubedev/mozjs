@@ -1,7 +1,6 @@
 //! Common context that is passed around during parsing and codegen.
 
-use super::analysis::{CannotDeriveCopy, CannotDeriveDebug, CannotDeriveDefault,
-                      CannotDeriveHash, CannotDerivePartialEqOrPartialOrd,
+use super::analysis::{CannotDerive, DeriveTrait, as_cannot_derive_set,
                       HasTypeParameterInArray, HasVtableAnalysis,
                       HasVtableResult, HasDestructorAnalysis,
                       UsedTemplateParameters, HasFloat, SizednessAnalysis,
@@ -10,7 +9,7 @@ use super::derive::{CanDeriveCopy, CanDeriveDebug, CanDeriveDefault,
                     CanDeriveHash, CanDerivePartialOrd, CanDeriveOrd,
                     CanDerivePartialEq, CanDeriveEq, CanDerive};
 use super::int::IntKind;
-use super::item::{IsOpaque, Item, ItemAncestors, ItemCanonicalPath, ItemSet};
+use super::item::{IsOpaque, Item, ItemAncestors, ItemSet};
 use super::item_kind::ItemKind;
 use super::module::{Module, ModuleKind};
 use super::template::{TemplateInstantiation, TemplateParameters};
@@ -24,13 +23,13 @@ use cexpr;
 use clang::{self, Cursor};
 use clang_sys;
 use parse::ClangItemParser;
-use quote;
+use proc_macro2::{Ident, Span};
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet, hash_map};
-use std::collections::btree_map::{self, BTreeMap};
 use std::iter::IntoIterator;
 use std::mem;
+use std::collections::HashMap as StdHashMap;
+use {HashMap, HashSet, Entry};
 
 /// An identifier for some kind of IR item.
 #[derive(Debug, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
@@ -226,7 +225,7 @@ where
     }
 }
 
-impl<'a, T> CanDeriveCopy<'a> for T
+impl<T> CanDeriveCopy for T
 where
     T: Copy + Into<ItemId>
 {
@@ -301,14 +300,8 @@ enum TypeKey {
 /// A context used during parsing and generation of structs.
 #[derive(Debug)]
 pub struct BindgenContext {
-    /// The map of all the items parsed so far.
-    ///
-    /// It's a BTreeMap because we want the keys to be sorted to have consistent
-    /// output.
-    items: BTreeMap<ItemId, Item>,
-
-    /// The next item id to use during this bindings regeneration.
-    next_item_id: ItemId,
+    /// The map of all the items parsed so far, keyed off ItemId.
+    items: Vec<Option<Item>>,
 
     /// Clang USR to type map. This is needed to be able to associate types with
     /// item ids during parsing.
@@ -348,10 +341,12 @@ pub struct BindgenContext {
     /// potentially break that assumption.
     currently_parsed_types: Vec<PartialType>,
 
-    /// A HashSet with all the already parsed macro names. This is done to avoid
+    /// A map with all the already parsed macro names. This is done to avoid
     /// hard errors while parsing duplicated macros, as well to allow macro
     /// expression parsing.
-    parsed_macros: HashMap<Vec<u8>, cexpr::expr::EvalResult>,
+    ///
+    /// This needs to be an std::HashMap because the cexpr API requires it.
+    parsed_macros: StdHashMap<Vec<u8>, cexpr::expr::EvalResult>,
 
     /// The active replacements collected from replaces="xxx" annotations.
     replacements: HashMap<Vec<String>, ItemId>,
@@ -366,11 +361,14 @@ pub struct BindgenContext {
     /// The translation unit for parsing.
     translation_unit: clang::TranslationUnit,
 
+    /// Target information that can be useful for some stuff.
+    target_info: Option<clang::TargetInfo>,
+
     /// The options given by the user via cli or other medium.
     options: BindgenOptions,
 
     /// Whether a bindgen complex was generated
-    generated_bindegen_complex: Cell<bool>,
+    generated_bindgen_complex: Cell<bool>,
 
     /// The set of `ItemId`s that are whitelisted. This the very first thing
     /// computed after parsing our IR, and before running any of our analyses.
@@ -475,13 +473,13 @@ impl<'ctx> Iterator for WhitelistedItemsTraversal<'ctx> {
 
     fn next(&mut self) -> Option<ItemId> {
         loop {
-            match self.traversal.next() {
-                None => return None,
-                Some(id) if self.ctx.resolve_item(id).is_blacklisted(self.ctx) => {
-                    continue
-                }
-                Some(id) => return Some(id),
+            let id = self.traversal.next()?;
+
+            if self.ctx.resolve_item(id).is_blacklisted(self.ctx) {
+                continue
             }
+
+            return Some(id);
         }
     }
 }
@@ -503,16 +501,26 @@ impl<'ctx> WhitelistedItemsTraversal<'ctx> {
     }
 }
 
+const HOST_TARGET: &'static str =
+    include_str!(concat!(env!("OUT_DIR"), "/host-target.txt"));
+
 /// Returns the effective target, and whether it was explicitly specified on the
 /// clang flags.
 fn find_effective_target(clang_args: &[String]) -> (String, bool) {
     use std::env;
 
-    for opt in clang_args {
+    let mut args = clang_args.iter();
+    while let Some(opt) = args.next() {
         if opt.starts_with("--target=") {
             let mut split = opt.split('=');
             split.next();
             return (split.next().unwrap().to_owned(), true);
+        }
+
+        if opt == "-target" {
+            if let Some(target) = args.next() {
+                return (target.clone(), true);
+            }
         }
     }
 
@@ -521,16 +529,12 @@ fn find_effective_target(clang_args: &[String]) -> (String, bool) {
         return (t, false)
     }
 
-    const HOST_TARGET: &'static str =
-        include_str!(concat!(env!("OUT_DIR"), "/host-target.txt"));
     (HOST_TARGET.to_owned(), false)
 }
 
 impl BindgenContext {
     /// Construct the context for the given `options`.
     pub(crate) fn new(options: BindgenOptions) -> Self {
-        use clang_sys;
-
         // TODO(emilio): Use the CXTargetInfo here when available.
         //
         // see: https://reviews.llvm.org/D32389
@@ -558,18 +562,36 @@ impl BindgenContext {
                 &clang_args,
                 &options.input_unsaved_files,
                 parse_options,
-            ).expect("TranslationUnit::parse failed")
+            ).expect("libclang error; possible causes include:
+- Invalid flag syntax
+- Unrecognized flags
+- Invalid flag arguments
+- File I/O errors
+If you encounter an error missing from this list, please file an issue or a PR!")
         };
+
+        let target_info = clang::TargetInfo::new(&translation_unit);
+
+        #[cfg(debug_assertions)]
+        {
+            if let Some(ref ti) = target_info {
+                if effective_target == HOST_TARGET {
+                    assert_eq!(
+                        ti.pointer_width / 8, mem::size_of::<*mut ()>(),
+                        "{:?} {:?}", effective_target, HOST_TARGET
+                    );
+                }
+            }
+        }
 
         let root_module = Self::build_root_module(ItemId(0));
         let root_module_id = root_module.id().as_module_id_unchecked();
 
-        let mut me = BindgenContext {
-            items: Default::default(),
+        BindgenContext {
+            items: vec![Some(root_module)],
             types: Default::default(),
             type_params: Default::default(),
             modules: Default::default(),
-            next_item_id: ItemId(1),
             root_module: root_module_id,
             current_module: root_module_id,
             semantic_parents: Default::default(),
@@ -578,10 +600,11 @@ impl BindgenContext {
             replacements: Default::default(),
             collected_typerefs: false,
             in_codegen: false,
-            index: index,
-            translation_unit: translation_unit,
-            options: options,
-            generated_bindegen_complex: Cell::new(false),
+            index,
+            translation_unit,
+            target_info,
+            options,
+            generated_bindgen_complex: Cell::new(false),
             whitelisted: None,
             codegen_items: None,
             used_template_parameters: None,
@@ -597,11 +620,7 @@ impl BindgenContext {
             have_destructor: None,
             has_type_param_in_array: None,
             has_float: None,
-        };
-
-        me.add_item(root_module, None, None);
-
-        me
+        }
     }
 
     /// Creates a timer for the current bindgen phase. If time_phases is `true`,
@@ -609,6 +628,15 @@ impl BindgenContext {
     /// nothing.
     pub fn timer<'a>(&self, name: &'a str) -> Timer<'a> {
         Timer::new(name).with_output(self.options.time_phases)
+    }
+
+    /// Returns the pointer width to use for the target for the current
+    /// translation.
+    pub fn target_pointer_size(&self) -> usize {
+        if let Some(ref ti) = self.target_info {
+            return ti.pointer_width / 8;
+        }
+        mem::size_of::<*mut ()>()
     }
 
     /// Get the stack of partially parsed types that we are in the middle of
@@ -656,7 +684,8 @@ impl BindgenContext {
         debug_assert!(
             declaration.is_some() || !item.kind().is_type() ||
                 item.kind().expect_type().is_builtin_or_type_param() ||
-                item.kind().expect_type().is_opaque(self, &item),
+                item.kind().expect_type().is_opaque(self, &item) ||
+                item.kind().expect_type().is_unresolved_ref(),
             "Adding a type without declaration?"
         );
 
@@ -674,7 +703,7 @@ impl BindgenContext {
             self.need_bitfield_allocation.push(id);
         }
 
-        let old_item = self.items.insert(id, item);
+        let old_item = mem::replace(&mut self.items[id.0], Some(item));
         assert!(
             old_item.is_none(),
             "should not have already associated an item with the given id"
@@ -702,7 +731,7 @@ impl BindgenContext {
                 debug!(
                     "Invalid declaration {:?} found for type {:?}",
                     declaration,
-                    self.items.get(&id).unwrap().kind().expect_type()
+                    self.resolve_item_fallible(id).unwrap().kind().expect_type()
                 );
                 return;
             }
@@ -731,9 +760,9 @@ impl BindgenContext {
     /// details.
     fn add_item_to_module(&mut self, item: &Item) {
         assert!(item.id() != self.root_module);
-        assert!(!self.items.contains_key(&item.id()));
+        assert!(self.resolve_item_fallible(item.id()).is_none());
 
-        if let Some(parent) = self.items.get_mut(&item.parent_id()) {
+        if let Some(ref mut parent) = self.items[item.parent_id().0] {
             if let Some(module) = parent.as_module_mut() {
                 debug!(
                     "add_item_to_module: adding {:?} as child of parent module {:?}",
@@ -752,8 +781,8 @@ impl BindgenContext {
             self.current_module
         );
 
-        self.items
-            .get_mut(&self.current_module.into())
+        self.items[(self.current_module.0).0]
+            .as_mut()
             .expect("Should always have an item for self.current_module")
             .as_module_mut()
             .expect("self.current_module should always be a module")
@@ -781,7 +810,7 @@ impl BindgenContext {
         self.add_item_to_module(&item);
 
         let id = item.id();
-        let old_item = self.items.insert(id, item);
+        let old_item = mem::replace(&mut self.items[id.0], Some(item));
         assert!(
             old_item.is_none(),
             "should not have already associated an item with the given id"
@@ -813,57 +842,58 @@ impl BindgenContext {
             name.contains("$") ||
             match name {
                 "abstract" |
- 	            "alignof" |
- 	            "as" |
- 	            "become" |
- 	            "box" |
+                "alignof" |
+                "as" |
+                "async" |
+                "become" |
+                "box" |
                 "break" |
- 	            "const" |
- 	            "continue" |
- 	            "crate" |
- 	            "do" |
+                "const" |
+                "continue" |
+                "crate" |
+                "do" |
                 "else" |
- 	            "enum" |
- 	            "extern" |
- 	            "false" |
- 	            "final" |
+                "enum" |
+                "extern" |
+                "false" |
+                "final" |
                 "fn" |
- 	            "for" |
- 	            "if" |
- 	            "impl" |
- 	            "in" |
+                "for" |
+                "if" |
+                "impl" |
+                "in" |
                 "let" |
- 	            "loop" |
- 	            "macro" |
- 	            "match" |
- 	            "mod" |
+                "loop" |
+                "macro" |
+                "match" |
+                "mod" |
                 "move" |
- 	            "mut" |
- 	            "offsetof" |
- 	            "override" |
- 	            "priv" |
+                "mut" |
+                "offsetof" |
+                "override" |
+                "priv" |
                 "proc" |
- 	            "pub" |
- 	            "pure" |
- 	            "ref" |
- 	            "return" |
+                "pub" |
+                "pure" |
+                "ref" |
+                "return" |
                 "Self" |
- 	            "self" |
- 	            "sizeof" |
- 	            "static" |
- 	            "struct" |
+                "self" |
+                "sizeof" |
+                "static" |
+                "struct" |
                 "super" |
- 	            "trait" |
- 	            "true" |
- 	            "type" |
- 	            "typeof" |
+                "trait" |
+                "true" |
+                "type" |
+                "typeof" |
                 "unsafe" |
- 	            "unsized" |
- 	            "use" |
- 	            "virtual" |
- 	            "where" |
+                "unsized" |
+                "use" |
+                "virtual" |
+                "where" |
                 "while" |
- 	            "yield" |
+                "yield" |
                 "bool" |
                 "_" => true,
                 _ => false,
@@ -880,7 +910,7 @@ impl BindgenContext {
     }
 
     /// Returns a mangled name as a rust identifier.
-    pub fn rust_ident<S>(&self, name: S) -> quote::Ident
+    pub fn rust_ident<S>(&self, name: S) -> Ident
     where
         S: AsRef<str>
     {
@@ -888,16 +918,22 @@ impl BindgenContext {
     }
 
     /// Returns a mangled name as a rust identifier.
-    pub fn rust_ident_raw<T>(&self, name: T) -> quote::Ident
+    pub fn rust_ident_raw<T>(&self, name: T) -> Ident
     where
-        T: Into<quote::Ident>
+        T: AsRef<str>
     {
-        name.into()
+        Ident::new(name.as_ref(), Span::call_site())
     }
 
     /// Iterate over all items that have been defined.
-    pub fn items<'a>(&'a self) -> btree_map::Iter<'a, ItemId, Item> {
-        self.items.iter()
+    pub fn items(&self) -> impl Iterator<Item = (ItemId, &Item)> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let item = item.as_ref()?;
+                Some((ItemId(index), item))
+            })
     }
 
     /// Have we collected all unresolved type references yet?
@@ -912,7 +948,8 @@ impl BindgenContext {
         debug_assert!(!self.collected_typerefs);
         self.collected_typerefs = true;
         let mut typerefs = vec![];
-        for (id, ref mut item) in &mut self.items {
+
+        for (id, item) in self.items() {
             let kind = item.kind();
             let ty = match kind.as_type() {
                 Some(ty) => ty,
@@ -921,7 +958,7 @@ impl BindgenContext {
 
             match *ty.kind() {
                 TypeKind::UnresolvedTypeRef(ref ty, loc, parent_id) => {
-                    typerefs.push((*id, ty.clone(), loc, parent_id));
+                    typerefs.push((id, ty.clone(), loc, parent_id));
                 }
                 _ => {}
             };
@@ -942,7 +979,7 @@ impl BindgenContext {
                         Item::new_opaque_type(self.next_item_id(), &ty, self)
                     });
 
-                let item = self.items.get_mut(&id).unwrap();
+                let item = self.items[id.0].as_mut().unwrap();
                 *item.kind_mut().as_type_mut().unwrap().kind_mut() =
                     TypeKind::ResolvedTypeRef(resolved);
                 resolved
@@ -973,11 +1010,11 @@ impl BindgenContext {
     where
         F: (FnOnce(&BindgenContext, &mut Item) -> T)
     {
-        let mut item = self.items.remove(&id).unwrap();
+        let mut item = self.items[id.0].take().unwrap();
 
         let result = f(self, &mut item);
 
-        let existing = self.items.insert(id, item);
+        let existing = mem::replace(&mut self.items[id.0], Some(item));
         assert!(existing.is_none());
 
         result
@@ -1006,17 +1043,13 @@ impl BindgenContext {
     fn deanonymize_fields(&mut self) {
         let _t = self.timer("deanonymize_fields");
 
-        let comp_item_ids: Vec<ItemId> = self.items
-            .iter()
+        let comp_item_ids: Vec<ItemId> = self.items()
             .filter_map(|(id, item)| {
-                if let Some(ty) = item.kind().as_type() {
-                    if let Some(_comp) = ty.as_comp() {
-                        return Some(id);
-                    }
+                if item.kind().as_type()?.is_comp() {
+                    return Some(id);
                 }
                 None
             })
-            .cloned()
             .collect();
 
         for id in comp_item_ids {
@@ -1047,7 +1080,7 @@ impl BindgenContext {
 
         let mut replacements = vec![];
 
-        for (id, item) in self.items.iter() {
+        for (id, item) in self.items() {
             if item.annotations().use_instead_of().is_some() {
                 continue;
             }
@@ -1062,18 +1095,19 @@ impl BindgenContext {
             match *ty.kind() {
                 TypeKind::Comp(..) |
                 TypeKind::TemplateAlias(..) |
+                TypeKind::Enum(..) |
                 TypeKind::Alias(..) => {}
                 _ => continue,
             }
 
-            let path = item.canonical_path(self);
+            let path = item.path_for_whitelisting(self);
             let replacement = self.replacements.get(&path[1..]);
 
             if let Some(replacement) = replacement {
-                if replacement != id {
+                if *replacement != id {
                     // We set this just after parsing the annotation. It's
                     // very unlikely, but this can happen.
-                    if self.items.get(replacement).is_some() {
+                    if self.resolve_item_fallible(*replacement).is_some() {
                         replacements.push((id.expect_type_id(self), replacement.expect_type_id(self)));
                     }
                 }
@@ -1082,9 +1116,9 @@ impl BindgenContext {
 
         for (id, replacement_id) in replacements {
             debug!("Replacing {:?} with {:?}", id, replacement_id);
-
             let new_parent = {
-                let item = self.items.get_mut(&id.into()).unwrap();
+                let item_id: ItemId = id.into();
+                let item = self.items[item_id.0].as_mut().unwrap();
                 *item.kind_mut().as_type_mut().unwrap().kind_mut() =
                     TypeKind::ResolvedTypeRef(replacement_id);
                 item.parent_id()
@@ -1102,8 +1136,9 @@ impl BindgenContext {
                 continue;
             }
 
-            self.items
-                .get_mut(&replacement_id.into())
+            let replacement_item_id: ItemId = replacement_id.into();
+            self.items[replacement_item_id.0]
+                .as_mut()
                 .unwrap()
                 .set_parent_for_replacement(new_parent);
 
@@ -1139,16 +1174,16 @@ impl BindgenContext {
                 continue;
             }
 
-            self.items
-                .get_mut(&old_module)
+            self.items[old_module.0]
+                .as_mut()
                 .unwrap()
                 .as_module_mut()
                 .unwrap()
                 .children_mut()
                 .remove(&replacement_id.into());
 
-            self.items
-                .get_mut(&new_module)
+            self.items[new_module.0]
+                .as_mut()
                 .unwrap()
                 .as_module_mut()
                 .unwrap()
@@ -1216,7 +1251,7 @@ impl BindgenContext {
         assert!(self.in_codegen_phase());
         assert!(self.current_module == self.root_module);
 
-        let roots = self.items().map(|(&id, _)| id);
+        let roots = self.items().map(|(id, _)| id);
         traversal::AssertNoDanglingItemsTraversal::new(
             self,
             roots,
@@ -1232,7 +1267,7 @@ impl BindgenContext {
             assert!(self.in_codegen_phase());
             assert!(self.current_module == self.root_module);
 
-            for (&id, _item) in self.items() {
+            for (id, _item) in self.items() {
                 if id == self.root_module {
                     continue;
                 }
@@ -1339,13 +1374,10 @@ impl BindgenContext {
         } else {
             // If you aren't recursively whitelisting, then we can't really make
             // any sense of template parameter usage, and you're on your own.
-            let mut used_params = HashMap::new();
+            let mut used_params = HashMap::default();
             for &id in self.whitelisted_items() {
                 used_params.entry(id).or_insert(
-                    id.self_template_params(self).map_or(
-                        Default::default(),
-                        |params| params.into_iter().map(|p| p.into()).collect(),
-                    ),
+                    id.self_template_params(self).into_iter().map(|p| p.into()).collect()
                 );
             }
             self.used_template_parameters = Some(used_params);
@@ -1426,7 +1458,7 @@ impl BindgenContext {
         debug_assert!(item.kind().is_type());
         self.add_item_to_module(&item);
         let id = item.id();
-        let old_item = self.items.insert(id, item);
+        let old_item = mem::replace(&mut self.items[id.0], Some(item));
         assert!(old_item.is_none(), "Inserted type twice?");
     }
 
@@ -1461,13 +1493,13 @@ impl BindgenContext {
     ///
     /// Panics if the id resolves to an item that is not a type.
     pub fn safe_resolve_type(&self, type_id: TypeId) -> Option<&Type> {
-        self.items.get(&type_id.into()).map(|t| t.kind().expect_type())
+        self.resolve_item_fallible(type_id).map(|t| t.kind().expect_type())
     }
 
     /// Resolve the given `ItemId` into an `Item`, or `None` if no such item
     /// exists.
     pub fn resolve_item_fallible<Id: Into<ItemId>>(&self, id: Id) -> Option<&Item> {
-        self.items.get(&id.into())
+        self.items.get(id.into().0)?.as_ref()
     }
 
     /// Resolve the given `ItemId` into an `Item`.
@@ -1475,7 +1507,7 @@ impl BindgenContext {
     /// Panics if the given id does not resolve to any item.
     pub fn resolve_item<Id: Into<ItemId>>(&self, item_id: Id) -> &Item {
         let item_id = item_id.into();
-        match self.items.get(&item_id) {
+        match self.resolve_item_fallible(item_id) {
             Some(item) => item,
             None => panic!("Not an item: {:?}", item_id),
         }
@@ -1517,7 +1549,7 @@ impl BindgenContext {
     ///
     /// Note that `declaration_id` is not guaranteed to be in the context's item
     /// set! It is possible that it is a partial type that we are still in the
-    /// middle of parsign.
+    /// middle of parsing.
     fn get_declaration_info_for_template_instantiation(
         &self,
         instantiation: &Cursor,
@@ -1528,15 +1560,16 @@ impl BindgenContext {
             .and_then(|canon_decl| {
                 self.get_resolved_type(&canon_decl).and_then(
                     |template_decl_id| {
-                        template_decl_id.num_self_template_params(self).map(
-                            |num_params| {
-                                (
-                                    *canon_decl.cursor(),
-                                    template_decl_id.into(),
-                                    num_params,
-                                )
-                            },
-                        )
+                        let num_params = template_decl_id.num_self_template_params(self);
+                        if num_params == 0 {
+                            None
+                        } else {
+                            Some((
+                                *canon_decl.cursor(),
+                                template_decl_id.into(),
+                                num_params,
+                            ))
+                        }
                     },
                 )
             })
@@ -1557,15 +1590,16 @@ impl BindgenContext {
                             .cloned()
                     })
                     .and_then(|template_decl| {
-                        template_decl.num_self_template_params(self).map(
-                            |num_template_params| {
-                                (
-                                    *template_decl.decl(),
-                                    template_decl.id(),
-                                    num_template_params,
-                                )
-                            },
-                        )
+                        let num_template_params = template_decl.num_self_template_params(self);
+                        if num_template_params == 0 {
+                            None
+                        } else {
+                            Some((
+                                *template_decl.decl(),
+                                template_decl.id(),
+                                num_template_params,
+                            ))
+                        }
                     })
             })
     }
@@ -1610,19 +1644,14 @@ impl BindgenContext {
         ty: &clang::Type,
         location: clang::Cursor,
     ) -> Option<TypeId> {
-        use clang_sys;
-
-        let num_expected_args = match self.resolve_type(template)
-            .num_self_template_params(self) {
-            Some(n) => n,
-            None => {
-                warn!(
-                    "Tried to instantiate a template for which we could not \
-                       determine any template parameters"
-                );
-                return None;
-            }
-        };
+        let num_expected_args = self.resolve_type(template).num_self_template_params(self);
+        if num_expected_args == 0 {
+            warn!(
+                "Tried to instantiate a template for which we could not \
+                   determine any template parameters"
+            );
+            return None;
+        }
 
         let mut args = vec![];
         let mut found_const_arg = false;
@@ -1673,10 +1702,7 @@ impl BindgenContext {
                 }
                 clang_sys::CXCursor_TemplateRef => {
                     let (template_decl_cursor, template_decl_id, num_expected_template_args) =
-                        match self.get_declaration_info_for_template_instantiation(child) {
-                            Some(info) => info,
-                            None => return None,
-                        };
+                        self.get_declaration_info_for_template_instantiation(child)?;
 
                     if num_expected_template_args == 0 ||
                         child.has_at_least_num_children(
@@ -1724,7 +1750,7 @@ impl BindgenContext {
                             sub_name,
                             template_decl_cursor
                                 .cur_type()
-                                .fallible_layout()
+                                .fallible_layout(self)
                                 .ok(),
                             sub_kind,
                             false,
@@ -1745,8 +1771,8 @@ impl BindgenContext {
                             sub_item
                         );
                         self.add_item_to_module(&sub_item);
-                        debug_assert!(sub_id == sub_item.id());
-                        self.items.insert(sub_id, sub_item);
+                        debug_assert_eq!(sub_id, sub_item.id());
+                        self.items[sub_id.0] = Some(sub_item);
                         args.push(sub_id.as_type_id_unchecked());
                     }
                 }
@@ -1790,7 +1816,7 @@ impl BindgenContext {
         let name = if name.is_empty() { None } else { Some(name) };
         let ty = Type::new(
             name,
-            ty.fallible_layout().ok(),
+            ty.fallible_layout(self).ok(),
             type_kind,
             ty.is_const(),
         );
@@ -1805,8 +1831,8 @@ impl BindgenContext {
         // Bypass all the validations in add_item explicitly.
         debug!("instantiate_template: inserting item: {:?}", item);
         self.add_item_to_module(&item);
-        debug_assert!(with_id == item.id());
-        self.items.insert(with_id, item);
+        debug_assert_eq!(with_id, item.id());
+        self.items[with_id.0] = Some(item);
         Some(with_id.as_type_id_unchecked())
     }
 
@@ -1897,7 +1923,7 @@ impl BindgenContext {
     /// Make a new item that is a resolved type reference to the `wrapped_id`.
     ///
     /// This is unfortunately a lot of bloat, but is needed to properly track
-    /// constness et. al.
+    /// constness et al.
     ///
     /// We should probably make the constness tracking separate, so it doesn't
     /// bloat that much, but hey, we already bloat the heck out of builtin
@@ -1909,9 +1935,44 @@ impl BindgenContext {
         parent_id: Option<ItemId>,
         ty: &clang::Type,
     ) -> TypeId {
+        self.build_wrapper(
+            with_id,
+            wrapped_id,
+            parent_id,
+            ty,
+            ty.is_const(),
+        )
+    }
+
+    /// A wrapper over a type that adds a const qualifier explicitly.
+    ///
+    /// Needed to handle const methods in C++, wrapping the type .
+    pub fn build_const_wrapper(
+        &mut self,
+        with_id: ItemId,
+        wrapped_id: TypeId,
+        parent_id: Option<ItemId>,
+        ty: &clang::Type,
+    ) -> TypeId {
+        self.build_wrapper(
+            with_id,
+            wrapped_id,
+            parent_id,
+            ty,
+            /* is_const = */ true,
+        )
+    }
+
+    fn build_wrapper(
+        &mut self,
+        with_id: ItemId,
+        wrapped_id: TypeId,
+        parent_id: Option<ItemId>,
+        ty: &clang::Type,
+        is_const: bool,
+    ) -> TypeId {
         let spelling = ty.spelling();
-        let is_const = ty.is_const();
-        let layout = ty.fallible_layout().ok();
+        let layout = ty.fallible_layout(self).ok();
         let type_kind = TypeKind::ResolvedTypeRef(wrapped_id);
         let ty = Type::new(Some(spelling), layout, type_kind, is_const);
         let item = Item::new(
@@ -1927,8 +1988,8 @@ impl BindgenContext {
 
     /// Returns the next item id to be used for an item.
     pub fn next_item_id(&mut self) -> ItemId {
-        let ret = self.next_item_id;
-        self.next_item_id = ItemId(self.next_item_id.0 + 1);
+        let ret = ItemId(self.items.len());
+        self.items.push(None);
         ret
     }
 
@@ -1950,7 +2011,8 @@ impl BindgenContext {
             CXType_UChar => TypeKind::Int(IntKind::UChar),
             CXType_Short => TypeKind::Int(IntKind::Short),
             CXType_UShort => TypeKind::Int(IntKind::UShort),
-            CXType_WChar | CXType_Char16 => TypeKind::Int(IntKind::U16),
+            CXType_WChar => TypeKind::Int(IntKind::WChar),
+            CXType_Char16 => TypeKind::Int(IntKind::U16),
             CXType_Char32 => TypeKind::Int(IntKind::U32),
             CXType_Long => TypeKind::Int(IntKind::Long),
             CXType_ULong => TypeKind::Int(IntKind::ULong),
@@ -1985,7 +2047,7 @@ impl BindgenContext {
 
         let spelling = ty.spelling();
         let is_const = ty.is_const();
-        let layout = ty.fallible_layout().ok();
+        let layout = ty.fallible_layout(self).ok();
         let ty = Type::new(Some(spelling), layout, type_kind, is_const);
         let id = self.next_item_id();
         let item =
@@ -2005,7 +2067,7 @@ impl BindgenContext {
     }
 
     /// Get the currently parsed macros.
-    pub fn parsed_macros(&self) -> &HashMap<Vec<u8>, cexpr::expr::EvalResult> {
+    pub fn parsed_macros(&self) -> &StdHashMap<Vec<u8>, cexpr::expr::EvalResult> {
         debug_assert!(!self.in_codegen_phase());
         &self.parsed_macros
     }
@@ -2031,7 +2093,7 @@ impl BindgenContext {
     /// and implies that the original type is hidden.
     pub fn replace(&mut self, name: &[String], potential_ty: ItemId) {
         match self.replacements.entry(name.into()) {
-            hash_map::Entry::Vacant(entry) => {
+            Entry::Vacant(entry) => {
                 debug!(
                     "Defining replacement for {:?} as {:?}",
                     name,
@@ -2039,7 +2101,7 @@ impl BindgenContext {
                 );
                 entry.insert(potential_ty);
             }
-            hash_map::Entry::Occupied(occupied) => {
+            Entry::Occupied(occupied) => {
                 warn!(
                     "Replacement for {:?} already defined as {:?}; \
                        ignoring duplicate replacement definition as {:?}",
@@ -2049,18 +2111,6 @@ impl BindgenContext {
                 );
             }
         }
-    }
-
-    /// Is the item with the given `name` blacklisted? Or is the item with the given
-    /// `name` and `id` replaced by another type, and effectively blacklisted?
-    pub fn blacklisted_by_name<Id: Into<ItemId>>(&self, path: &[String], id: Id) -> bool {
-        let id = id.into();
-        debug_assert!(
-            self.in_codegen_phase(),
-            "You're not supposed to call this yet"
-        );
-        self.options.blacklisted_types.matches(&path[1..].join("::")) ||
-            self.is_replaced_type(path, id)
     }
 
     /// Has the item with the given `name` and `id` been replaced by another
@@ -2098,19 +2148,20 @@ impl BindgenContext {
             ::clang_sys::CXCursor_Namespace,
             "Be a nice person"
         );
-        let tokens = match cursor.tokens() {
-            Some(tokens) => tokens,
-            None => return (None, ModuleKind::Normal),
-        };
 
+        let mut module_name = None;
+        let spelling = cursor.spelling();
+        if !spelling.is_empty() {
+            module_name = Some(spelling)
+        }
+
+        let tokens = cursor.tokens();
         let mut iter = tokens.iter();
         let mut kind = ModuleKind::Normal;
         let mut found_namespace_keyword = false;
-        let mut module_name = None;
-
         while let Some(token) = iter.next() {
-            match &*token.spelling {
-                "inline" => {
+            match token.spelling() {
+                b"inline" => {
                     assert!(!found_namespace_keyword);
                     assert!(kind != ModuleKind::Inline);
                     kind = ModuleKind::Inline;
@@ -2125,15 +2176,17 @@ impl BindgenContext {
                 //
                 // Fortunately enough, inline nested namespace specifiers aren't
                 // a thing, and are invalid C++ :)
-                "namespace" | "::" => {
+                b"namespace" | b"::" => {
                     found_namespace_keyword = true;
                 }
-                "{" => {
+                b"{" => {
                     assert!(found_namespace_keyword);
                     break;
                 }
                 name if found_namespace_keyword => {
-                    module_name = Some(name.to_owned());
+                    if module_name.is_none() {
+                        module_name = Some(String::from_utf8_lossy(name).into_owned());
+                    }
                     break;
                 }
                 _ => {
@@ -2238,7 +2291,7 @@ impl BindgenContext {
                         return true;
                     }
 
-                    let name = item.canonical_path(self)[1..].join("::");
+                    let name = item.path_for_whitelisting(self)[1..].join("::");
                     debug!("whitelisted_items: testing {:?}", name);
                     match *item.kind() {
                         ItemKind::Module(..) => true,
@@ -2253,35 +2306,62 @@ impl BindgenContext {
                                 return true;
                             }
 
-                            let parent = self.resolve_item(item.parent_id());
-                            if parent.is_module() {
-                                let mut prefix_path = parent.canonical_path(self);
-
-                                // Unnamed top-level enums are special and we
-                                // whitelist them via the `whitelisted_vars` filter,
-                                // since they're effectively top-level constants,
-                                // and there's no way for them to be referenced
-                                // consistently.
-                                if let TypeKind::Enum(ref enum_) = *ty.kind() {
-                                    if ty.name().is_none() &&
-                                        enum_.variants().iter().any(|variant| {
-                                            prefix_path.push(variant.name().into());
-                                            let name = prefix_path[1..].join("::");
-                                            prefix_path.pop().unwrap();
-                                            self.options()
-                                                .whitelisted_vars
-                                                .matches(&name)
-                                        }) {
-                                            return true;
-                                        }
-                                }
+                            // Auto-whitelist types that don't need code
+                            // generation if not whitelisting recursively, to
+                            // make the #[derive] analysis not be lame.
+                            if !self.options().whitelist_recursively {
+                                match *ty.kind() {
+                                    TypeKind::Void |
+                                    TypeKind::NullPtr |
+                                    TypeKind::Int(..) |
+                                    TypeKind::Float(..) |
+                                    TypeKind::Complex(..) |
+                                    TypeKind::Array(..) |
+                                    TypeKind::Vector(..) |
+                                    TypeKind::Pointer(..) |
+                                    TypeKind::Reference(..) |
+                                    TypeKind::Function(..) |
+                                    TypeKind::ResolvedTypeRef(..) |
+                                    TypeKind::Opaque |
+                                    TypeKind::TypeParam => return true,
+                                    _ => {},
+                                };
                             }
 
-                            false
+                            // Unnamed top-level enums are special and we
+                            // whitelist them via the `whitelisted_vars` filter,
+                            // since they're effectively top-level constants,
+                            // and there's no way for them to be referenced
+                            // consistently.
+                            let parent = self.resolve_item(item.parent_id());
+                            if !parent.is_module() {
+                                return false;
+                            }
+
+
+                            let enum_ = match *ty.kind() {
+                                TypeKind::Enum(ref e) => e,
+                                _ => return false,
+                            };
+
+                            if ty.name().is_some() {
+                                return false;
+                            }
+
+                            let mut prefix_path =
+                                parent.path_for_whitelisting(self);
+                            enum_.variants().iter().any(|variant| {
+                                prefix_path.push(variant.name().into());
+                                let name = prefix_path[1..].join("::");
+                                prefix_path.pop().unwrap();
+                                self.options()
+                                    .whitelisted_vars
+                                    .matches(&name)
+                            })
                         }
                     }
                 })
-                .map(|(&id, _)| id)
+                .map(|(id, _)| id)
                 .collect::<Vec<_>>();
 
             // The reversal preserves the expected ordering of traversal,
@@ -2295,7 +2375,11 @@ impl BindgenContext {
             if self.options().whitelist_recursively {
                 traversal::all_edges
             } else {
-                traversal::no_edges
+                // Only follow InnerType edges from the whitelisted roots.
+                // Such inner types (e.g. anonymous structs/unions) are
+                // always emitted by codegen, and they need to be whitelisted
+                // to make sure they are processed by e.g. the derive analysis.
+                traversal::only_inner_type_edges
             };
 
         let whitelisted = WhitelistedItemsTraversal::new(
@@ -2316,11 +2400,23 @@ impl BindgenContext {
 
         self.whitelisted = Some(whitelisted);
         self.codegen_items = Some(codegen_items);
+
+        for item in self.options().whitelisted_functions.unmatched_items() {
+            error!("unused option: --whitelist-function {}", item);
+        }
+
+        for item in self.options().whitelisted_vars.unmatched_items() {
+            error!("unused option: --whitelist-var {}", item);
+        }
+
+        for item in self.options().whitelisted_types.unmatched_items() {
+            error!("unused option: --whitelist-type {}", item);
+        }
     }
 
     /// Convenient method for getting the prefix to use for most traits in
     /// codegen depending on the `use_core` option.
-    pub fn trait_prefix(&self) -> quote::Ident {
+    pub fn trait_prefix(&self) -> Ident {
         if self.options().use_core {
             self.rust_ident_raw("core")
         } else {
@@ -2328,14 +2424,14 @@ impl BindgenContext {
         }
     }
 
-    /// Call if a binden complex is generated
-    pub fn generated_bindegen_complex(&self) {
-        self.generated_bindegen_complex.set(true)
+    /// Call if a bindgen complex is generated
+    pub fn generated_bindgen_complex(&self) {
+        self.generated_bindgen_complex.set(true)
     }
 
-    /// Whether we need to generate the binden complex type
-    pub fn need_bindegen_complex_type(&self) -> bool {
-        self.generated_bindegen_complex.get()
+    /// Whether we need to generate the bindgen complex type
+    pub fn need_bindgen_complex_type(&self) -> bool {
+        self.generated_bindgen_complex.get()
     }
 
     /// Compute whether we can derive debug.
@@ -2343,7 +2439,7 @@ impl BindgenContext {
         let _t = self.timer("compute_cannot_derive_debug");
         assert!(self.cannot_derive_debug.is_none());
         if self.options.derive_debug {
-            self.cannot_derive_debug = Some(analyze::<CannotDeriveDebug>(self));
+            self.cannot_derive_debug = Some(as_cannot_derive_set(analyze::<CannotDerive>((self, DeriveTrait::Debug))));
         }
     }
 
@@ -2367,7 +2463,7 @@ impl BindgenContext {
         assert!(self.cannot_derive_default.is_none());
         if self.options.derive_default {
             self.cannot_derive_default =
-                Some(analyze::<CannotDeriveDefault>(self));
+                Some(as_cannot_derive_set(analyze::<CannotDerive>((self, DeriveTrait::Default))));
         }
     }
 
@@ -2389,7 +2485,7 @@ impl BindgenContext {
     fn compute_cannot_derive_copy(&mut self) {
         let _t = self.timer("compute_cannot_derive_copy");
         assert!(self.cannot_derive_copy.is_none());
-        self.cannot_derive_copy = Some(analyze::<CannotDeriveCopy>(self));
+        self.cannot_derive_copy = Some(as_cannot_derive_set(analyze::<CannotDerive>((self, DeriveTrait::Copy))));
     }
 
     /// Compute whether we can derive hash.
@@ -2397,7 +2493,7 @@ impl BindgenContext {
         let _t = self.timer("compute_cannot_derive_hash");
         assert!(self.cannot_derive_hash.is_none());
         if self.options.derive_hash {
-            self.cannot_derive_hash = Some(analyze::<CannotDeriveHash>(self));
+            self.cannot_derive_hash = Some(as_cannot_derive_set(analyze::<CannotDerive>((self, DeriveTrait::Hash))));
         }
     }
 
@@ -2420,7 +2516,7 @@ impl BindgenContext {
         let _t = self.timer("compute_cannot_derive_partialord_partialeq_or_eq");
         assert!(self.cannot_derive_partialeq_or_partialord.is_none());
         if self.options.derive_partialord || self.options.derive_partialeq || self.options.derive_eq {
-            self.cannot_derive_partialeq_or_partialord = Some(analyze::<CannotDerivePartialEqOrPartialOrd>(self));
+            self.cannot_derive_partialeq_or_partialord = Some(analyze::<CannotDerive>((self, DeriveTrait::PartialEqOrPartialOrd)));
         }
     }
 
@@ -2497,19 +2593,19 @@ impl BindgenContext {
 
     /// Check if `--no-partialeq` flag is enabled for this item.
     pub fn no_partialeq_by_name(&self, item: &Item) -> bool {
-        let name = item.canonical_path(self)[1..].join("::");
+        let name = item.path_for_whitelisting(self)[1..].join("::");
         self.options().no_partialeq_types.matches(&name)
     }
 
     /// Check if `--no-copy` flag is enabled for this item.
     pub fn no_copy_by_name(&self, item: &Item) -> bool {
-        let name = item.canonical_path(self)[1..].join("::");
+        let name = item.path_for_whitelisting(self)[1..].join("::");
         self.options().no_copy_types.matches(&name)
     }
 
-    /// Chech if `--no-hash` flag is enabled for this item.
+    /// Check if `--no-hash` flag is enabled for this item.
     pub fn no_hash_by_name(&self, item: &Item) -> bool {
-        let name = item.canonical_path(self)[1..].join("::");
+        let name = item.path_for_whitelisting(self)[1..].join("::");
         self.options().no_hash_types.matches(&name)
     }
 }
@@ -2622,13 +2718,13 @@ impl TemplateParameters for PartialType {
     fn self_template_params(
         &self,
         _ctx: &BindgenContext,
-    ) -> Option<Vec<TypeId>> {
+    ) -> Vec<TypeId> {
         // Maybe at some point we will eagerly parse named types, but for now we
         // don't and this information is unavailable.
-        None
+        vec![]
     }
 
-    fn num_self_template_params(&self, _ctx: &BindgenContext) -> Option<usize> {
+    fn num_self_template_params(&self, _ctx: &BindgenContext) -> usize {
         // Wouldn't it be nice if libclang would reliably give us this
         // information‽
         match self.decl().kind() {
@@ -2647,9 +2743,9 @@ impl TemplateParameters for PartialType {
                     };
                     clang_sys::CXChildVisit_Continue
                 });
-                Some(num_params)
+                num_params
             }
-            _ => None,
+            _ => 0,
         }
     }
 }

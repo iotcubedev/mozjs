@@ -122,9 +122,9 @@ Each `PushRegistration` corresponds to a unique *uaid* (User-Agent ID) on the
 autopush server.  Each *uaid* is long-lived; a healthy client will maintain the
 same *uaid* until the client's configuration changes or the service expires the
 registration due to inactivity or an unexpected server event.  Each
-`PushSubscription` is associated to a given *uaid* and correponds to a unique
+`PushSubscription` is associated to a given *uaid* and corresponds to a unique
 (per-*uaid*) *chid* (Channel ID) on the autopush server.  An individual *chid*
-is potentially long-lived, but clients must expect the service to expire *chid*s
+is potentially long-lived, but clients must expect the service to expire *chid*'s`
 as part of regular maintenance.  The `PushManager` uses an `AutopushClient`
 instance to interact with the autopush server.
 

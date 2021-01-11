@@ -30,8 +30,9 @@
 
 "use strict";
 
-const { FILTER_FLAGS } = require("../constants");
+const { FILTER_FLAGS, SUPPORTED_HTTP_CODES } = require("../constants");
 const { getFormattedIPAndPort } = require("./format-utils");
+const { getUnicodeUrl } = require("devtools/client/shared/unicode-url");
 
 /*
   The function `parseFilters` is from:
@@ -42,21 +43,38 @@ const { getFormattedIPAndPort } = require("./format-utils");
 */
 
 function parseFilters(query) {
-  let flags = [];
-  let text = [];
-  let parts = query.split(/\s+/);
+  const flags = [];
+  const text = [];
+  const parts = query.split(/\s+/);
 
-  for (let part of parts) {
+  for (const part of parts) {
     if (!part) {
       continue;
     }
-    let colonIndex = part.indexOf(":");
+    const colonIndex = part.indexOf(":");
     if (colonIndex === -1) {
+      const isNegative = part.startsWith("-");
+      // Stores list of HTTP codes that starts with value of lastToken
+      const filteredStatusCodes = SUPPORTED_HTTP_CODES.filter(item => {
+        item = isNegative ? item.substr(1) : item;
+        return item.toLowerCase().startsWith(part.toLowerCase());
+      });
+
+      if (filteredStatusCodes.length > 0) {
+        flags.push({
+          type: "status-code", // a standard key before a colon
+          value: isNegative ? part.substring(1) : part,
+          isNegative,
+        });
+        continue;
+      }
+
+      // Value of lastToken is just text that does not correspond to status codes
       text.push(part);
       continue;
     }
     let key = part.substring(0, colonIndex);
-    let negative = key.startsWith("-");
+    const negative = key.startsWith("-");
     if (negative) {
       key = key.substring(1);
     }
@@ -92,7 +110,7 @@ function processFlagFilter(type, value) {
         multiplier = 1024 * 1024;
         value = value.substring(0, value.length - 1);
       }
-      let quantity = Number(value);
+      const quantity = Number(value);
       if (isNaN(quantity)) {
         return null;
       }
@@ -103,6 +121,10 @@ function processFlagFilter(type, value) {
 }
 
 function isFlagFilterMatch(item, { type, value, negative }) {
+  if (value == null) {
+    return false;
+  }
+
   // Ensures when filter token is exactly a flag ie. "remote-ip:", all values are shown
   if (value.length < 1) {
     return true;
@@ -111,115 +133,101 @@ function isFlagFilterMatch(item, { type, value, negative }) {
   let match = true;
   let { responseCookies = { cookies: [] } } = item;
   responseCookies = responseCookies.cookies || responseCookies;
-  switch (type) {
-    case "status-code":
-      match = item.status === value;
-      break;
-    case "method":
-      match = item.method.toLowerCase() === value;
-      break;
-    case "protocol":
-      let protocol = item.httpVersion;
-      match = typeof protocol === "string" ?
-                protocol.toLowerCase().includes(value) : false;
-      break;
-    case "domain":
-      match = item.urlDetails.host.toLowerCase().includes(value);
-      break;
-    case "remote-ip":
-      match = getFormattedIPAndPort(item.remoteAddress, item.remotePort)
-        .toLowerCase().includes(value);
-      break;
-    case "has-response-header":
+
+  const matchers = {
+    "status-code": () => item.status && item.status.toString() === value,
+    method: () => item.method.toLowerCase() === value,
+    protocol: () => {
+      const protocol = item.httpVersion;
+      return typeof protocol === "string"
+        ? protocol.toLowerCase().includes(value)
+        : false;
+    },
+    domain: () => item.urlDetails.host.toLowerCase().includes(value),
+    "remote-ip": () => {
+      const data = getFormattedIPAndPort(item.remoteAddress, item.remotePort);
+      return data ? data.toLowerCase().includes(value) : false;
+    },
+    "has-response-header": () => {
       if (typeof item.responseHeaders === "object") {
-        let { headers } = item.responseHeaders;
-        match = headers.findIndex(h => h.name.toLowerCase() === value) > -1;
-      } else {
-        match = false;
+        const { headers } = item.responseHeaders;
+        return headers.findIndex(h => h.name.toLowerCase() === value) > -1;
       }
-      break;
-    case "cause":
-      let causeType = item.cause.type;
-      match = typeof causeType === "string" ?
-                causeType.toLowerCase().includes(value) : false;
-      break;
-    case "transferred":
+      return false;
+    },
+    cause: () => {
+      const causeType = item.cause.type;
+      return typeof causeType === "string"
+        ? causeType.toLowerCase().includes(value)
+        : false;
+    },
+    transferred: () => {
       if (item.fromCache) {
-        match = false;
-      } else {
-        match = isSizeMatch(value, item.transferredSize);
+        return false;
       }
-      break;
-    case "size":
-      match = isSizeMatch(value, item.contentSize);
-      break;
-    case "larger-than":
-      match = item.contentSize > value;
-      break;
-    case "transferred-larger-than":
+      return isSizeMatch(value, item.transferredSize);
+    },
+    size: () => isSizeMatch(value, item.contentSize),
+    "larger-than": () => item.contentSize > value,
+    "transferred-larger-than": () => {
       if (item.fromCache) {
-        match = false;
-      } else {
-        match = item.transferredSize > value;
+        return false;
       }
-      break;
-    case "mime-type":
-      match = item.mimeType.includes(value);
-      break;
-    case "is":
-      if (value === "from-cache" ||
-          value === "cached") {
-        match = item.fromCache || item.status === "304";
-      } else if (value === "running") {
-        match = !item.status;
+      return item.transferredSize > value;
+    },
+    "mime-type": () => item.mimeType.includes(value),
+    is: () => {
+      if (value === "from-cache" || value === "cached") {
+        return item.fromCache || item.status === "304";
       }
-      break;
-    case "scheme":
-      match = item.urlDetails.scheme === value;
-      break;
-    case "regexp":
+      if (value === "running") {
+        return !item.status;
+      }
+      return match;
+    },
+    scheme: () => item.urlDetails.scheme === value,
+    regexp: () => {
       try {
-        let pattern = new RegExp(value);
-        match = pattern.test(item.url);
+        const pattern = new RegExp(value);
+        return pattern.test(item.url);
       } catch (e) {
-        match = false;
+        return false;
       }
-      break;
-    case "set-cookie-domain":
+    },
+    "set-cookie-domain": () => {
       if (responseCookies.length > 0) {
-        let host = item.urlDetails.host;
-        let i = responseCookies.findIndex(c => {
-          let domain = c.hasOwnProperty("domain") ? c.domain : host;
+        const host = item.urlDetails.host;
+        const i = responseCookies.findIndex(c => {
+          const domain = c.hasOwnProperty("domain") ? c.domain : host;
           return domain.includes(value);
         });
-        match = i > -1;
-      } else {
-        match = false;
+        return i > -1;
       }
-      break;
-    case "set-cookie-name":
-      match = responseCookies.findIndex(c =>
-        c.name.toLowerCase().includes(value)) > -1;
-      break;
-    case "set-cookie-value":
-      match = responseCookies.findIndex(c =>
-        c.value.toLowerCase().includes(value)) > -1;
-      break;
+      return false;
+    },
+    "set-cookie-name": () =>
+      responseCookies.findIndex(c => c.name.toLowerCase().includes(value)) > -1,
+    "set-cookie-value": () =>
+      responseCookies.findIndex(c => c.value.toLowerCase().includes(value)) >
+      -1,
+  };
+
+  const matcher = matchers[type];
+  if (matcher) {
+    match = matcher();
   }
-  if (negative) {
-    return !match;
-  }
-  return match;
+
+  return negative ? !match : match;
 }
 
 function isSizeMatch(value, size) {
-  return value >= (size - size / 10) && value <= (size + size / 10);
+  return value >= size - size / 10 && value <= size + size / 10;
 }
 
 function isTextFilterMatch({ url }, text) {
-  let lowerCaseUrl = url.toLowerCase();
+  const lowerCaseUrl = getUnicodeUrl(url).toLowerCase();
   let lowerCaseText = text.toLowerCase();
-  let textLength = text.length;
+  const textLength = text.length;
   // Support negative filtering
   if (text.startsWith("-") && textLength > 1) {
     lowerCaseText = lowerCaseText.substring(1, textLength);
@@ -235,14 +243,14 @@ function isFreetextMatch(item, text) {
     return true;
   }
 
-  let filters = parseFilters(text);
+  const filters = parseFilters(text);
   let match = true;
 
-  for (let textFilter of filters.text) {
+  for (const textFilter of filters.text) {
     match = match && isTextFilterMatch(item, textFilter);
   }
 
-  for (let flagFilter of filters.flags) {
+  for (const flagFilter of filters.flags) {
     match = match && isFlagFilterMatch(item, flagFilter);
   }
 

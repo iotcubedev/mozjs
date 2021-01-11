@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,14 +5,22 @@
 "use strict";
 
 const Services = require("Services");
-const EventEmitter = require("devtools/shared/old-event-emitter");
+const EventEmitter = require("devtools/shared/event-emitter");
 const {
   VIEW_NODE_VALUE_TYPE,
-  VIEW_NODE_SHAPE_POINT_TYPE
+  VIEW_NODE_SHAPE_POINT_TYPE,
 } = require("devtools/client/inspector/shared/node-types");
 
-const DEFAULT_GRID_COLOR = "#4B0082";
-const INSET_POINT_TYPES = ["top", "right", "bottom", "left"];
+loader.lazyRequireGetter(
+  this,
+  "parseURL",
+  "devtools/client/shared/source-utils",
+  true
+);
+loader.lazyRequireGetter(this, "asyncStorage", "devtools/shared/async-storage");
+
+const DEFAULT_HIGHLIGHTER_COLOR = "#9400FF";
+const SUBGRID_PARENT_ALPHA = 0.5;
 
 /**
  * Highlighters overlay is a singleton managing all highlighters in the Inspector.
@@ -26,50 +32,117 @@ class HighlightersOverlay {
    */
   constructor(inspector) {
     this.inspector = inspector;
-    this.highlighters = {};
-    this.highlighterUtils = this.inspector.toolbox.highlighterUtils;
+    this.inspectorFront = this.inspector.inspectorFront;
+    this.store = this.inspector.store;
+    this.target = this.inspector.target;
+    this.telemetry = this.inspector.telemetry;
+    this.walker = this.inspector.walker;
+    this.maxGridHighlighters = Services.prefs.getIntPref(
+      "devtools.gridinspector.maxHighlighters"
+    );
 
-    // Only initialize the overlay if at least one of the highlighter types is supported.
-    this.supportsHighlighters = this.highlighterUtils.supportsCustomHighlighters();
+    // Collection of instantiated highlighter actors like FlexboxHighlighter,
+    // ShapesHighlighter and GeometryEditorHighlighter.
+    this.highlighters = {};
+    // Map of grid container NodeFront to their instantiated grid highlighter actors.
+    this.gridHighlighters = new Map();
+    // Map of parent grid container NodeFront to their instantiated grid highlighter
+    // actors.
+    this.parentGridHighlighters = new Map();
+    // Array of reusable grid highlighters that have been instantiated and are not
+    // associated with any NodeFront.
+    this.extraGridHighlighterPool = [];
+
+    // Map of grid container NodeFront to their parent grid container.
+    this.subgridToParentMap = new Map();
+
+    // Boolean flag to keep track of whether or not the telemetry timer for the grid
+    // highlighter active time is active. We keep track of this to avoid re-starting a
+    // new timer when an additional grid highlighter is turned on.
+    this.isGridHighlighterTimerActive = false;
+
+    // Collection of instantiated in-context editors, like ShapesInContextEditor, which
+    // behave like highlighters but with added editing capabilities that need to map value
+    // changes to properties in the Rule view.
+    this.editors = {};
+
+    // Saved state to be restore on page navigation.
+    this.state = {
+      flexbox: {},
+      // Map of grid container NodeFront to the their stored grid options
+      grids: new Map(),
+      shapes: {},
+    };
 
     // NodeFront of the flexbox container that is highlighted.
     this.flexboxHighlighterShown = null;
+    // NodeFront of the flex item that is highlighted.
+    this.flexItemHighlighterShown = null;
     // NodeFront of element that is highlighted by the geometry editor.
     this.geometryEditorHighlighterShown = null;
-    // NodeFront of the grid container that is highlighted.
-    this.gridHighlighterShown = null;
     // Name of the highlighter shown on mouse hover.
     this.hoveredHighlighterShown = null;
     // Name of the selector highlighter shown.
     this.selectorHighlighterShown = null;
     // NodeFront of the shape that is highlighted
     this.shapesHighlighterShown = null;
-    // Saved state to be restore on page navigation.
-    this.state = {
-      flexbox: {},
-      grid: {},
-      shapes: {},
-    };
 
     this.onClick = this.onClick.bind(this);
+    this.onDisplayChange = this.onDisplayChange.bind(this);
     this.onMarkupMutation = this.onMarkupMutation.bind(this);
     this.onMouseMove = this.onMouseMove.bind(this);
     this.onMouseOut = this.onMouseOut.bind(this);
     this.onWillNavigate = this.onWillNavigate.bind(this);
     this.hideFlexboxHighlighter = this.hideFlexboxHighlighter.bind(this);
+    this.hideFlexItemHighlighter = this.hideFlexItemHighlighter.bind(this);
     this.hideGridHighlighter = this.hideGridHighlighter.bind(this);
     this.hideShapesHighlighter = this.hideShapesHighlighter.bind(this);
     this.showFlexboxHighlighter = this.showFlexboxHighlighter.bind(this);
+    this.showFlexItemHighlighter = this.showFlexItemHighlighter.bind(this);
     this.showGridHighlighter = this.showGridHighlighter.bind(this);
     this.showShapesHighlighter = this.showShapesHighlighter.bind(this);
     this._handleRejection = this._handleRejection.bind(this);
-    this._onHighlighterEvent = this._onHighlighterEvent.bind(this);
+    this.onShapesHighlighterShown = this.onShapesHighlighterShown.bind(this);
+    this.onShapesHighlighterHidden = this.onShapesHighlighterHidden.bind(this);
 
     // Add inspector events, not specific to a given view.
     this.inspector.on("markupmutation", this.onMarkupMutation);
-    this.inspector.target.on("will-navigate", this.onWillNavigate);
+    this.target.on("will-navigate", this.onWillNavigate);
+    this.walker.on("display-change", this.onDisplayChange);
 
     EventEmitter.decorate(this);
+  }
+
+  async canGetParentGridNode() {
+    if (this._canGetParentGridNode === undefined) {
+      this._canGetParentGridNode = await this.target.actorHasMethod(
+        "domwalker",
+        "getParentGridNode"
+      );
+    }
+
+    return this._canGetParentGridNode;
+  }
+
+  /**
+   * Returns true if the grid highlighter can be toggled on/off for the given node, and
+   * false otherwise. A grid container can be toggled on if the max grid highlighters
+   * is only 1 or less than the maximum grid highlighters that can be displayed or if
+   * the grid highlighter already highlights the given node.
+   *
+   * @param  {NodeFront} node
+   *         Grid container NodeFront.
+   * @return {Boolean}
+   */
+  canGridHighlighterToggle(node) {
+    const maxGridHighlighters = Services.prefs.getIntPref(
+      "devtools.gridinspector.maxHighlighters"
+    );
+    return (
+      maxGridHighlighters === 1 ||
+      this.gridHighlighters.size < maxGridHighlighters ||
+      this.gridHighlighters.has(node)
+    );
   }
 
   /**
@@ -90,11 +163,7 @@ class HighlightersOverlay {
    *         Either the rule-view or computed-view panel to add the highlighters overlay.
    */
   addToView(view) {
-    if (!this.supportsHighlighters) {
-      return;
-    }
-
-    let el = view.element;
+    const el = view.element;
     el.addEventListener("click", this.onClick, true);
     el.addEventListener("mousemove", this.onMouseMove);
     el.addEventListener("mouseout", this.onMouseOut);
@@ -110,44 +179,33 @@ class HighlightersOverlay {
    *         overlay.
    */
   removeFromView(view) {
-    if (!this.supportsHighlighters) {
-      return;
-    }
-
-    let el = view.element;
+    const el = view.element;
     el.removeEventListener("click", this.onClick, true);
     el.removeEventListener("mousemove", this.onMouseMove);
     el.removeEventListener("mouseout", this.onMouseOut);
   }
 
   /**
-   * Toggle the shapes highlighter for the given element with a shape.
+   * Toggle the shapes highlighter for the given node.
    *
    * @param  {NodeFront} node
    *         The NodeFront of the element with a shape to highlight.
    * @param  {Object} options
    *         Object used for passing options to the shapes highlighter.
+   * @param {TextProperty} textProperty
+   *        TextProperty where to write changes.
    */
-  async toggleShapesHighlighter(node, options = {}) {
-    options.transformMode = options.ctrlOrMetaPressed;
-
-    if (node == this.shapesHighlighterShown &&
-        options.mode === this.state.shapes.options.mode) {
-      // If meta/ctrl is not pressed, hide the highlighter.
-      if (!options.ctrlOrMetaPressed) {
-        await this.hideShapesHighlighter(node);
-        return;
-      }
-
-      // If meta/ctrl is pressed, toggle transform mode on the highlighter.
-      options.transformMode = !this.state.shapes.options.transformMode;
+  async toggleShapesHighlighter(node, options, textProperty) {
+    const shapesEditor = await this.getInContextEditor("shapesEditor");
+    if (!shapesEditor) {
+      return;
     }
-
-    await this.showShapesHighlighter(node, options);
+    shapesEditor.toggle(node, options, textProperty);
   }
 
   /**
-   * Show the shapes highlighter for the given element with a shape.
+   * Show the shapes highlighter for the given node.
+   * This method delegates to the in-context shapes editor.
    *
    * @param  {NodeFront} node
    *         The NodeFront of the element with a shape to highlight.
@@ -155,49 +213,56 @@ class HighlightersOverlay {
    *         Object used for passing options to the shapes highlighter.
    */
   async showShapesHighlighter(node, options) {
-    let highlighter = await this._getHighlighter("ShapesHighlighter");
-    if (!highlighter) {
+    const shapesEditor = await this.getInContextEditor("shapesEditor");
+    if (!shapesEditor) {
       return;
     }
-
-    let isShown = await highlighter.show(node, options);
-    if (!isShown) {
-      return;
-    }
-
-    this.shapesHighlighterShown = node;
-    let { mode } = options;
-    this._toggleRuleViewIcon(node, false, ".ruleview-shapeswatch");
-    this._toggleRuleViewIcon(node, true, `.ruleview-shapeswatch[data-mode='${mode}']`);
-
-    try {
-      // Save shapes highlighter state.
-      let { url } = this.inspector.target;
-      let selector = await node.getUniqueSelector();
-      this.state.shapes = { selector, options, url };
-      this.shapesHighlighterShown = node;
-      this.emit("shapes-highlighter-shown", node, options);
-    } catch (e) {
-      this._handleRejection(e);
-    }
+    shapesEditor.show(node, options);
   }
 
   /**
-   * Hide the shapes highlighter for the given element with a shape.
+   * Called after the shape highlighter was shown.
    *
-   * @param  {NodeFront} node
-   *         The NodeFront of the element with a shape to unhighlight.
+   * @param  {Object} data
+   *         Data associated with the event.
+   *         Contains:
+   *         - {NodeFront} node: The NodeFront of the element that is highlighted.
+   *         - {Object} options: Options that were passed to ShapesHighlighter.show()
    */
-  async hideShapesHighlighter(node) {
-    if (!this.shapesHighlighterShown || !this.highlighters.ShapesHighlighter) {
+  onShapesHighlighterShown(data) {
+    const { node, options } = data;
+    this.shapesHighlighterShown = node;
+    this.state.shapes.options = options;
+    this.emit("shapes-highlighter-shown", node, options);
+  }
+
+  /**
+   * Hide the shapes highlighter if visible.
+   * This method delegates the to the in-context shapes editor which wraps
+   * the shapes highlighter with additional functionality.
+   */
+  async hideShapesHighlighter() {
+    const shapesEditor = await this.getInContextEditor("shapesEditor");
+    if (!shapesEditor) {
       return;
     }
+    shapesEditor.hide();
+  }
 
-    this._toggleRuleViewIcon(node, false, ".ruleview-shapeswatch");
-
-    await this.highlighters.ShapesHighlighter.hide();
-    this.emit("shapes-highlighter-hidden", this.shapesHighlighterShown,
-      this.state.shapes.options);
+  /**
+   * Called after the shapes highlighter was hidden.
+   *
+   * @param  {Object} data
+   *         Data associated with the event.
+   *         Contains:
+   *         - {NodeFront} node: The NodeFront of the element that was highlighted.
+   */
+  onShapesHighlighterHidden(data) {
+    this.emit(
+      "shapes-highlighter-hidden",
+      this.shapesHighlighterShown,
+      this.state.shapes.options
+    );
     this.shapesHighlighterShown = null;
     this.state.shapes = {};
   }
@@ -212,41 +277,43 @@ class HighlightersOverlay {
    */
   async hoverPointShapesHighlighter(node, point) {
     if (node == this.shapesHighlighterShown) {
-      let options = Object.assign({}, this.state.shapes.options);
+      const options = Object.assign({}, this.state.shapes.options);
       options.hoverPoint = point;
       await this.showShapesHighlighter(node, options);
     }
   }
 
   /**
-   * Highlight the given shape point in the rule view.
-   *
-   * @param {String} point
-   *        The point to highlight.
+   * Returns the flexbox highlighter color for the given node.
    */
-  highlightRuleViewShapePoint(point) {
-    let view = this.inspector.getPanel("ruleview").view;
-    let ruleViewEl = view.element;
-    let selector = `.ruleview-shape-point.active`;
+  async getFlexboxHighlighterColor() {
+    // Attempt to get the flexbox highlighter color from the Redux store.
+    const { flexbox } = this.store.getState();
+    const color = flexbox.color;
 
-    for (let pointNode of ruleViewEl.querySelectorAll(selector)) {
-      this._toggleShapePointActive(pointNode, false);
+    if (color) {
+      return color;
     }
 
-    if (point !== null && point !== undefined) {
-      // Because one inset value can represent multiple points, inset points use classes
-      // instead of data.
-      selector = (INSET_POINT_TYPES.includes(point)) ?
-                 `.ruleview-shape-point.${point}` :
-                 `.ruleview-shape-point[data-point='${point}']`;
+    // If the flexbox inspector has not been initialized, attempt to get the flexbox
+    // highlighter from the async storage.
+    const customHostColors =
+      (await asyncStorage.getItem("flexboxInspectorHostColors")) || {};
 
-      for (let pointNode of ruleViewEl.querySelectorAll(selector)) {
-        let nodeInfo = view.getNodeInfo(pointNode);
-        if (this.isRuleViewShapePoint(nodeInfo)) {
-          this._toggleShapePointActive(pointNode, true);
-        }
-      }
+    // Get the hostname, if there is no hostname, fall back on protocol
+    // ex: `data:` uri, and `about:` pages
+    let hostname;
+    try {
+      hostname =
+        parseURL(this.target.url).hostname ||
+        parseURL(this.target.url).protocol;
+    } catch (e) {
+      this._handleRejection(e);
     }
+
+    return hostname && customHostColors[hostname]
+      ? customHostColors[hostname]
+      : DEFAULT_HIGHLIGHTER_COLOR;
   }
 
   /**
@@ -254,16 +321,18 @@ class HighlightersOverlay {
    *
    * @param  {NodeFront} node
    *         The NodeFront of the flexbox container element to highlight.
-   * @param  {Object} options
-   *         Object used for passing options to the flexbox highlighter.
+   * @param. {String} trigger
+   *         String name matching "layout", "markup" or "rule" to indicate where the
+   *         flexbox highlighter was toggled on from. "layout" represents the layout view.
+   *         "markup" represents the markup view. "rule" represents the rule view.
    */
-  async toggleFlexboxHighlighter(node, options = {}) {
+  async toggleFlexboxHighlighter(node, trigger) {
     if (node == this.flexboxHighlighterShown) {
       await this.hideFlexboxHighlighter(node);
       return;
     }
 
-    await this.showFlexboxHighlighter(node, options);
+    await this.showFlexboxHighlighter(node, {}, trigger);
   }
 
   /**
@@ -273,24 +342,54 @@ class HighlightersOverlay {
    *         The NodeFront of the flexbox container element to highlight.
    * @param  {Object} options
    *         Object used for passing options to the flexbox highlighter.
+   * @param. {String} trigger
+   *         String name matching "layout", "markup" or "rule" to indicate where the
+   *         flexbox highlighter was toggled on from. "layout" represents the layout view.
+   *         "markup" represents the markup view. "rule" represents the rule view.
    */
-  async showFlexboxHighlighter(node, options) {
-    let highlighter = await this._getHighlighter("FlexboxHighlighter");
+  async showFlexboxHighlighter(node, options, trigger) {
+    const highlighter = await this._getHighlighter("FlexboxHighlighter");
     if (!highlighter) {
       return;
     }
 
-    let isShown = await highlighter.show(node, options);
+    const color = await this.getFlexboxHighlighterColor(node);
+    options = Object.assign({}, options, { color });
+
+    let isShown;
+
+    try {
+      isShown = await highlighter.show(node, options);
+    } catch (e) {
+      // This call might fail if called asynchrously after the toolbox is finished
+      // closing.
+      this._handleRejection(e);
+    }
+
     if (!isShown) {
       return;
     }
 
     this._toggleRuleViewIcon(node, true, ".ruleview-flex");
 
+    this.telemetry.toolOpened(
+      "flexbox_highlighter",
+      this.inspector.toolbox.sessionId,
+      this
+    );
+
+    if (trigger === "layout") {
+      this.telemetry.scalarAdd("devtools.layout.flexboxhighlighter.opened", 1);
+    } else if (trigger === "markup") {
+      this.telemetry.scalarAdd("devtools.markup.flexboxhighlighter.opened", 1);
+    } else if (trigger === "rule") {
+      this.telemetry.scalarAdd("devtools.rules.flexboxhighlighter.opened", 1);
+    }
+
     try {
       // Save flexbox highlighter state.
-      let { url } = this.inspector.target;
-      let selector = await node.getUniqueSelector();
+      const { url } = this.target;
+      const selector = await node.getUniqueSelector();
       this.state.flexbox = { selector, options, url };
       this.flexboxHighlighterShown = node;
 
@@ -309,9 +408,18 @@ class HighlightersOverlay {
    *         The NodeFront of the flexbox container element to unhighlight.
    */
   async hideFlexboxHighlighter(node) {
-    if (!this.flexboxHighlighterShown || !this.highlighters.FlexboxHighlighter) {
+    if (
+      !this.flexboxHighlighterShown ||
+      !this.highlighters.FlexboxHighlighter
+    ) {
       return;
     }
+
+    this.telemetry.toolClosed(
+      "flexbox_highlighter",
+      this.inspector.toolbox.sessionId,
+      this
+    );
 
     this._toggleRuleViewIcon(node, false, ".ruleview-flex");
 
@@ -319,11 +427,83 @@ class HighlightersOverlay {
 
     // Emit the NodeFront of the flexbox container element that the flexbox highlighter
     // was hidden for.
-    this.emit("flexbox-highlighter-hidden", this.flexboxHighlighterShown);
+    const nodeFront = this.flexboxHighlighterShown;
     this.flexboxHighlighterShown = null;
+    this.emit("flexbox-highlighter-hidden", nodeFront);
 
     // Erase flexbox highlighter state.
     this.state.flexbox = null;
+  }
+
+  /**
+   * Toggle the flex item highlighter for the given flex item element.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the flex item element to highlight.
+   * @param  {Object} options
+   *         Object used for passing options to the flex item highlighter.
+   */
+  async toggleFlexItemHighlighter(node, options = {}) {
+    if (node == this.flexItemHighlighterShown) {
+      await this.hideFlexItemHighlighter(node);
+      return;
+    }
+
+    await this.showFlexItemHighlighter(node, options);
+  }
+
+  /**
+   * Show the flex item highlighter for the given flex item element.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the flex item element to highlight.
+   * @param  {Object} options
+   *         Object used for passing options to the flex item highlighter.
+   */
+  async showFlexItemHighlighter(node, options) {
+    const highlighter = await this._getHighlighter("FlexItemHighlighter");
+    if (!highlighter) {
+      return;
+    }
+
+    const isShown = await highlighter.show(node, options);
+    if (!isShown) {
+      return;
+    }
+
+    this.flexItemHighlighterShown = node;
+  }
+
+  /**
+   * Hide the flex item highlighter for the given flex item element.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the flex item element to unhighlight.
+   */
+  async hideFlexItemHighlighter(node) {
+    if (
+      !this.flexItemHighlighterShown ||
+      !this.highlighters.FlexItemHighlighter
+    ) {
+      return;
+    }
+
+    await this.highlighters.FlexItemHighlighter.hide();
+    this.flexItemHighlighterShown = null;
+  }
+
+  /**
+   * Create a grid highlighter settings object for the provided nodeFront.
+   *
+   * @param  {NodeFront} nodeFront
+   *         The NodeFront for which we need highlighter settings.
+   */
+  getGridHighlighterSettings(nodeFront) {
+    const { grids, highlighterSettings } = this.store.getState();
+    const grid = grids.find(g => g.nodeFront === nodeFront);
+    const color = grid ? grid.color : DEFAULT_HIGHLIGHTER_COLOR;
+    const zIndex = grid ? grid.zIndex : 0;
+    return Object.assign({}, highlighterSettings, { color, zIndex });
   }
 
   /**
@@ -331,20 +511,18 @@ class HighlightersOverlay {
    *
    * @param  {NodeFront} node
    *         The NodeFront of the grid container element to highlight.
-   * @param  {Object} options
-   *         Object used for passing options to the grid highlighter.
-   * @param. {String|null} trigger
-   *         String name matching "grid" or "rule" to indicate where the
-   *         grid highlighter was toggled on from. "grid" represents the grid view
-   *         "rule" represents the rule view.
+   * @param. {String} trigger
+   *         String name matching "grid", "markup" or "rule" to indicate where the
+   *         grid highlighter was toggled on from. "grid" represents the grid view.
+   *         "markup" represents the markup view. "rule" represents the rule view.
    */
-  async toggleGridHighlighter(node, options = {}, trigger) {
-    if (node == this.gridHighlighterShown) {
+  async toggleGridHighlighter(node, trigger) {
+    if (this.gridHighlighters.has(node)) {
       await this.hideGridHighlighter(node);
       return;
     }
 
-    await this.showGridHighlighter(node, options, trigger);
+    await this.showGridHighlighter(node, {}, trigger);
   }
 
   /**
@@ -354,38 +532,106 @@ class HighlightersOverlay {
    *         The NodeFront of the grid container element to highlight.
    * @param  {Object} options
    *         Object used for passing options to the grid highlighter.
+   * @param  {String} trigger
+   *         String name matching "grid", "markup" or "rule" to indicate where the
+   *         grid highlighter was toggled on from. "grid" represents the grid view.
+   *         "markup" represents the markup view. "rule" represents the rule view.
    */
   async showGridHighlighter(node, options, trigger) {
-    let highlighter = await this._getHighlighter("CssGridHighlighter");
+    // When the grid highlighter has the given node, it is probably called with new
+    // highlighting options, so skip any extra grid highlighter handling.
+    if (!this.gridHighlighters.has(node)) {
+      if (this.maxGridHighlighters === 1) {
+        // Only one grid highlighter can be shown at a time. Hides any instantiated
+        // grid highlighters.
+        for (const nodeFront of this.gridHighlighters.keys()) {
+          await this.hideGridHighlighter(nodeFront);
+        }
+      } else if (this.gridHighlighters.size === this.maxGridHighlighters) {
+        // The maximum number of grid highlighters shown have been reached. Don't show
+        // any additional grid highlighters.
+        return;
+      }
+    } else if (this.parentGridHighlighters.has(node)) {
+      // A translucent parent grid container is being highlighted, hide the translucent
+      // highlight of the parent grid container.
+      await this.hideGridHighlighter(node);
+    }
+
+    if (node.displayType === "subgrid" && (await this.canGetParentGridNode())) {
+      // Show a translucent highlight of the parent grid container if the given node is
+      // a subgrid and the parent grid container is not highlighted.
+      const parentGridNode = await this.walker.getParentGridNode(node);
+      this.subgridToParentMap.set(node, parentGridNode);
+      await this.showParentGridHighlighter(parentGridNode);
+    }
+
+    const highlighter = await this._getGridHighlighter(node);
     if (!highlighter) {
       return;
     }
 
-    let isShown = await highlighter.show(node, options);
+    options = Object.assign({}, options, this.getGridHighlighterSettings(node));
+
+    const isShown = await highlighter.show(node, options);
     if (!isShown) {
       return;
     }
 
     this._toggleRuleViewIcon(node, true, ".ruleview-grid");
 
-    if (trigger == "grid") {
-      Services.telemetry.scalarAdd("devtools.grid.gridinspector.opened", 1);
-    } else if (trigger == "rule") {
-      Services.telemetry.scalarAdd("devtools.rules.gridinspector.opened", 1);
+    if (!this.isGridHighlighterTimerActive) {
+      this.telemetry.toolOpened(
+        "grid_highlighter",
+        this.inspector.toolbox.sessionId,
+        this
+      );
+      this.isGridHighlighterTimerActive = true;
+    }
+
+    if (trigger === "grid") {
+      this.telemetry.scalarAdd("devtools.grid.gridinspector.opened", 1);
+    } else if (trigger === "markup") {
+      this.telemetry.scalarAdd("devtools.markup.gridinspector.opened", 1);
+    } else if (trigger === "rule") {
+      this.telemetry.scalarAdd("devtools.rules.gridinspector.opened", 1);
     }
 
     try {
       // Save grid highlighter state.
-      let { url } = this.inspector.target;
-      let selector = await node.getUniqueSelector();
-      this.state.grid = { selector, options, url };
-      this.gridHighlighterShown = node;
+      const { url } = this.target;
+      const selector = await node.getUniqueSelector();
+      this.state.grids.set(node, { selector, options, url });
+
       // Emit the NodeFront of the grid container element that the grid highlighter was
-      // shown for.
+      // shown for, and its options for testing the highlighter setting options.
       this.emit("grid-highlighter-shown", node, options);
     } catch (e) {
       this._handleRejection(e);
     }
+  }
+
+  /**
+   * Show the grid highlighter for the given parent grid container element.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the parent grid container element to highlight.
+   */
+  async showParentGridHighlighter(node) {
+    if (this.gridHighlighters.has(node)) {
+      // Parent grid container already highlighted.
+      return;
+    }
+
+    const highlighter = await this._getGridHighlighter(node, true);
+    if (!highlighter) {
+      return;
+    }
+
+    await highlighter.show(node, {
+      ...this.getGridHighlighterSettings(node),
+      globalAlpha: SUBGRID_PARENT_ALPHA,
+    });
   }
 
   /**
@@ -395,22 +641,127 @@ class HighlightersOverlay {
    *         The NodeFront of the grid container element to unhighlight.
    */
   async hideGridHighlighter(node) {
-    if (!this.gridHighlighterShown || !this.highlighters.CssGridHighlighter) {
+    let highlighter;
+
+    if (this.gridHighlighters.has(node)) {
+      highlighter = this.gridHighlighters.get(node);
+      this.gridHighlighters.delete(node);
+    } else if (this.parentGridHighlighters.has(node)) {
+      highlighter = this.parentGridHighlighters.get(node);
+      this.parentGridHighlighters.delete(node);
+    } else {
       return;
+    }
+
+    // Hide the highlighter and put it in the pool of extra grid highlighters
+    // so that it can be reused.
+    await highlighter.hide();
+    this.extraGridHighlighterPool.push(highlighter);
+    this.state.grids.delete(node);
+
+    // Given node was a subgrid, remove its entry from the subgridToParentMap and
+    // hide its parent grid container highlight.
+    if (this.subgridToParentMap.has(node)) {
+      const parentGridNode = this.subgridToParentMap.get(node);
+      this.subgridToParentMap.delete(node);
+      await this.hideParentGridHighlighter(parentGridNode);
+    }
+
+    // Check if the given node matches any of the subgrid's parent grid container.
+    // Since the subgrid and its parent grid container were previously both highlighted
+    // and the parent grid container (the given node) has just been hidden, show a
+    // translucent highlight of the parent grid container.
+    for (const highlightedNode of this.gridHighlighters.keys()) {
+      const parentGridNode = await this.walker.getParentGridNode(
+        highlightedNode
+      );
+      if (node === parentGridNode) {
+        this.subgridToParentMap.set(highlightedNode, node);
+        await this.showParentGridHighlighter(node);
+        break;
+      }
     }
 
     this._toggleRuleViewIcon(node, false, ".ruleview-grid");
 
-    await this.highlighters.CssGridHighlighter.hide();
+    if (this.isGridHighlighterTimerActive && !this.gridHighlighters.size) {
+      this.telemetry.toolClosed(
+        "grid_highlighter",
+        this.inspector.toolbox.sessionId,
+        this
+      );
+      this.isGridHighlighterTimerActive = false;
+    }
 
     // Emit the NodeFront of the grid container element that the grid highlighter was
     // hidden for.
-    this.emit("grid-highlighter-hidden", this.gridHighlighterShown,
-      this.state.grid.options);
-    this.gridHighlighterShown = null;
+    this.emit("grid-highlighter-hidden", node);
+  }
 
-    // Erase grid highlighter state.
-    this.state.grid = {};
+  /**
+   * Hide the parent grid highlighter for the given parent grid container element.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the parent grid container element to unhiglight.
+   */
+  async hideParentGridHighlighter(node) {
+    // Before hiding the parent grid highlighter, check if there are any other subgrids
+    // highlighted with the same parent grid container.
+    for (const parentGridNode of this.subgridToParentMap.values()) {
+      if (parentGridNode === node) {
+        // Don't hide the parent grid highlighter if another subgrid is highlighted
+        // with the given parent node.
+        return;
+      }
+    }
+
+    const highlighter = this.parentGridHighlighters.get(node);
+    if (highlighter) {
+      await highlighter.hide();
+      this.extraGridHighlighterPool.push(highlighter);
+    }
+    this.state.grids.delete(node);
+    this.parentGridHighlighters.delete(node);
+  }
+
+  /**
+   * Show the box model highlighter for the given node.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the element to highlight.
+   * @param  {Object} options
+   *         Object used for passing options to the box model highlighter.
+   */
+  async showBoxModelHighlighter(node, options) {
+    const highlighter = await this._getHighlighter("BoxModelHighlighter");
+    if (!highlighter) {
+      return;
+    }
+
+    const isShown = await highlighter.show(node, options);
+    if (!isShown) {
+      return;
+    }
+
+    this.boxModelHighlighterShown = node;
+    this.emit("box-model-highlighter-shown", node);
+  }
+
+  /**
+   * Hide the box model highlighter.
+   */
+  async hideBoxModelHighlighter() {
+    if (
+      !this.boxModelHighlighterShown ||
+      !this.highlighters.BoxModelHighlighter
+    ) {
+      return;
+    }
+
+    await this.highlighters.BoxModelHighlighter.hide();
+    const node = this.boxModelHighlighterShown;
+    this.boxModelHighlighterShown = null;
+    this.emit("box-model-highlighter-hidden", node);
   }
 
   /**
@@ -435,12 +786,12 @@ class HighlightersOverlay {
    *        THe NodeFront of the element to highlight.
    */
   async showGeometryEditor(node) {
-    let highlighter = await this._getHighlighter("GeometryEditorHighlighter");
+    const highlighter = await this._getHighlighter("GeometryEditorHighlighter");
     if (!highlighter) {
       return;
     }
 
-    let isShown = await highlighter.show(node);
+    const isShown = await highlighter.show(node);
     if (!isShown) {
       return;
     }
@@ -453,8 +804,10 @@ class HighlightersOverlay {
    * Hide the geometry editor highlighter.
    */
   async hideGeometryEditor() {
-    if (!this.geometryEditorHighlighterShown ||
-        !this.highlighters.GeometryEditorHighlighter) {
+    if (
+      !this.geometryEditorHighlighterShown ||
+      !this.highlighters.GeometryEditorHighlighter
+    ) {
       return;
     }
 
@@ -465,29 +818,15 @@ class HighlightersOverlay {
   }
 
   /**
-   * Handle events emitted by the highlighter.
-   *
-   * @param {Object} data
-   *        The data object sent in the event.
-   */
-  _onHighlighterEvent(data) {
-    if (data.type === "shape-hover-on") {
-      this.state.shapes.hoverPoint = data.point;
-      this.emit("hover-shape-point", data.point);
-    } else if (data.type === "shape-hover-off") {
-      this.state.shapes.hoverPoint = null;
-      this.emit("hover-shape-point", null);
-    }
-
-    this.emit("highlighter-event-handled");
-  }
-
-  /**
    * Restores the saved flexbox highlighter state.
    */
   async restoreFlexboxState() {
     try {
-      await this.restoreState("flexbox", this.state.flexbox, this.showFlexboxHighlighter);
+      await this.restoreState(
+        "flexbox",
+        this.state.flexbox,
+        this.showFlexboxHighlighter
+      );
     } catch (e) {
       this._handleRejection(e);
     }
@@ -497,27 +836,24 @@ class HighlightersOverlay {
    * Restores the saved grid highlighter state.
    */
   async restoreGridState() {
+    // The NodeFronts that are used as the keys in the grid state Map are no longer in the
+    // tree after a reload. To clean up the grid state, we create a copy of the values of
+    // the grid state before restoring and clear it.
+    const values = [...this.state.grids.values()];
+    this.state.grids.clear();
+
     try {
-      await this.restoreState("grid", this.state.grid, this.showGridHighlighter);
+      for (const gridState of values) {
+        await this.restoreState("grid", gridState, this.showGridHighlighter);
+      }
     } catch (e) {
       this._handleRejection(e);
     }
   }
 
   /**
-   * Restores the saved shape highlighter state.
-   */
-  async restoreShapeState() {
-    try {
-      await this.restoreState("shapes", this.state.shapes, this.showShapesHighlighter);
-    } catch (e) {
-      this._handleRejection(e);
-    }
-  }
-
-  /**
-   * Helper function called by restoreFlexboxState, restoreGridState and
-   * restoreShapeState. Restores the saved highlighter state for the given highlighter
+   * Helper function called by restoreFlexboxState, restoreGridState.
+   * Restores the saved highlighter state for the given highlighter
    * and their state.
    *
    * @param  {String} name
@@ -530,17 +866,16 @@ class HighlightersOverlay {
    *         expected highlighters are displayed.
    */
   async restoreState(name, state, showFunction) {
-    let { selector, options, url } = state;
+    const { selector, options, url } = state;
 
-    if (!selector || url !== this.inspector.target.url) {
+    if (!selector || url !== this.target.url) {
       // Bail out if no selector was saved, or if we are on a different page.
       this.emit(`${name}-state-restored`, { restored: false });
       return;
     }
 
-    let walker = this.inspector.walker;
-    let rootNode = await walker.getRootNode();
-    let nodeFront = await walker.querySelector(rootNode, selector);
+    const rootNode = await this.walker.getRootNode();
+    const nodeFront = await this.walker.querySelector(rootNode, selector);
 
     if (nodeFront) {
       if (options.hoverPoint) {
@@ -549,9 +884,53 @@ class HighlightersOverlay {
 
       await showFunction(nodeFront, options);
       this.emit(`${name}-state-restored`, { restored: true });
+    } else {
+      this.emit(`${name}-state-restored`, { restored: false });
+    }
+  }
+
+  /**
+   * Get an instance of an in-context editor for the given type.
+   *
+   * In-context editors behave like highlighters but with added editing capabilities which
+   * need to write value changes back to something, like to properties in the Rule view.
+   * They typically exist in the context of the page, like the ShapesInContextEditor.
+   *
+   * @param  {String} type
+   *         Type of in-context editor. Currently supported: "shapesEditor"
+   * @return {Object|null}
+   *         Reference to instance for given type of in-context editor or null.
+   */
+  async getInContextEditor(type) {
+    if (this.editors[type]) {
+      return this.editors[type];
     }
 
-    this.emit(`${name}-state-restored`, { restored: false });
+    let editor;
+
+    switch (type) {
+      case "shapesEditor":
+        const highlighter = await this._getHighlighter("ShapesHighlighter");
+        if (!highlighter) {
+          return null;
+        }
+        const ShapesInContextEditor = require("devtools/client/shared/widgets/ShapesInContextEditor");
+
+        editor = new ShapesInContextEditor(
+          highlighter,
+          this.inspector,
+          this.state
+        );
+        editor.on("show", this.onShapesHighlighterShown);
+        editor.on("hide", this.onShapesHighlighterHidden);
+        break;
+      default:
+        throw new Error(`Unsupported in-context editor '${name}'`);
+    }
+
+    this.editors[type] = editor;
+
+    return editor;
   }
 
   /**
@@ -562,8 +941,6 @@ class HighlightersOverlay {
    * @return {Promise} that resolves to the highlighter
    */
   async _getHighlighter(type) {
-    let utils = this.highlighterUtils;
-
     if (this.highlighters[type]) {
       return this.highlighters[type];
     }
@@ -571,17 +948,61 @@ class HighlightersOverlay {
     let highlighter;
 
     try {
-      highlighter = await utils.getHighlighterByType(type);
+      highlighter = await this.inspectorFront.getHighlighterByType(type);
     } catch (e) {
-      // Ignore any error
+      this._handleRejection(e);
     }
 
     if (!highlighter) {
       return null;
     }
 
-    highlighter.on("highlighter-event", this._onHighlighterEvent);
     this.highlighters[type] = highlighter;
+    return highlighter;
+  }
+
+  /**
+   * Get a grid highlighter front for a given node.
+   *
+   * @param  {NodeFront} node
+   *         The NodeFront of the grid container element to highlight.
+   * @param  {Boolean} isParent
+   *         Whether or not the given node is a parent grid container element.
+   * @return {Promise} that resolves to the grid highlighter front.
+   */
+  async _getGridHighlighter(node, isParent) {
+    if (isParent && this.parentGridHighlighters.has(node)) {
+      return this.parentGridHighlighters.get(node);
+    } else if (this.gridHighlighters.has(node)) {
+      return this.gridHighlighters.get(node);
+    }
+
+    let highlighter;
+
+    // Attempt to use any grid highlighters already instantiated in the extra pool,
+    // otherwise, initialize a new grid highlighter.
+    if (this.extraGridHighlighterPool.length > 0) {
+      highlighter = this.extraGridHighlighterPool.pop();
+    } else {
+      try {
+        highlighter = await this.inspectorFront.getHighlighterByType(
+          "CssGridHighlighter"
+        );
+      } catch (e) {
+        this._handleRejection(e);
+      }
+    }
+
+    if (!highlighter) {
+      return null;
+    }
+
+    if (isParent) {
+      this.parentGridHighlighters.set(node, highlighter);
+    } else {
+      this.gridHighlighters.set(node, highlighter);
+    }
+
     return highlighter;
   }
 
@@ -603,13 +1024,25 @@ class HighlightersOverlay {
    *         The selector of the rule view icon to toggle.
    */
   _toggleRuleViewIcon(node, active, selector) {
-    if (this.inspector.selection.nodeFront != node) {
+    const ruleViewEl = this.inspector.getPanel("ruleview").view.element;
+
+    if (this.inspector.selection.nodeFront !== node) {
+      if (selector === ".ruleview-grid") {
+        for (const icon of ruleViewEl.querySelectorAll(selector)) {
+          if (
+            this.canGridHighlighterToggle(this.inspector.selection.nodeFront)
+          ) {
+            icon.removeAttribute("disabled");
+          } else {
+            icon.setAttribute("disabled", true);
+          }
+        }
+      }
+
       return;
     }
 
-    let ruleViewEl = this.inspector.getPanel("ruleview").view.element;
-
-    for (let icon of ruleViewEl.querySelectorAll(selector)) {
+    for (const icon of ruleViewEl.querySelectorAll(selector)) {
       icon.classList.toggle("active", active);
     }
   }
@@ -635,8 +1068,10 @@ class HighlightersOverlay {
    * Hide the currently shown hovered highlighter.
    */
   _hideHoveredHighlighter() {
-    if (!this.hoveredHighlighterShown ||
-        !this.highlighters[this.hoveredHighlighterShown]) {
+    if (
+      !this.hoveredHighlighterShown ||
+      !this.highlighters[this.hoveredHighlighterShown]
+    ) {
       return;
     }
 
@@ -644,7 +1079,7 @@ class HighlightersOverlay {
     // promise. This causes some tests to fail when trying to install a
     // rejection handler on the result of the call. To avoid this, check
     // whether the result is truthy before installing the handler.
-    let onHidden = this.highlighters[this.hoveredHighlighterShown].hide();
+    const onHidden = this.highlighters[this.hoveredHighlighterShown].hide();
     if (onHidden) {
       onHidden.catch(console.error);
     }
@@ -669,12 +1104,12 @@ class HighlightersOverlay {
     }
 
     try {
-      let isInTree = await this.inspector.walker.isInDOMTree(node);
+      const isInTree = await this.walker.isInDOMTree(node);
       if (!isInTree) {
         hideHighlighter(node);
       }
     } catch (e) {
-      console.error(e);
+      this._handleRejection(e);
     }
   }
 
@@ -689,8 +1124,10 @@ class HighlightersOverlay {
     if (nodeInfo.view != "computed") {
       return false;
     }
-    return nodeInfo.type === VIEW_NODE_VALUE_TYPE &&
-           nodeInfo.value.property === "transform";
+    return (
+      nodeInfo.type === VIEW_NODE_VALUE_TYPE &&
+      nodeInfo.value.property === "transform"
+    );
   }
 
   /**
@@ -722,8 +1159,10 @@ class HighlightersOverlay {
    * @param  {DOMNode} node
    * @return {Boolean}
    */
-  _isRuleViewShape(node) {
-    return this.isRuleView(node) && node.classList.contains("ruleview-shapeswatch");
+  _isRuleViewShapeSwatch(node) {
+    return (
+      this.isRuleView(node) && node.classList.contains("ruleview-shapeswatch")
+    );
   }
 
   /**
@@ -736,11 +1175,13 @@ class HighlightersOverlay {
     if (nodeInfo.view != "rule") {
       return false;
     }
-    let isTransform = nodeInfo.type === VIEW_NODE_VALUE_TYPE &&
-                      nodeInfo.value.property === "transform";
-    let isEnabled = nodeInfo.value.enabled &&
-                    !nodeInfo.value.overridden &&
-                    !nodeInfo.value.pseudoElement;
+    const isTransform =
+      nodeInfo.type === VIEW_NODE_VALUE_TYPE &&
+      nodeInfo.value.property === "transform";
+    const isEnabled =
+      nodeInfo.value.enabled &&
+      !nodeInfo.value.overridden &&
+      !nodeInfo.value.pseudoElement;
     return isTransform && isEnabled;
   }
 
@@ -754,40 +1195,89 @@ class HighlightersOverlay {
     if (nodeInfo.view != "rule") {
       return false;
     }
-    let isShape = nodeInfo.type === VIEW_NODE_SHAPE_POINT_TYPE &&
-                  (nodeInfo.value.property === "clip-path" ||
-                  nodeInfo.value.property === "shape-outside");
-    let isEnabled = nodeInfo.value.enabled &&
-                    !nodeInfo.value.overridden &&
-                    !nodeInfo.value.pseudoElement;
-    return isShape && isEnabled && nodeInfo.value.toggleActive &&
-           !this.state.shapes.options.transformMode;
+    const isShape =
+      nodeInfo.type === VIEW_NODE_SHAPE_POINT_TYPE &&
+      (nodeInfo.value.property === "clip-path" ||
+        nodeInfo.value.property === "shape-outside");
+    const isEnabled =
+      nodeInfo.value.enabled &&
+      !nodeInfo.value.overridden &&
+      !nodeInfo.value.pseudoElement;
+    return (
+      isShape &&
+      isEnabled &&
+      nodeInfo.value.toggleActive &&
+      !this.state.shapes.options.transformMode
+    );
   }
 
   onClick(event) {
     if (this._isRuleViewDisplayGrid(event.target)) {
       event.stopPropagation();
+      this.toggleGridHighlighter(this.inspector.selection.nodeFront, "rule");
+    }
 
-      let { store } = this.inspector;
-      let { grids, highlighterSettings } = store.getState();
-      let grid = grids.find(g => g.nodeFront == this.inspector.selection.nodeFront);
+    if (this._isRuleViewDisplayFlex(event.target)) {
+      event.stopPropagation();
+      this.toggleFlexboxHighlighter(this.inspector.selection.nodeFront, "rule");
+    }
 
-      highlighterSettings.color = grid ? grid.color : DEFAULT_GRID_COLOR;
-
-      this.toggleGridHighlighter(this.inspector.selection.nodeFront, highlighterSettings,
-        "rule");
-    } else if (this._isRuleViewDisplayFlex(event.target)) {
+    if (this._isRuleViewShapeSwatch(event.target)) {
       event.stopPropagation();
 
-      this.toggleFlexboxHighlighter(this.inspector.selection.nodeFront);
-    } else if (this._isRuleViewShape(event.target)) {
-      event.stopPropagation();
+      const view = this.inspector.getPanel("ruleview").view;
+      const nodeInfo = view.getNodeInfo(event.target);
 
-      let settings = {
-        mode: event.target.dataset.mode,
-        ctrlOrMetaPressed: event.metaKey || event.ctrlKey
-      };
-      this.toggleShapesHighlighter(this.inspector.selection.nodeFront, settings);
+      this.toggleShapesHighlighter(
+        this.inspector.selection.nodeFront,
+        {
+          mode: event.target.dataset.mode,
+          transformMode: event.metaKey || event.ctrlKey,
+        },
+        nodeInfo.value.textProperty
+      );
+    }
+  }
+
+  /**
+   * Handler for "display-change" events from the walker. Hides the flexbox or
+   * grid highlighter if their respective node is no longer a flex container or
+   * grid container.
+   *
+   * @param  {Array} nodes
+   *         An array of nodeFronts
+   */
+  async onDisplayChange(nodes) {
+    for (const node of nodes) {
+      const display = node.displayType;
+
+      // Hide the flexbox highlighter if the node is no longer a flexbox
+      // container.
+      if (
+        display !== "flex" &&
+        display !== "inline-flex" &&
+        node == this.flexboxHighlighterShown
+      ) {
+        await this.hideFlexboxHighlighter(node);
+        return;
+      }
+
+      // Hide the grid highlighter if the node is no longer a grid container.
+      if (
+        display !== "grid" &&
+        display !== "inline-grid" &&
+        (this.gridHighlighters.has(node) ||
+          this.parentGridHighlighters.has(node))
+      ) {
+        await this.hideGridHighlighter(node);
+        return;
+      }
+
+      // Hide the grid highlighter if the node is no longer a subgrid.
+      if (display !== "subgrid" && this.gridHighlighters.has(node)) {
+        await this.hideGridHighlighter(node);
+        return;
+      }
     }
   }
 
@@ -802,56 +1292,64 @@ class HighlightersOverlay {
 
     this._lastHovered = event.target;
 
-    let view = this.isRuleView(this._lastHovered) ?
-      this.inspector.getPanel("ruleview").view :
-      this.inspector.getPanel("computedview").computedView;
-    let nodeInfo = view.getNodeInfo(event.target);
+    const view = this.isRuleView(this._lastHovered)
+      ? this.inspector.getPanel("ruleview").view
+      : this.inspector.getPanel("computedview").computedView;
+    const nodeInfo = view.getNodeInfo(event.target);
     if (!nodeInfo) {
       return;
     }
 
     if (this.isRuleViewShapePoint(nodeInfo)) {
-      let { point } = nodeInfo.value;
-      this.hoverPointShapesHighlighter(this.inspector.selection.nodeFront, point);
-      this.emit("hover-shape-point", point);
+      const { point } = nodeInfo.value;
+      this.hoverPointShapesHighlighter(
+        this.inspector.selection.nodeFront,
+        point
+      );
       return;
     }
 
     // Choose the type of highlighter required for the hovered node.
     let type;
-    if (this._isRuleViewTransform(nodeInfo) ||
-        this._isComputedViewTransform(nodeInfo)) {
+    if (
+      this._isRuleViewTransform(nodeInfo) ||
+      this._isComputedViewTransform(nodeInfo)
+    ) {
       type = "CssTransformHighlighter";
     }
 
     if (type) {
       this.hoveredHighlighterShown = type;
-      let node = this.inspector.selection.nodeFront;
+      const node = this.inspector.selection.nodeFront;
       this._getHighlighter(type)
-          .then(highlighter => highlighter.show(node))
-          .then(shown => {
-            if (shown) {
-              this.emit("highlighter-shown");
-            }
-          });
+        .then(highlighter => highlighter.show(node))
+        .then(shown => {
+          if (shown) {
+            this.emit("highlighter-shown");
+          }
+        });
     }
   }
 
   onMouseOut(event) {
     // Only hide the highlighter if the mouse leaves the currently hovered node.
-    if (!this._lastHovered ||
-        (event && this._lastHovered.contains(event.relatedTarget))) {
+    if (
+      !this._lastHovered ||
+      (event && this._lastHovered.contains(event.relatedTarget))
+    ) {
       return;
     }
 
     // Otherwise, hide the highlighter.
-    let view = this.isRuleView(this._lastHovered) ?
-      this.inspector.getPanel("ruleview").view :
-      this.inspector.getPanel("computedview").computedView;
-    let nodeInfo = view.getNodeInfo(this._lastHovered);
+    const view = this.isRuleView(this._lastHovered)
+      ? this.inspector.getPanel("ruleview").view
+      : this.inspector.getPanel("computedview").computedView;
+    const nodeInfo = view.getNodeInfo(this._lastHovered);
     if (nodeInfo && this.isRuleViewShapePoint(nodeInfo)) {
-      this.hoverPointShapesHighlighter(this.inspector.selection.nodeFront, null);
-      this.emit("hover-shape-point", null);
+      this.hoverPointShapesHighlighter(
+        this.inspector.selection.nodeFront,
+        null
+      );
     }
     this._lastHovered = null;
     this._hideHoveredHighlighter();
@@ -861,32 +1359,116 @@ class HighlightersOverlay {
    * Handler function for "markupmutation" events. Hides the flexbox/grid/shapes
    * highlighter if the flexbox/grid/shapes container is no longer in the DOM tree.
    */
-  async onMarkupMutation(evt, mutations) {
-    let hasInterestingMutation = mutations.some(mut => mut.type === "childList");
+  async onMarkupMutation(mutations) {
+    const hasInterestingMutation = mutations.some(
+      mut => mut.type === "childList"
+    );
     if (!hasInterestingMutation) {
       // Bail out if the mutations did not remove nodes, or if no grid highlighter is
       // displayed.
       return;
     }
 
-    this._hideHighlighterIfDeadNode(this.flexboxHighlighterShown,
-      this.hideFlexboxHighlighter);
-    this._hideHighlighterIfDeadNode(this.gridHighlighterShown,
-      this.hideGridHighlighter);
-    this._hideHighlighterIfDeadNode(this.shapesHighlighterShown,
-      this.hideShapesHighlighter);
+    for (const node of this.gridHighlighters.keys()) {
+      await this._hideHighlighterIfDeadNode(node, this.hideGridHighlighter);
+    }
+
+    for (const node of this.parentGridHighlighters.keys()) {
+      await this._hideHighlighterIfDeadNode(node, this.hideGridHighlighter);
+    }
+
+    await this._hideHighlighterIfDeadNode(
+      this.flexboxHighlighterShown,
+      this.hideFlexboxHighlighter
+    );
+    await this._hideHighlighterIfDeadNode(
+      this.flexItemHighlighterShown,
+      this.hideFlexItemHighlighter
+    );
+    await this._hideHighlighterIfDeadNode(
+      this.shapesHighlighterShown,
+      this.hideShapesHighlighter
+    );
   }
 
   /**
    * Clear saved highlighter shown properties on will-navigate.
    */
-  onWillNavigate() {
+  async onWillNavigate() {
+    this.destroyEditors();
+
+    // Store all the grid highlighters into the pool of reusable grid highlighters, and
+    // clear the Map of grid highlighters.
+    for (const highlighter of this.gridHighlighters.values()) {
+      this.extraGridHighlighterPool.push(highlighter);
+    }
+
+    for (const highlighter of this.parentGridHighlighters.values()) {
+      this.extraGridHighlighterPool.push(highlighter);
+    }
+
+    this.gridHighlighters.clear();
+    this.parentGridHighlighters.clear();
+    this.subgridToParentMap.clear();
+
+    this.boxModelHighlighterShown = null;
     this.flexboxHighlighterShown = null;
+    this.flexItemHighlighterShown = null;
     this.geometryEditorHighlighterShown = null;
-    this.gridHighlighterShown = null;
     this.hoveredHighlighterShown = null;
     this.selectorHighlighterShown = null;
     this.shapesHighlighterShown = null;
+  }
+
+  /**
+   * Destroy and clean-up all instances of in-context editors.
+   */
+  destroyEditors() {
+    for (const type in this.editors) {
+      this.editors[type].off("show");
+      this.editors[type].off("hide");
+      this.editors[type].destroy();
+    }
+
+    this.editors = {};
+  }
+
+  /**
+   * Destroy all instances of the grid highlighters.
+   */
+  destroyGridHighlighters() {
+    for (const highlighter of this.gridHighlighters.values()) {
+      highlighter.finalize();
+    }
+
+    for (const highlighter of this.parentGridHighlighters.values()) {
+      highlighter.finalize();
+    }
+
+    for (const highlighter of this.extraGridHighlighterPool) {
+      highlighter.finalize();
+    }
+
+    this.gridHighlighters.clear();
+    this.parentGridHighlighters.clear();
+
+    this.gridHighlighters = null;
+    this.parentGridHighlighters = null;
+    this.extraGridHighlighterPool = null;
+  }
+
+  /**
+   * Destroy and clean-up all instances of highlighters.
+   */
+  destroyHighlighters() {
+    for (const type in this.highlighters) {
+      if (this.highlighters[type]) {
+        this.highlighters[type].finalize();
+        this.highlighters[type] = null;
+      }
+    }
+
+    this.highlighters = null;
   }
 
   /**
@@ -894,31 +1476,32 @@ class HighlightersOverlay {
    * all initialized highlighters.
    */
   destroy() {
-    for (let type in this.highlighters) {
-      if (this.highlighters[type]) {
-        if (this.highlighters[type].off) {
-          this.highlighters[type].off("highlighter-event", this._onHighlighterEvent);
-        }
-        this.highlighters[type].finalize();
-        this.highlighters[type] = null;
-      }
-    }
-
-    // Remove inspector events.
     this.inspector.off("markupmutation", this.onMarkupMutation);
-    this.inspector.target.off("will-navigate", this.onWillNavigate);
+    this.target.off("will-navigate", this.onWillNavigate);
+    this.walker.off("display-change", this.onDisplayChange);
 
+    this.destroyEditors();
+    this.destroyGridHighlighters();
+    this.destroyHighlighters();
+
+    this.subgridToParentMap.clear();
+
+    this._canGetParentGridNode = null;
     this._lastHovered = null;
 
     this.inspector = null;
-    this.highlighters = null;
-    this.highlighterUtils = null;
-    this.supportsHighlighters = null;
+    this.inspectorFront = null;
     this.state = null;
+    this.store = null;
+    this.subgridToParentMap = null;
+    this.target = null;
+    this.telemetry = null;
+    this.walker = null;
 
+    this.boxModelHighlighterShown = null;
     this.flexboxHighlighterShown = null;
+    this.flexItemHighlighterShown = null;
     this.geometryEditorHighlighterShown = null;
-    this.gridHighlighterShown = null;
     this.hoveredHighlighterShown = null;
     this.selectorHighlighterShown = null;
     this.shapesHighlighterShown = null;

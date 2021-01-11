@@ -2,7 +2,6 @@
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
 esid: sec-array.prototype.copywithin
-es6id: 22.1.3.3
 description: >
   Return abrupt from ToInteger(start).
 info: |
@@ -22,6 +21,5 @@ var o1 = {
 assert.throws(Test262Error, function() {
   [].copyWithin(0, o1);
 });
-
 
 reportCompare(0, 0);

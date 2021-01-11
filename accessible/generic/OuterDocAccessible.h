@@ -9,6 +9,11 @@
 #include "AccessibleWrap.h"
 
 namespace mozilla {
+
+namespace dom {
+class BrowserBridgeChild;
+}
+
 namespace a11y {
 class DocAccessibleParent;
 
@@ -21,18 +26,30 @@ class DocAccessibleParent;
  * the inner document root.
  */
 
-class OuterDocAccessible final : public AccessibleWrap
-{
-public:
+class OuterDocAccessible final : public AccessibleWrap {
+ public:
   OuterDocAccessible(nsIContent* aContent, DocAccessible* aDoc);
 
   NS_INLINE_DECL_REFCOUNTING_INHERITED(OuterDocAccessible, AccessibleWrap)
 
   DocAccessibleParent* RemoteChildDoc() const;
+#if defined(XP_WIN)
+  Accessible* RemoteChildDocAccessible() const;
+#endif
+
+  /**
+   * For iframes in a content process which will be rendered in another content
+   * process, tell the parent process about this OuterDocAccessible
+   * so it can link the trees together when the embedded document is added.
+   * Note that an OuterDocAccessible can be created before the
+   * BrowserBridgeChild or vice versa. Therefore, this must be conditionally
+   * called when either of these is created.
+   */
+  void SendEmbedderAccessible(dom::BrowserBridgeChild* aBridge);
 
   // Accessible
   virtual void Shutdown() override;
-  virtual mozilla::a11y::role NativeRole() override;
+  virtual mozilla::a11y::role NativeRole() const override;
   virtual Accessible* ChildAtPoint(int32_t aX, int32_t aY,
                                    EWhichChildAtPoint aWhichChild) override;
 
@@ -43,19 +60,17 @@ public:
 #if defined(XP_WIN)
   virtual uint32_t ChildCount() const override;
   virtual Accessible* GetChildAt(uint32_t aIndex) const override;
-#endif // defined(XP_WIN)
+#endif  // defined(XP_WIN)
 
-protected:
+ protected:
   virtual ~OuterDocAccessible() override;
 };
 
-inline OuterDocAccessible*
-Accessible::AsOuterDoc()
-{
+inline OuterDocAccessible* Accessible::AsOuterDoc() {
   return IsOuterDoc() ? static_cast<OuterDocAccessible*>(this) : nullptr;
 }
 
-} // namespace a11y
-} // namespace mozilla
+}  // namespace a11y
+}  // namespace mozilla
 
 #endif

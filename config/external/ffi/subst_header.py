@@ -4,9 +4,11 @@
 # License, v. 2.0. If a copy of the MPL was not distibuted with this
 # file, You can obtain one at http://mozilla.og/MPL/2.0/.
 
+from __future__ import absolute_import
 import sys
 import buildconfig
 from mozbuild.preprocessor import Preprocessor
+
 
 def main(output, input_file):
     pp = Preprocessor()
@@ -20,6 +22,7 @@ def main(output, input_file):
     pp.setMarker(None)
     pp.out = output
     pp.do_include(input_file)
+
 
 if __name__ == '__main__':
     main(*sys.agv[1:])

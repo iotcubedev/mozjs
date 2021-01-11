@@ -6,7 +6,7 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
-use {Atomic, Shared, Guard, unprotected};
+use {unprotected, Atomic, Guard, Shared};
 
 /// An entry in a linked list.
 ///
@@ -130,8 +130,10 @@ pub enum IterError {
 
 impl Default for Entry {
     /// Returns the empty entry.
-    fn default() -> Entry {
-        Entry { next: Atomic::null() }
+    fn default() -> Self {
+        Self {
+            next: Atomic::null(),
+        }
     }
 }
 
@@ -150,8 +152,8 @@ impl Entry {
 
 impl<T, C: IsElement<T>> List<T, C> {
     /// Returns a new, empty linked list.
-    pub fn new() -> List<T, C> {
-        List {
+    pub fn new() -> Self {
+        Self {
             head: Atomic::null(),
             _marker: PhantomData,
         }
@@ -204,7 +206,7 @@ impl<T, C: IsElement<T>> List<T, C> {
     ///    thread will continue to iterate over the same list.
     pub fn iter<'g>(&'g self, guard: &'g Guard) -> Iter<'g, T, C> {
         Iter {
-            guard: guard,
+            guard,
             pred: &self.head,
             curr: self.head.load(Acquire, guard),
             head: &self.head,
@@ -245,19 +247,17 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
                 // node leaves the list in an invalid state.
                 debug_assert!(self.curr.tag() == 0);
 
-                match self.pred.compare_and_set(
-                    self.curr,
-                    succ,
-                    Acquire,
-                    self.guard,
-                ) {
+                match self
+                    .pred
+                    .compare_and_set(self.curr, succ, Acquire, self.guard)
+                {
                     Ok(_) => {
                         // We succeeded in unlinking this element from the list, so we have to
                         // schedule deallocation. Deferred drop is okay, because `list.delete()`
                         // can only be called if `T: 'static`.
                         unsafe {
                             let p = self.curr;
-                            self.guard.defer(move || C::finalize(p.deref()));
+                            self.guard.defer_unchecked(move || C::finalize(p.deref()));
                         }
 
                         // Move over the removed by only advancing `curr`, not `pred`.
@@ -289,10 +289,10 @@ impl<'g, T: 'g, C: IsElement<T>> Iterator for Iter<'g, T, C> {
 
 #[cfg(test)]
 mod tests {
-    use {Collector, Owned, Guard};
-    use crossbeam_utils::scoped;
-    use std::sync::Barrier;
     use super::*;
+    use crossbeam_utils::thread;
+    use std::sync::Barrier;
+    use {Collector, Owned};
 
     impl IsElement<Entry> for Entry {
         fn entry_of(entry: &Entry) -> &Entry {
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn insert() {
         let collector = Collector::new();
-        let handle = collector.handle();
+        let handle = collector.register();
         let guard = handle.pin();
 
         let l: List<Entry> = List::new();
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn delete() {
         let collector = Collector::new();
-        let handle = collector.handle();
+        let handle = collector.register();
         let guard = handle.pin();
 
         let l: List<Entry> = List::new();
@@ -396,31 +396,33 @@ mod tests {
         let l: List<Entry> = List::new();
         let b = Barrier::new(THREADS);
 
-        scoped::scope(|s| for _ in 0..THREADS {
-            s.spawn(|| {
-                b.wait();
+        thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|_| {
+                    b.wait();
 
-                let handle = collector.handle();
-                let guard: Guard = handle.pin();
-                let mut v = Vec::with_capacity(ITERS);
+                    let handle = collector.register();
+                    let guard: Guard = handle.pin();
+                    let mut v = Vec::with_capacity(ITERS);
 
-                for _ in 0..ITERS {
-                    let e = Owned::new(Entry::default()).into_shared(&guard);
-                    v.push(e);
-                    unsafe {
-                        l.insert(e, &guard);
+                    for _ in 0..ITERS {
+                        let e = Owned::new(Entry::default()).into_shared(&guard);
+                        v.push(e);
+                        unsafe {
+                            l.insert(e, &guard);
+                        }
                     }
-                }
 
-                for e in v {
-                    unsafe {
-                        e.as_ref().unwrap().delete(&guard);
+                    for e in v {
+                        unsafe {
+                            e.as_ref().unwrap().delete(&guard);
+                        }
                     }
-                }
-            });
-        });
+                });
+            }
+        }).unwrap();
 
-        let handle = collector.handle();
+        let handle = collector.register();
         let guard = handle.pin();
 
         let mut iter = l.iter(&guard);
@@ -435,36 +437,38 @@ mod tests {
         let l: List<Entry> = List::new();
         let b = Barrier::new(THREADS);
 
-        scoped::scope(|s| for _ in 0..THREADS {
-            s.spawn(|| {
-                b.wait();
+        thread::scope(|s| {
+            for _ in 0..THREADS {
+                s.spawn(|_| {
+                    b.wait();
 
-                let handle = collector.handle();
-                let guard: Guard = handle.pin();
-                let mut v = Vec::with_capacity(ITERS);
+                    let handle = collector.register();
+                    let guard: Guard = handle.pin();
+                    let mut v = Vec::with_capacity(ITERS);
 
-                for _ in 0..ITERS {
-                    let e = Owned::new(Entry::default()).into_shared(&guard);
-                    v.push(e);
-                    unsafe {
-                        l.insert(e, &guard);
+                    for _ in 0..ITERS {
+                        let e = Owned::new(Entry::default()).into_shared(&guard);
+                        v.push(e);
+                        unsafe {
+                            l.insert(e, &guard);
+                        }
                     }
-                }
 
-                let mut iter = l.iter(&guard);
-                for _ in 0..ITERS {
-                    assert!(iter.next().is_some());
-                }
-
-                for e in v {
-                    unsafe {
-                        e.as_ref().unwrap().delete(&guard);
+                    let mut iter = l.iter(&guard);
+                    for _ in 0..ITERS {
+                        assert!(iter.next().is_some());
                     }
-                }
-            });
-        });
 
-        let handle = collector.handle();
+                    for e in v {
+                        unsafe {
+                            e.as_ref().unwrap().delete(&guard);
+                        }
+                    }
+                });
+            }
+        }).unwrap();
+
+        let handle = collector.register();
         let guard = handle.pin();
 
         let mut iter = l.iter(&guard);

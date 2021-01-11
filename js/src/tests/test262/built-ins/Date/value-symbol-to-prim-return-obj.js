@@ -2,7 +2,6 @@
 // this code is governed by the bsd license found in the license file.
 /*---
 esid: sec-date-value
-es6id: 20.3.2.2
 description: >
     Behavior when coercion via `Symbol.toPrimitive` yields an Object
 info: |
@@ -39,7 +38,9 @@ assert.throws(TypeError, function() {
   new Date(y);
 }, 'ordinary object');
 
-retVal = (function() { return arguments; }());
+retVal = (function() {
+  return arguments;
+}());
 assert.throws(TypeError, function() {
   new Date(y);
 }, 'arguments exotic object');

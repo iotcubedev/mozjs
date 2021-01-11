@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -6,9 +5,9 @@
 
 // Test that the class panel can be toggled.
 
-add_task(function* () {
-  yield addTab("data:text/html;charset=utf-8,<body class='class1 class2'>");
-  let {inspector, view} = yield openRuleView();
+add_task(async function() {
+  await addTab("data:text/html;charset=utf-8,<body class='class1 class2'>");
+  const { inspector, view } = await openRuleView();
 
   info("Check that the toggle button exists");
   const button = inspector.panelDoc.querySelector("#class-panel-toggle");
@@ -33,13 +32,22 @@ add_task(function* () {
 
   info("Open the pseudo-class panel first, then the class panel");
   view.pseudoClassToggle.click();
-  ok(!view.pseudoClassPanel.hasAttribute("hidden"), "The pseudo-class panel is shown");
+  ok(
+    !view.pseudoClassPanel.hasAttribute("hidden"),
+    "The pseudo-class panel is shown"
+  );
   button.click();
   ok(!panel.hasAttribute("hidden"), "The panel is shown");
-  ok(view.pseudoClassPanel.hasAttribute("hidden"), "The pseudo-class panel is hidden");
+  ok(
+    view.pseudoClassPanel.hasAttribute("hidden"),
+    "The pseudo-class panel is hidden"
+  );
 
   info("Click again on the pseudo-class button");
   view.pseudoClassToggle.click();
   ok(panel.hasAttribute("hidden"), "The panel is hidden");
-  ok(!view.pseudoClassPanel.hasAttribute("hidden"), "The pseudo-class panel is shown");
+  ok(
+    !view.pseudoClassPanel.hasAttribute("hidden"),
+    "The pseudo-class panel is shown"
+  );
 });

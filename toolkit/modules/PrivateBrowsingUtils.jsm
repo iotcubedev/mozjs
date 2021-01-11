@@ -4,7 +4,7 @@
 
 var EXPORTED_SYMBOLS = ["PrivateBrowsingUtils"];
 
-ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const kAutoStartPref = "browser.privatebrowsing.autostart";
 
@@ -21,9 +21,11 @@ var PrivateBrowsingUtils = {
   // isBrowserPrivate since it works with e10s.
   isWindowPrivate: function pbu_isWindowPrivate(aWindow) {
     if (!aWindow.isChromeWindow) {
-      dump("WARNING: content window passed to PrivateBrowsingUtils.isWindowPrivate. " +
-           "Use isContentWindowPrivate instead (but only for frame scripts).\n"
-           + new Error().stack);
+      dump(
+        "WARNING: content window passed to PrivateBrowsingUtils.isWindowPrivate. " +
+          "Use isContentWindowPrivate instead (but only for frame scripts).\n" +
+          new Error().stack
+      );
     }
 
     return this.privacyContextFromWindow(aWindow).usePrivateBrowsing;
@@ -44,31 +46,19 @@ var PrivateBrowsingUtils = {
       // content window doesn't exist.
       return this.isWindowPrivate(chromeWin);
     }
-    return this.privacyContextFromWindow(aBrowser.contentWindow).usePrivateBrowsing;
+    return this.privacyContextFromWindow(aBrowser.contentWindow)
+      .usePrivateBrowsing;
   },
 
   privacyContextFromWindow: function pbu_privacyContextFromWindow(aWindow) {
-    return aWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                  .getInterface(Ci.nsIWebNavigation)
-                  .QueryInterface(Ci.nsILoadContext);
-  },
-
-  addToTrackingAllowlist(aURI) {
-    let pbmtpWhitelist = Cc["@mozilla.org/pbm-tp-whitelist;1"]
-                           .getService(Ci.nsIPrivateBrowsingTrackingProtectionWhitelist);
-    pbmtpWhitelist.addToAllowList(aURI);
-  },
-
-  removeFromTrackingAllowlist(aURI) {
-    let pbmtpWhitelist = Cc["@mozilla.org/pbm-tp-whitelist;1"]
-                           .getService(Ci.nsIPrivateBrowsingTrackingProtectionWhitelist);
-    pbmtpWhitelist.removeFromAllowList(aURI);
+    return aWindow.docShell.QueryInterface(Ci.nsILoadContext);
   },
 
   get permanentPrivateBrowsing() {
     try {
-      return gTemporaryAutoStartMode ||
-             Services.prefs.getBoolPref(kAutoStartPref);
+      return (
+        gTemporaryAutoStartMode || Services.prefs.getBoolPref(kAutoStartPref)
+      );
     } catch (e) {
       // The pref does not exist
       return false;
@@ -83,4 +73,3 @@ var PrivateBrowsingUtils = {
     return gTemporaryAutoStartMode;
   },
 };
-

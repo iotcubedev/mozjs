@@ -10,13 +10,16 @@ import re
 import os
 import sys
 
+import attr
+
 from .. import GECKO
-from taskgraph.util.bbb_validation import valid_bbb_builders
+from .treeherder import join_symbol
 
 logger = logging.getLogger(__name__)
 base_path = os.path.join(GECKO, 'taskcluster', 'docs')
 
 
+@attr.s(frozen=True)
 class VerificationSequence(object):
     """
     Container for a sequence of verifications over a TaskGraph. Each
@@ -25,19 +28,18 @@ class VerificationSequence(object):
     time with no task but with the taskgraph and the same scratch_pad
     that was passed for each task.
     """
-    def __init__(self):
-        self.verifications = {}
+    _verifications = attr.ib(factory=dict)
 
-    def __call__(self, graph_name, graph):
-        for verification in self.verifications.get(graph_name, []):
+    def __call__(self, graph_name, graph, graph_config):
+        for verification in self._verifications.get(graph_name, []):
             scratch_pad = {}
-            graph.for_each_task(verification, scratch_pad=scratch_pad)
-            verification(None, graph, scratch_pad=scratch_pad)
+            graph.for_each_task(verification, scratch_pad=scratch_pad, graph_config=graph_config)
+            verification(None, graph, scratch_pad=scratch_pad, graph_config=graph_config)
         return graph_name, graph
 
     def add(self, graph_name):
         def wrap(func):
-            self.verifications.setdefault(graph_name, []).append(func)
+            self._verifications.setdefault(graph_name, []).append(func)
             return func
         return wrap
 
@@ -77,7 +79,7 @@ def verify_docs(filename, identifiers, appearing_as):
 
 
 @verifications.add('full_task_graph')
-def verify_task_graph_symbol(task, taskgraph, scratch_pad):
+def verify_task_graph_symbol(task, taskgraph, scratch_pad, graph_config):
     """
         This function verifies that tuple
         (collection.keys(), machine.platform, groupSymbol, symbol) is unique
@@ -92,29 +94,39 @@ def verify_task_graph_symbol(task, taskgraph, scratch_pad):
             treeherder = extra["treeherder"]
 
             collection_keys = tuple(sorted(treeherder.get('collection', {}).keys()))
+            if len(collection_keys) != 1:
+                raise Exception(
+                    "Task {} can't be in multiple treeherder collections "
+                    "(the part of the platform after `/`): {}"
+                    .format(task.label, collection_keys)
+                )
             platform = treeherder.get('machine', {}).get('platform')
             group_symbol = treeherder.get('groupSymbol')
             symbol = treeherder.get('symbol')
 
-            key = (collection_keys, platform, group_symbol, symbol)
+            key = (platform, collection_keys[0], group_symbol, symbol)
             if key in scratch_pad:
                 raise Exception(
-                    "conflict between `{}`:`{}` for values `{}`"
-                    .format(task.label, scratch_pad[key], key)
+                    "Duplicate treeherder platform and symbol in tasks "
+                    "`{}`and `{}`: {} {}".format(
+                        task.label,
+                        scratch_pad[key],
+                        "{}/{}".format(platform, collection_keys[0]),
+                        join_symbol(group_symbol, symbol),
+                    )
                 )
             else:
                 scratch_pad[key] = task.label
 
 
 @verifications.add('full_task_graph')
-def verify_gecko_v2_routes(task, taskgraph, scratch_pad):
+def verify_trust_domain_v2_routes(task, taskgraph, scratch_pad, graph_config):
     """
-        This function ensures that any two
-        tasks have distinct index.v2.routes
+    This function ensures that any two tasks have distinct ``index.{trust-domain}.v2`` routes.
     """
     if task is None:
         return
-    route_prefix = "index.gecko.v2"
+    route_prefix = "index.{}.v2".format(graph_config['trust-domain'])
     task_dict = task.task
     routes = task_dict.get('routes', [])
 
@@ -130,7 +142,33 @@ def verify_gecko_v2_routes(task, taskgraph, scratch_pad):
 
 
 @verifications.add('full_task_graph')
-def verify_dependency_tiers(task, taskgraph, scratch_pad):
+def verify_routes_notification_filters(task, taskgraph, scratch_pad, graph_config):
+    """
+        This function ensures that only understood filters for notifications are
+        specified.
+
+        See: https://docs.taskcluster.net/reference/core/taskcluster-notify/docs/usage
+    """
+    if task is None:
+        return
+    route_prefix = "notify."
+    valid_filters = ('on-any', 'on-completed', 'on-failed', 'on-exception')
+    task_dict = task.task
+    routes = task_dict.get('routes', [])
+
+    for route in routes:
+        if route.startswith(route_prefix):
+            # Get the filter of the route
+            route_filter = route.split('.')[-1]
+            if route_filter not in valid_filters:
+                raise Exception(
+                    '{} has invalid notification filter ({})'
+                    .format(task.label, route_filter)
+                )
+
+
+@verifications.add('full_task_graph')
+def verify_dependency_tiers(task, taskgraph, scratch_pad, graph_config):
     tiers = scratch_pad
     if task is not None:
         tiers[task.label] = task.task.get('extra', {}) \
@@ -143,14 +181,9 @@ def verify_dependency_tiers(task, taskgraph, scratch_pad):
             return tier
 
         for task in taskgraph.tasks.itervalues():
-            # Buildbot bridge tasks cannot have tiers, so we cannot enforce
-            # this check for them
-            if task.task.get("workerType") == "buildbot-bridge":
-                continue
             tier = tiers[task.label]
             for d in task.dependencies.itervalues():
-                if taskgraph[d].task.get("workerType") in ("buildbot-bridge",
-                                                           "always-optimized"):
+                if taskgraph[d].task.get("workerType") == "always-optimized":
                     continue
                 if "dummy" in taskgraph[d].kind:
                     continue
@@ -161,31 +194,35 @@ def verify_dependency_tiers(task, taskgraph, scratch_pad):
                                 d, printable_tier(tiers[d])))
 
 
-@verifications.add('optimized_task_graph')
-def verify_bbb_builders_valid(task, taskgraph, scratch_pad):
+@verifications.add('full_task_graph')
+def verify_required_signoffs(task, taskgraph, scratch_pad, graph_config):
     """
-        This function ensures that any task which is run
-        in buildbot (via buildbot-bridge) is using a recognized buildername.
-
-        If you see an unexpected failure with a task due to this check, please
-        see the IRC Channel, #releng.
+    Task with required signoffs can't be dependencies of tasks with less
+    required signoffs.
     """
-    if task is None:
-        return
-    valid_builders = valid_bbb_builders()
-    if valid_builders is None:
-        return
-    if task.task.get('workerType') == 'buildbot-bridge':
-        buildername = task.task['payload']['buildername']
-        if buildername not in valid_builders:
-            logger.warning(
-                '{} uses an invalid buildbot buildername ("{}") '
-                ' - contact #releng for help'
-                .format(task.label, buildername))
+    all_required_signoffs = scratch_pad
+    if task is not None:
+        all_required_signoffs[task.label] = set(task.attributes.get('required_signoffs', []))
+    else:
+        def printable_signoff(signoffs):
+            if len(signoffs) == 1:
+                return 'required signoff {}'.format(*signoffs)
+            elif signoffs:
+                return 'required signoffs {}'.format(', '.join(signoffs))
+            else:
+                return 'no required signoffs'
+        for task in taskgraph.tasks.itervalues():
+            required_signoffs = all_required_signoffs[task.label]
+            for d in task.dependencies.itervalues():
+                if required_signoffs < all_required_signoffs[d]:
+                    raise Exception(
+                        '{} ({}) cannot depend on {} ({})'
+                        .format(task.label, printable_signoff(required_signoffs),
+                                d, printable_signoff(all_required_signoffs[d])))
 
 
 @verifications.add('optimized_task_graph')
-def verify_always_optimized(task, taskgraph, scratch_pad):
+def verify_always_optimized(task, taskgraph, scratch_pad, graph_config):
     """
         This function ensures that always-optimized tasks have been optimized.
     """
@@ -193,3 +230,11 @@ def verify_always_optimized(task, taskgraph, scratch_pad):
         return
     if task.task.get('workerType') == 'always-optimized':
         raise Exception('Could not optimize the task {!r}'.format(task.label))
+
+
+@verifications.add('full_task_graph')
+def verify_nightly_no_sccache(task, taskgraph, scratch_pad, graph_config):
+    if task and any([task.attributes.get('nightly'), task.attributes.get('shippable')]):
+        if task.task.get('payload', {}).get('env', {}).get('USE_SCCACHE'):
+            raise Exception(
+                'Nightly job {} cannot use sccache'.format(task.label))

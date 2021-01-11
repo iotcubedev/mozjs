@@ -49,8 +49,7 @@
 #include "nsDOMAttributeMap.h"
 #include "nsError.h"
 #include "nsID.h"
-#include "nsIDOMElement.h"
-#include "nsIDOMNode.h"
+#include "nsINode.h"
 #include "nsISupportsUtils.h"
 #include "nsString.h"
 #include "nsGkAtoms.h"
@@ -62,33 +61,28 @@ namespace mozilla {
 #define MATCHES(tagName, str) tagName.EqualsIgnoreCase(str)
 
 HTMLURIRefObject::HTMLURIRefObject()
-  : mCurAttrIndex(0)
-  , mAttributeCnt(0)
-  , mAttrsInited(false)
-{
-}
+    : mCurAttrIndex(0), mAttributeCnt(0), mAttrsInited(false) {}
 
-HTMLURIRefObject::~HTMLURIRefObject()
-{
-}
+HTMLURIRefObject::~HTMLURIRefObject() {}
 
-//Interfaces for addref and release and queryinterface
+// Interfaces for addref and release and queryinterface
 NS_IMPL_ISUPPORTS(HTMLURIRefObject, nsIURIRefObject)
 
 NS_IMETHODIMP
-HTMLURIRefObject::Reset()
-{
+HTMLURIRefObject::Reset() {
   mCurAttrIndex = 0;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-HTMLURIRefObject::GetNextURI(nsAString& aURI)
-{
+HTMLURIRefObject::GetNextURI(nsAString& aURI) {
   NS_ENSURE_TRUE(mNode, NS_ERROR_NOT_INITIALIZED);
 
-  nsCOMPtr<dom::Element> element = do_QueryInterface(mNode);
-  NS_ENSURE_TRUE(element, NS_ERROR_INVALID_ARG);
+  if (NS_WARN_IF(!mNode->IsElement())) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  RefPtr<dom::Element> element = mNode->AsElement();
 
   // Loop over attribute list:
   if (!mAttrsInited) {
@@ -104,10 +98,8 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
 
     // href >> A, AREA, BASE, LINK
     if (attrInfo.mName->Equals(nsGkAtoms::href)) {
-      if (!element->IsAnyOfHTMLElements(nsGkAtoms::a,
-                                        nsGkAtoms::area,
-                                        nsGkAtoms::base,
-                                        nsGkAtoms::link)) {
+      if (!element->IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area,
+                                        nsGkAtoms::base, nsGkAtoms::link)) {
         continue;
       }
 
@@ -122,10 +114,8 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
     }
     // src >> FRAME, IFRAME, IMG, INPUT, SCRIPT
     else if (attrInfo.mName->Equals(nsGkAtoms::src)) {
-      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img,
-                                        nsGkAtoms::frame,
-                                        nsGkAtoms::iframe,
-                                        nsGkAtoms::input,
+      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img, nsGkAtoms::frame,
+                                        nsGkAtoms::iframe, nsGkAtoms::input,
                                         nsGkAtoms::script)) {
         continue;
       }
@@ -142,8 +132,7 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
     }
     // longdesc >> FRAME, IFRAME, IMG
     else if (attrInfo.mName->Equals(nsGkAtoms::longdesc)) {
-      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img,
-                                        nsGkAtoms::frame,
+      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img, nsGkAtoms::frame,
                                         nsGkAtoms::iframe)) {
         continue;
       }
@@ -152,8 +141,7 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
     }
     // usemap >> IMG, INPUT, OBJECT
     else if (attrInfo.mName->Equals(nsGkAtoms::usemap)) {
-      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img,
-                                        nsGkAtoms::input,
+      if (!element->IsAnyOfHTMLElements(nsGkAtoms::img, nsGkAtoms::input,
                                         nsGkAtoms::object)) {
         continue;
       }
@@ -200,10 +188,8 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
     }
     // cite >> BLOCKQUOTE, DEL, INS, Q
     else if (attrInfo.mName->Equals(nsGkAtoms::cite)) {
-      if (!element->IsAnyOfHTMLElements(nsGkAtoms::blockquote,
-                                        nsGkAtoms::q,
-                                        nsGkAtoms::del,
-                                        nsGkAtoms::ins)) {
+      if (!element->IsAnyOfHTMLElements(nsGkAtoms::blockquote, nsGkAtoms::q,
+                                        nsGkAtoms::del, nsGkAtoms::ins)) {
         continue;
       }
 
@@ -225,29 +211,24 @@ HTMLURIRefObject::GetNextURI(nsAString& aURI)
 
 NS_IMETHODIMP
 HTMLURIRefObject::RewriteAllURIs(const nsAString& aOldPat,
-                                 const nsAString& aNewPat,
-                                 bool aMakeRel)
-{
+                                 const nsAString& aNewPat, bool aMakeRel) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
-HTMLURIRefObject::GetNode(nsIDOMNode** aNode)
-{
+HTMLURIRefObject::GetNode(nsINode** aNode) {
   NS_ENSURE_TRUE(mNode, NS_ERROR_NOT_INITIALIZED);
   NS_ENSURE_TRUE(aNode, NS_ERROR_NULL_POINTER);
-  *aNode = mNode.get();
-  NS_ADDREF(*aNode);
+  *aNode = do_AddRef(mNode).take();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-HTMLURIRefObject::SetNode(nsIDOMNode* aNode)
-{
+HTMLURIRefObject::SetNode(nsINode* aNode) {
   mNode = aNode;
   nsAutoString dummyURI;
   if (NS_SUCCEEDED(GetNextURI(dummyURI))) {
-    mCurAttrIndex = 0;    // Reset so we'll get the first node next time
+    mCurAttrIndex = 0;  // Reset so we'll get the first node next time
     return NS_OK;
   }
 
@@ -257,10 +238,9 @@ HTMLURIRefObject::SetNode(nsIDOMNode* aNode)
   return NS_ERROR_INVALID_ARG;
 }
 
-} // namespace mozilla
+}  // namespace mozilla
 
-nsresult NS_NewHTMLURIRefObject(nsIURIRefObject** aResult, nsIDOMNode* aNode)
-{
+nsresult NS_NewHTMLURIRefObject(nsIURIRefObject** aResult, nsINode* aNode) {
   RefPtr<mozilla::HTMLURIRefObject> refObject = new mozilla::HTMLURIRefObject();
   nsresult rv = refObject->SetNode(aNode);
   if (NS_FAILED(rv)) {

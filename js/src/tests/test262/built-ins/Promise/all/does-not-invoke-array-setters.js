@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright (C) 2015 André Bargull. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -33,4 +34,6 @@ Object.defineProperty(Array.prototype, 0, {
   }
 });
 
-Promise.all([42]).then(function(){ $DONE(); }, $DONE);
+Promise.all([42]).then(function() {
+  $DONE();
+}, $DONE);

@@ -82,44 +82,17 @@ build::
 	# Start a new server, ensuring it gets the jobserver file descriptors
 	# from make (but don't use the + prefix when make -n is used, so that
 	# the command doesn't run in that case)
-	$(if $(findstring n,$(filter-out --%, $(MAKEFLAGS))),,+)env RUST_LOG=sccache::compiler=debug SCCACHE_ERROR_LOG=$(OBJDIR)/dist/sccache.log $(MOZBUILD_MANAGE_SCCACHE_DAEMON) --start-server
+	mkdir -p $(UPLOAD_PATH)
+	$(if $(findstring n,$(filter-out --%, $(MAKEFLAGS))),,+)env RUST_LOG=sccache=debug SCCACHE_ERROR_LOG=$(UPLOAD_PATH)/sccache.log $(MOZBUILD_MANAGE_SCCACHE_DAEMON) --start-server
 endif
 
 ####################################
 # Configure
 
-MAKEFILE      = $(wildcard $(OBJDIR)/Makefile)
-CONFIG_STATUS = $(wildcard $(OBJDIR)/config.status)
-
-EXTRA_CONFIG_DEPS := \
-  $(TOPSRCDIR)/aclocal.m4 \
-  $(TOPSRCDIR)/old-configure.in \
-  $(wildcard $(TOPSRCDIR)/build/autoconf/*.m4) \
-  $(TOPSRCDIR)/js/src/aclocal.m4 \
-  $(TOPSRCDIR)/js/src/old-configure.in \
-  $(NULL)
-
-$(CONFIGURES): %: %.in $(EXTRA_CONFIG_DEPS)
+$(CONFIGURES): %: %.in
 	@echo Generating $@
 	cp -f $< $@
 	chmod +x $@
-
-CONFIG_STATUS_DEPS := \
-  $(wildcard $(TOPSRCDIR)/*/confvars.sh) \
-  $(CONFIGURES) \
-  $(TOPSRCDIR)/nsprpub/configure \
-  $(TOPSRCDIR)/config/milestone.txt \
-  $(TOPSRCDIR)/browser/config/version.txt \
-  $(TOPSRCDIR)/browser/config/version_display.txt \
-  $(TOPSRCDIR)/build/virtualenv_packages.txt \
-  $(TOPSRCDIR)/python/mozbuild/mozbuild/virtualenv.py \
-  $(TOPSRCDIR)/testing/mozbase/packages.txt \
-  $(OBJDIR)/.mozconfig.json \
-  $(NULL)
-
-# Include a dep file emitted by configure to track Python files that
-# may influence the result of configure.
--include $(OBJDIR)/configure.d
 
 CONFIGURE_ENV_ARGS += \
   MAKE='$(MAKE)' \
@@ -134,48 +107,26 @@ else
   CONFIGURE = $(TOPSRCDIR)/configure
 endif
 
-configure-files: $(CONFIGURES)
-
-configure-preqs = \
-  configure-files \
-  $(OBJDIR)/.mozconfig.json \
-  $(NULL)
-
-configure:: $(configure-preqs)
+configure:: $(CONFIGURES)
 	$(call BUILDSTATUS,TIERS configure)
 	$(call BUILDSTATUS,TIER_START configure)
 	@echo cd $(OBJDIR);
 	@echo $(CONFIGURE) $(CONFIGURE_ARGS)
 	@cd $(OBJDIR) && $(CONFIGURE_ENV_ARGS) $(CONFIGURE) $(CONFIGURE_ARGS) \
 	  || ( echo '*** Fix above errors and then restart with\
-               "$(MAKE) -f client.mk build"' && exit 1 )
+               "./mach build"' && exit 1 )
 	@touch $(OBJDIR)/Makefile
 	$(call BUILDSTATUS,TIER_FINISH configure)
-
-ifneq (,$(MAKEFILE))
-$(OBJDIR)/Makefile: $(OBJDIR)/config.status
-
-$(OBJDIR)/config.status: $(CONFIG_STATUS_DEPS)
-else
-$(OBJDIR)/Makefile: $(CONFIG_STATUS_DEPS)
-endif
-	@$(MAKE) -f $(TOPSRCDIR)/client.mk configure
 
 ####################################
 # Build it
 
-build::  $(OBJDIR)/Makefile $(OBJDIR)/config.status
+build::
 	+$(MOZ_MAKE)
 
 ifdef MOZ_AUTOMATION
 build::
 	+$(MOZ_MAKE) automation/build
-endif
-
-ifdef MOZBUILD_MANAGE_SCCACHE_DAEMON
-build::
-	# Terminate sccache server. This prints sccache stats.
-	-$(MOZBUILD_MANAGE_SCCACHE_DAEMON) --stop-server
 endif
 
 # This makefile doesn't support parallel execution. It does pass

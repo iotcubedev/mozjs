@@ -4,10 +4,8 @@
 
 from __future__ import absolute_import, print_function, unicode_literals
 
-from distutils.version import LooseVersion
 import logging
 from mozbuild.base import (
-    BuildEnvironmentNotFoundException,
     MozbuildObject,
 )
 import mozfile
@@ -18,6 +16,7 @@ import re
 import sys
 import tarfile
 from urlparse import urlparse
+
 
 class VendorAOM(MozbuildObject):
     def upstream_snapshot(self, revision):
@@ -62,15 +61,12 @@ Please set a repository url with --repo on either googlesource or github.''' % h
         req.raise_for_status()
         try:
             info = req.json()
-        except ValueError as e:
-            if 'No JSON object' in e.message:
-                # As of 2017 May, googlesource sends 4 garbage characters
-                # at the beginning of the json response. Work around this.
-                # https://bugs.chromium.org/p/chromium/issues/detail?id=718550
-                import json
-                info = json.loads(req.text[4:])
-            else:
-                raise
+        except ValueError:
+            # As of 2017 May, googlesource sends 4 garbage characters
+            # at the beginning of the json response. Work around this.
+            # https://bugs.chromium.org/p/chromium/issues/detail?id=718550
+            import json
+            info = json.loads(req.text[4:])
         return (info['commit'], info['committer']['time'])
 
     def upstream_github_commit(self, revision):
@@ -135,48 +131,12 @@ Please set a repository url with --repo on either googlesource or github.''' % h
             with open(filename, 'w') as f:
                 f.write(new_readme)
 
-    def update_mimetype(self, revision):
-        '''Update source tree references to the aom revision.
-
-        While the av1 bitstream is unstable, we track the git revision
-        of the reference implementation we're building, and are careful
-        to build with default feature flags. This lets us answer whether
-        a particular bitstream will be playable by comparing the encode-
-        side hash as part of the mime type.
-        '''
-        filename = mozpath.join(self.topsrcdir,
-                'dom/media/platforms/agnostic/AOMDecoder.cpp')
-        with open(filename) as f:
-            source = f.read()
-
-        new_source = ''
-        pattern = re.compile('version.AppendLiteral\("([a-f0-9]{40})"\);')
-        match = pattern.search(source)
-        if match:
-            old_revision = match.group(1)
-            if old_revision == revision:
-                # Nothing to update.
-                return
-            new_source = pattern.sub('version.AppendLiteral("%s");' % revision,
-                                     source)
-        if not match or new_source == source:
-            self.log(logging.ERROR, 'hash_update', {},
-                     '''Couldn't update commit hash in
-    {file}.
-Please check manually and update the vendor script.
-                     '''.format(file=filename))
-            sys.exit(1)
-
-        with open(filename, 'w') as f:
-            f.write(new_source)
-
-
     def clean_upstream(self, target):
         '''Remove files we don't want to import.'''
         mozfile.remove(mozpath.join(target, '.gitattributes'))
         mozfile.remove(mozpath.join(target, '.gitignore'))
         mozfile.remove(mozpath.join(target, 'build', '.gitattributes'))
-        mozfile.remove(mozpath.join(target, 'build' ,'.gitignore'))
+        mozfile.remove(mozpath.join(target, 'build', '.gitignore'))
 
     def generate_sources(self, target):
         '''
@@ -236,9 +196,6 @@ Please commit or stash these changes before vendoring, or re-run with `--ignore-
         self.log(logging.INFO, 'generate_sources', {},
                  '''Generating build files...''')
         self.generate_sources(glue_dir)
-        self.log(logging.INFO, 'update_source', {},
-                 '''Updating mimetype extension.''')
-        self.update_mimetype(commit)
         self.log(logging.INFO, 'update_readme', {},
                  '''Updating README_MOZILLA.''')
         self.update_readme(commit, timestamp, glue_dir)

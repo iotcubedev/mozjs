@@ -8,30 +8,30 @@
 
 #include "mozilla/ServoCSSRuleList.h"
 
+#include "mozilla/dom/CSSCounterStyleRule.h"
+#include "mozilla/dom/CSSFontFaceRule.h"
+#include "mozilla/dom/CSSFontFeatureValuesRule.h"
+#include "mozilla/dom/CSSImportRule.h"
+#include "mozilla/dom/CSSKeyframesRule.h"
+#include "mozilla/dom/CSSMediaRule.h"
+#include "mozilla/dom/CSSMozDocumentRule.h"
+#include "mozilla/dom/CSSNamespaceRule.h"
+#include "mozilla/dom/CSSPageRule.h"
+#include "mozilla/dom/CSSStyleRule.h"
+#include "mozilla/dom/CSSSupportsRule.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/ServoBindings.h"
-#include "mozilla/ServoDocumentRule.h"
-#include "mozilla/ServoImportRule.h"
-#include "mozilla/ServoFontFeatureValuesRule.h"
-#include "mozilla/ServoKeyframesRule.h"
-#include "mozilla/ServoMediaRule.h"
-#include "mozilla/ServoNamespaceRule.h"
-#include "mozilla/ServoPageRule.h"
-#include "mozilla/ServoStyleRule.h"
-#include "mozilla/ServoStyleSheet.h"
-#include "mozilla/ServoSupportsRule.h"
-#include "nsCSSCounterStyleRule.h"
-#include "nsCSSFontFaceRule.h"
+#include "mozilla/StyleSheet.h"
+#include "mozilla/dom/Document.h"
 
 using namespace mozilla::dom;
 
 namespace mozilla {
 
 ServoCSSRuleList::ServoCSSRuleList(already_AddRefed<ServoCssRules> aRawRules,
-                                   ServoStyleSheet* aDirectOwnerStyleSheet)
-  : mStyleSheet(aDirectOwnerStyleSheet)
-  , mRawRules(aRawRules)
-{
+                                   StyleSheet* aSheet,
+                                   css::GroupRule* aParentRule)
+    : mStyleSheet(aSheet), mParentRule(aParentRule), mRawRules(aRawRules) {
   Servo_CssRules_ListTypes(mRawRules, &mRules);
 }
 
@@ -53,96 +53,52 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(ServoCSSRuleList,
     if (!aRule->IsCCLeaf()) {
       NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mRules[i]");
       cb.NoteXPCOMChild(aRule);
-      // Note about @font-face and @counter-style rule again, since
-      // there is an indirect owning edge through Servo's struct that
-      // FontFaceRule / CounterStyleRule in Servo owns a Gecko
-      // nsCSSFontFaceRule / nsCSSCounterStyleRule object.
-      auto type = aRule->Type();
-      if (type == CSSRuleBinding::FONT_FACE_RULE ||
-          type == CSSRuleBinding::COUNTER_STYLE_RULE) {
-        NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mRawRules[i]");
-        cb.NoteXPCOMChild(aRule);
-      }
     }
   });
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-void
-ServoCSSRuleList::SetParentRule(css::GroupRule* aParentRule)
-{
-  mParentRule = aParentRule;
-  EnumerateInstantiatedRules([aParentRule](css::Rule* rule) {
-    rule->SetParentRule(aParentRule);
-  });
-}
-
-void
-ServoCSSRuleList::SetStyleSheet(StyleSheet* aStyleSheet)
-{
-  mStyleSheet = aStyleSheet ? aStyleSheet->AsServo() : nullptr;
-  EnumerateInstantiatedRules([this](css::Rule* rule) {
-    rule->SetStyleSheet(mStyleSheet);
-  });
-}
-
-css::Rule*
-ServoCSSRuleList::GetRule(uint32_t aIndex)
-{
+css::Rule* ServoCSSRuleList::GetRule(uint32_t aIndex) {
   uintptr_t rule = mRules[aIndex];
   if (rule <= kMaxRuleType) {
     RefPtr<css::Rule> ruleObj = nullptr;
     switch (rule) {
-#define CASE_RULE(const_, name_)                                            \
-      case CSSRuleBinding::const_##_RULE: {                                 \
-        uint32_t line = 0, column = 0;                                      \
-        RefPtr<RawServo##name_##Rule> rule =                                \
-          Servo_CssRules_Get##name_##RuleAt(                                \
-              mRawRules, aIndex, &line, &column                             \
-          ).Consume();                                                      \
-        MOZ_ASSERT(rule);                                                   \
-        ruleObj = new Servo##name_##Rule(rule.forget(), line, column);      \
-        break;                                                              \
-      }
+#define CASE_RULE(const_, name_)                                             \
+  case CSSRule_Binding::const_##_RULE: {                                     \
+    uint32_t line = 0, column = 0;                                           \
+    RefPtr<RawServo##name_##Rule> rule =                                     \
+        Servo_CssRules_Get##name_##RuleAt(mRawRules, aIndex, &line, &column) \
+            .Consume();                                                      \
+    MOZ_ASSERT(rule);                                                        \
+    ruleObj = new CSS##name_##Rule(rule.forget(), mStyleSheet, mParentRule,  \
+                                   line, column);                            \
+    break;                                                                   \
+  }
       CASE_RULE(STYLE, Style)
       CASE_RULE(KEYFRAMES, Keyframes)
       CASE_RULE(MEDIA, Media)
       CASE_RULE(NAMESPACE, Namespace)
       CASE_RULE(PAGE, Page)
       CASE_RULE(SUPPORTS, Supports)
-      CASE_RULE(DOCUMENT, Document)
+      CASE_RULE(DOCUMENT, MozDocument)
       CASE_RULE(IMPORT, Import)
       CASE_RULE(FONT_FEATURE_VALUES, FontFeatureValues)
+      CASE_RULE(FONT_FACE, FontFace)
+      CASE_RULE(COUNTER_STYLE, CounterStyle)
 #undef CASE_RULE
-      // For @font-face and @counter-style rules, the function returns
-      // a borrowed Gecko rule object directly, so we don't need to
-      // create anything here. But we still need to have the style sheet
-      // and parent rule set properly.
-      case CSSRuleBinding::FONT_FACE_RULE: {
-        ruleObj = Servo_CssRules_GetFontFaceRuleAt(mRawRules, aIndex);
-        break;
-      }
-      case CSSRuleBinding::COUNTER_STYLE_RULE: {
-        ruleObj = Servo_CssRules_GetCounterStyleRuleAt(mRawRules, aIndex);
-        break;
-      }
-      case CSSRuleBinding::KEYFRAME_RULE:
+      case CSSRule_Binding::KEYFRAME_RULE:
         MOZ_ASSERT_UNREACHABLE("keyframe rule cannot be here");
         return nullptr;
       default:
         NS_WARNING("stylo: not implemented yet");
         return nullptr;
     }
-    ruleObj->SetStyleSheet(mStyleSheet);
-    ruleObj->SetParentRule(mParentRule);
     rule = CastToUint(ruleObj.forget().take());
     mRules[aIndex] = rule;
   }
   return CastToPtr(rule);
 }
 
-css::Rule*
-ServoCSSRuleList::IndexedGetter(uint32_t aIndex, bool& aFound)
-{
+css::Rule* ServoCSSRuleList::IndexedGetter(uint32_t aIndex, bool& aFound) {
   if (aIndex >= mRules.Length()) {
     aFound = false;
     return nullptr;
@@ -151,10 +107,8 @@ ServoCSSRuleList::IndexedGetter(uint32_t aIndex, bool& aFound)
   return GetRule(aIndex);
 }
 
-template<typename Func>
-void
-ServoCSSRuleList::EnumerateInstantiatedRules(Func aCallback)
-{
+template <typename Func>
+void ServoCSSRuleList::EnumerateInstantiatedRules(Func aCallback) {
   for (uintptr_t rule : mRules) {
     if (rule > kMaxRuleType) {
       aCallback(CastToPtr(rule));
@@ -162,47 +116,65 @@ ServoCSSRuleList::EnumerateInstantiatedRules(Func aCallback)
   }
 }
 
-static void
-DropRule(already_AddRefed<css::Rule> aRule)
-{
+static void DropRule(already_AddRefed<css::Rule> aRule) {
   RefPtr<css::Rule> rule = aRule;
-  rule->SetStyleSheet(nullptr);
-  rule->SetParentRule(nullptr);
+  rule->DropReferences();
 }
 
-void
-ServoCSSRuleList::DropAllRules()
-{
-  EnumerateInstantiatedRules([](css::Rule* rule) {
-    DropRule(already_AddRefed<css::Rule>(rule));
-  });
+void ServoCSSRuleList::DropAllRules() {
+  mStyleSheet = nullptr;
+  mParentRule = nullptr;
+  EnumerateInstantiatedRules(
+      [](css::Rule* rule) { DropRule(already_AddRefed<css::Rule>(rule)); });
   mRules.Clear();
   mRawRules = nullptr;
 }
 
-void
-ServoCSSRuleList::DropReference()
-{
+void ServoCSSRuleList::DropSheetReference() {
+  // If mStyleSheet is not set on this rule list, then it is not set on any of
+  // its instantiated rules either.  To avoid O(N^2) beavhior in the depth of
+  // group rule nesting, which can happen if we are unlinked starting from the
+  // deepest nested group rule, skip recursing into the rule list if we know we
+  // don't need to.
+  if (!mStyleSheet) {
+    return;
+  }
   mStyleSheet = nullptr;
-  mParentRule = nullptr;
-  DropAllRules();
+  EnumerateInstantiatedRules(
+      [](css::Rule* rule) { rule->DropSheetReference(); });
 }
 
-nsresult
-ServoCSSRuleList::InsertRule(const nsAString& aRule, uint32_t aIndex)
-{
-  MOZ_ASSERT(mStyleSheet, "Caller must ensure that "
+void ServoCSSRuleList::DropParentRuleReference() {
+  mParentRule = nullptr;
+  EnumerateInstantiatedRules(
+      [](css::Rule* rule) { rule->DropParentRuleReference(); });
+}
+
+nsresult ServoCSSRuleList::InsertRule(const nsAString& aRule, uint32_t aIndex) {
+  MOZ_ASSERT(mStyleSheet,
+             "Caller must ensure that "
              "the list is not unlinked from stylesheet");
+
+  if (IsReadOnly()) {
+    return NS_OK;
+  }
+
   NS_ConvertUTF16toUTF8 rule(aRule);
   bool nested = !!mParentRule;
   css::Loader* loader = nullptr;
-  if (nsIDocument* doc = mStyleSheet->GetAssociatedDocument()) {
+
+  // TODO(emilio, bug 1535456): Should probably always be able to get a handle
+  // to some loader if we're parsing an @import rule, but which one?
+  //
+  // StyleSheet::ReparseSheet just mints a new loader, but that'd be wrong in
+  // this case I think, since such a load will bypass CSP checks.
+  if (Document* doc = mStyleSheet->GetAssociatedDocument()) {
     loader = doc->CSSLoader();
   }
   uint16_t type;
-  nsresult rv = Servo_CssRules_InsertRule(mRawRules, mStyleSheet->RawContents(),
-                                          &rule, aIndex, nested,
-                                          loader, mStyleSheet, &type);
+  nsresult rv =
+      Servo_CssRules_InsertRule(mRawRules, mStyleSheet->RawContents(), &rule,
+                                aIndex, nested, loader, mStyleSheet, &type);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -210,9 +182,11 @@ ServoCSSRuleList::InsertRule(const nsAString& aRule, uint32_t aIndex)
   return rv;
 }
 
-nsresult
-ServoCSSRuleList::DeleteRule(uint32_t aIndex)
-{
+nsresult ServoCSSRuleList::DeleteRule(uint32_t aIndex) {
+  if (IsReadOnly()) {
+    return NS_OK;
+  }
+
   nsresult rv = Servo_CssRules_DeleteRule(mRawRules, aIndex);
   if (!NS_FAILED(rv)) {
     uintptr_t rule = mRules[aIndex];
@@ -224,9 +198,7 @@ ServoCSSRuleList::DeleteRule(uint32_t aIndex)
   return rv;
 }
 
-uint16_t
-ServoCSSRuleList::GetDOMCSSRuleType(uint32_t aIndex) const
-{
+uint16_t ServoCSSRuleList::GetDOMCSSRuleType(uint32_t aIndex) const {
   uintptr_t rule = mRules[aIndex];
   if (rule <= kMaxRuleType) {
     return rule;
@@ -234,11 +206,18 @@ ServoCSSRuleList::GetDOMCSSRuleType(uint32_t aIndex) const
   return CastToPtr(rule)->Type();
 }
 
-ServoCSSRuleList::~ServoCSSRuleList()
-{
+ServoCSSRuleList::~ServoCSSRuleList() {
   MOZ_ASSERT(!mStyleSheet, "Backpointer should have been cleared");
   MOZ_ASSERT(!mParentRule, "Backpointer should have been cleared");
   DropAllRules();
 }
 
-} // namespace mozilla
+bool ServoCSSRuleList::IsReadOnly() const {
+  MOZ_ASSERT(!mStyleSheet || !mParentRule ||
+                 mStyleSheet->IsReadOnly() == mParentRule->IsReadOnly(),
+             "a parent rule should be read only iff the owning sheet is "
+             "read only");
+  return mStyleSheet && mStyleSheet->IsReadOnly();
+}
+
+}  // namespace mozilla

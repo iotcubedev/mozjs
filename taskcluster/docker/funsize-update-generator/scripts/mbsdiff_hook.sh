@@ -20,11 +20,13 @@ CACHE_THRESHOLD=500000
 NAMESPACE='releng.releases.partials'
 if [ -e "${HOME}/.dogrc" ]
 then
-    METRIC_CMD="$(which dog)"
+    METRIC_CMD="$(command -v dog)"
 else
     METRIC_CMD="echo"
 fi
 METRIC_PARAMS="--type gauge --no_host"
+S3_CACHE_HITS=0
+S3_CACHE_MISSES=0
 
 if [ -n "${BRANCH}" ]
 then
@@ -62,7 +64,7 @@ print_usage(){
 }
 
 upload_patch(){
-    if [ "$(stat -f "%z" "$2")" -lt ${CACHE_THRESHOLD} ]
+    if [ "$(stat -c "%s" "$2")" -lt ${CACHE_THRESHOLD} ]
     then
       return 0
     fi
@@ -94,7 +96,7 @@ upload_patch(){
 
 get_patch(){
     # $1 and $2 are the /path/to/filename
-    if [ "$(stat -f "%z" "$2")" -lt ${CACHE_THRESHOLD} ]
+    if [ "$(stat -c "%s" "$2")" -lt ${CACHE_THRESHOLD} ]
     then
       return 1
     fi
@@ -116,6 +118,7 @@ get_patch(){
     if [ -n "${AWS_BUCKET_NAME}" ]; then
         BUCKET_PATH="s3://${AWS_BUCKET_NAME}${sha_from}/${sha_to}/${s3_filename}"
         if aws s3 ls "${BUCKET_PATH}"; then
+            ((S3_CACHE_HITS++))
             # shellcheck disable=SC2086,SC2090
             ${METRIC_CMD} metric post "${NAMESPACE}.s3_cache.hit" "${S3_CACHE_HITS}" ${METRIC_PARAMS} ${TAGS}
             echo "s3 cache hits now ${S3_CACHE_HITS}"
@@ -128,6 +131,7 @@ get_patch(){
             fi
         # Not found, fall through to default error
         else
+            ((S3_CACHE_MISSES++))
             # shellcheck disable=SC2086,SC2090
             ${METRIC_CMD} metric post "${NAMESPACE}.s3_cache.miss" "${S3_CACHE_MISSES}" ${METRIC_PARAMS} ${TAGS}
         fi

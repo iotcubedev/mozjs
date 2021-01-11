@@ -5,48 +5,52 @@
 #include "nsISupports.idl"
 
 interface nsIDocShell;
-interface nsIDocument;
-interface nsIDOMNode;
 interface nsISHEntry;
 interface nsIPrintSettings;
-
+webidl Document;
+webidl Node;
 
 %{ C++
 #include "nsTArray.h"
 #include "nsRect.h"
 
 class nsIWidget;
-class nsIPresShell;
 class nsPresContext;
 class nsView;
 class nsDOMNavigationTiming;
 namespace mozilla {
 class Encoding;
-}
+class PresShell;
+namespace dom {
+class WindowGlobalChild;
+} // namespace dom
+} // namespace mozilla
 %}
 
 [ptr] native nsIWidgetPtr(nsIWidget);
 [ref] native nsIntRectRef(nsIntRect);
-[ptr] native nsIPresShellPtr(nsIPresShell);
 [ptr] native nsPresContextPtr(nsPresContext);
 [ptr] native nsViewPtr(nsView);
 [ptr] native nsDOMNavigationTimingPtr(nsDOMNavigationTiming);
 [ref] native nsIContentViewerTArray(nsTArray<nsCOMPtr<nsIContentViewer> >);
 [ptr] native Encoding(const mozilla::Encoding);
+[ptr] native PresShellPtr(mozilla::PresShell);
+[ptr] native WindowGlobalChildPtr(mozilla::dom::WindowGlobalChild);
 
 [scriptable, builtinclass, uuid(2da17016-7851-4a45-a7a8-00b360e01595)]
 interface nsIContentViewer : nsISupports
 {
   [noscript] void init(in nsIWidgetPtr aParentWidget,
-                       [const] in nsIntRectRef aBounds);
+                       [const] in nsIntRectRef aBounds,
+                       in WindowGlobalChildPtr aWindowActor);
 
   attribute nsIDocShell container;
 
-  [noscript,notxpcom,nostdcall] void loadStart(in nsIDocument aDoc);
-  void loadComplete(in nsresult aStatus);
-  [noscript] readonly attribute boolean loadCompleted;
+  [noscript,notxpcom,nostdcall] void loadStart(in Document aDoc);
+  [can_run_script] void loadComplete(in nsresult aStatus);
+  [notxpcom,nostdcall] readonly attribute boolean loadCompleted;
 
-  [noscript] readonly attribute boolean isStopped;
+  [notxpcom,nostdcall] readonly attribute boolean isStopped;
 
   /**
    * aPermitUnloadFlags are passed to PermitUnload to indicate what action to take
@@ -101,7 +105,7 @@ interface nsIContentViewer : nsISupports
 
   /**
    * All users of a content viewer are responsible for calling both
-   * close() and destroy(), in that order. 
+   * close() and destroy(), in that order.
    *
    * close() should be called when the load of a new page for the next
    * content viewer begins, and destroy() should be called when the next
@@ -129,17 +133,17 @@ interface nsIContentViewer : nsISupports
    * Returns the same thing as getDocument(), but for use from script
    * only.  C++ consumers should use getDocument().
    */
-  readonly attribute nsISupports DOMDocument;
+  readonly attribute Document DOMDocument;
 
   /**
-   * Returns DOMDocument as nsIDocument and without addrefing.
+   * Returns DOMDocument without addrefing.
    */
-  [noscript,notxpcom,nostdcall] nsIDocument getDocument();
+  [noscript,notxpcom,nostdcall] Document getDocument();
 
   /**
    * Allows setting the document.
    */
-  [noscript,nostdcall] void setDocument(in nsIDocument aDocument);
+  [noscript,nostdcall] void setDocument(in Document aDocument);
 
   [noscript] void getBounds(in nsIntRectRef aBounds);
   [noscript] void setBounds([const] in nsIntRectRef aBounds);
@@ -154,7 +158,7 @@ interface nsIContentViewer : nsISupports
    * The previous content viewer, which has been |close|d but not
    * |destroy|ed.
    */
-  [noscript] attribute nsIContentViewer previousViewer;
+  [notxpcom,nostdcall] attribute nsIContentViewer previousViewer;
 
   void move(in long aX, in long aY);
 
@@ -191,7 +195,8 @@ interface nsIContentViewer : nsISupports
    * Change the layout to view the document with page layout (like print preview), but
    * dynamic and editable (like Galley layout).
    */
-  void setPageMode(in boolean aPageMode, in nsIPrintSettings aPrintSettings);
+  void setPageModeForTesting(in boolean aPageMode,
+                             in nsIPrintSettings aPrintSettings);
 
   /**
    * Get the history entry that this viewer will save itself into when
@@ -215,10 +220,12 @@ interface nsIContentViewer : nsISupports
    */
   attribute boolean isHidden;
 
-  [noscript] readonly attribute nsIPresShellPtr presShell;
-  [noscript] readonly attribute nsPresContextPtr presContext;
+  // presShell can be null.
+  [notxpcom,nostdcall] readonly attribute PresShellPtr presShell;
+  // presContext can be null.
+  [notxpcom,nostdcall] readonly attribute nsPresContextPtr presContext;
   // aDocument must not be null.
-  [noscript] void setDocumentInternal(in nsIDocument aDocument,
+  [noscript] void setDocumentInternal(in Document aDocument,
                                       in boolean aForceReuseInnerWindow);
   /**
    * Find the view to use as the container view for MakeWindow. Returns
@@ -231,10 +238,6 @@ interface nsIContentViewer : nsISupports
    * Set collector for navigation timing data (load, unload events).
    */
   [noscript,notxpcom,nostdcall] void setNavigationTiming(in nsDOMNavigationTimingPtr aTiming);
-  /*
-  Scrolls to a given DOM content node. 
-  */
-  void scrollToNode(in nsIDOMNode node);
 
   /** The amount by which to scale all text. Default is 1.0. */
   attribute float textZoom;
@@ -298,9 +301,6 @@ interface nsIContentViewer : nsISupports
   void getContentSizeConstrained(in long maxWidth, in long maxHeight,
                                  out long width, out long height);
 
-  /** The minimum font size  */
-  attribute long minFontSize;
-
   /**
    * Append |this| and all of its descendants to the given array,
    * in depth-first pre-order traversal.
@@ -331,6 +331,19 @@ interface nsIContentViewer : nsISupports
    * Restore the viewer's natural media type
    */
   void stopEmulatingMedium();
+
+  cenum PrefersColorScheme : 8 {
+    PREFERS_COLOR_SCHEME_LIGHT,
+    PREFERS_COLOR_SCHEME_DARK,
+    PREFERS_COLOR_SCHEME_NO_PREFERENCE,
+    PREFERS_COLOR_SCHEME_NONE, /* This clears the override. */
+  };
+
+  /*
+   * Emulate or stop emulating the prefers color scheme on this page and
+   * subdocuments.
+   */
+  void emulatePrefersColorScheme(in nsIContentViewer_PrefersColorScheme aPrefersColorScheme);
 
   [noscript, notxpcom] Encoding getHintCharset();
   [noscript, notxpcom] void setHintCharset(in Encoding aEncoding);

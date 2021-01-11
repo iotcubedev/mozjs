@@ -25,7 +25,8 @@ interface BaseAudioContext : EventTarget {
     readonly        attribute double               currentTime;
     readonly        attribute AudioListener        listener;
     readonly        attribute AudioContextState    state;
-    // Bug 1324552: readonly        attribute double               baseLatency;
+    [Throws, SameObject, SecureContext, Pref="dom.audioworklet.enabled"]
+    readonly        attribute AudioWorklet         audioWorklet;
 
     [Throws]
     Promise<void> resume();
@@ -96,5 +97,5 @@ interface BaseAudioContext : EventTarget {
     [NewObject, Throws]
     PeriodicWave createPeriodicWave(Float32Array real,
                                     Float32Array imag,
-                                    optional PeriodicWaveConstraints constraints);
+                                    optional PeriodicWaveConstraints constraints = {});
 };

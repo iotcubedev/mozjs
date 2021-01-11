@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html class="reftest-wait">
+<link rel="help" href="https://drafts.css-houdini.org/css-paint-api/">
 <link rel="match" href="style-first-letter-pseudo-ref.html">
+<link rel="stylesheet" type="text/css" href="/fonts/ahem.css" />
 <style>
 div {
     color: rgb(0, 255, 0);
@@ -28,7 +30,7 @@ registerPaint('geometry', class {
         ];
     }
     paint(ctx, geom, styleMap) {
-        const properties = styleMap.getProperties().sort();
+        const properties = [...styleMap.keys()].sort();
         var serializedStrings = [];
         for (let i = 0; i < properties.length; i++) {
             const value = styleMap.get(properties[i]);

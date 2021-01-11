@@ -1,4 +1,4 @@
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 # %include python/mozbuild/mozbuild/action/tooltool.py
 ADD topsrcdir/python/mozbuild/mozbuild/action/tooltool.py /setup/tooltool.py
@@ -15,13 +15,15 @@ ADD topsrcdir/testing/mozharness/external_tools/robustcheckout.py /usr/local/mer
 # %include taskcluster/docker/recipes/hgrc
 COPY topsrcdir/taskcluster/docker/recipes/hgrc /etc/mercurial/hgrc.d/mozilla.rc
 
-# %include taskcluster/docker/recipes/run-task
-ADD topsrcdir/taskcluster/docker/recipes/run-task /usr/local/bin/run-task
+# %include taskcluster/scripts/run-task
+ADD topsrcdir/taskcluster/scripts/run-task /usr/local/bin/run-task
 
 # Add and run setup script
 ADD build-image.sh      /usr/local/bin/build-image.sh
 ADD download-and-compress /usr/local/bin/download-and-compress
 ADD setup.sh            /setup/setup.sh
+ADD requirements/py2.txt /setup/requirements-py2.txt
+ADD requirements/py3.txt /setup/requirements-py3.txt
 RUN bash /setup/setup.sh
 
 # Setup a workspace that won't use AUFS.

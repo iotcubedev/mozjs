@@ -10,16 +10,16 @@
 typedef (Request or USVString) RequestInfo;
 typedef unsigned long nsContentPolicyType;
 
-[Constructor(RequestInfo input, optional RequestInit init),
+[Constructor(RequestInfo input, optional RequestInit init = {}),
  Exposed=(Window,Worker)]
 interface Request {
   readonly attribute ByteString method;
   readonly attribute USVString url;
-  [SameObject] readonly attribute Headers headers;
+  [SameObject, BinaryName="headers_"] readonly attribute Headers headers;
 
-  [Func="mozilla::dom::DOMPrefs::RequestContextEnabled"]
-  readonly attribute RequestContext context;
+  readonly attribute RequestDestination destination;
   readonly attribute USVString referrer;
+  [BinaryName="referrerPolicy_"]
   readonly attribute ReferrerPolicy referrerPolicy;
   readonly attribute RequestMode mode;
   readonly attribute RequestCredentials credentials;
@@ -42,7 +42,7 @@ interface Request {
   [ChromeOnly]
   void overrideContentPolicyType(nsContentPolicyType context);
 };
-Request implements Body;
+Request includes Body;
 
 dictionary RequestInit {
   ByteString method;
@@ -61,26 +61,18 @@ dictionary RequestInit {
 
   AbortSignal? signal;
 
-  [Func="mozilla::dom::DOMPrefs::FetchObserverEnabled"]
+  [Pref="dom.fetchObserver.enabled"]
   ObserverCallback observe;
 };
 
-// Gecko currently does not ship RequestContext, so please don't use it in IDL
-// that is exposed to script.
-enum RequestContext {
-  "audio", "beacon", "cspreport", "download", "embed", "eventsource", "favicon", "fetch",
-  "font", "form", "frame", "hyperlink", "iframe", "image", "imageset", "import",
-  "internal", "location", "manifest", "object", "ping", "plugin", "prefetch", "script",
-  "sharedworker", "subresource", "style", "track", "video", "worker", "xmlhttprequest",
-  "xslt"
+enum RequestDestination {
+  "",
+  "audio", "audioworklet", "document", "embed", "font", "image", "manifest", "object",
+  "paintworklet", "report", "script", "sharedworker", "style",  "track", "video",
+  "worker", "xslt"
 };
 
 enum RequestMode { "same-origin", "no-cors", "cors", "navigate" };
 enum RequestCredentials { "omit", "same-origin", "include" };
 enum RequestCache { "default", "no-store", "reload", "no-cache", "force-cache", "only-if-cached" };
 enum RequestRedirect { "follow", "error", "manual" };
-enum ReferrerPolicy {
-  "", "no-referrer", "no-referrer-when-downgrade", "origin",
-  "origin-when-cross-origin", "unsafe-url", "same-origin", "strict-origin",
-  "strict-origin-when-cross-origin"
-};

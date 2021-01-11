@@ -4,14 +4,13 @@
 /*---
 info: "[[Get]], [[Delete]] from not an inherited property"
 esid: sec-array.prototype.sort
-es5id: 15.4.4.11_A6_T2
 description: >
     [[Prototype]] of Array instance is Array.prototype, [[Prototype]
     of Array.prototype is Object.prototype
 ---*/
 
 Array.prototype[1] = -1;
-var x = [1,0];
+var x = [1, 0];
 x.length = 2;
 x.sort();
 
@@ -40,7 +39,10 @@ if (x[1] !== -1) {
 Object.prototype[1] = -1;
 Object.prototype.length = 2;
 Object.prototype.sort = Array.prototype.sort;
-x = {0:1,1:0};
+x = {
+  0: 1,
+  1: 0
+};
 x.sort();
 
 //CHECK#5

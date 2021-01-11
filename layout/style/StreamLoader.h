@@ -7,6 +7,7 @@
 #ifndef mozilla_css_StreamLoader_h
 #define mozilla_css_StreamLoader_h
 
+#include "nsIStreamListener.h"
 #include "nsString.h"
 #include "mozilla/css/SheetLoadData.h"
 
@@ -15,34 +16,37 @@ class nsIInputStream;
 namespace mozilla {
 namespace css {
 
-class StreamLoader : public nsIStreamListener
-{
-public:
+class StreamLoader : public nsIStreamListener {
+ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSISTREAMLISTENER
 
-  explicit StreamLoader(mozilla::css::SheetLoadData* aSheetLoadData);
+  explicit StreamLoader(SheetLoadData&);
 
-private:
+ private:
   virtual ~StreamLoader();
 
   /**
    * callback method used for ReadSegments
    */
-  static nsresult WriteSegmentFun(nsIInputStream*,
-                                  void*,
-                                  const char*,
-                                  uint32_t,
-                                  uint32_t,
-                                  uint32_t*);
+  static nsresult WriteSegmentFun(nsIInputStream*, void*, const char*, uint32_t,
+                                  uint32_t, uint32_t*);
 
-  RefPtr<mozilla::css::SheetLoadData> mSheetLoadData;
-  nsCString mBytes;
+  void HandleBOM();
+
+  RefPtr<SheetLoadData> mSheetLoadData;
   nsresult mStatus;
+  Maybe<const Encoding*> mEncodingFromBOM;
+
+  // We store the initial three bytes of the stream into mBOMBytes, and then
+  // use that buffer to detect a BOM. We then shift any non-BOM bytes into
+  // mBytes, and store all subsequent data in that buffer.
+  nsCString mBytes;
+  nsAutoCStringN<3> mBOMBytes;
 };
 
-} // namespace css
-} // namespace mozilla
+}  // namespace css
+}  // namespace mozilla
 
-#endif // mozilla_css_StreamLoader_h
+#endif  // mozilla_css_StreamLoader_h

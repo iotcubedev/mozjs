@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -8,7 +7,7 @@
 // Adapted from https://github.com/mozilla-b2g/gaia/blob/f09993563fb5fec4393eb71816ce76cb00463190/apps/sharedtest/test/unit/async_storage_test.js.
 
 const asyncStorage = require("devtools/shared/async-storage");
-add_task(async function () {
+add_task(async function() {
   is(typeof asyncStorage.length, "function", "API exists.");
   is(typeof asyncStorage.key, "function", "API exists.");
   is(typeof asyncStorage.getItem, "function", "API exists.");
@@ -17,7 +16,7 @@ add_task(async function () {
   is(typeof asyncStorage.clear, "function", "API exists.");
 });
 
-add_task(async function () {
+add_task(async function() {
   await asyncStorage.setItem("foo", "bar");
   let value = await asyncStorage.getItem("foo");
   is(value, "bar", "value is correct");
@@ -29,11 +28,11 @@ add_task(async function () {
   is(value, null, "value is correct");
 });
 
-add_task(async function () {
-  let object = {
+add_task(async function() {
+  const object = {
     x: 1,
     y: "foo",
-    z: true
+    z: true,
   };
 
   await asyncStorage.setItem("myobj", object);
@@ -46,7 +45,7 @@ add_task(async function () {
   is(value, null, "value is correct");
 });
 
-add_task(async function () {
+add_task(async function() {
   await asyncStorage.clear();
   let len = await asyncStorage.length();
   is(len, 0, "length is correct");

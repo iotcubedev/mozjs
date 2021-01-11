@@ -21,10 +21,4 @@ Contents:
    shutdown
    push
    gradle
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   testcoverage

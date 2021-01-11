@@ -2,6 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
 from firefox_puppeteer import PuppeteerMixin
 from marionette_harness import MarionetteTestCase
 
@@ -23,9 +24,6 @@ class TestPageInfoWindow(PuppeteerMixin, MarionetteTestCase):
 
         self.assertEqual(page_info.deck.element.get_property('localName'), 'deck')
 
-        # feed panel
-        self.assertEqual(page_info.deck.feed.element.get_property('localName'), 'vbox')
-
         # general panel
         self.assertEqual(page_info.deck.general.element.get_property('localName'), 'vbox')
 
@@ -45,7 +43,6 @@ class TestPageInfoWindow(PuppeteerMixin, MarionetteTestCase):
         self.assertEqual(panel.verifier.get_property('localName'), 'textbox')
 
         self.assertEqual(panel.view_certificate.get_property('localName'), 'button')
-        self.assertEqual(panel.view_cookies.get_property('localName'), 'button')
         self.assertEqual(panel.view_passwords.get_property('localName'), 'button')
 
     def test_select(self):
@@ -70,7 +67,7 @@ class TestPageInfoWindow(PuppeteerMixin, MarionetteTestCase):
 
         platformName = self.marionette.session_capabilities['platformName']
         for trigger in open_strategies:
-            if trigger == 'shortcut' and platformName == 'windows_nt':
+            if trigger == 'shortcut' and platformName == 'windows':
                 # The shortcut for page info window does not exist on windows.
                 self.assertRaises(ValueError, self.browser.open_page_info_window,
                                   trigger=trigger)
@@ -94,7 +91,7 @@ class TestPageInfoWindow(PuppeteerMixin, MarionetteTestCase):
         platformName = self.marionette.session_capabilities['platformName']
         for trigger in close_strategies:
             # menu only works on OS X
-            if trigger == 'menu' and platformName != 'darwin':
+            if trigger == 'menu' and platformName != 'mac':
                 continue
 
             page_info = self.browser.open_page_info_window()

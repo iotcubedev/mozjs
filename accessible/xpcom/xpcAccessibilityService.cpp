@@ -9,24 +9,24 @@
 #include "Platform.h"
 
 #ifdef A11Y_LOG
-#include "Logging.h"
+#  include "Logging.h"
 #endif
 
 using namespace mozilla;
 using namespace mozilla::a11y;
 using namespace mozilla::dom;
 
-xpcAccessibilityService *xpcAccessibilityService::gXPCAccessibilityService = nullptr;
+xpcAccessibilityService* xpcAccessibilityService::gXPCAccessibilityService =
+    nullptr;
 
 ////////////////////////////////////////////////////////////////////////////////
 // nsISupports
 
-void
-xpcAccessibilityService::ShutdownCallback(nsITimer* aTimer, void* aClosure)
-{
+void xpcAccessibilityService::ShutdownCallback(nsITimer* aTimer,
+                                               void* aClosure) {
   MaybeShutdownAccService(nsAccessibilityService::eXPCOM);
   xpcAccessibilityService* xpcAccService =
-    reinterpret_cast<xpcAccessibilityService*>(aClosure);
+      reinterpret_cast<xpcAccessibilityService*>(aClosure);
 
   if (xpcAccService->mShutdownTimer) {
     xpcAccService->mShutdownTimer->Cancel();
@@ -35,11 +35,10 @@ xpcAccessibilityService::ShutdownCallback(nsITimer* aTimer, void* aClosure)
 }
 
 NS_IMETHODIMP_(MozExternalRefCountType)
-xpcAccessibilityService::AddRef(void)
-{
+xpcAccessibilityService::AddRef(void) {
   MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(xpcAccessibilityService)
   MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");
-  if (!mRefCnt.isThreadSafe)
+  if (!nsAutoRefCnt::isThreadSafe)
     NS_ASSERT_OWNINGTHREAD(xpcAccessibilityService);
   nsrefcnt count = ++mRefCnt;
   NS_LOG_ADDREF(this, count, "xpcAccessibilityService", sizeof(*this));
@@ -59,11 +58,10 @@ xpcAccessibilityService::AddRef(void)
 }
 
 NS_IMETHODIMP_(MozExternalRefCountType)
-xpcAccessibilityService::Release(void)
-{
+xpcAccessibilityService::Release(void) {
   MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");
 
-  if (!mRefCnt.isThreadSafe) {
+  if (!nsAutoRefCnt::isThreadSafe) {
     NS_ASSERT_OWNINGTHREAD(xpcAccessibilityService);
   }
 
@@ -71,7 +69,7 @@ xpcAccessibilityService::Release(void)
   NS_LOG_RELEASE(this, count, "xpcAccessibilityService");
 
   if (count == 0) {
-    if (!mRefCnt.isThreadSafe) {
+    if (!nsAutoRefCnt::isThreadSafe) {
       NS_ASSERT_OWNINGTHREAD(xpcAccessibilityService);
     }
 
@@ -85,12 +83,9 @@ xpcAccessibilityService::Release(void)
   // xpcAccessibilityService and we can attempt to shut down acceessiblity
   // service.
   if (count == 1 && !mShutdownTimer) {
-    NS_NewTimerWithFuncCallback(getter_AddRefs(mShutdownTimer),
-                                ShutdownCallback,
-                                this,
-                                100,
-                                nsITimer::TYPE_ONE_SHOT,
-                                "xpcAccessibilityService::Release");
+    NS_NewTimerWithFuncCallback(
+        getter_AddRefs(mShutdownTimer), ShutdownCallback, this, 100,
+        nsITimer::TYPE_ONE_SHOT, "xpcAccessibilityService::Release");
   }
 
   return count;
@@ -99,8 +94,8 @@ xpcAccessibilityService::Release(void)
 NS_IMPL_QUERY_INTERFACE(xpcAccessibilityService, nsIAccessibilityService)
 
 NS_IMETHODIMP
-xpcAccessibilityService::GetApplicationAccessible(nsIAccessible** aAccessibleApplication)
-{
+xpcAccessibilityService::GetApplicationAccessible(
+    nsIAccessible** aAccessibleApplication) {
   NS_ENSURE_ARG_POINTER(aAccessibleApplication);
 
   NS_IF_ADDREF(*aAccessibleApplication = XPCApplicationAcc());
@@ -108,18 +103,12 @@ xpcAccessibilityService::GetApplicationAccessible(nsIAccessible** aAccessibleApp
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::GetAccessibleFor(nsIDOMNode *aNode,
-                                          nsIAccessible **aAccessible)
-{
+xpcAccessibilityService::GetAccessibleFor(nsINode* aNode,
+                                          nsIAccessible** aAccessible) {
   NS_ENSURE_ARG_POINTER(aAccessible);
   *aAccessible = nullptr;
   if (!aNode) {
     return NS_OK;
-  }
-
-  nsCOMPtr<nsINode> node(do_QueryInterface(aNode));
-  if (!node) {
-    return NS_ERROR_INVALID_ARG;
   }
 
   nsAccessibilityService* accService = GetAccService();
@@ -127,17 +116,16 @@ xpcAccessibilityService::GetAccessibleFor(nsIDOMNode *aNode,
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
   }
 
-  DocAccessible* document = accService->GetDocAccessible(node->OwnerDoc());
+  DocAccessible* document = accService->GetDocAccessible(aNode->OwnerDoc());
   if (document) {
-    NS_IF_ADDREF(*aAccessible = ToXPC(document->GetAccessible(node)));
+    NS_IF_ADDREF(*aAccessible = ToXPC(document->GetAccessible(aNode)));
   }
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::GetStringRole(uint32_t aRole, nsAString& aString)
-{
+xpcAccessibilityService::GetStringRole(uint32_t aRole, nsAString& aString) {
   nsAccessibilityService* accService = GetAccService();
   if (!accService) {
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
@@ -149,8 +137,7 @@ xpcAccessibilityService::GetStringRole(uint32_t aRole, nsAString& aString)
 
 NS_IMETHODIMP
 xpcAccessibilityService::GetStringStates(uint32_t aState, uint32_t aExtraState,
-                                         nsISupports **aStringStates)
-{
+                                         nsISupports** aStringStates) {
   nsAccessibilityService* accService = GetAccService();
   if (!accService) {
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
@@ -162,8 +149,7 @@ xpcAccessibilityService::GetStringStates(uint32_t aState, uint32_t aExtraState,
 
 NS_IMETHODIMP
 xpcAccessibilityService::GetStringEventType(uint32_t aEventType,
-                                            nsAString& aString)
-{
+                                            nsAString& aString) {
   nsAccessibilityService* accService = GetAccService();
   if (!accService) {
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
@@ -175,8 +161,7 @@ xpcAccessibilityService::GetStringEventType(uint32_t aEventType,
 
 NS_IMETHODIMP
 xpcAccessibilityService::GetStringRelationType(uint32_t aRelationType,
-                                               nsAString& aString)
-{
+                                               nsAString& aString) {
   nsAccessibilityService* accService = GetAccService();
   if (!accService) {
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
@@ -187,18 +172,12 @@ xpcAccessibilityService::GetStringRelationType(uint32_t aRelationType,
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::GetAccessibleFromCache(nsIDOMNode* aNode,
-                                                nsIAccessible** aAccessible)
-{
+xpcAccessibilityService::GetAccessibleFromCache(nsINode* aNode,
+                                                nsIAccessible** aAccessible) {
   NS_ENSURE_ARG_POINTER(aAccessible);
   *aAccessible = nullptr;
   if (!aNode) {
     return NS_OK;
-  }
-
-  nsCOMPtr<nsINode> node(do_QueryInterface(aNode));
-  if (!node) {
-    return NS_ERROR_INVALID_ARG;
   }
 
   nsAccessibilityService* accService = GetAccService();
@@ -212,12 +191,9 @@ xpcAccessibilityService::GetAccessibleFromCache(nsIDOMNode* aNode,
   // document accessibles are not stored in the document cache, however an
   // "unofficially" shutdown document (i.e. not from DocManager) can still
   // exist in the document cache.
-  Accessible* accessible = accService->FindAccessibleInCache(node);
-  if (!accessible) {
-    nsCOMPtr<nsIDocument> document(do_QueryInterface(node));
-    if (document) {
-      accessible = mozilla::a11y::GetExistingDocAccessible(document);
-    }
+  Accessible* accessible = accService->FindAccessibleInCache(aNode);
+  if (!accessible && aNode->IsDocument()) {
+    accessible = mozilla::a11y::GetExistingDocAccessible(aNode->AsDocument());
   }
 
   NS_IF_ADDREF(*aAccessible = ToXPC(accessible));
@@ -226,8 +202,7 @@ xpcAccessibilityService::GetAccessibleFromCache(nsIDOMNode* aNode,
 
 NS_IMETHODIMP
 xpcAccessibilityService::CreateAccessiblePivot(nsIAccessible* aRoot,
-                                               nsIAccessiblePivot** aPivot)
-{
+                                               nsIAccessiblePivot** aPivot) {
   NS_ENSURE_ARG_POINTER(aPivot);
   NS_ENSURE_ARG(aRoot);
   *aPivot = nullptr;
@@ -242,8 +217,7 @@ xpcAccessibilityService::CreateAccessiblePivot(nsIAccessible* aRoot,
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::SetLogging(const nsACString& aModules)
-{
+xpcAccessibilityService::SetLogging(const nsACString& aModules) {
 #ifdef A11Y_LOG
   logging::Enable(PromiseFlatCString(aModules));
 #endif
@@ -251,8 +225,7 @@ xpcAccessibilityService::SetLogging(const nsACString& aModules)
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::IsLogged(const nsAString& aModule, bool* aIsLogged)
-{
+xpcAccessibilityService::IsLogged(const nsAString& aModule, bool* aIsLogged) {
   NS_ENSURE_ARG_POINTER(aIsLogged);
   *aIsLogged = false;
 
@@ -264,8 +237,7 @@ xpcAccessibilityService::IsLogged(const nsAString& aModule, bool* aIsLogged)
 }
 
 NS_IMETHODIMP
-xpcAccessibilityService::GetConsumers(nsAString& aString)
-{
+xpcAccessibilityService::GetConsumers(nsAString& aString) {
   nsAccessibilityService* accService = GetAccService();
   if (!accService) {
     return NS_ERROR_SERVICE_NOT_AVAILABLE;
@@ -279,9 +251,7 @@ xpcAccessibilityService::GetConsumers(nsAString& aString)
 // NS_GetAccessibilityService
 ////////////////////////////////////////////////////////////////////////////////
 
-nsresult
-NS_GetAccessibilityService(nsIAccessibilityService** aResult)
-{
+nsresult NS_GetAccessibilityService(nsIAccessibilityService** aResult) {
   NS_ENSURE_TRUE(aResult, NS_ERROR_NULL_POINTER);
   *aResult = nullptr;
 

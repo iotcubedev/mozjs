@@ -12,10 +12,11 @@ var EXPORTED_SYMBOLS = [
 ];
 
 Cu.import("resource://gre/modules/FileUtils.jsm");
-Cu.import("chrome://reftest/content/globals.jsm", this);
-Cu.import("chrome://reftest/content/httpd.jsm", this);
-Cu.import("chrome://reftest/content/manifest.jsm", this);
-Cu.import("chrome://reftest/content/StructuredLog.jsm", this);
+Cu.import("resource://reftest/globals.jsm", this);
+Cu.import("resource://reftest/httpd.jsm", this);
+Cu.import("resource://reftest/manifest.jsm", this);
+Cu.import("resource://reftest/StructuredLog.jsm", this);
+Cu.import("resource://reftest/PerTestCoverageUtils.jsm", this);
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import('resource://gre/modules/XPCOMUtils.jsm');
@@ -47,7 +48,7 @@ function HasUnexpectedResult()
 var gDumpFn = function(line) {
   dump(line);
   if (g.logFile) {
-    g.logFile.write(line, line.length);
+    g.logFile.writeString(line);
   }
 }
 var gDumpRawLog = function(record) {
@@ -56,7 +57,7 @@ var gDumpRawLog = function(record) {
   dump(line);
 
   if (g.logFile) {
-    g.logFile.write(line, line.length);
+    g.logFile.writeString(line);
   }
 }
 g.logger = new StructuredLogger('reftest', gDumpRawLog);
@@ -66,6 +67,15 @@ function TestBuffer(str)
 {
   logger.debug(str);
   g.testLog.push(str);
+}
+
+function isWebRenderOnAndroidDevice() {
+  var xr = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime);
+  // This is the best we can do for now; maybe in the future we'll have
+  // more correct detection of this case.
+  return xr.OS == "Android" &&
+      g.browserIsRemote &&
+      g.windowUtils.layerManagerType == "WebRender";
 }
 
 function FlushTestBuffer()
@@ -163,7 +173,7 @@ function OnRefTestLoad(win)
 
     g.browserIsIframe = prefs.getBoolPref("reftest.browser.iframe.enabled", false);
 
-    g.logLevel = prefs.getCharPref("reftest.logLevel", "info");
+    g.logLevel = prefs.getStringPref("reftest.logLevel", "info");
 
     if (win === undefined || win == null) {
       win = window;
@@ -177,7 +187,6 @@ function OnRefTestLoad(win)
       g.browser.setAttribute("mozbrowser", "");
     } else {
       g.browser = g.containingWindow.document.createElementNS(XUL_NS, "xul:browser");
-      g.browser.setAttribute("class", "lightweight");
     }
     g.browser.setAttribute("id", "browser");
     g.browser.setAttribute("type", "content");
@@ -237,10 +246,13 @@ function InitAndStartRefTests()
 
     /* Get the logfile for android tests */
     try {
-        var logFile = prefs.getCharPref("reftest.logFile");
+        var logFile = prefs.getStringPref("reftest.logFile");
         if (logFile) {
             var f = FileUtils.File(logFile);
-            g.logFile = FileUtils.openFileOutputStream(f, FileUtils.MODE_WRONLY | FileUtils.MODE_CREATE);
+            var out = FileUtils.openFileOutputStream(f, FileUtils.MODE_WRONLY | FileUtils.MODE_CREATE);
+            g.logFile = Cc["@mozilla.org/intl/converter-output-stream;1"]
+                          .createInstance(Ci.nsIConverterOutputStream);
+            g.logFile.init(out, null);
         }
     } catch(e) {}
 
@@ -259,17 +271,12 @@ function InitAndStartRefTests()
     }
 
     try {
-        g.focusFilterMode = prefs.getCharPref("reftest.focusFilterMode");
+        g.focusFilterMode = prefs.getStringPref("reftest.focusFilterMode");
     } catch(e) {}
 
     try {
         g.compareRetainedDisplayLists = prefs.getBoolPref("reftest.compareRetainedDisplayLists");
     } catch (e) {}
-#ifdef MOZ_STYLO
-    try {
-        g.compareStyloToGecko = prefs.getBoolPref("reftest.compareStyloToGecko");
-    } catch(e) {}
-#endif
 
 #ifdef MOZ_ENABLE_SKIA_PDF
     try {
@@ -284,7 +291,7 @@ function InitAndStartRefTests()
     }
 #endif
 
-    g.windowUtils = g.containingWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils);
+    g.windowUtils = g.containingWindow.windowUtils;
     if (!g.windowUtils || !g.windowUtils.compareCanvases)
         throw "nsIDOMWindowUtils inteface missing";
 
@@ -310,6 +317,10 @@ function InitAndStartRefTests()
 
     // Focus the content browser.
     if (g.focusFilterMode != FOCUS_FILTER_NON_NEEDS_FOCUS_TESTS) {
+        var fm = Cc["@mozilla.org/focus-manager;1"].getService(Ci.nsIFocusManager);
+        if (fm.activeWindow != g.containingWindow) {
+            Focus();
+        }
         g.browser.addEventListener("focus", ReadTests, true);
         g.browser.focus();
     } else {
@@ -358,12 +369,14 @@ function ReadTests() {
          * The latter two modes are used to pass test data back and forth
          * with python harness.
         */
-        let manifests = prefs.getCharPref("reftest.manifests", null);
-        let dumpTests = prefs.getCharPref("reftest.manifests.dumpTests", null);
-        let testList = prefs.getCharPref("reftest.tests", null);
+        let manifests = prefs.getStringPref("reftest.manifests", null);
+        let dumpTests = prefs.getStringPref("reftest.manifests.dumpTests", null);
+        let testList = prefs.getStringPref("reftest.tests", null);
 
         if ((testList && manifests) || !(testList || manifests)) {
             logger.error("Exactly one of reftest.manifests or reftest.tests must be specified.");
+            logger.debug("reftest.manifests is: " + manifests);
+            logger.error("reftest.tests is: " + testList);
             DoneTests();
         }
 
@@ -379,14 +392,12 @@ function ReadTests() {
             });
         } else if (manifests) {
             // Parse reftest manifests
-            // XXX There is a race condition in the manifest parsing code which
-            // sometimes shows up on Android jsreftests (bug 1416125). It seems
-            // adding/removing log statements can change its frequency.
             logger.debug("Reading " + manifests.length + " manifests");
             manifests = JSON.parse(manifests);
             g.urlsFilterRegex = manifests[null];
 
             var globalFilter = manifests.hasOwnProperty("") ? new RegExp(manifests[""]) : null;
+            delete manifests[""];
             var manifestURLs = Object.keys(manifests);
 
             // Ensure we read manifests from higher up the directory tree first so that we
@@ -505,7 +516,7 @@ function StartTests()
             var ids = g.urls.map(function(obj) {
                 return obj.identifier;
             });
-            var suite = prefs.getCharPref('reftest.suite', 'reftest');
+            var suite = prefs.getStringPref('reftest.suite', 'reftest');
             logger.suiteStart(ids, suite, {"skipped": g.urls.length - numActiveTests});
             g.suiteStarted = true
         }
@@ -515,11 +526,17 @@ function StartTests()
         }
 
         g.totalTests = g.urls.length;
-        if (!g.totalTests && !g.verify)
+        if (!g.totalTests && !g.verify && !g.repeat)
             throw "No tests to run";
 
         g.uriCanvases = {};
-        StartCurrentTest();
+
+        PerTestCoverageUtils.beforeTest()
+        .then(StartCurrentTest)
+        .catch(e => {
+            logger.error("EXCEPTION: " + e);
+            DoneTests();
+        });
     } catch (ex) {
         //g.browser.loadURI('data:text/plain,' + ex);
         ++g.testResults.Exception;
@@ -633,7 +650,7 @@ function StartCurrentTest()
     } else if (g.urls.length == 0 && g.repeat > 0) {
         // Repeat
         g.repeat--;
-        StartTests();
+        ReadTests();
     } else {
         if (g.urls[0].chaosMode) {
             g.windowUtils.enterChaosMode();
@@ -677,7 +694,7 @@ function StartCurrentURI(aURLTargetType)
                     }
                 } else if (ps.type == PREF_STRING) {
                     try {
-                        oldVal = prefs.getCharPref(ps.name);
+                        oldVal = prefs.getStringPref(ps.name);
                     } catch (e) {
                         badPref = "string preference '" + ps.name + "'";
                         throw "bad pref";
@@ -700,7 +717,7 @@ function StartCurrentURI(aURLTargetType)
                     if (ps.type == PREF_BOOLEAN) {
                         prefs.setBoolPref(ps.name, value);
                     } else if (ps.type == PREF_STRING) {
-                        prefs.setCharPref(ps.name, value);
+                        prefs.setStringPref(ps.name, value);
                         value = '"' + value + '"';
                     } else if (ps.type == PREF_INTEGER) {
                         prefs.setIntPref(ps.name, value);
@@ -759,28 +776,32 @@ function StartCurrentURI(aURLTargetType)
 
 function DoneTests()
 {
-    if (g.manageSuite) {
-        g.suiteStarted = false
-        logger.suiteEnd({'results': g.testResults});
-    } else {
-        logger._logData('results', {results: g.testResults});
-    }
-    logger.info("Slowest test took " + g.slowestTestTime + "ms (" + g.slowestTestURL + ")");
-    logger.info("Total canvas count = " + g.recycledCanvases.length);
-    if (g.failedUseWidgetLayers) {
-        LogWidgetLayersFailure();
-    }
+    PerTestCoverageUtils.afterTest()
+    .catch(e => logger.error("EXCEPTION: " + e))
+    .then(() => {
+        if (g.manageSuite) {
+            g.suiteStarted = false
+            logger.suiteEnd({'results': g.testResults});
+        } else {
+            logger._logData('results', {results: g.testResults});
+        }
+        logger.info("Slowest test took " + g.slowestTestTime + "ms (" + g.slowestTestURL + ")");
+        logger.info("Total canvas count = " + g.recycledCanvases.length);
+        if (g.failedUseWidgetLayers) {
+            LogWidgetLayersFailure();
+        }
 
-    function onStopped() {
-        let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"].getService(Ci.nsIAppStartup);
-        appStartup.quit(Ci.nsIAppStartup.eForceQuit);
-    }
-    if (g.server) {
-        g.server.stop(onStopped);
-    }
-    else {
-        onStopped();
-    }
+        function onStopped() {
+            let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"].getService(Ci.nsIAppStartup);
+            appStartup.quit(Ci.nsIAppStartup.eForceQuit);
+        }
+        if (g.server) {
+            g.server.stop(onStopped);
+        }
+        else {
+            onStopped();
+        }
+    });
 }
 
 function UpdateCanvasCache(url, canvas)
@@ -930,6 +951,12 @@ function RecordResult(testRunTime, errorMsg, typeSpecificResults)
     };
     // for EXPECTED_FUZZY we need special handling because we can have
     // Pass, UnexpectedPass, or UnexpectedFail
+
+    if ((g.currentURLTargetType == URL_TARGET_TYPE_TEST && g.urls[0].wrCapture.test) ||
+        (g.currentURLTargetType == URL_TARGET_TYPE_REFERENCE && g.urls[0].wrCapture.ref)) {
+      logger.info("Running webrender capture");
+      g.windowUtils.wrCapture();
+    }
 
     var output;
     var extra;
@@ -1087,15 +1114,32 @@ function RecordResult(testRunTime, errorMsg, typeSpecificResults)
             // by the actual comparison results
             var fuzz_exceeded = false;
 
+            // what is expected on this platform (PASS, FAIL, RANDOM, or FUZZY)
+            var expected = g.urls[0].expected;
+
             differences = g.windowUtils.compareCanvases(g.canvas1, g.canvas2, maxDifference);
+
+            if (g.urls[0].noAutoFuzz) {
+                // Autofuzzing is disabled
+            } else if (isWebRenderOnAndroidDevice() && maxDifference.value <= 2 && differences > 0) {
+                // Autofuzz for WR on Android physical devices: Reduce any
+                // maxDifference of 2 to 0, because we get a lot of off-by-ones
+                // and off-by-twos that are very random and hard to annotate.
+                // In cases where the difference on any pixel component is more
+                // than 2 we require manual annotation. Note that this applies
+                // to both == tests and != tests, so != tests don't
+                // inadvertently pass due to a random off-by-one pixel
+                // difference.
+                logger.info(`REFTEST wr-on-android dropping fuzz of (${maxDifference.value}, ${differences}) to (0, 0)`);
+                maxDifference.value = 0;
+                differences = 0;
+            }
+
             equal = (differences == 0);
 
             if (maxDifference.value > 0 && equal) {
                 throw "Inconsistent result from compareCanvases.";
             }
-
-            // what is expected on this platform (PASS, FAIL, or RANDOM)
-            var expected = g.urls[0].expected;
 
             if (expected == EXPECTED_FUZZY) {
                 logger.info(`REFTEST fuzzy test ` +
@@ -1261,7 +1305,7 @@ function FindUnexpectedCrashDumpFiles()
 
     let foundCrashDumpFile = false;
     while (entries.hasMoreElements()) {
-        let file = entries.getNext().QueryInterface(Ci.nsIFile);
+        let file = entries.nextFile;
         let path = String(file.path);
         if (path.match(/\.(dmp|extra)$/) && !g.unexpectedCrashDumpFiles[path]) {
             if (!foundCrashDumpFile) {
@@ -1287,7 +1331,7 @@ function RemovePendingCrashDumpFiles()
 
     let entries = g.pendingCrashDumpDir.directoryEntries;
     while (entries.hasMoreElements()) {
-        let file = entries.getNext().QueryInterface(Ci.nsIFile);
+        let file = entries.nextFile;
         if (file.isFile()) {
           file.remove(false);
           logger.info("This test left pending crash dumps; deleted "+file.path);
@@ -1369,7 +1413,7 @@ function RestoreChangedPreferences()
             if (ps.type == PREF_BOOLEAN) {
                 prefs.setBoolPref(ps.name, value);
             } else if (ps.type == PREF_STRING) {
-                prefs.setCharPref(ps.name, value);
+                prefs.setStringPref(ps.name, value);
                 value = '"' + value + '"';
             } else if (ps.type == PREF_INTEGER) {
                 prefs.setIntPref(ps.name, value);
@@ -1451,7 +1495,7 @@ function RegisterMessageListenersAndLoadContentScript()
         function (m) { RecvExpectProcessCrash(); }
     );
 
-    g.browserMessageManager.loadFrameScript("chrome://reftest/content/reftest-content.js", true, true);
+    g.browserMessageManager.loadFrameScript("resource://reftest/reftest-content.js", true, true);
 }
 
 function RecvAssertionCount(count)
@@ -1555,9 +1599,9 @@ function OnProcessCrashed(subject, topic, data)
     var id;
     subject = subject.QueryInterface(Ci.nsIPropertyBag2);
     if (topic == "plugin-crashed") {
-        id = subject.getPropertyAsAString("pluginDumpID");
+        id = subject.get("pluginDumpID");
     } else if (topic == "ipc:content-shutdown") {
-        id = subject.getPropertyAsAString("dumpID");
+        id = subject.get("dumpID");
     }
     if (id) {
         g.expectedCrashDumpFiles.push(id + ".dmp");

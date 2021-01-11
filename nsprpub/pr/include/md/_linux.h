@@ -57,6 +57,12 @@
 #define _PR_SI_ARCHITECTURE "m32r"
 #elif defined(__or1k__)
 #define _PR_SI_ARCHITECTURE "or1k"
+#elif defined(__riscv) && (__riscv_xlen == 32)
+#define _PR_SI_ARCHITECTURE "riscv32"
+#elif defined(__riscv) && (__riscv_xlen == 64)
+#define _PR_SI_ARCHITECTURE "riscv64"
+#elif defined(__arc__)
+#define _PR_SI_ARCHITECTURE "arc"
 #else
 #error "Unknown CPU architecture"
 #endif

@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.TextView;
 import org.mozilla.gecko.R;
@@ -17,6 +18,7 @@ import org.mozilla.gecko.Telemetry;
 import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.fxa.FxAccountConstants;
 import org.mozilla.gecko.fxa.activities.FxAccountWebFlowActivity;
+import org.mozilla.gecko.util.OnboardingResources;
 
 public class SyncPanel extends FirstrunPanel {
     @Override
@@ -24,13 +26,23 @@ public class SyncPanel extends FirstrunPanel {
         final ViewGroup root = (ViewGroup) inflater.inflate(R.layout.firstrun_sync_fragment, container, false);
         final Bundle args = getArguments();
         if (args != null) {
-            final int imageRes = args.getInt(FirstrunPagerConfig.KEY_IMAGE);
-            final int textRes = args.getInt(FirstrunPagerConfig.KEY_TEXT);
-            final int subtextRes = args.getInt(FirstrunPagerConfig.KEY_SUBTEXT);
+            final int image = args.getInt(FirstrunPagerConfig.KEY_IMAGE);
+            final String message = args.getString(FirstrunPagerConfig.KEY_MESSAGE);
+            final String subtext = args.getString(FirstrunPagerConfig.KEY_SUBTEXT);
 
-            ((ImageView) root.findViewById(R.id.firstrun_image)).setImageResource(imageRes);
-            ((TextView) root.findViewById(R.id.firstrun_text)).setText(textRes);
-            ((TextView) root.findViewById(R.id.firstrun_subtext)).setText(subtextRes);
+            ((ImageView) root.findViewById(R.id.firstrun_image)).setImageDrawable(getResources().getDrawable(image));
+            ((TextView) root.findViewById(R.id.firstrun_text)).setText(message);
+            ((TextView) root.findViewById(R.id.firstrun_subtext)).setText(subtext);
+
+            final TextView messageView = root.findViewById(R.id.firstrun_text);
+            if (NO_MESSAGE.equals(message)) {
+                messageView.setVisibility(View.GONE);
+            } else {
+                messageView.setText(message);
+            }
+
+            OnboardingResources onboardingUtil = OnboardingResources.getInstance(getContext());
+            ((Button) root.findViewById(R.id.welcome_account)).setText(onboardingUtil.getSyncButtonText());
         }
 
         root.findViewById(R.id.welcome_account).setOnClickListener(new View.OnClickListener() {

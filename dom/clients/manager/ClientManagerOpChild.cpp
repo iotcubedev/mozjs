@@ -6,23 +6,23 @@
 
 #include "ClientManagerOpChild.h"
 
+#include "mozilla/dom/ClientManager.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 
 namespace mozilla {
 namespace dom {
 
-void
-ClientManagerOpChild::ActorDestroy(ActorDestroyReason aReason)
-{
+void ClientManagerOpChild::ActorDestroy(ActorDestroyReason aReason) {
+  mClientManager = nullptr;
   if (mPromise) {
     mPromise->Reject(NS_ERROR_ABORT, __func__);
     mPromise = nullptr;
   }
 }
 
-mozilla::ipc::IPCResult
-ClientManagerOpChild::Recv__delete__(const ClientOpResult& aResult)
-{
+mozilla::ipc::IPCResult ClientManagerOpChild::Recv__delete__(
+    const ClientOpResult& aResult) {
+  mClientManager = nullptr;
   if (aResult.type() == ClientOpResult::Tnsresult &&
       NS_FAILED(aResult.get_nsresult())) {
     mPromise->Reject(aResult.get_nsresult(), __func__);
@@ -34,17 +34,17 @@ ClientManagerOpChild::Recv__delete__(const ClientOpResult& aResult)
   return IPC_OK();
 }
 
-ClientManagerOpChild::ClientManagerOpChild(const ClientOpConstructorArgs& aArgs,
+ClientManagerOpChild::ClientManagerOpChild(ClientManager* aClientManager,
+                                           const ClientOpConstructorArgs& aArgs,
                                            ClientOpPromise::Private* aPromise)
-  : mPromise(aPromise)
-{
+    : mClientManager(aClientManager), mPromise(aPromise) {
+  MOZ_DIAGNOSTIC_ASSERT(mClientManager);
   MOZ_DIAGNOSTIC_ASSERT(mPromise);
 }
 
-ClientManagerOpChild::~ClientManagerOpChild()
-{
+ClientManagerOpChild::~ClientManagerOpChild() {
   MOZ_DIAGNOSTIC_ASSERT(!mPromise);
 }
 
-} // namespace dom
-} // namespace mozilla
+}  // namespace dom
+}  // namespace mozilla

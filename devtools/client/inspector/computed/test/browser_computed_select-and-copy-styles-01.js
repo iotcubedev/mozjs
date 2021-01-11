@@ -1,4 +1,3 @@
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -32,31 +31,37 @@ const TEST_URI = `
   </div>
 `;
 
-add_task(function* () {
-  yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  let {inspector, view} = yield openComputedView();
-  yield selectNode("span", inspector);
+add_task(async function() {
+  await addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
+  const { inspector, view } = await openComputedView();
+  await selectNode("span", inspector);
 
-  yield testCopySome(view);
-  yield testCopyAll(view);
+  await testCopySome(view);
+  await testCopyAll(view);
 });
 
-function* testCopySome(view) {
-  let expectedPattern = "font-family: helvetica, sans-serif;[\\r\\n]+" +
-                        "font-size: 16px;[\\r\\n]+" +
-                        "font-variant-caps: small-caps;[\\r\\n]*";
+async function testCopySome(view) {
+  const expectedPattern =
+    "font-family: helvetica, sans-serif;[\\r\\n]+" +
+    "font-size: 16px;[\\r\\n]+" +
+    "font-variant-caps: small-caps;[\\r\\n]*";
 
-  yield copySomeTextAndCheckClipboard(view, {
-    start: {prop: 1, offset: 0},
-    end: {prop: 3, offset: 2}
-  }, expectedPattern);
+  await copySomeTextAndCheckClipboard(
+    view,
+    {
+      start: { prop: 1, offset: 0 },
+      end: { prop: 3, offset: 2 },
+    },
+    expectedPattern
+  );
 }
 
-function* testCopyAll(view) {
-  let expectedPattern = "color: rgb\\(255, 255, 0\\);[\\r\\n]+" +
-                        "font-family: helvetica, sans-serif;[\\r\\n]+" +
-                        "font-size: 16px;[\\r\\n]+" +
-                        "font-variant-caps: small-caps;[\\r\\n]*";
+async function testCopyAll(view) {
+  const expectedPattern =
+    "color: rgb\\(255, 255, 0\\);[\\r\\n]+" +
+    "font-family: helvetica, sans-serif;[\\r\\n]+" +
+    "font-size: 16px;[\\r\\n]+" +
+    "font-variant-caps: small-caps;[\\r\\n]*";
 
-  yield copyAllAndCheckClipboard(view, expectedPattern);
+  await copyAllAndCheckClipboard(view, expectedPattern);
 }

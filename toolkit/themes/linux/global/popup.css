@@ -40,6 +40,11 @@ panel[type="arrow"][side="right"] {
   margin: 4px;
 }
 
+panel[type="arrow"].panel-no-padding > .panel-arrowcontainer > .panel-arrowcontent {
+  padding: 0;
+  overflow: hidden; /* Don't let panel content overflow the border */
+}
+
 .panel-arrow {
   -moz-context-properties: fill, stroke;
   fill: var(--arrowpanel-background);
@@ -78,23 +83,6 @@ panel[type="arrow"][side="right"] {
 .panel-arrow[side="right"] {
   transform: scaleX(-1);
   margin-left: -5px;
-}
-
-/* ::::: tooltip ::::: */
-
-tooltip {
-  -moz-appearance: tooltip;
-  margin-top: 21px;
-  max-width: 40em;
-  color: InfoText;
-  font: message-box;
-}
-
-tooltip[titletip="true"] {
- /* See bug 32157 comment 128
-  * margin: -2px 0px 0px -3px;
-  */
-  max-width: none;
 }
 
 /* rules for popups associated with menulists */

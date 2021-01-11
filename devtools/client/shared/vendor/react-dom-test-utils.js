@@ -1,7 +1,7 @@
-/** @license React v16.2.0
+/** @license React v16.8.6
  * react-dom-test-utils.production.min.js
  *
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,6 +17,38 @@ var ReactInternals = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
 var _assign = ReactInternals.assign;
 
 /**
+ * Use invariant() to assert state which your program assumes to be true.
+ *
+ * Provide sprintf-style format (only %s is supported) and arguments
+ * to provide information about what broke and what you were
+ * expecting.
+ *
+ * The invariant message will be stripped in production, but the invariant
+ * will remain to ensure logic does not differ in production.
+ */
+
+function invariant(condition, format, a, b, c, d, e, f) {
+  if (!condition) {
+    var error = void 0;
+    if (format === undefined) {
+      error = new Error('Minified exception occurred; use the non-minified dev environment ' + 'for the full error message and additional helpful warnings.');
+    } else {
+      var args = [a, b, c, d, e, f];
+      var argIndex = 0;
+      error = new Error(format.replace(/%s/g, function () {
+        return args[argIndex++];
+      }));
+      error.name = 'Invariant Violation';
+    }
+
+    error.framesToPop = 1; // we don't care about invariant's own frame
+    throw error;
+  }
+}
+
+// Relying on the `invariant()` implementation lets us
+// preserve the format and params in the www builds.
+/**
  * WARNING: DO NOT manually require this module.
  * This is a replacement for `invariant(...)` used by the error code system
  * and will _only_ be required by the corresponding babel pass.
@@ -24,71 +56,25 @@ var _assign = ReactInternals.assign;
  */
 function reactProdInvariant(code) {
   var argCount = arguments.length - 1;
-
-  var message = 'Minified React error #' + code + '; visit ' + 'http://facebook.github.io/react/docs/error-decoder.html?invariant=' + code;
-
+  var url = 'https://reactjs.org/docs/error-decoder.html?invariant=' + code;
   for (var argIdx = 0; argIdx < argCount; argIdx++) {
-    message += '&args[]=' + encodeURIComponent(arguments[argIdx + 1]);
+    url += '&args[]=' + encodeURIComponent(arguments[argIdx + 1]);
   }
-
-  message += ' for the full message or use the non-minified dev environment' + ' for full errors and additional helpful warnings.';
-
-  var error = new Error(message);
-  error.name = 'Invariant Violation';
-  error.framesToPop = 1; // we don't care about reactProdInvariant's own frame
-
-  throw error;
+  // Rename it so that our build transform doesn't attempt
+  // to replace this invariant() call with reactProdInvariant().
+  var i = invariant;
+  i(false,
+  // The error code is intentionally part of the message (and
+  // not the format argument) so that we could deduplicate
+  // different errors in logs based on the code.
+  'Minified React error #' + code + '; visit %s ' + 'for the full message or use the non-minified dev environment ' + 'for full errors and additional helpful warnings. ', url);
 }
 
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
- */
-
-/**
- * Copyright (c) 2013-present, Facebook, Inc.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
- * 
- */
-
-function makeEmptyFunction(arg) {
-  return function () {
-    return arg;
-  };
-}
-
-/**
- * This function accepts and discards inputs; it has no side effects. This is
- * primarily useful idiomatically for overridable function endpoints which
- * always need to be callable, since JS lacks a null-call idiom ala Cocoa.
- */
-var emptyFunction = function emptyFunction() {};
-
-emptyFunction.thatReturns = makeEmptyFunction;
-emptyFunction.thatReturnsFalse = makeEmptyFunction(false);
-emptyFunction.thatReturnsTrue = makeEmptyFunction(true);
-emptyFunction.thatReturnsNull = makeEmptyFunction(null);
-emptyFunction.thatReturnsThis = function () {
-  return this;
-};
-emptyFunction.thatReturnsArgument = function (arg) {
-  return arg;
-};
-
-var emptyFunction_1 = emptyFunction;
-
-/**
- * Copyright (c) 2014-present, Facebook, Inc.
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
+ * Similar to invariant but only logs a warning if the condition is not met.
+ * This can be used to log issues in development environments in critical
+ * paths. Removing the logging code for production environments will keep the
+ * same logic and follow the same code paths.
  */
 
 /**
@@ -112,31 +98,50 @@ function get(key) {
   return key._reactInternalFiber;
 }
 
-var ReactInternals$1 = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+var ReactSharedInternals = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
 
-var ReactCurrentOwner = ReactInternals$1.ReactCurrentOwner;
+// Prevent newer renderers from RTE when used with older react package versions.
+// Current owner and dispatcher used to share the same ref,
+// but PR #14548 split them out to better support the react-debug-tools package.
+if (!ReactSharedInternals.hasOwnProperty('ReactCurrentDispatcher')) {
+  ReactSharedInternals.ReactCurrentDispatcher = {
+    current: null
+  };
+}
 
-// Before we know whether it is functional or class
-var FunctionalComponent = 1;
-var ClassComponent = 2;
+// The Symbol used to tag the ReactElement-like types. If there is no native Symbol
+// nor polyfill, then a plain number is used for performance.
+
+var FunctionComponent = 0;
+var ClassComponent = 1;
+ // Before we know whether it is function or class
 var HostRoot = 3; // Root of a host tree. Could be nested inside another node.
  // A subtree. Could be an entry point to a different renderer.
 var HostComponent = 5;
 var HostText = 6;
 
-// Don't change these two values:
-var NoEffect = 0; //           0b00000000
- //      0b00000001
+// Don't change these two values. They're used by React Dev Tools.
+var NoEffect = /*              */0;
+
 
 // You can change the rest (and add more).
-var Placement = 2; //          0b00000010
- //             0b00000100
- // 0b00000110
- //           0b00001000
- //      0b00010000
- //          0b00100000
- //               0b01000000
- //              0b10000000
+var Placement = /*             */2;
+
+
+
+
+
+
+
+
+
+
+// Passive & Update & Callback & Ref & Snapshot
+
+
+// Union of all host effects
+
+var ReactCurrentOwner = ReactSharedInternals.ReactCurrentOwner;
 
 var MOUNTING = 1;
 var MOUNTED = 2;
@@ -150,15 +155,15 @@ function isFiberMountedImpl(fiber) {
     if ((node.effectTag & Placement) !== NoEffect) {
       return MOUNTING;
     }
-    while (node['return']) {
-      node = node['return'];
+    while (node.return) {
+      node = node.return;
       if ((node.effectTag & Placement) !== NoEffect) {
         return MOUNTING;
       }
     }
   } else {
-    while (node['return']) {
-      node = node['return'];
+    while (node.return) {
+      node = node.return;
     }
   }
   if (node.tag === HostRoot) {
@@ -196,7 +201,7 @@ function findCurrentFiberUsingSlowPath(fiber) {
   var a = fiber;
   var b = alternate;
   while (true) {
-    var parentA = a['return'];
+    var parentA = a.return;
     var parentB = parentA ? parentA.alternate : null;
     if (!parentA || !parentB) {
       // We're at the root.
@@ -226,7 +231,7 @@ function findCurrentFiberUsingSlowPath(fiber) {
       reactProdInvariant('188');
     }
 
-    if (a['return'] !== b['return']) {
+    if (a.return !== b.return) {
       // The return pointer of A and the return pointer of B point to different
       // fibers. We assume that return pointers never criss-cross, so A must
       // belong to the child set of A.return, and B must belong to the child
@@ -295,8 +300,6 @@ function findCurrentFiberUsingSlowPath(fiber) {
 
 var EVENT_POOL_SIZE = 10;
 
-var shouldBeReleasedProperties = ['dispatchConfig', '_targetInst', 'nativeEvent', 'isDefaultPrevented', 'isPropagationStopped', '_dispatchListeners', '_dispatchInstances'];
-
 /**
  * @interface Event
  * @see http://www.w3.org/TR/DOM-Level-3-Events/
@@ -305,7 +308,9 @@ var EventInterface = {
   type: null,
   target: null,
   // currentTarget is set when dispatching; no use in copying it here
-  currentTarget: emptyFunction_1.thatReturnsNull,
+  currentTarget: function () {
+    return null;
+  },
   eventPhase: null,
   bubbles: null,
   cancelable: null,
@@ -315,6 +320,14 @@ var EventInterface = {
   defaultPrevented: null,
   isTrusted: null
 };
+
+function functionThatReturnsTrue() {
+  return true;
+}
+
+function functionThatReturnsFalse() {
+  return false;
+}
 
 /**
  * Synthetic events are dispatched by event plugins, typically in response to a
@@ -358,11 +371,11 @@ function SyntheticEvent(dispatchConfig, targetInst, nativeEvent, nativeEventTarg
 
   var defaultPrevented = nativeEvent.defaultPrevented != null ? nativeEvent.defaultPrevented : nativeEvent.returnValue === false;
   if (defaultPrevented) {
-    this.isDefaultPrevented = emptyFunction_1.thatReturnsTrue;
+    this.isDefaultPrevented = functionThatReturnsTrue;
   } else {
-    this.isDefaultPrevented = emptyFunction_1.thatReturnsFalse;
+    this.isDefaultPrevented = functionThatReturnsFalse;
   }
-  this.isPropagationStopped = emptyFunction_1.thatReturnsFalse;
+  this.isPropagationStopped = functionThatReturnsFalse;
   return this;
 }
 
@@ -379,7 +392,7 @@ _assign(SyntheticEvent.prototype, {
     } else if (typeof event.returnValue !== 'unknown') {
       event.returnValue = false;
     }
-    this.isDefaultPrevented = emptyFunction_1.thatReturnsTrue;
+    this.isDefaultPrevented = functionThatReturnsTrue;
   },
 
   stopPropagation: function () {
@@ -399,7 +412,7 @@ _assign(SyntheticEvent.prototype, {
       event.cancelBubble = true;
     }
 
-    this.isPropagationStopped = emptyFunction_1.thatReturnsTrue;
+    this.isPropagationStopped = functionThatReturnsTrue;
   },
 
   /**
@@ -408,7 +421,7 @@ _assign(SyntheticEvent.prototype, {
    * won't be added back into the pool.
    */
   persist: function () {
-    this.isPersistent = emptyFunction_1.thatReturnsTrue;
+    this.isPersistent = functionThatReturnsTrue;
   },
 
   /**
@@ -416,7 +429,7 @@ _assign(SyntheticEvent.prototype, {
    *
    * @return {boolean} True if this should not be released, false otherwise.
    */
-  isPersistent: emptyFunction_1.thatReturnsFalse,
+  isPersistent: functionThatReturnsFalse,
 
   /**
    * `PooledClass` looks for `destructor` on each instance it releases.
@@ -428,9 +441,13 @@ _assign(SyntheticEvent.prototype, {
         this[propName] = null;
       }
     }
-    for (var i = 0; i < shouldBeReleasedProperties.length; i++) {
-      this[shouldBeReleasedProperties[i]] = null;
-    }
+    this.dispatchConfig = null;
+    this._targetInst = null;
+    this.nativeEvent = null;
+    this.isDefaultPrevented = functionThatReturnsFalse;
+    this.isPropagationStopped = functionThatReturnsFalse;
+    this._dispatchListeners = null;
+    this._dispatchInstances = null;
     
   }
 });
@@ -439,30 +456,28 @@ SyntheticEvent.Interface = EventInterface;
 
 /**
  * Helper to reduce boilerplate when creating subclasses.
- *
- * @param {function} Class
- * @param {?object} Interface
  */
-SyntheticEvent.augmentClass = function (Class, Interface) {
+SyntheticEvent.extend = function (Interface) {
   var Super = this;
 
   var E = function () {};
   E.prototype = Super.prototype;
   var prototype = new E();
 
+  function Class() {
+    return Super.apply(this, arguments);
+  }
   _assign(prototype, Class.prototype);
   Class.prototype = prototype;
   Class.prototype.constructor = Class;
 
   Class.Interface = _assign({}, Super.Interface, Interface);
-  Class.augmentClass = Super.augmentClass;
+  Class.extend = Super.extend;
   addEventPoolingTo(Class);
+
+  return Class;
 };
 
-/** Proxying after everything set on SyntheticEvent
- * to resolve Proxy issue on some WebKit browsers
- * in which some Event properties are set to undefined (GH#10010)
- */
 addEventPoolingTo(SyntheticEvent);
 
 function getPooledEvent(dispatchConfig, targetInst, nativeEvent, nativeInst) {
@@ -477,7 +492,7 @@ function getPooledEvent(dispatchConfig, targetInst, nativeEvent, nativeInst) {
 
 function releasePooledEvent(event) {
   var EventConstructor = this;
-  !(event instanceof EventConstructor) ? reactProdInvariant('223') : void 0;
+  !(event instanceof EventConstructor) ? reactProdInvariant('279') : void 0;
   event.destructor();
   if (EventConstructor.eventPool.length < EVENT_POOL_SIZE) {
     EventConstructor.eventPool.push(event);
@@ -491,38 +506,34 @@ function addEventPoolingTo(EventConstructor) {
 }
 
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Forked from fbjs/warning:
+ * https://github.com/facebook/fbjs/blob/e66ba20ad5be433eb54423f2b097d829324d9de6/packages/fbjs/src/__forks__/warning.js
  *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- *
+ * Only change is we use console.warn instead of console.error,
+ * and do nothing when 'console' is not supported.
+ * This really simplifies the code.
+ * ---
+ * Similar to invariant but only logs a warning if the condition is not met.
+ * This can be used to log issues in development environments in critical
+ * paths. Removing the logging code for production environments will keep the
+ * same logic and follow the same code paths.
  */
-
-
-
-var canUseDOM = !!(typeof window !== 'undefined' && window.document && window.document.createElement);
 
 /**
- * Simple, lightweight module assisting with the detection and context of
- * Worker. Helps avoid circular dependencies and allows code to reason about
- * whether or not they are in a Worker, even if they never include the main
- * `ReactWorker` dependency.
+ * HTML nodeType values that represent the type of the node
  */
-var ExecutionEnvironment = {
 
-  canUseDOM: canUseDOM,
+var ELEMENT_NODE = 1;
 
-  canUseWorkers: typeof Worker !== 'undefined',
+// Do not uses the below two methods directly!
+// Instead use constants exported from DOMTopLevelEventTypes in ReactDOM.
+// (It is the only module that is allowed to access these methods.)
 
-  canUseEventListeners: canUseDOM && !!(window.addEventListener || window.attachEvent),
+function unsafeCastStringToDOMTopLevelType(topLevelType) {
+  return topLevelType;
+}
 
-  canUseViewport: canUseDOM && !!window.screen,
-
-  isInWorker: !canUseDOM // For now, this is true - might change in the future.
-
-};
-
-var ExecutionEnvironment_1 = ExecutionEnvironment;
+var canUseDOM = !!(typeof window !== 'undefined' && window.document && window.document.createElement);
 
 /**
  * Generate a mapping of standard vendor prefixes using the defined style property and event name.
@@ -537,8 +548,6 @@ function makePrefixMap(styleProp, eventName) {
   prefixes[styleProp.toLowerCase()] = eventName.toLowerCase();
   prefixes['Webkit' + styleProp] = 'webkit' + eventName;
   prefixes['Moz' + styleProp] = 'moz' + eventName;
-  prefixes['ms' + styleProp] = 'MS' + eventName;
-  prefixes['O' + styleProp] = 'o' + eventName.toLowerCase();
 
   return prefixes;
 }
@@ -566,7 +575,7 @@ var style = {};
 /**
  * Bootstrap if a DOM exists.
  */
-if (ExecutionEnvironment_1.canUseDOM) {
+if (canUseDOM) {
   style = document.createElementNS('http://www.w3.org/1999/xhtml', 'div').style;
 
   // On some platforms, in particular some releases of Android 4.x,
@@ -606,108 +615,150 @@ function getVendorPrefixedEventName(eventName) {
     }
   }
 
-  return '';
+  return eventName;
 }
 
 /**
- * Types of raw signals from the browser caught at the top level.
- *
- * For events like 'submit' which don't consistently bubble (which we
- * trap at a lower node than `document`), binding at `document` would
- * cause duplicate events so we don't include them here.
+ * To identify top level events in ReactDOM, we use constants defined by this
+ * module. This is the only module that uses the unsafe* methods to express
+ * that the constants actually correspond to the browser event names. This lets
+ * us save some bundle size by avoiding a top level type -> event name map.
+ * The rest of ReactDOM code should import top level types from this file.
  */
-var topLevelTypes$1 = {
-  topAbort: 'abort',
-  topAnimationEnd: getVendorPrefixedEventName('animationend') || 'animationend',
-  topAnimationIteration: getVendorPrefixedEventName('animationiteration') || 'animationiteration',
-  topAnimationStart: getVendorPrefixedEventName('animationstart') || 'animationstart',
-  topBlur: 'blur',
-  topCancel: 'cancel',
-  topCanPlay: 'canplay',
-  topCanPlayThrough: 'canplaythrough',
-  topChange: 'change',
-  topClick: 'click',
-  topClose: 'close',
-  topCompositionEnd: 'compositionend',
-  topCompositionStart: 'compositionstart',
-  topCompositionUpdate: 'compositionupdate',
-  topContextMenu: 'contextmenu',
-  topCopy: 'copy',
-  topCut: 'cut',
-  topDoubleClick: 'dblclick',
-  topDrag: 'drag',
-  topDragEnd: 'dragend',
-  topDragEnter: 'dragenter',
-  topDragExit: 'dragexit',
-  topDragLeave: 'dragleave',
-  topDragOver: 'dragover',
-  topDragStart: 'dragstart',
-  topDrop: 'drop',
-  topDurationChange: 'durationchange',
-  topEmptied: 'emptied',
-  topEncrypted: 'encrypted',
-  topEnded: 'ended',
-  topError: 'error',
-  topFocus: 'focus',
-  topInput: 'input',
-  topKeyDown: 'keydown',
-  topKeyPress: 'keypress',
-  topKeyUp: 'keyup',
-  topLoadedData: 'loadeddata',
-  topLoad: 'load',
-  topLoadedMetadata: 'loadedmetadata',
-  topLoadStart: 'loadstart',
-  topMouseDown: 'mousedown',
-  topMouseMove: 'mousemove',
-  topMouseOut: 'mouseout',
-  topMouseOver: 'mouseover',
-  topMouseUp: 'mouseup',
-  topPaste: 'paste',
-  topPause: 'pause',
-  topPlay: 'play',
-  topPlaying: 'playing',
-  topProgress: 'progress',
-  topRateChange: 'ratechange',
-  topScroll: 'scroll',
-  topSeeked: 'seeked',
-  topSeeking: 'seeking',
-  topSelectionChange: 'selectionchange',
-  topStalled: 'stalled',
-  topSuspend: 'suspend',
-  topTextInput: 'textInput',
-  topTimeUpdate: 'timeupdate',
-  topToggle: 'toggle',
-  topTouchCancel: 'touchcancel',
-  topTouchEnd: 'touchend',
-  topTouchMove: 'touchmove',
-  topTouchStart: 'touchstart',
-  topTransitionEnd: getVendorPrefixedEventName('transitionend') || 'transitionend',
-  topVolumeChange: 'volumechange',
-  topWaiting: 'waiting',
-  topWheel: 'wheel'
-};
+var TOP_ABORT = unsafeCastStringToDOMTopLevelType('abort');
+var TOP_ANIMATION_END = unsafeCastStringToDOMTopLevelType(getVendorPrefixedEventName('animationend'));
+var TOP_ANIMATION_ITERATION = unsafeCastStringToDOMTopLevelType(getVendorPrefixedEventName('animationiteration'));
+var TOP_ANIMATION_START = unsafeCastStringToDOMTopLevelType(getVendorPrefixedEventName('animationstart'));
+var TOP_BLUR = unsafeCastStringToDOMTopLevelType('blur');
+var TOP_CAN_PLAY = unsafeCastStringToDOMTopLevelType('canplay');
+var TOP_CAN_PLAY_THROUGH = unsafeCastStringToDOMTopLevelType('canplaythrough');
+var TOP_CANCEL = unsafeCastStringToDOMTopLevelType('cancel');
+var TOP_CHANGE = unsafeCastStringToDOMTopLevelType('change');
+var TOP_CLICK = unsafeCastStringToDOMTopLevelType('click');
+var TOP_CLOSE = unsafeCastStringToDOMTopLevelType('close');
+var TOP_COMPOSITION_END = unsafeCastStringToDOMTopLevelType('compositionend');
+var TOP_COMPOSITION_START = unsafeCastStringToDOMTopLevelType('compositionstart');
+var TOP_COMPOSITION_UPDATE = unsafeCastStringToDOMTopLevelType('compositionupdate');
+var TOP_CONTEXT_MENU = unsafeCastStringToDOMTopLevelType('contextmenu');
+var TOP_COPY = unsafeCastStringToDOMTopLevelType('copy');
+var TOP_CUT = unsafeCastStringToDOMTopLevelType('cut');
+var TOP_DOUBLE_CLICK = unsafeCastStringToDOMTopLevelType('dblclick');
 
-var BrowserEventConstants = {
-  topLevelTypes: topLevelTypes$1
-};
+var TOP_DRAG = unsafeCastStringToDOMTopLevelType('drag');
+var TOP_DRAG_END = unsafeCastStringToDOMTopLevelType('dragend');
+var TOP_DRAG_ENTER = unsafeCastStringToDOMTopLevelType('dragenter');
+var TOP_DRAG_EXIT = unsafeCastStringToDOMTopLevelType('dragexit');
+var TOP_DRAG_LEAVE = unsafeCastStringToDOMTopLevelType('dragleave');
+var TOP_DRAG_OVER = unsafeCastStringToDOMTopLevelType('dragover');
+var TOP_DRAG_START = unsafeCastStringToDOMTopLevelType('dragstart');
+var TOP_DROP = unsafeCastStringToDOMTopLevelType('drop');
+var TOP_DURATION_CHANGE = unsafeCastStringToDOMTopLevelType('durationchange');
+var TOP_EMPTIED = unsafeCastStringToDOMTopLevelType('emptied');
+var TOP_ENCRYPTED = unsafeCastStringToDOMTopLevelType('encrypted');
+var TOP_ENDED = unsafeCastStringToDOMTopLevelType('ended');
+var TOP_ERROR = unsafeCastStringToDOMTopLevelType('error');
+var TOP_FOCUS = unsafeCastStringToDOMTopLevelType('focus');
 
+var TOP_INPUT = unsafeCastStringToDOMTopLevelType('input');
+
+var TOP_KEY_DOWN = unsafeCastStringToDOMTopLevelType('keydown');
+var TOP_KEY_PRESS = unsafeCastStringToDOMTopLevelType('keypress');
+var TOP_KEY_UP = unsafeCastStringToDOMTopLevelType('keyup');
+var TOP_LOAD = unsafeCastStringToDOMTopLevelType('load');
+var TOP_LOAD_START = unsafeCastStringToDOMTopLevelType('loadstart');
+var TOP_LOADED_DATA = unsafeCastStringToDOMTopLevelType('loadeddata');
+var TOP_LOADED_METADATA = unsafeCastStringToDOMTopLevelType('loadedmetadata');
+
+var TOP_MOUSE_DOWN = unsafeCastStringToDOMTopLevelType('mousedown');
+var TOP_MOUSE_MOVE = unsafeCastStringToDOMTopLevelType('mousemove');
+var TOP_MOUSE_OUT = unsafeCastStringToDOMTopLevelType('mouseout');
+var TOP_MOUSE_OVER = unsafeCastStringToDOMTopLevelType('mouseover');
+var TOP_MOUSE_UP = unsafeCastStringToDOMTopLevelType('mouseup');
+var TOP_PASTE = unsafeCastStringToDOMTopLevelType('paste');
+var TOP_PAUSE = unsafeCastStringToDOMTopLevelType('pause');
+var TOP_PLAY = unsafeCastStringToDOMTopLevelType('play');
+var TOP_PLAYING = unsafeCastStringToDOMTopLevelType('playing');
+
+
+
+
+
+
+
+
+var TOP_PROGRESS = unsafeCastStringToDOMTopLevelType('progress');
+var TOP_RATE_CHANGE = unsafeCastStringToDOMTopLevelType('ratechange');
+
+var TOP_SCROLL = unsafeCastStringToDOMTopLevelType('scroll');
+var TOP_SEEKED = unsafeCastStringToDOMTopLevelType('seeked');
+var TOP_SEEKING = unsafeCastStringToDOMTopLevelType('seeking');
+var TOP_SELECTION_CHANGE = unsafeCastStringToDOMTopLevelType('selectionchange');
+var TOP_STALLED = unsafeCastStringToDOMTopLevelType('stalled');
+
+var TOP_SUSPEND = unsafeCastStringToDOMTopLevelType('suspend');
+var TOP_TEXT_INPUT = unsafeCastStringToDOMTopLevelType('textInput');
+var TOP_TIME_UPDATE = unsafeCastStringToDOMTopLevelType('timeupdate');
+var TOP_TOGGLE = unsafeCastStringToDOMTopLevelType('toggle');
+var TOP_TOUCH_CANCEL = unsafeCastStringToDOMTopLevelType('touchcancel');
+var TOP_TOUCH_END = unsafeCastStringToDOMTopLevelType('touchend');
+var TOP_TOUCH_MOVE = unsafeCastStringToDOMTopLevelType('touchmove');
+var TOP_TOUCH_START = unsafeCastStringToDOMTopLevelType('touchstart');
+var TOP_TRANSITION_END = unsafeCastStringToDOMTopLevelType(getVendorPrefixedEventName('transitionend'));
+var TOP_VOLUME_CHANGE = unsafeCastStringToDOMTopLevelType('volumechange');
+var TOP_WAITING = unsafeCastStringToDOMTopLevelType('waiting');
+var TOP_WHEEL = unsafeCastStringToDOMTopLevelType('wheel');
+
+// List of events that need to be individually attached to media elements.
+// Note that events in this list will *not* be listened to at the top level
+// unless they're explicitly whitelisted in `ReactBrowserEventEmitter.listenTo`.
+
+// for .act's return value
 var findDOMNode = ReactDOM.findDOMNode;
-var _ReactDOM$__SECRET_IN = ReactDOM.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
-var EventPluginHub = _ReactDOM$__SECRET_IN.EventPluginHub;
-var EventPluginRegistry = _ReactDOM$__SECRET_IN.EventPluginRegistry;
-var EventPropagators = _ReactDOM$__SECRET_IN.EventPropagators;
-var ReactControlledComponent = _ReactDOM$__SECRET_IN.ReactControlledComponent;
-var ReactDOMComponentTree = _ReactDOM$__SECRET_IN.ReactDOMComponentTree;
-var ReactDOMEventListener = _ReactDOM$__SECRET_IN.ReactDOMEventListener;
+// Keep in sync with ReactDOMUnstableNativeDependencies.js
+// and ReactDOM.js:
 
+var _ReactDOM$__SECRET_IN = ReactDOM.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.Events;
+var getInstanceFromNode = _ReactDOM$__SECRET_IN[0];
+var getNodeFromInstance = _ReactDOM$__SECRET_IN[1];
+var getFiberCurrentPropsFromNode = _ReactDOM$__SECRET_IN[2];
+var injectEventPluginsByName = _ReactDOM$__SECRET_IN[3];
+var eventNameDispatchConfigs = _ReactDOM$__SECRET_IN[4];
+var accumulateTwoPhaseDispatches = _ReactDOM$__SECRET_IN[5];
+var accumulateDirectDispatches = _ReactDOM$__SECRET_IN[6];
+var enqueueStateRestore = _ReactDOM$__SECRET_IN[7];
+var restoreStateIfNeeded = _ReactDOM$__SECRET_IN[8];
+var dispatchEvent = _ReactDOM$__SECRET_IN[9];
+var runEventsInBatch = _ReactDOM$__SECRET_IN[10];
 
-var topLevelTypes = BrowserEventConstants.topLevelTypes;
 
 function Event(suffix) {}
 
 /**
  * @class ReactTestUtils
  */
+
+/**
+ * Simulates a top level event being dispatched from a raw event that occurred
+ * on an `Element` node.
+ * @param {number} topLevelType A number from `TopLevelEventTypes`
+ * @param {!Element} node The dom to simulate an event occurring on.
+ * @param {?Event} fakeNativeEvent Fake native event to use in SyntheticEvent.
+ */
+function simulateNativeEventOnNode(topLevelType, node, fakeNativeEvent) {
+  fakeNativeEvent.target = node;
+  dispatchEvent(topLevelType, fakeNativeEvent);
+}
+
+/**
+ * Simulates a top level event being dispatched from a raw event that occurred
+ * on the `ReactDOMComponent` `comp`.
+ * @param {Object} topLevelType A type from `BrowserEventConstants.topLevelTypes`.
+ * @param {!ReactDOMComponent} comp
+ * @param {?Event} fakeNativeEvent Fake native event to use in SyntheticEvent.
+ */
+function simulateNativeEventOnDOMComponent(topLevelType, comp, fakeNativeEvent) {
+  simulateNativeEventOnNode(topLevelType, findDOMNode(comp), fakeNativeEvent);
+}
 
 function findAllInRenderedFiberTreeInternal(fiber, test) {
   if (!fiber) {
@@ -720,14 +771,14 @@ function findAllInRenderedFiberTreeInternal(fiber, test) {
   var node = currentParent;
   var ret = [];
   while (true) {
-    if (node.tag === HostComponent || node.tag === HostText || node.tag === ClassComponent || node.tag === FunctionalComponent) {
+    if (node.tag === HostComponent || node.tag === HostText || node.tag === ClassComponent || node.tag === FunctionComponent) {
       var publicInst = node.stateNode;
       if (test(publicInst)) {
         ret.push(publicInst);
       }
     }
     if (node.child) {
-      node.child['return'] = node;
+      node.child.return = node;
       node = node.child;
       continue;
     }
@@ -735,15 +786,41 @@ function findAllInRenderedFiberTreeInternal(fiber, test) {
       return ret;
     }
     while (!node.sibling) {
-      if (!node['return'] || node['return'] === currentParent) {
+      if (!node.return || node.return === currentParent) {
         return ret;
       }
-      node = node['return'];
+      node = node.return;
     }
-    node.sibling['return'] = node['return'];
+    node.sibling.return = node.return;
     node = node.sibling;
   }
 }
+
+function validateClassInstance(inst, methodName) {
+  if (!inst) {
+    // This is probably too relaxed but it's existing behavior.
+    return;
+  }
+  if (get(inst)) {
+    // This is a public instance indeed.
+    return;
+  }
+  var received = void 0;
+  var stringified = '' + inst;
+  if (Array.isArray(inst)) {
+    received = 'an array';
+  } else if (inst && inst.nodeType === ELEMENT_NODE && inst.tagName) {
+    received = 'a DOM node';
+  } else if (stringified === '[object Object]') {
+    received = 'object with keys {' + Object.keys(inst).join(', ') + '}';
+  } else {
+    received = stringified;
+  }
+  reactProdInvariant('286', methodName, received);
+}
+
+// a stub element, lazily initialized, used by act() when flushing effects
+var actContainerElement = null;
 
 /**
  * Utilities for making it easy to test React components.
@@ -774,7 +851,7 @@ var ReactTestUtils = {
   },
 
   isDOMComponent: function (inst) {
-    return !!(inst && inst.nodeType === 1 && inst.tagName);
+    return !!(inst && inst.nodeType === ELEMENT_NODE && inst.tagName);
   },
 
   isDOMComponentElement: function (inst) {
@@ -800,10 +877,10 @@ var ReactTestUtils = {
   },
 
   findAllInRenderedTree: function (inst, test) {
+    validateClassInstance(inst, 'findAllInRenderedTree');
     if (!inst) {
       return [];
     }
-    !ReactTestUtils.isCompositeComponent(inst) ? reactProdInvariant('10') : void 0;
     var internalInstance = get(inst);
     return findAllInRenderedFiberTreeInternal(internalInstance, test);
   },
@@ -814,6 +891,7 @@ var ReactTestUtils = {
    * @return {array} an array of all the matches.
    */
   scryRenderedDOMComponentsWithClass: function (root, classNames) {
+    validateClassInstance(root, 'scryRenderedDOMComponentsWithClass');
     return ReactTestUtils.findAllInRenderedTree(root, function (inst) {
       if (ReactTestUtils.isDOMComponent(inst)) {
         var className = inst.className;
@@ -842,6 +920,7 @@ var ReactTestUtils = {
    * @return {!ReactDOMComponent} The one match.
    */
   findRenderedDOMComponentWithClass: function (root, className) {
+    validateClassInstance(root, 'findRenderedDOMComponentWithClass');
     var all = ReactTestUtils.scryRenderedDOMComponentsWithClass(root, className);
     if (all.length !== 1) {
       throw new Error('Did not find exactly one match (found: ' + all.length + ') ' + 'for class:' + className);
@@ -855,6 +934,7 @@ var ReactTestUtils = {
    * @return {array} an array of all the matches.
    */
   scryRenderedDOMComponentsWithTag: function (root, tagName) {
+    validateClassInstance(root, 'scryRenderedDOMComponentsWithTag');
     return ReactTestUtils.findAllInRenderedTree(root, function (inst) {
       return ReactTestUtils.isDOMComponent(inst) && inst.tagName.toUpperCase() === tagName.toUpperCase();
     });
@@ -867,6 +947,7 @@ var ReactTestUtils = {
    * @return {!ReactDOMComponent} The one match.
    */
   findRenderedDOMComponentWithTag: function (root, tagName) {
+    validateClassInstance(root, 'findRenderedDOMComponentWithTag');
     var all = ReactTestUtils.scryRenderedDOMComponentsWithTag(root, tagName);
     if (all.length !== 1) {
       throw new Error('Did not find exactly one match (found: ' + all.length + ') ' + 'for tag:' + tagName);
@@ -879,6 +960,7 @@ var ReactTestUtils = {
    * @return {array} an array of all the matches.
    */
   scryRenderedComponentsWithType: function (root, componentType) {
+    validateClassInstance(root, 'scryRenderedComponentsWithType');
     return ReactTestUtils.findAllInRenderedTree(root, function (inst) {
       return ReactTestUtils.isCompositeComponentWithType(inst, componentType);
     });
@@ -891,6 +973,7 @@ var ReactTestUtils = {
    * @return {!ReactComponent} The one match.
    */
   findRenderedComponentWithType: function (root, componentType) {
+    validateClassInstance(root, 'findRenderedComponentWithType');
     var all = ReactTestUtils.scryRenderedComponentsWithType(root, componentType);
     if (all.length !== 1) {
       throw new Error('Did not find exactly one match (found: ' + all.length + ') ' + 'for componentType:' + componentType);
@@ -921,29 +1004,6 @@ var ReactTestUtils = {
     return this;
   },
 
-  /**
-   * Simulates a top level event being dispatched from a raw event that occurred
-   * on an `Element` node.
-   * @param {Object} topLevelType A type from `BrowserEventConstants.topLevelTypes`
-   * @param {!Element} node The dom to simulate an event occurring on.
-   * @param {?Event} fakeNativeEvent Fake native event to use in SyntheticEvent.
-   */
-  simulateNativeEventOnNode: function (topLevelType, node, fakeNativeEvent) {
-    fakeNativeEvent.target = node;
-    ReactDOMEventListener.dispatchEvent(topLevelType, fakeNativeEvent);
-  },
-
-  /**
-   * Simulates a top level event being dispatched from a raw event that occurred
-   * on the `ReactDOMComponent` `comp`.
-   * @param {Object} topLevelType A type from `BrowserEventConstants.topLevelTypes`.
-   * @param {!ReactDOMComponent} comp
-   * @param {?Event} fakeNativeEvent Fake native event to use in SyntheticEvent.
-   */
-  simulateNativeEventOnDOMComponent: function (topLevelType, comp, fakeNativeEvent) {
-    ReactTestUtils.simulateNativeEventOnNode(topLevelType, findDOMNode(comp), fakeNativeEvent);
-  },
-
   nativeTouchData: function (x, y) {
     return {
       touches: [{ pageX: x, pageY: y }]
@@ -951,7 +1011,26 @@ var ReactTestUtils = {
   },
 
   Simulate: null,
-  SimulateNative: {}
+  SimulateNative: {},
+
+  act: function (callback) {
+    if (actContainerElement === null) {
+      // warn if we can't actually create the stub element
+      actContainerElement = document.createElementNS('http://www.w3.org/1999/xhtml', 'div');
+    }
+
+    var result = ReactDOM.unstable_batchedUpdates(callback);
+    // note: keep these warning messages in sync with
+    // createReactNoop.js and ReactTestRenderer.js
+    ReactDOM.render(React.createElement('div', null), actContainerElement);
+    // we want the user to not expect a return,
+    // but we want to warn if they use it like they can await on it.
+    return {
+      then: function () {
+        
+      }
+    };
+  }
 };
 
 /**
@@ -967,7 +1046,7 @@ function makeSimulator(eventType) {
     !!React.isValidElement(domNode) ? reactProdInvariant('228') : void 0;
     !!ReactTestUtils.isCompositeComponent(domNode) ? reactProdInvariant('229') : void 0;
 
-    var dispatchConfig = EventPluginRegistry.eventNameDispatchConfigs[eventType];
+    var dispatchConfig = eventNameDispatchConfigs[eventType];
 
     var fakeNativeEvent = new Event();
     fakeNativeEvent.target = domNode;
@@ -975,7 +1054,7 @@ function makeSimulator(eventType) {
 
     // We don't use SyntheticEvent.getPooled in order to not have to worry about
     // properly destroying any properties assigned from `eventData` upon release
-    var targetInst = ReactDOMComponentTree.getInstanceFromNode(domNode);
+    var targetInst = getInstanceFromNode(domNode);
     var event = new SyntheticEvent(dispatchConfig, targetInst, fakeNativeEvent, domNode);
 
     // Since we aren't using pooling, always persist the event. This will make
@@ -984,27 +1063,26 @@ function makeSimulator(eventType) {
     _assign(event, eventData);
 
     if (dispatchConfig.phasedRegistrationNames) {
-      EventPropagators.accumulateTwoPhaseDispatches(event);
+      accumulateTwoPhaseDispatches(event);
     } else {
-      EventPropagators.accumulateDirectDispatches(event);
+      accumulateDirectDispatches(event);
     }
 
     ReactDOM.unstable_batchedUpdates(function () {
       // Normally extractEvent enqueues a state restore, but we'll just always
-      // do that since we we're by-passing it here.
-      ReactControlledComponent.enqueueStateRestore(domNode);
-
-      EventPluginHub.enqueueEvents(event);
-      EventPluginHub.processEventQueue(true);
+      // do that since we're by-passing it here.
+      enqueueStateRestore(domNode);
+      runEventsInBatch(event);
     });
+    restoreStateIfNeeded();
   };
 }
 
 function buildSimulators() {
   ReactTestUtils.Simulate = {};
 
-  var eventType;
-  for (eventType in EventPluginRegistry.eventNameDispatchConfigs) {
+  var eventType = void 0;
+  for (eventType in eventNameDispatchConfigs) {
     /**
      * @param {!Element|ReactDOMComponent} domComponentOrNode
      * @param {?object} eventData Fake event data to use in SyntheticEvent.
@@ -1012,18 +1090,6 @@ function buildSimulators() {
     ReactTestUtils.Simulate[eventType] = makeSimulator(eventType);
   }
 }
-
-// Rebuild ReactTestUtils.Simulate whenever event plugins are injected
-var oldInjectEventPluginOrder = EventPluginHub.injection.injectEventPluginOrder;
-EventPluginHub.injection.injectEventPluginOrder = function () {
-  oldInjectEventPluginOrder.apply(this, arguments);
-  buildSimulators();
-};
-var oldInjectEventPlugins = EventPluginHub.injection.injectEventPluginsByName;
-EventPluginHub.injection.injectEventPluginsByName = function () {
-  oldInjectEventPlugins.apply(this, arguments);
-  buildSimulators();
-};
 
 buildSimulators();
 
@@ -1043,32 +1109,33 @@ buildSimulators();
  * to dispatch synthetic events.
  */
 
-function makeNativeSimulator(eventType) {
+function makeNativeSimulator(eventType, topLevelType) {
   return function (domComponentOrNode, nativeEventData) {
     var fakeNativeEvent = new Event(eventType);
     _assign(fakeNativeEvent, nativeEventData);
     if (ReactTestUtils.isDOMComponent(domComponentOrNode)) {
-      ReactTestUtils.simulateNativeEventOnDOMComponent(eventType, domComponentOrNode, fakeNativeEvent);
+      simulateNativeEventOnDOMComponent(topLevelType, domComponentOrNode, fakeNativeEvent);
     } else if (domComponentOrNode.tagName) {
       // Will allow on actual dom nodes.
-      ReactTestUtils.simulateNativeEventOnNode(eventType, domComponentOrNode, fakeNativeEvent);
+      simulateNativeEventOnNode(topLevelType, domComponentOrNode, fakeNativeEvent);
     }
   };
 }
 
-Object.keys(topLevelTypes).forEach(function (eventType) {
-  // Event type is stored as 'topClick' - we transform that to 'click'
-  var convenienceName = eventType.indexOf('top') === 0 ? eventType.charAt(3).toLowerCase() + eventType.substr(4) : eventType;
+[[TOP_ABORT, 'abort'], [TOP_ANIMATION_END, 'animationEnd'], [TOP_ANIMATION_ITERATION, 'animationIteration'], [TOP_ANIMATION_START, 'animationStart'], [TOP_BLUR, 'blur'], [TOP_CAN_PLAY_THROUGH, 'canPlayThrough'], [TOP_CAN_PLAY, 'canPlay'], [TOP_CANCEL, 'cancel'], [TOP_CHANGE, 'change'], [TOP_CLICK, 'click'], [TOP_CLOSE, 'close'], [TOP_COMPOSITION_END, 'compositionEnd'], [TOP_COMPOSITION_START, 'compositionStart'], [TOP_COMPOSITION_UPDATE, 'compositionUpdate'], [TOP_CONTEXT_MENU, 'contextMenu'], [TOP_COPY, 'copy'], [TOP_CUT, 'cut'], [TOP_DOUBLE_CLICK, 'doubleClick'], [TOP_DRAG_END, 'dragEnd'], [TOP_DRAG_ENTER, 'dragEnter'], [TOP_DRAG_EXIT, 'dragExit'], [TOP_DRAG_LEAVE, 'dragLeave'], [TOP_DRAG_OVER, 'dragOver'], [TOP_DRAG_START, 'dragStart'], [TOP_DRAG, 'drag'], [TOP_DROP, 'drop'], [TOP_DURATION_CHANGE, 'durationChange'], [TOP_EMPTIED, 'emptied'], [TOP_ENCRYPTED, 'encrypted'], [TOP_ENDED, 'ended'], [TOP_ERROR, 'error'], [TOP_FOCUS, 'focus'], [TOP_INPUT, 'input'], [TOP_KEY_DOWN, 'keyDown'], [TOP_KEY_PRESS, 'keyPress'], [TOP_KEY_UP, 'keyUp'], [TOP_LOAD_START, 'loadStart'], [TOP_LOAD_START, 'loadStart'], [TOP_LOAD, 'load'], [TOP_LOADED_DATA, 'loadedData'], [TOP_LOADED_METADATA, 'loadedMetadata'], [TOP_MOUSE_DOWN, 'mouseDown'], [TOP_MOUSE_MOVE, 'mouseMove'], [TOP_MOUSE_OUT, 'mouseOut'], [TOP_MOUSE_OVER, 'mouseOver'], [TOP_MOUSE_UP, 'mouseUp'], [TOP_PASTE, 'paste'], [TOP_PAUSE, 'pause'], [TOP_PLAY, 'play'], [TOP_PLAYING, 'playing'], [TOP_PROGRESS, 'progress'], [TOP_RATE_CHANGE, 'rateChange'], [TOP_SCROLL, 'scroll'], [TOP_SEEKED, 'seeked'], [TOP_SEEKING, 'seeking'], [TOP_SELECTION_CHANGE, 'selectionChange'], [TOP_STALLED, 'stalled'], [TOP_SUSPEND, 'suspend'], [TOP_TEXT_INPUT, 'textInput'], [TOP_TIME_UPDATE, 'timeUpdate'], [TOP_TOGGLE, 'toggle'], [TOP_TOUCH_CANCEL, 'touchCancel'], [TOP_TOUCH_END, 'touchEnd'], [TOP_TOUCH_MOVE, 'touchMove'], [TOP_TOUCH_START, 'touchStart'], [TOP_TRANSITION_END, 'transitionEnd'], [TOP_VOLUME_CHANGE, 'volumeChange'], [TOP_WAITING, 'waiting'], [TOP_WHEEL, 'wheel']].forEach(function (_ref) {
+  var topLevelType = _ref[0],
+      eventType = _ref[1];
+
   /**
    * @param {!Element|ReactDOMComponent} domComponentOrNode
    * @param {?Event} nativeEventData Fake native event to use in SyntheticEvent.
    */
-  ReactTestUtils.SimulateNative[convenienceName] = makeNativeSimulator(eventType);
+  ReactTestUtils.SimulateNative[eventType] = makeNativeSimulator(eventType, topLevelType);
 });
 
 
 
-var ReactTestUtils$2 = Object.freeze({
+var ReactTestUtils$2 = ({
 	default: ReactTestUtils
 });
 
@@ -1076,7 +1143,7 @@ var ReactTestUtils$3 = ( ReactTestUtils$2 && ReactTestUtils ) || ReactTestUtils$
 
 // TODO: decide on the top-level export form.
 // This is hacky but makes it work with both Rollup and Jest.
-var testUtils = ReactTestUtils$3['default'] ? ReactTestUtils$3['default'] : ReactTestUtils$3;
+var testUtils = ReactTestUtils$3.default || ReactTestUtils$3;
 
 return testUtils;
 

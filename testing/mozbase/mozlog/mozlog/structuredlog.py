@@ -11,8 +11,10 @@ import sys
 import time
 import traceback
 
-from .logtypes import Unicode, TestId, TestList, Status, SubStatus, Dict, List, Int, Any, Tuple
+from .logtypes import (Unicode, TestId, TestList, Status, SubStatus, Dict, List, Int, Any, Tuple,
+                       Boolean, Nullable)
 from .logtypes import log_action, convertor_registry
+import six
 
 """Structured Logging for recording test results.
 
@@ -34,6 +36,8 @@ Allowed actions, and subfields:
       expected [As for status] - Status that the test was expected to get,
                                  or absent if the test got the expected status
       extra - Dictionary of harness-specific extra information e.g. debug info
+      known_intermittent - List of known intermittent statuses that should
+                           not fail a test. eg. ['FAIL', 'TIMEOUT']
 
   test_status
       test - ID for the test
@@ -41,6 +45,8 @@ Allowed actions, and subfields:
       status [PASS | FAIL | TIMEOUT | NOTRUN | SKIP] - test status
       expected [As for status] - Status that the subtest was expected to get,
                                  or absent if the subtest got the expected status
+      known_intermittent - List of known intermittent statuses that should
+                           not fail a test. eg. ['FAIL', 'TIMEOUT']
 
   process_output
       process - PID of the process
@@ -51,6 +57,26 @@ Allowed actions, and subfields:
       count - Number of assertions produced
       min_expected - Minimum expected number of assertions
       max_expected - Maximum expected number of assertions
+
+  lsan_leak
+      frames - List of stack frames from the leak report
+      scope - An identifier for the set of tests run during the browser session
+              (e.g. a directory name)
+      allowed_match - A stack frame in the list that matched a rule meaning the
+                      leak is expected
+
+  lsan_summary
+      bytes - Number of bytes leaked
+      allocations - Number of allocations
+      allowed - Boolean indicating whether all detected leaks matched allow rules
+
+  mozleak_object
+     process - Process that leaked
+     bytes - Number of bytes that leaked
+     name - Name of the object that leaked
+     scope - An identifier for the set of tests run during the browser session
+             (e.g. a directory name)
+     allowed - Boolean indicating whether the leak was permitted
 
   log
       level [CRITICAL | ERROR | WARNING |
@@ -183,8 +209,8 @@ class StructuredLogger(object):
         """
         rv = []
         for handler in self._state.handlers:
-            if hasattr(handler, "handle_message"):
-                rv += handler.handle_message(topic, command, *args)
+            if hasattr(handler, "message_handler"):
+                rv += handler.message_handler.handle_message(topic, command, *args)
         return rv
 
     @property
@@ -207,8 +233,9 @@ class StructuredLogger(object):
 
         action = raw_data["action"]
         converted_data = convertor_registry[action].convert_known(**raw_data)
-        for k, v in raw_data.iteritems():
-            if k not in converted_data:
+        for k, v in six.iteritems(raw_data):
+            if (k not in converted_data and
+                    k not in convertor_registry[action].optional_args):
                 converted_data[k] = v
 
         data = self._make_log_data(action, converted_data)
@@ -332,7 +359,9 @@ class StructuredLogger(object):
                 SubStatus("expected", default="PASS"),
                 Unicode("message", default=None, optional=True),
                 Unicode("stack", default=None, optional=True),
-                Dict(Any, "extra", default=None, optional=True))
+                Dict(Any, "extra", default=None, optional=True),
+                List(SubStatus, "known_intermittent", default=None,
+                     optional=True))
     def test_status(self, data):
         """
         Log a test_status message indicating a subtest result. Tests that
@@ -363,7 +392,9 @@ class StructuredLogger(object):
                 Status("expected", default="OK"),
                 Unicode("message", default=None, optional=True),
                 Unicode("stack", default=None, optional=True),
-                Dict(Any, "extra", default=None, optional=True))
+                Dict(Any, "extra", default=None, optional=True),
+                List(Status, "known_intermittent", default=None,
+                     optional=True))
     def test_end(self, data):
         """
         Log a test_end message indicating that a test completed. For tests
@@ -462,6 +493,36 @@ class StructuredLogger(object):
         :param max_expected: - Maximum expected number of assertions
         """
         self._log_data("assertion_count", data)
+
+    @log_action(List(Unicode, "frames"),
+                Unicode("scope", optional=True, default=None),
+                Unicode("allowed_match", optional=True, default=None))
+    def lsan_leak(self, data):
+        self._log_data("lsan_leak", data)
+
+    @log_action(Int("bytes"),
+                Int("allocations"),
+                Boolean("allowed", optional=True, default=False))
+    def lsan_summary(self, data):
+        self._log_data("lsan_summary", data)
+
+    @log_action(Unicode("process"),
+                Int("bytes"),
+                Unicode("name"),
+                Unicode("scope", optional=True, default=None),
+                Boolean("allowed", optional=True, default=False))
+    def mozleak_object(self, data):
+        self._log_data("mozleak_object", data)
+
+    @log_action(Unicode("process"),
+                Nullable(Int, "bytes"),
+                Int("threshold"),
+                List(Unicode, "objects"),
+                Unicode("scope", optional=True, default=None),
+                Boolean("induced_crash", optional=True, default=False),
+                Boolean("ignore_missing", optional=True, default=False))
+    def mozleak_total(self, data):
+        self._log_data("mozleak_total", data)
 
     @log_action()
     def shutdown(self, data):

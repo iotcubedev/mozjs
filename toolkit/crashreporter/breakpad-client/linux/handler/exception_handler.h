@@ -44,6 +44,12 @@
 #include "common/using_std_string.h"
 #include "google_breakpad/common/minidump_format.h"
 
+#ifdef MOZ_PHC
+#include "PHC.h"
+#else
+namespace mozilla { namespace phc { class AddrInfo {}; } }
+#endif
+
 namespace google_breakpad {
 
 // ExceptionHandler
@@ -82,7 +88,8 @@ class ExceptionHandler {
   // attempting to write a minidump.  If a FilterCallback returns false,
   // Breakpad  will immediately report the exception as unhandled without
   // writing a minidump, allowing another handler the opportunity to handle it.
-  typedef bool (*FilterCallback)(void *context);
+  typedef bool (*FilterCallback)(void *context,
+                                 const mozilla::phc::AddrInfo* addr_info);
 
   // A callback function to run after the minidump has been written.
   // |descriptor| contains the file descriptor or file path containing the
@@ -102,6 +109,7 @@ class ExceptionHandler {
   // return true directly (unless |succeeded| is true).
   typedef bool (*MinidumpCallback)(const MinidumpDescriptor& descriptor,
                                    void* context,
+                                   const mozilla::phc::AddrInfo* addr_info,
                                    bool succeeded);
 
   // In certain cases, a user may wish to handle the generation of the minidump
@@ -194,8 +202,8 @@ class ExceptionHandler {
     ucontext_t context;
 #if !defined(__ARM_EABI__) && !defined(__mips__)
     // #ifdef this out because FP state is not part of user ABI for Linux ARM.
-    // In case of MIPS Linux FP state is already part of struct
-    // ucontext so 'float_state' is not required.
+    // In case of MIPS Linux FP state is already part of ucontext_t so
+    // 'float_state' is not required.
     fpstate_t float_state;
 #endif
   };
@@ -209,7 +217,7 @@ class ExceptionHandler {
   // a custom library loader is used that maps things in a way
   // that the linux dumper can't handle by reading the maps file.
   void AddMappingInfo(const string& name,
-                      const uint8_t identifier[sizeof(MDGUID)],
+                      const wasteful_vector<uint8_t>& identifier,
                       uintptr_t start_address,
                       size_t mapping_size,
                       size_t file_offset);
@@ -234,7 +242,8 @@ class ExceptionHandler {
   static void RestoreHandlersLocked();
 
   void PreresolveSymbols();
-  bool GenerateDump(CrashContext *context);
+  bool GenerateDump(CrashContext *context,
+                    const mozilla::phc::AddrInfo* addr_info);
   void SendContinueSignalToChild();
   void WaitForContinueSignal();
 
@@ -262,7 +271,7 @@ class ExceptionHandler {
   // can do this. We create a pipe which we can use to block the
   // cloned process after creating it, until we have explicitly enabled
   // ptrace. This is used to store the file descriptors for the pipe
-  int fdes[2];
+  int fdes[2] = {-1, -1};
 
   // Callers can add extra info about mappings for cases where the
   // dumper code cannot extract enough information from /proc/<pid>/maps.
@@ -272,6 +281,9 @@ class ExceptionHandler {
   // the dump.
   AppMemoryList app_memory_list_;
 };
+
+typedef bool (*FirstChanceHandler)(int, siginfo_t*, void*);
+void SetFirstChanceExceptionHandler(FirstChanceHandler callback);
 
 }  // namespace google_breakpad
 

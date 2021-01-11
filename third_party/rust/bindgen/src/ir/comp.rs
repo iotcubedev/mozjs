@@ -17,7 +17,7 @@ use peeking_take_while::PeekableExt;
 use std::cmp;
 use std::io;
 use std::mem;
-use std::collections::HashMap;
+use HashMap;
 
 /// The kind of compound type.
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -351,7 +351,6 @@ impl Bitfield {
     /// Get the mask value that when &'ed with this bitfield's allocation unit
     /// produces this bitfield's value.
     pub fn mask(&self) -> u64 {
-        use std::mem;
         use std::u64;
 
         let unoffseted_mask =
@@ -1068,15 +1067,25 @@ impl CompInfo {
     /// members. This is not ideal, but clang fails to report the size for these
     /// kind of unions, see test/headers/template_union.hpp
     pub fn layout(&self, ctx: &BindgenContext) -> Option<Layout> {
-        use std::cmp;
-
         // We can't do better than clang here, sorry.
         if self.kind == CompKind::Struct {
             return None;
         }
 
+        // By definition, we don't have the right layout information here if
+        // we're a forward declaration.
+        if self.is_forward_declaration() {
+            return None;
+        }
+
+        // empty union case
+        if self.fields().is_empty() {
+            return None;
+        }
+
         let mut max_size = 0;
-        let mut max_align = 0;
+        // Don't allow align(0)
+        let mut max_align = 1;
         for field in self.fields() {
             let field_layout = field.layout(ctx);
 
@@ -1169,7 +1178,7 @@ impl CompInfo {
             }
         }
 
-        let kind = try!(kind);
+        let kind = kind?;
 
         debug!("CompInfo::from_ty({:?}, {:?})", kind, cursor);
 
@@ -1283,16 +1292,17 @@ impl CompInfo {
                     // Let's just assume that if the cursor we've found is a
                     // definition, it's a valid inner type.
                     //
-                    // [1]: https://github.com/rust-lang-nursery/rust-bindgen/issues/482
+                    // [1]: https://github.com/rust-lang/rust-bindgen/issues/482
                     let is_inner_struct = cur.semantic_parent() == cursor ||
                                           cur.is_definition();
                     if !is_inner_struct {
                         return CXChildVisit_Continue;
                     }
 
+                    // Even if this is a definition, we may not be the semantic
+                    // parent, see #1281.
                     let inner = Item::parse(cur, Some(potential_id), ctx)
                         .expect("Inner ClassDecl");
-                    assert_eq!(ctx.resolve_item(inner).parent_id(), potential_id);
 
                     let inner = inner.expect_type_id(ctx);
 
@@ -1355,7 +1365,7 @@ impl CompInfo {
                     // to be inserted in the map two times.
                     //
                     // I couldn't make a reduced test case, but anyway...
-                    // Methods of template functions not only use to be inlined,
+                    // Methods of template functions not only used to be inlined,
                     // but also instantiated, and we wouldn't be able to call
                     // them, so just bail out.
                     if !ci.template_params.is_empty() {
@@ -1516,6 +1526,10 @@ impl CompInfo {
             }) {
                 info!("Found a struct that was defined within `#pragma packed(...)`");
                 return true;
+            } else if self.has_own_virtual_method {
+                if parent_layout.align == 1 {
+                    return true;
+                }
             }
         }
 
@@ -1543,7 +1557,7 @@ impl CompInfo {
     ///     1. Current RustTarget allows for `untagged_union`
     ///     2. Each field can derive `Copy`
     pub fn can_be_rust_union(&self, ctx: &BindgenContext) -> bool {
-        if !ctx.options().rust_features().untagged_union() {
+        if !ctx.options().rust_features().untagged_union {
             return false;
         }
 
@@ -1648,16 +1662,19 @@ impl IsOpaque for CompInfo {
             return true;
         }
 
-        // We don't have `#[repr(packed = "N")]` in Rust yet, so the best we can
-        // do is make this struct opaque.
-        //
-        // See https://github.com/rust-lang-nursery/rust-bindgen/issues/537 and
-        // https://github.com/rust-lang/rust/issues/33158
-        if self.is_packed(ctx, layout) && layout.map_or(false, |l| l.align > 1) {
-            warn!("Found a type that is both packed and aligned to greater than \
-                   1; Rust doesn't have `#[repr(packed = \"N\")]` yet, so we \
-                   are treating it as opaque");
-            return true;
+        if !ctx.options().rust_features().repr_packed_n {
+            // If we don't have `#[repr(packed(N)]`, the best we can
+            // do is make this struct opaque.
+            //
+            // See https://github.com/rust-lang/rust-bindgen/issues/537 and
+            // https://github.com/rust-lang/rust/issues/33158
+            if self.is_packed(ctx, layout) && layout.map_or(false, |l| l.align > 1) {
+                warn!("Found a type that is both packed and aligned to greater than \
+                       1; Rust before version 1.33 doesn't have `#[repr(packed(N))]`, so we \
+                       are treating it as opaque. You may wish to set bindgen's rust target \
+                       version to 1.33 or later to enable `#[repr(packed(N))]` support.");
+                return true;
+            }
         }
 
         false
@@ -1668,12 +1685,8 @@ impl TemplateParameters for CompInfo {
     fn self_template_params(
         &self,
         _ctx: &BindgenContext,
-    ) -> Option<Vec<TypeId>> {
-        if self.template_params.is_empty() {
-            None
-        } else {
-            Some(self.template_params.clone())
-        }
+    ) -> Vec<TypeId> {
+        self.template_params.clone()
     }
 }
 
@@ -1684,8 +1697,7 @@ impl Trace for CompInfo {
     where
         T: Tracer,
     {
-        let params = item.all_template_params(context).unwrap_or(vec![]);
-        for p in params {
+        for p in item.all_template_params(context) {
             tracer.visit_kind(p.into(), EdgeKind::TemplateParameterDefinition);
         }
 

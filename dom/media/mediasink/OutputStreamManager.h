@@ -8,73 +8,158 @@
 #define OutputStreamManager_h
 
 #include "mozilla/RefPtr.h"
+#include "mozilla/StateMirroring.h"
 #include "nsTArray.h"
+#include "TrackID.h"
 
 namespace mozilla {
 
+class DOMMediaStream;
 class MediaInputPort;
 class MediaStream;
-class MediaStreamGraph;
 class OutputStreamManager;
 class ProcessedMediaStream;
+class SourceMediaStream;
+
+namespace dom {
+class MediaStreamTrack;
+}
 
 class OutputStreamData {
-public:
+ public:
+  OutputStreamData(OutputStreamManager* aManager,
+                   AbstractThread* aAbstractMainThread,
+                   DOMMediaStream* aDOMStream);
+  OutputStreamData(const OutputStreamData& aOther) = delete;
+  OutputStreamData(OutputStreamData&& aOther) = delete;
   ~OutputStreamData();
-  void Init(OutputStreamManager* aOwner, ProcessedMediaStream* aStream);
 
-  // Connect mStream to the input stream.
-  // Return false is mStream is already destroyed, otherwise true.
-  bool Connect(MediaStream* aStream);
-  // Disconnect mStream from its input stream.
-  // Return false is mStream is already destroyed, otherwise true.
-  bool Disconnect();
-  // Return true if aStream points to the same object as mStream.
-  // Used by OutputStreamManager to remove an output stream.
-  bool Equals(MediaStream* aStream) const;
-  // Return the graph mStream belongs to.
-  MediaStreamGraph* Graph() const;
+  // Creates and adds a MediaStreamTrack to mDOMStream so that we can feed data
+  // to it. For a true aAsyncAddTrack we will dispatch a task to add the
+  // created track to mDOMStream, as is required by spec for the "addtrack"
+  // event.
+  void AddTrack(SourceMediaStream* aStream, MediaSegment::Type aType,
+                nsIPrincipal* aPrincipal, bool aAsyncAddTrack);
+  // Ends any MediaStreamTracks sourced from aStream.
+  void RemoveTrack(SourceMediaStream* aStream);
 
-private:
-  OutputStreamManager* mOwner;
-  RefPtr<ProcessedMediaStream> mStream;
-  // mPort connects our mStream to an input stream.
-  RefPtr<MediaInputPort> mPort;
+  void SetPrincipal(nsIPrincipal* aPrincipal);
+
+  const RefPtr<OutputStreamManager> mManager;
+  const RefPtr<AbstractThread> mAbstractMainThread;
+  // The DOMMediaStream we add tracks to and represent.
+  const WeakPtr<DOMMediaStream> mDOMStream;
+
+ private:
+  // Tracks that have been added and not yet removed.
+  nsTArray<WeakPtr<dom::MediaStreamTrack>> mTracks;
 };
 
 class OutputStreamManager {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(OutputStreamManager);
 
-public:
+ public:
+  OutputStreamManager(SharedDummyStream* aDummyStream, nsIPrincipal* aPrincipal,
+                      AbstractThread* aAbstractMainThread);
   // Add the output stream to the collection.
-  void Add(ProcessedMediaStream* aStream, bool aFinishWhenEnded);
+  void Add(DOMMediaStream* aDOMStream);
   // Remove the output stream from the collection.
-  void Remove(MediaStream* aStream);
-  // Return true if the collection empty.
-  bool IsEmpty() const
-  {
+  void Remove(DOMMediaStream* aDOMStream);
+  // Returns true if there's a live track of the given type.
+  bool HasTrackType(MediaSegment::Type aType);
+  // Returns true if the given streams are sourcing all currently live tracks.
+  // Use nullptr to make it ignored for that type.
+  bool HasTracks(SourceMediaStream* aAudioStream,
+                 SourceMediaStream* aVideoStream);
+  // Gets the underlying stream for the given type if it has never been played,
+  // or nullptr if there is none.
+  SourceMediaStream* GetPrecreatedTrackOfType(MediaSegment::Type aType) const;
+  // Returns the number of live tracks.
+  size_t NumberOfTracks();
+  // Add a track sourced to all output streams and return the MediaStream that
+  // sources it.
+  already_AddRefed<SourceMediaStream> AddTrack(MediaSegment::Type aType);
+  // Remove all currently live tracks.
+  void RemoveTracks();
+  // Remove all currently live tracks and all output streams.
+  void Disconnect();
+  // The principal handle for the underlying decoder.
+  AbstractCanonical<PrincipalHandle>* CanonicalPrincipalHandle();
+  // Called when the underlying decoder's principal has changed.
+  void SetPrincipal(nsIPrincipal* aPrincipal);
+  // Called by DecodedStream when its playing state changes. While not playing
+  // we suspend mSourceStream.
+  void SetPlaying(bool aPlaying);
+  // Return true if the collection of output streams is empty.
+  bool IsEmpty() const {
     MOZ_ASSERT(NS_IsMainThread());
     return mStreams.IsEmpty();
   }
-  // Connect all output streams in the collection to the input stream.
-  void Connect(MediaStream* aStream);
-  // Disconnect all output streams from the input stream.
-  void Disconnect();
-  // Return the graph these streams belong to or null if empty.
-  MediaStreamGraph* Graph() const
-  {
-    MOZ_ASSERT(NS_IsMainThread());
-    return !IsEmpty() ? mStreams[0].Graph() : nullptr;
-  }
 
-private:
-  ~OutputStreamManager() {}
-  // Keep the input stream so we can connect the output streams that
-  // are added after Connect().
-  RefPtr<MediaStream> mInputStream;
-  nsTArray<OutputStreamData> mStreams;
+  static const TrackID sTrackID = 1;
+
+  const RefPtr<AbstractThread> mAbstractMainThread;
+
+ private:
+  ~OutputStreamManager();
+
+  class LiveTrack {
+   public:
+    LiveTrack(SourceMediaStream* aSourceStream, MediaSegment::Type aType)
+        : mSourceStream(aSourceStream), mType(aType) {}
+    ~LiveTrack();
+
+    const RefPtr<SourceMediaStream> mSourceStream;
+    const MediaSegment::Type mType;
+    bool mEverPlayed = false;
+  };
+
+  struct StreamComparator {
+    static bool Equals(const UniquePtr<OutputStreamData>& aData,
+                       DOMMediaStream* aStream) {
+      return aData->mDOMStream == aStream;
+    }
+  };
+  struct TrackStreamComparator {
+    static bool Equals(const UniquePtr<LiveTrack>& aLiveTrack,
+                       SourceMediaStream* aStream) {
+      return aLiveTrack->mSourceStream == aStream;
+    }
+  };
+  struct TrackTypeComparator {
+    static bool Equals(const UniquePtr<LiveTrack>& aLiveTrack,
+                       MediaSegment::Type aType) {
+      return aLiveTrack->mType == aType;
+    }
+  };
+  struct PrecreatedTrackTypeComparator {
+    static bool Equals(const UniquePtr<LiveTrack>& aLiveTrack,
+                       MediaSegment::Type aType) {
+      return !aLiveTrack->mEverPlayed && aLiveTrack->mType == aType;
+    }
+  };
+  struct TrackComparator {
+    static bool Equals(
+        const UniquePtr<LiveTrack>& aLiveTrack,
+        const Pair<SourceMediaStream*, MediaSegment::Type>& aOther) {
+      return aLiveTrack->mSourceStream == aOther.first() &&
+             aLiveTrack->mType == aOther.second();
+    }
+  };
+
+  // Goes through mStreams and removes any entries that have been destroyed.
+  void AutoRemoveDestroyedStreams();
+
+  // Remove tracks sourced from aStream from all output streams.
+  void RemoveTrack(SourceMediaStream* aStream);
+
+  const RefPtr<SharedDummyStream> mDummyStream;
+  nsTArray<UniquePtr<OutputStreamData>> mStreams;
+  nsTArray<UniquePtr<LiveTrack>> mLiveTracks;
+  Canonical<PrincipalHandle> mPrincipalHandle;
+  bool mPlaying = false;
 };
 
-} // namespace mozilla
+}  // namespace mozilla
 
-#endif // OutputStreamManager_h
+#endif  // OutputStreamManager_h

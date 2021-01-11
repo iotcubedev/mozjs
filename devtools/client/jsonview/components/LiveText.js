@@ -1,12 +1,10 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
 
-define(function (require, exports, module) {
+define(function(require, exports, module) {
   const { Component } = require("devtools/client/shared/vendor/react");
   const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
   const { findDOMNode } = require("devtools/client/shared/vendor/react-dom");
@@ -27,7 +25,7 @@ define(function (require, exports, module) {
     }
 
     componentDidUpdate() {
-      let el = findDOMNode(this);
+      const el = findDOMNode(this);
       if (el.firstChild === this.props.data) {
         return;
       }
@@ -36,7 +34,7 @@ define(function (require, exports, module) {
     }
 
     render() {
-      return pre({className: "data"});
+      return pre({ className: "data" });
     }
   }
 

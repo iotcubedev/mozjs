@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,8 +37,8 @@ class InspectorTabPanel extends Component {
   }
 
   componentDidMount() {
-    let doc = this.refs.content.ownerDocument;
-    let panel = doc.getElementById(this.props.idPrefix + this.props.id);
+    const doc = this.refs.content.ownerDocument;
+    const panel = doc.getElementById(this.props.idPrefix + this.props.id);
 
     // Append existing DOM node into panel's content.
     this.refs.content.appendChild(panel);
@@ -51,8 +49,8 @@ class InspectorTabPanel extends Component {
   }
 
   componentWillUnmount() {
-    let doc = this.refs.content.ownerDocument;
-    let panels = doc.getElementById("tabpanels");
+    const doc = this.refs.content.ownerDocument;
+    const panels = doc.getElementById("tabpanels");
 
     if (this.props.onUnmount) {
       this.props.onUnmount(this.refs.content, this.props);
@@ -63,12 +61,10 @@ class InspectorTabPanel extends Component {
   }
 
   render() {
-    return (
-      div({
-        ref: "content",
-        className: "devtools-inspector-tab-panel",
-      })
-    );
+    return div({
+      ref: "content",
+      className: "devtools-inspector-tab-panel",
+    });
   }
 }
 

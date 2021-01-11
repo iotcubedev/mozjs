@@ -1,3 +1,4 @@
+// |reftest| async
 // Copyright 2014 Cubane Canada, Inc.  All rights reserved.
 // See LICENSE for details.
 
@@ -12,13 +13,13 @@ flags: [async]
 
 var obj = {};
 
-var p = Promise.resolve(obj).then(/*Identity, Thrower*/)
-        .then(function (arg) {
-            if (arg !== obj) {
-                $DONE("Expected promise to be fulfilled with obj, actually " + arg);
-                return;
-            }
-            $DONE();
-        }, function() {
-          $DONE('The promise should not be rejected.');
-        });
+var p = Promise.resolve(obj).then( /*Identity, Thrower*/ )
+  .then(function(arg) {
+    if (arg !== obj) {
+      $DONE("Expected promise to be fulfilled with obj, actually " + arg);
+      return;
+    }
+    $DONE();
+  }, function() {
+    $DONE('The promise should not be rejected.');
+  });

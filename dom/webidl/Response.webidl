@@ -9,7 +9,7 @@
 
 // This should be Constructor(optional BodyInit... but BodyInit doesn't include
 // ReadableStream yet because we don't want to expose Streams API to Request.
-[Constructor(optional (Blob or BufferSource or FormData or URLSearchParams or ReadableStream or USVString)? body, optional ResponseInit init),
+[Constructor(optional (Blob or BufferSource or FormData or URLSearchParams or ReadableStream or USVString)? body, optional ResponseInit init = {}),
  Exposed=(Window,Worker)]
 interface Response {
   [NewObject] static Response error();
@@ -23,25 +23,28 @@ interface Response {
   readonly attribute unsigned short status;
   readonly attribute boolean ok;
   readonly attribute ByteString statusText;
-  [SameObject] readonly attribute Headers headers;
+  [SameObject, BinaryName="headers_"] readonly attribute Headers headers;
 
   [Throws,
    NewObject] Response clone();
 
   [ChromeOnly, NewObject, Throws] Response cloneUnfiltered();
+
+  // For testing only.
+  [ChromeOnly] readonly attribute boolean hasCacheInfoChannel;
 };
-Response implements Body;
+Response includes Body;
 
 // This should be part of Body but we don't want to expose body to request yet.
 // See bug 1387483.
 partial interface Response {
-  [GetterThrows, Func="mozilla::dom::DOMPrefs::StreamsEnabled"]
+  [GetterThrows, Pref="javascript.options.streams"]
   readonly attribute ReadableStream? body;
 };
 
 dictionary ResponseInit {
   unsigned short status = 200;
-  ByteString statusText = "OK";
+  ByteString statusText = "";
   HeadersInit headers;
 };
 

@@ -5,13 +5,14 @@ MAINTAINER Franziskus Kiefer <franziskuskiefer@gmail.com>
 # the original F* formula with Daniel Fabian
 
 # Pinned versions of HACL* (F* and KreMLin are pinned as submodules)
-ENV haclrepo https://github.com/franziskuskiefer/hacl-star.git
+ENV haclrepo https://github.com/mitls/hacl-star.git
 
 # Define versions of dependencies
-ENV opamv 4.04.2
-ENV haclversion 668d6cf274c33bbe2e951e3a84b73f2b6442a51f
+ENV opamv 4.05.0
+ENV haclversion 1442c015dab97cdf203ae238b1f3aeccf511bd1e
 
 # Install required packages and set versions
+ADD B6C8F98282B944E3B0D5C2530FC3042E345AD05D.asc /tmp/B6C8F98282B944E3B0D5C2530FC3042E345AD05D.asc
 ADD setup.sh /tmp/setup.sh
 RUN bash /tmp/setup.sh
 

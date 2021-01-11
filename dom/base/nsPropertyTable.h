@@ -19,11 +19,8 @@
 
 class nsAtom;
 
-typedef void
-(*NSPropertyFunc)(void           *aObject,
-                  nsAtom        *aPropertyName,
-                  void           *aPropertyValue,
-                  void           *aData);
+typedef void (*NSPropertyFunc)(void* aObject, nsAtom* aPropertyName,
+                               void* aPropertyValue, void* aData);
 
 /**
  * Callback type for property destructors.  |aObject| is the object
@@ -35,9 +32,8 @@ typedef NSPropertyFunc NSPropertyDtorFunc;
 class nsINode;
 class nsIFrame;
 
-class nsPropertyOwner
-{
-public:
+class nsPropertyOwner {
+ public:
   nsPropertyOwner(const nsPropertyOwner& aOther) : mObject(aOther.mObject) {}
 
   // These are the types of objects that can own properties. No object should
@@ -49,21 +45,18 @@ public:
   operator const void*() { return mObject; }
   const void* get() { return mObject; }
 
-private:
+ private:
   const void* mObject;
 };
 
-class nsPropertyTable
-{
+class nsPropertyTable {
  public:
   /**
    * Get the value of the property |aPropertyName| for node |aObject|.
    * |aResult|, if supplied, is filled in with a return status code.
    **/
-  void* GetProperty(const nsPropertyOwner& aObject,
-                    nsAtom    *aPropertyName,
-                    nsresult   *aResult = nullptr)
-  {
+  void* GetProperty(const nsPropertyOwner& aObject, const nsAtom* aPropertyName,
+                    nsresult* aResult = nullptr) {
     return GetPropertyInternal(aObject, aPropertyName, false, aResult);
   }
 
@@ -75,33 +68,25 @@ class nsPropertyTable
    * opaque context to be passed to the property destructor.  Note that the
    * destructor is global for each property name regardless of node; it is an
    * error to set a given property with a different destructor than was used
-   * before (this will return NS_ERROR_INVALID_ARG). If aOldValue is non-null
-   * it will contain the old value after the function returns (the destructor
-   * for the old value will not be run in that case). If |aTransfer| is true
+   * before (this will return NS_ERROR_INVALID_ARG). If |aTransfer| is true
    * the property will be transfered to the new table when the property table
    * for |aObject| changes (currently the tables for nodes are owned by their
    * ownerDocument, so if the ownerDocument for a node changes, its property
    * table changes too). If |aTransfer| is false the property will just be
    * deleted instead.
    */
-  nsresult SetProperty(const nsPropertyOwner&     aObject,
-                                   nsAtom            *aPropertyName,
-                                   void               *aPropertyValue,
-                                   NSPropertyDtorFunc  aDtor,
-                                   void               *aDtorData,
-                                   bool                aTransfer = false,
-                                   void              **aOldValue = nullptr)
-  {
-    return SetPropertyInternal(aObject, aPropertyName, aPropertyValue,
-                               aDtor, aDtorData, aTransfer, aOldValue);
+  nsresult SetProperty(const nsPropertyOwner& aObject, nsAtom* aPropertyName,
+                       void* aPropertyValue, NSPropertyDtorFunc aDtor,
+                       void* aDtorData, bool aTransfer = false) {
+    return SetPropertyInternal(aObject, aPropertyName, aPropertyValue, aDtor,
+                               aDtorData, aTransfer);
   }
 
   /**
    * Delete the property |aPropertyName| in the global category for object
    * |aObject|. The property's destructor function will be called.
    */
-  nsresult DeleteProperty(nsPropertyOwner aObject,
-                                      nsAtom    *aPropertyName);
+  nsresult DeleteProperty(nsPropertyOwner aObject, const nsAtom* aPropertyName);
 
   /**
    * Unset the property |aPropertyName| in the global category for object
@@ -109,9 +94,8 @@ class nsPropertyTable
    * property value is returned.
    */
   void* UnsetProperty(const nsPropertyOwner& aObject,
-                      nsAtom    *aPropertyName,
-                      nsresult   *aStatus = nullptr)
-  {
+                      const nsAtom* aPropertyName,
+                      nsresult* aStatus = nullptr) {
     return GetPropertyInternal(aObject, aPropertyName, true, aStatus);
   }
 
@@ -128,24 +112,23 @@ class nsPropertyTable
    * If transfering a property fails, this deletes all the properties for
    * object |aObject|.
    */
-  nsresult
-    TransferOrDeleteAllPropertiesFor(nsPropertyOwner aObject,
-                                     nsPropertyTable *aOtherTable);
+  nsresult TransferOrDeleteAllPropertiesFor(nsPropertyOwner aObject,
+                                            nsPropertyTable& aOtherTable);
 
   /**
    * Enumerate the properties for object |aObject|.
    * For every property |aCallback| will be called with as arguments |aObject|,
    * the property name, the property value and |aData|.
    */
-  void Enumerate(nsPropertyOwner aObject,
-                             NSPropertyFunc aCallback, void *aData);
+  void Enumerate(nsPropertyOwner aObject, NSPropertyFunc aCallback,
+                 void* aData);
 
   /**
    * Enumerate all the properties.
    * For every property |aCallback| will be called with arguments the owner,
    * the property name, the property value and |aData|.
    */
-  void EnumerateAll(NSPropertyFunc aCallback, void *aData);
+  void EnumerateAll(NSPropertyFunc aCallback, void* aData);
 
   /**
    * Deletes all of the properties for all objects in the property
@@ -154,17 +137,15 @@ class nsPropertyTable
   void DeleteAllProperties();
 
   nsPropertyTable() : mPropertyList(nullptr) {}
-  ~nsPropertyTable() {
-    DeleteAllProperties();
-  }
+  ~nsPropertyTable() { DeleteAllProperties(); }
 
   /**
    * Function useable as destructor function for property data that is
    * XPCOM objects. The function will call NS_IF_RELASE on the value
    * to destroy it.
    */
-  static void SupportsDtorFunc(void *aObject, nsAtom *aPropertyName,
-                               void *aPropertyValue, void *aData);
+  static void SupportsDtorFunc(void* aObject, nsAtom* aPropertyName,
+                               void* aPropertyValue, void* aData);
 
   class PropertyList;
 
@@ -173,19 +154,14 @@ class nsPropertyTable
 
  private:
   void DestroyPropertyList();
-  PropertyList* GetPropertyListFor(nsAtom *aPropertyName) const;
+  PropertyList* GetPropertyListFor(const nsAtom* aPropertyName) const;
   void* GetPropertyInternal(nsPropertyOwner aObject,
-                                        nsAtom    *aPropertyName,
-                                        bool        aRemove,
-                                        nsresult   *aStatus);
-  nsresult SetPropertyInternal(nsPropertyOwner     aObject,
-                                           nsAtom            *aPropertyName,
-                                           void               *aPropertyValue,
-                                           NSPropertyDtorFunc  aDtor,
-                                           void               *aDtorData,
-                                           bool                aTransfer,
-                                           void              **aOldValue);
+                            const nsAtom* aPropertyName, bool aRemove,
+                            nsresult* aStatus);
+  nsresult SetPropertyInternal(nsPropertyOwner aObject, nsAtom* aPropertyName,
+                               void* aPropertyValue, NSPropertyDtorFunc aDtor,
+                               void* aDtorData, bool aTransfer);
 
-  PropertyList *mPropertyList;
+  PropertyList* mPropertyList;
 };
 #endif

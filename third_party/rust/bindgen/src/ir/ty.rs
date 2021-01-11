@@ -16,7 +16,6 @@ use clang::{self, Cursor};
 use parse::{ClangItemParser, ParseError, ParseResult};
 use std::borrow::Cow;
 use std::io;
-use std::mem;
 
 /// The base representation of a type in bindgen.
 ///
@@ -91,6 +90,14 @@ impl Type {
         self.name.as_ref().map(|name| &**name)
     }
 
+    /// Whether this is a block pointer type.
+    pub fn is_block_pointer(&self) -> bool {
+        match self.kind {
+            TypeKind::BlockPointer(..) => true,
+            _ => false,
+        }
+    }
+
     /// Is this a compound type?
     pub fn is_comp(&self) -> bool {
         match self.kind {
@@ -156,7 +163,6 @@ impl Type {
             TypeKind::Array(..) |
             TypeKind::Reference(..) |
             TypeKind::Pointer(..) |
-            TypeKind::BlockPointer |
             TypeKind::Int(..) |
             TypeKind::Float(..) |
             TypeKind::TypeParam => true,
@@ -217,6 +223,14 @@ impl Type {
         }
     }
 
+    /// Is this an unresolved reference?
+    pub fn is_unresolved_ref(&self) -> bool {
+        match self.kind {
+            TypeKind::UnresolvedTypeRef(_, _, _) => true,
+            _ => false,
+        }
+    }
+
     /// Is this a incomplete array type?
     pub fn is_incomplete_array(&self, ctx: &BindgenContext) -> Option<ItemId> {
         match self.kind {
@@ -232,18 +246,21 @@ impl Type {
 
     /// What is the layout of this type?
     pub fn layout(&self, ctx: &BindgenContext) -> Option<Layout> {
-        use std::mem;
-
         self.layout.or_else(|| {
             match self.kind {
                 TypeKind::Comp(ref ci) => ci.layout(ctx),
+                TypeKind::Array(inner, length) if length == 0 => {
+                    Some(Layout::new(
+                        0,
+                        ctx.resolve_type(inner).layout(ctx)?.align,
+                    ))
+                }
                 // FIXME(emilio): This is a hack for anonymous union templates.
                 // Use the actual pointer size!
-                TypeKind::Pointer(..) |
-                TypeKind::BlockPointer => {
+                TypeKind::Pointer(..) => {
                     Some(Layout::new(
-                        mem::size_of::<*mut ()>(),
-                        mem::align_of::<*mut ()>(),
+                        ctx.target_pointer_size(),
+                        ctx.target_pointer_size(),
                     ))
                 }
                 TypeKind::ResolvedTypeRef(inner) => {
@@ -323,6 +340,7 @@ impl Type {
         match self.kind {
             TypeKind::TypeParam |
             TypeKind::Array(..) |
+            TypeKind::Vector(..) |
             TypeKind::Comp(..) |
             TypeKind::Opaque |
             TypeKind::Int(..) |
@@ -333,8 +351,8 @@ impl Type {
             TypeKind::Reference(..) |
             TypeKind::Void |
             TypeKind::NullPtr |
-            TypeKind::BlockPointer |
             TypeKind::Pointer(..) |
+            TypeKind::BlockPointer(..) |
             TypeKind::ObjCId |
             TypeKind::ObjCSel |
             TypeKind::ObjCInterface(..) => Some(self),
@@ -423,20 +441,20 @@ impl DotAttributes for Type {
         W: io::Write,
     {
         if let Some(ref layout) = self.layout {
-            try!(writeln!(
+            writeln!(
                 out,
                 "<tr><td>size</td><td>{}</td></tr>
                            <tr><td>align</td><td>{}</td></tr>",
                 layout.size,
                 layout.align
-            ));
+            )?;
             if layout.packed {
-                try!(writeln!(out, "<tr><td>packed</td><td>true</td></tr>"));
+                writeln!(out, "<tr><td>packed</td><td>true</td></tr>")?;
             }
         }
 
         if self.is_const {
-            try!(writeln!(out, "<tr><td>const</td><td>true</td></tr>"));
+            writeln!(out, "<tr><td>const</td><td>true</td></tr>")?;
         }
 
         self.kind.dot_attributes(ctx, out)
@@ -475,10 +493,11 @@ impl TypeKind {
             TypeKind::Alias(..) => "Alias",
             TypeKind::TemplateAlias(..) => "TemplateAlias",
             TypeKind::Array(..) => "Array",
+            TypeKind::Vector(..) => "Vector",
             TypeKind::Function(..) => "Function",
             TypeKind::Enum(..) => "Enum",
             TypeKind::Pointer(..) => "Pointer",
-            TypeKind::BlockPointer => "BlockPointer",
+            TypeKind::BlockPointer(..) => "BlockPointer",
             TypeKind::Reference(..) => "Reference",
             TypeKind::TemplateInstantiation(..) => "TemplateInstantiation",
             TypeKind::UnresolvedTypeRef(..) => "UnresolvedTypeRef",
@@ -543,7 +562,7 @@ impl TemplateParameters for Type {
     fn self_template_params(
         &self,
         ctx: &BindgenContext,
-    ) -> Option<Vec<TypeId>> {
+    ) -> Vec<TypeId> {
         self.kind.self_template_params(ctx)
     }
 }
@@ -552,13 +571,13 @@ impl TemplateParameters for TypeKind {
     fn self_template_params(
         &self,
         ctx: &BindgenContext,
-    ) -> Option<Vec<TypeId>> {
+    ) -> Vec<TypeId> {
         match *self {
             TypeKind::ResolvedTypeRef(id) => {
                 ctx.resolve_type(id).self_template_params(ctx)
             }
             TypeKind::Comp(ref comp) => comp.self_template_params(ctx),
-            TypeKind::TemplateAlias(_, ref args) => Some(args.clone()),
+            TypeKind::TemplateAlias(_, ref args) => args.clone(),
 
             TypeKind::Opaque |
             TypeKind::TemplateInstantiation(..) |
@@ -568,17 +587,18 @@ impl TemplateParameters for TypeKind {
             TypeKind::Float(_) |
             TypeKind::Complex(_) |
             TypeKind::Array(..) |
+            TypeKind::Vector(..) |
             TypeKind::Function(_) |
             TypeKind::Enum(_) |
             TypeKind::Pointer(_) |
-            TypeKind::BlockPointer |
+            TypeKind::BlockPointer(_) |
             TypeKind::Reference(_) |
             TypeKind::UnresolvedTypeRef(..) |
             TypeKind::TypeParam |
             TypeKind::Alias(_) |
             TypeKind::ObjCId |
             TypeKind::ObjCSel |
-            TypeKind::ObjCInterface(_) => None,
+            TypeKind::ObjCInterface(_) => vec![],
         }
     }
 }
@@ -594,17 +614,6 @@ pub enum FloatKind {
     LongDouble,
     /// A `__float128`.
     Float128,
-}
-
-impl FloatKind {
-    /// If this type has a known size, return it (in bytes).
-    pub fn known_size(&self) -> usize {
-        match *self {
-            FloatKind::Float => mem::size_of::<f32>(),
-            FloatKind::Double | FloatKind::LongDouble => mem::size_of::<f64>(),
-            FloatKind::Float128 => mem::size_of::<f64>() * 2,
-        }
-    }
 }
 
 /// The different kinds of types that we can parse.
@@ -641,6 +650,9 @@ pub enum TypeKind {
     /// template parameters.
     TemplateAlias(TypeId, Vec<TypeId>),
 
+    /// A packed vector type: element type, number of elements
+    Vector(TypeId, usize),
+
     /// An array of a type and a length.
     Array(TypeId, usize),
 
@@ -655,7 +667,7 @@ pub enum TypeKind {
     Pointer(TypeId),
 
     /// A pointer to an Apple block.
-    BlockPointer,
+    BlockPointer(TypeId),
 
     /// A reference to a type, as in: int& foo().
     Reference(TypeId),
@@ -724,7 +736,7 @@ impl Type {
             }
         }
 
-        let layout = ty.fallible_layout().ok();
+        let layout = ty.fallible_layout(ctx).ok();
         let cursor = ty.declaration();
         let mut name = cursor.spelling();
 
@@ -774,7 +786,7 @@ impl Type {
                    opaque type instead."
             );
             return Ok(
-                ParseResult::New(Opaque::from_clang_ty(&canonical_ty), None),
+                ParseResult::New(Opaque::from_clang_ty(&canonical_ty, ctx), None),
             );
         }
 
@@ -818,7 +830,7 @@ impl Type {
                     // trying to see if it has a valid return type.
                     if ty.ret_type().is_some() {
                         let signature =
-                            try!(FunctionSig::from_ty(ty, &location, ctx));
+                            FunctionSig::from_ty(ty, &location, ctx)?;
                         TypeKind::Function(signature)
                     // Same here, with template specialisations we can safely
                     // assume this is a Comp(..)
@@ -906,7 +918,7 @@ impl Type {
                                                from class template or base \
                                                specifier, using opaque blob"
                                         );
-                                        let opaque = Opaque::from_clang_ty(ty);
+                                        let opaque = Opaque::from_clang_ty(ty, ctx);
                                         return Ok(
                                             ParseResult::New(opaque, None),
                                         );
@@ -1056,37 +1068,17 @@ impl Type {
                 CXType_ObjCObjectPointer |
                 CXType_MemberPointer |
                 CXType_Pointer => {
-                    // Fun fact: the canonical type of a pointer type may sometimes
-                    // contain information we need but isn't present in the concrete
-                    // type (yeah, I'm equally wat'd).
-                    //
-                    // Yet we still have trouble if we unconditionally trust the
-                    // canonical type, like too-much desugaring (sigh).
-                    //
-                    // See tests/headers/call-conv-field.h for an example.
-                    //
-                    // Since for now the only identifier cause of breakage is the
-                    // ABI for function pointers, and different ABI mixed with
-                    // problematic stuff like that one is _extremely_ unlikely and
-                    // can be bypassed via blacklisting, we do the check explicitly
-                    // (as hacky as it is).
-                    //
-                    // Yet we should probably (somehow) get the best of both worlds,
-                    // presumably special-casing function pointers as a whole, yet
-                    // someone is going to need to care about typedef'd function
-                    // pointers, etc, which isn't trivial given function pointers
-                    // are mostly unexposed. I don't have the time for it right now.
-                    let mut pointee = ty.pointee_type().unwrap();
-                    let canonical_pointee =
-                        canonical_ty.pointee_type().unwrap();
-                    if pointee.call_conv() != canonical_pointee.call_conv() {
-                        pointee = canonical_pointee;
-                    }
+                    let pointee = ty.pointee_type().unwrap();
                     let inner =
                         Item::from_ty_or_ref(pointee, location, None, ctx);
                     TypeKind::Pointer(inner)
                 }
-                CXType_BlockPointer => TypeKind::BlockPointer,
+                CXType_BlockPointer => {
+                    let pointee = ty.pointee_type().expect("Not valid Type?");
+                    let inner =
+                        Item::from_ty_or_ref(pointee, location, None, ctx);
+                    TypeKind::BlockPointer(inner)
+                },
                 // XXX: RValueReference is most likely wrong, but I don't think we
                 // can even add bindings for that, so huh.
                 CXType_RValueReference |
@@ -1122,7 +1114,7 @@ impl Type {
                 CXType_FunctionNoProto |
                 CXType_FunctionProto => {
                     let signature =
-                        try!(FunctionSig::from_ty(ty, &location, ctx));
+                        FunctionSig::from_ty(ty, &location, ctx)?;
                     TypeKind::Function(signature)
                 }
                 CXType_Typedef => {
@@ -1162,12 +1154,15 @@ impl Type {
 
                     TypeKind::Comp(complex)
                 }
-                // FIXME: We stub vectors as arrays since in 99% of the cases the
-                // layout is going to be correct, and there's no way we can generate
-                // vector types properly in Rust for now.
-                //
-                // That being said, that should be fixed eventually.
-                CXType_Vector |
+                CXType_Vector => {
+                    let inner = Item::from_ty(
+                        ty.elem_type().as_ref().unwrap(),
+                        location,
+                        None,
+                        ctx,
+                    ).expect("Not able to resolve vector element?");
+                    TypeKind::Vector(inner, ty.num_elements().unwrap())
+                }
                 CXType_ConstantArray => {
                     let inner = Item::from_ty(
                         ty.elem_type().as_ref().unwrap(),
@@ -1195,6 +1190,9 @@ impl Type {
                     name = interface.rust_name();
                     TypeKind::ObjCInterface(interface)
                 }
+                CXType_Dependent => {
+                    return Err(ParseError::Continue);
+                }
                 _ => {
                     error!(
                         "unsupported type: kind = {:?}; ty = {:?}; at {:?}",
@@ -1208,6 +1206,7 @@ impl Type {
         };
 
         let name = if name.is_empty() { None } else { Some(name) };
+
         let is_const = ty.is_const();
 
         let ty = Type::new(name, layout, kind, is_const);
@@ -1227,6 +1226,8 @@ impl Trace for Type {
             TypeKind::Pointer(inner) |
             TypeKind::Reference(inner) |
             TypeKind::Array(inner, _) |
+            TypeKind::Vector(inner, _) |
+            TypeKind::BlockPointer(inner) |
             TypeKind::Alias(inner) |
             TypeKind::ResolvedTypeRef(inner) => {
                 tracer.visit_kind(inner.into(), EdgeKind::TypeReference);
@@ -1268,8 +1269,7 @@ impl Trace for Type {
             TypeKind::Float(_) |
             TypeKind::Complex(_) |
             TypeKind::ObjCId |
-            TypeKind::ObjCSel |
-            TypeKind::BlockPointer => {}
+            TypeKind::ObjCSel => {}
         }
     }
 }

@@ -7,6 +7,7 @@ Transform the beetmover task into an actual task description.
 
 from __future__ import absolute_import, print_function, unicode_literals
 
+from taskgraph.loader.single_dep import schema
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.transforms.beetmover import craft_release_properties
 from taskgraph.util.attributes import copy_attributes_from_dependent_job
@@ -16,10 +17,8 @@ from taskgraph.util.partners import (
     get_partner_config_by_kind,
 )
 from taskgraph.util.schema import (
-    Schema,
     optionally_keyed_by,
     resolve_keyed_by,
-    validate_schema,
 )
 from taskgraph.util.scriptworker import (
     add_scope_prefix,
@@ -36,81 +35,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Voluptuous uses marker objects as dictionary *keys*, but they are not
-# comparable, so we cast all of the keys back to regular strings
-task_description_schema = {str(k): v for k, v in task_description_schema.schema.iteritems()}
-
-transforms = TransformSequence()
-
-# shortcut for a string where task references are allowed
-taskref_or_string = Any(
-    basestring,
-    {Required('task-reference'): basestring})
-
-beetmover_description_schema = Schema({
-    # the dependent task (object) for this beetmover job, used to inform beetmover.
-    Required('dependent-task'): object,
-
+beetmover_description_schema = schema.extend({
     # depname is used in taskref's to identify the taskID of the unsigned things
     Required('depname', default='build'): basestring,
 
     # unique label to describe this beetmover task, defaults to {dep.label}-beetmover
     Optional('label'): basestring,
 
-    Required('partner-bucket-scope'): optionally_keyed_by('project', basestring),
+    Required('partner-bucket-scope'): optionally_keyed_by('release-level', basestring),
     Required('partner-public-path'): Any(None, basestring),
     Required('partner-private-path'): Any(None, basestring),
 
     Optional('extra'): object,
     Required('shipping-phase'): task_description_schema['shipping-phase'],
     Optional('shipping-product'): task_description_schema['shipping-product'],
+    Optional('priority'): task_description_schema['priority'],
 })
 
+transforms = TransformSequence()
 transforms.add(check_if_partners_enabled)
-
-
-@transforms.add
-def validate(config, jobs):
-    for job in jobs:
-        label = job.get('dependent-task', object).__dict__.get('label', '?no-label?')
-        validate_schema(
-            beetmover_description_schema, job,
-            "In beetmover ({!r} kind) task for {!r}:".format(config.kind, label))
-        yield job
-
-
-@transforms.add
-def skip_for_indirect_dependencies(config, jobs):
-    for job in jobs:
-        dep_job = job['dependent-task']
-        build_platform = dep_job.attributes.get("build_platform")
-        if not build_platform:
-            raise Exception("Cannot find build platform!")
-
-        # Partner and EME free beetmover tasks have multiple upstreams defined
-        # because some platforms don't run some parts of the sign -> repack ->
-        # repack sign chain. We only want to run beetmover for the last part of
-        # that chain that runs for any given platform.
-        # For Linux, it is the eme-free/partner repack build tasks.
-        # For Mac, it is repackage.
-        # For Windows, it is repackage-signing.
-        if "win" in build_platform:
-            if "repackage" not in dep_job.label:
-                continue
-            elif "signing" not in dep_job.label:
-                continue
-        if "macosx" in build_platform:
-            if "repackage" not in dep_job.label:
-                continue
-
-        yield job
+transforms.add_validate(beetmover_description_schema)
 
 
 @transforms.add
 def resolve_keys(config, jobs):
     for job in jobs:
         resolve_keyed_by(
-            job, 'partner-bucket-scope', item_name=job['label'], project=config.params['project']
+            job, 'partner-bucket-scope', item_name=job['label'],
+            **{'release-level': config.params.release_level()}
         )
         yield job
 
@@ -118,7 +70,7 @@ def resolve_keys(config, jobs):
 @transforms.add
 def make_task_description(config, jobs):
     for job in jobs:
-        dep_job = job['dependent-task']
+        dep_job = job['primary-dependency']
         repack_id = dep_job.task.get('extra', {}).get('repack_id')
         if not repack_id:
             raise Exception("Cannot find repack id!")
@@ -128,6 +80,7 @@ def make_task_description(config, jobs):
         if not build_platform:
             raise Exception("Cannot find build platform!")
 
+        label = dep_job.label.replace("repackage-signing-l10n", "beetmover-")
         label = dep_job.label.replace("repackage-signing-", "beetmover-")
         label = label.replace("repackage-", "beetmover-")
         label = label.replace("chunking-dummy-", "beetmover-")
@@ -150,10 +103,9 @@ def make_task_description(config, jobs):
             dependencies["repackage"] = "{}-repackage-{}-{}".format(
                 base_label, build_platform, repack_id.replace('/', '-')
             )
-        if "win" in build_platform:
-            dependencies["repackage-signing"] = "{}-repackage-signing-{}-{}".format(
-                base_label, build_platform, repack_id.replace('/', '-')
-            )
+        dependencies["repackage-signing"] = "{}-repackage-signing-{}-{}".format(
+             base_label, build_platform, repack_id.replace('/', '-')
+        )
 
         attributes = copy_attributes_from_dependent_job(dep_job)
 
@@ -172,6 +124,10 @@ def make_task_description(config, jobs):
                 'repack_id': repack_id,
             },
         }
+        # we may have reduced the priority for partner jobs, otherwise task.py will set it
+        if job.get('priority'):
+            task['priority'] = job['priority']
+
         yield task
 
 
@@ -196,20 +152,21 @@ def split_public_and_private(config, jobs):
         partner_bucket_scope = add_scope_prefix(config, job['partner-bucket-scope'])
         partner, subpartner, _ = job['extra']['repack_id'].split('/')
 
-        # public
         if partner_config[partner][subpartner].get('upload_to_candidates'):
+            # public
             yield populate_scopes_and_worker_type(
                 config, job, public_bucket_scope, partner_public=True
             )
-        # private
-        yield populate_scopes_and_worker_type(
-            config, job, partner_bucket_scope, partner_public=False
-        )
+        else:
+            # private
+            yield populate_scopes_and_worker_type(
+                config, job, partner_bucket_scope, partner_public=False
+            )
 
 
 def generate_upstream_artifacts(job, build_task_ref, repackage_task_ref,
                                 repackage_signing_task_ref, platform, repack_id,
-                                partner_path):
+                                partner_path, repack_stub_installer=False):
 
     upstream_artifacts = []
     artifact_prefix = get_artifact_prefix(job)
@@ -221,11 +178,23 @@ def generate_upstream_artifacts(job, build_task_ref, repackage_task_ref,
             "paths": ["{}/{}/target.tar.bz2".format(artifact_prefix, repack_id)],
             "locale": partner_path,
         })
+        upstream_artifacts.append({
+            "taskId": {"task-reference": repackage_signing_task_ref},
+            "taskType": "repackage",
+            "paths": ["{}/{}/target.tar.bz2.asc".format(artifact_prefix, repack_id)],
+            "locale": partner_path,
+        })
     elif "macosx" in platform:
         upstream_artifacts.append({
             "taskId": {"task-reference": repackage_task_ref},
             "taskType": "repackage",
             "paths": ["{}/{}/target.dmg".format(artifact_prefix, repack_id)],
+            "locale": partner_path,
+        })
+        upstream_artifacts.append({
+            "taskId": {"task-reference": repackage_signing_task_ref},
+            "taskType": "repackage",
+            "paths": ["{}/{}/target.dmg.asc".format(artifact_prefix, repack_id)],
             "locale": partner_path,
         })
     elif "win" in platform:
@@ -235,6 +204,26 @@ def generate_upstream_artifacts(job, build_task_ref, repackage_task_ref,
             "paths": ["{}/{}/target.installer.exe".format(artifact_prefix, repack_id)],
             "locale": partner_path,
         })
+        upstream_artifacts.append({
+            "taskId": {"task-reference": repackage_signing_task_ref},
+            "taskType": "repackage",
+            "paths": ["{}/{}/target.installer.exe.asc".format(artifact_prefix, repack_id)],
+            "locale": partner_path,
+        })
+        if platform.startswith('win32') and repack_stub_installer:
+            upstream_artifacts.append({
+                "taskId": {"task-reference": repackage_signing_task_ref},
+                "taskType": "repackage",
+                "paths": ["{}/{}/target.stub-installer.exe".format(artifact_prefix, repack_id)],
+                "locale": partner_path,
+            })
+            upstream_artifacts.append({
+                "taskId": {"task-reference": repackage_signing_task_ref},
+                "taskType": "repackage",
+                "paths": ["{}/{}/target.stub-installer.exe.asc".format(
+                    artifact_prefix, repack_id)],
+                "locale": partner_path,
+            })
 
     if not upstream_artifacts:
         raise Exception("Couldn't find any upstream artifacts.")
@@ -248,6 +237,8 @@ def make_task_worker(config, jobs):
         platform = job["attributes"]["build_platform"]
         repack_id = job["extra"]["repack_id"]
         partner, subpartner, locale = job['extra']['repack_id'].split('/')
+        partner_config = get_partner_config_by_kind(config, config.kind)
+        repack_stub_installer = partner_config[partner][subpartner].get('repack_stub_installer')
         build_task = None
         repackage_task = None
         repackage_signing_task = None
@@ -295,7 +286,7 @@ def make_task_worker(config, jobs):
             'upstream-artifacts': generate_upstream_artifacts(
                 job, build_task_ref, repackage_task_ref,
                 repackage_signing_task_ref, platform, repack_id,
-                partner_path
+                partner_path, repack_stub_installer
             ),
             'partner-public': partner_public,
         }

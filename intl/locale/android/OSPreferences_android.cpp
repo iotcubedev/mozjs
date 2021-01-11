@@ -12,45 +12,40 @@
 
 using namespace mozilla::intl;
 
-OSPreferences::OSPreferences()
-{
-}
+OSPreferences::OSPreferences() {}
 
-OSPreferences::~OSPreferences()
-{
-}
+OSPreferences::~OSPreferences() {}
 
-bool
-OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList)
-{
+bool OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList) {
   if (!mozilla::jni::IsAvailable()) {
     return false;
   }
 
-  //XXX: Notice, this value may be empty on an early read. In that case
+  // XXX: Notice, this value may be empty on an early read. In that case
   //     we won't add anything to the return list so that it doesn't get
   //     cached in mSystemLocales.
-  auto locale = mozilla::jni::IsFennec() ? java::BrowserLocaleManager::GetLocale() :
-                java::GeckoAppShell::GetDefaultLocale();
-  if (locale) {
-    aLocaleList.AppendElement(locale->ToCString());
+  auto locales = mozilla::jni::IsFennec()
+                     ? java::BrowserLocaleManager::GetLocales()
+                     : java::GeckoAppShell::GetDefaultLocales();
+  if (locales) {
+    for (size_t i = 0; i < locales->Length(); i++) {
+      jni::String::LocalRef locale = locales->GetElement(i);
+      aLocaleList.AppendElement(locale->ToCString());
+    }
     return true;
   }
   return false;
 }
 
-bool
-OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList)
-{
+bool OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList) {
   // For now we're just taking System Locales since we don't know of any better
   // API for regional prefs.
   return ReadSystemLocales(aLocaleList);
 }
 
-bool
-OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
-                                   DateTimeFormatStyle aTimeStyle,
-                                   const nsACString& aLocale, nsAString& aRetVal)
-{
+bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
+                                        DateTimeFormatStyle aTimeStyle,
+                                        const nsACString& aLocale,
+                                        nsAString& aRetVal) {
   return false;
 }

@@ -20,18 +20,21 @@ const gCertOverrideService = {
   },
 
   hasMatchingOverride(hostname, port, cert, overrideBits, isTemporary) {
-    Assert.equal(hostname, "expired.example.com",
-                 "hasMatchingOverride: hostname should be expired.example.com");
+    Assert.equal(
+      hostname,
+      "expired.example.com",
+      "hasMatchingOverride: hostname should be expired.example.com"
+    );
     overrideBits.value = Ci.nsICertOverrideService.ERROR_TIME;
     isTemporary.value = false;
     return true;
   },
 
-  getValidityOverride() {
+  clearValidityOverride() {
     throw Cr.NS_ERROR_NOT_IMPLEMENTED;
   },
 
-  clearValidityOverride() {
+  clearAllOverrides() {
     throw Cr.NS_ERROR_NOT_IMPLEMENTED;
   },
 
@@ -39,18 +42,19 @@ const gCertOverrideService = {
     throw Cr.NS_ERROR_NOT_IMPLEMENTED;
   },
 
-  QueryInterface: XPCOMUtils.generateQI([Ci.nsICertOverrideService])
+  QueryInterface: ChromeUtils.generateQI([Ci.nsICertOverrideService]),
 };
 
 function run_test() {
   do_get_profile();
-  let certOverrideServiceCID =
-    MockRegistrar.register("@mozilla.org/security/certoverride;1",
-                           gCertOverrideService);
+  let certOverrideServiceCID = MockRegistrar.register(
+    "@mozilla.org/security/certoverride;1",
+    gCertOverrideService
+  );
   registerCleanupFunction(() => {
     MockRegistrar.unregister(certOverrideServiceCID);
   });
-  add_tls_server_setup("BadCertServer", "bad_certs");
+  add_tls_server_setup("BadCertAndPinningServer", "bad_certs");
   add_connection_test("expired.example.com", PRErrorCodeSuccess);
   run_next_test();
 }

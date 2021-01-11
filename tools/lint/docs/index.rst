@@ -28,10 +28,5 @@ like mach, mozreview and taskcluster.
   create
   linters/eslint
   linters/flake8
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+  linters/l10n
+  linters/rstlinter
