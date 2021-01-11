@@ -6,10 +6,13 @@
 
 #include "mozilla/css/StreamLoader.h"
 
-#include "mozilla/IntegerTypeTraits.h"
 #include "mozilla/Encoding.h"
+#include "mozilla/ScopeExit.h"
+#include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "nsIInputStream.h"
+
+#include <limits>
 
 using namespace mozilla;
 
@@ -19,26 +22,32 @@ namespace css {
 StreamLoader::StreamLoader(SheetLoadData& aSheetLoadData)
     : mSheetLoadData(&aSheetLoadData), mStatus(NS_OK) {}
 
-StreamLoader::~StreamLoader() {}
+StreamLoader::~StreamLoader() {
+#ifdef NIGHTLY_BUILD
+  MOZ_RELEASE_ASSERT(mOnStopRequestCalled || mChannelOpenFailed);
+#endif
+}
 
 NS_IMPL_ISUPPORTS(StreamLoader, nsIStreamListener)
 
 /* nsIRequestObserver implementation */
 NS_IMETHODIMP
 StreamLoader::OnStartRequest(nsIRequest* aRequest) {
+  MOZ_ASSERT(aRequest);
+  mSheetLoadData->NotifyStart(aRequest);
+
   // It's kinda bad to let Web content send a number that results
   // in a potentially large allocation directly, but efficiency of
   // compression bombs is so great that it doesn't make much sense
   // to require a site to send one before going ahead and allocating.
-  nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest);
-  if (channel) {
+  if (nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest)) {
     int64_t length;
     nsresult rv = channel->GetContentLength(&length);
     if (NS_SUCCEEDED(rv) && length > 0) {
-      if (length > MaxValue<nsACString::size_type>::value) {
+      if (length > std::numeric_limits<nsACString::size_type>::max()) {
         return (mStatus = NS_ERROR_OUT_OF_MEMORY);
       }
-      if (!mBytes.SetCapacity(length, mozilla::fallible_t())) {
+      if (!mBytes.SetCapacity(length, fallible)) {
         return (mStatus = NS_ERROR_OUT_OF_MEMORY);
       }
     }
@@ -48,6 +57,12 @@ StreamLoader::OnStartRequest(nsIRequest* aRequest) {
 
 NS_IMETHODIMP
 StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
+#ifdef NIGHTLY_BUILD
+  MOZ_RELEASE_ASSERT(!mOnStopRequestCalled);
+  mOnStopRequestCalled = true;
+#endif
+
+  nsresult rv = mStatus;
   // Decoded data
   nsCString utf8String;
   {
@@ -64,12 +79,11 @@ StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
       return mStatus;
     }
 
-    nsresult rv = mSheetLoadData->VerifySheetReadyToParse(aStatus, mBOMBytes,
-                                                          bytes, channel);
+    rv = mSheetLoadData->VerifySheetReadyToParse(aStatus, mBOMBytes, bytes,
+                                                 channel);
     if (rv != NS_OK_PARSE_SHEET) {
       return rv;
     }
-    rv = NS_OK;
 
     // BOM detection generally happens during the write callback, but that won't
     // have happened if fewer than three bytes were received.
@@ -103,11 +117,34 @@ StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     }
   }  // run destructor for `bytes`
 
+  auto info = nsContentUtils::GetSubresourceCacheValidationInfo(aRequest);
+
+  // data: URIs are safe to cache across documents under any circumstance, so we
+  // special-case them here even though the channel itself doesn't have any
+  // caching policy.
+  //
+  // TODO(emilio): Figure out which other schemes that don't have caching
+  // policies are safe to cache. Blobs should be...
+  if (mSheetLoadData->mURI->SchemeIs("data")) {
+    MOZ_ASSERT(!info.mExpirationTime);
+    MOZ_ASSERT(!info.mMustRevalidate);
+    info.mExpirationTime = Some(0);  // 0 means "doesn't expire".
+  }
+
+  // For now, we never cache entries that we have to revalidate, or whose
+  // channel don't support caching.
+  if (!info.mExpirationTime || info.mMustRevalidate) {
+    info.mExpirationTime =
+        Some(nsContentUtils::SecondsFromPRTime(PR_Now()) - 1);
+  }
+  mSheetLoadData->mExpirationTime = *info.mExpirationTime;
+
   // For reasons I don't understand, factoring the below lines into
   // a method on SheetLoadData resulted in a linker error. Hence,
   // accessing fields of mSheetLoadData from here.
   mSheetLoadData->mLoader->ParseSheet(utf8String, *mSheetLoadData,
                                       Loader::AllowAsyncParse::Yes);
+
   return NS_OK;
 }
 
@@ -162,7 +199,7 @@ nsresult StreamLoader::WriteSegmentFun(nsIInputStream*, void* aClosure,
     }
   }
 
-  if (!self->mBytes.Append(aSegment, aCount, mozilla::fallible_t())) {
+  if (!self->mBytes.Append(aSegment, aCount, fallible)) {
     self->mBytes.Truncate();
     return (self->mStatus = NS_ERROR_OUT_OF_MEMORY);
   }

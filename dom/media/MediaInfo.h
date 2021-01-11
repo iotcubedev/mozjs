@@ -14,7 +14,6 @@
 #  include "AudioConfig.h"
 #  include "ImageTypes.h"
 #  include "MediaData.h"
-#  include "TrackID.h"  // for TrackID
 #  include "TimeUnits.h"
 #  include "mozilla/gfx/Point.h"  // for gfx::IntSize
 #  include "mozilla/gfx/Rect.h"   // for gfx::IntRect
@@ -44,7 +43,7 @@ class TrackInfo {
   enum TrackType { kUndefinedTrack, kAudioTrack, kVideoTrack, kTextTrack };
   TrackInfo(TrackType aType, const nsAString& aId, const nsAString& aKind,
             const nsAString& aLabel, const nsAString& aLanguage, bool aEnabled,
-            TrackID aTrackId)
+            uint32_t aTrackId)
       : mId(aId),
         mKind(aKind),
         mLabel(aLabel),
@@ -74,14 +73,14 @@ class TrackInfo {
   nsString mLanguage;
   bool mEnabled;
 
-  TrackID mTrackId;
+  uint32_t mTrackId;
 
   nsCString mMimeType;
   media::TimeUnit mDuration;
   media::TimeUnit mMediaTime;
   CryptoTrack mCrypto;
 
-  nsTArray<MetadataTag> mTags;
+  CopyableTArray<MetadataTag> mTags;
 
   // True if the track is gonna be (decrypted)/decoded and
   // rendered directly by non-gecko components.
@@ -103,7 +102,7 @@ class TrackInfo {
 
   virtual UniquePtr<TrackInfo> Clone() const = 0;
 
-  virtual ~TrackInfo() { MOZ_COUNT_DTOR(TrackInfo); }
+  MOZ_COUNTED_DTOR_VIRTUAL(TrackInfo)
 
  protected:
   TrackInfo(const TrackInfo& aOther) {
@@ -119,7 +118,7 @@ class TrackInfo {
     mCrypto = aOther.mCrypto;
     mIsRenderedExternally = aOther.mIsRenderedExternally;
     mType = aOther.mType;
-    mTags = aOther.mTags;
+    mTags = aOther.mTags.Clone();
     MOZ_COUNT_CTOR(TrackInfo);
   }
   bool IsEqualTo(const TrackInfo& rhs) const;
@@ -146,9 +145,8 @@ class VideoInfo : public TrackInfo {
       : VideoInfo(gfx::IntSize(aWidth, aHeight)) {}
 
   explicit VideoInfo(const gfx::IntSize& aSize)
-      : TrackInfo(kVideoTrack, NS_LITERAL_STRING("2"),
-                  NS_LITERAL_STRING("main"), EmptyString(), EmptyString(), true,
-                  2),
+      : TrackInfo(kVideoTrack, u"2"_ns, u"main"_ns, EmptyString(),
+                  EmptyString(), true, 2),
         mDisplay(aSize),
         mStereoMode(StereoMode::MONO),
         mImage(aSize),
@@ -270,9 +268,8 @@ class VideoInfo : public TrackInfo {
 class AudioInfo : public TrackInfo {
  public:
   AudioInfo()
-      : TrackInfo(kAudioTrack, NS_LITERAL_STRING("1"),
-                  NS_LITERAL_STRING("main"), EmptyString(), EmptyString(), true,
-                  1),
+      : TrackInfo(kAudioTrack, u"1"_ns, u"main"_ns, EmptyString(),
+                  EmptyString(), true, 1),
         mRate(0),
         mChannels(0),
         mChannelMap(AudioConfig::ChannelLayout::UNKNOWN_MAP),
@@ -337,9 +334,9 @@ class EncryptionInfo {
     nsString mType;
 
     // Encryption data.
-    nsTArray<uint8_t> mInitData;
+    CopyableTArray<uint8_t> mInitData;
   };
-  typedef nsTArray<InitData> InitDatas;
+  typedef CopyableTArray<InitData> InitDatas;
 
   // True if the stream has encryption metadata
   bool IsEncrypted() const { return mEncrypted; }
@@ -400,16 +397,6 @@ class MediaInfo {
 
   bool HasValidMedia() const { return HasVideo() || HasAudio(); }
 
-  void AssertValid() const {
-    NS_ASSERTION(!HasAudio() || mAudio.mTrackId != TRACK_INVALID,
-                 "Audio track ID must be valid");
-    NS_ASSERTION(!HasVideo() || mVideo.mTrackId != TRACK_INVALID,
-                 "Audio track ID must be valid");
-    NS_ASSERTION(
-        !HasAudio() || !HasVideo() || mAudio.mTrackId != mVideo.mTrackId,
-        "Duplicate track IDs");
-  }
-
   // TODO: Store VideoInfo and AudioIndo in arrays to support multi-tracks.
   VideoInfo mVideo;
   AudioInfo mAudio;
@@ -467,7 +454,7 @@ class TrackInfoSharedPtr {
   }
 
  private:
-  ~TrackInfoSharedPtr() {}
+  ~TrackInfoSharedPtr() = default;
   UniquePtr<TrackInfo> mInfo;
   // A unique ID, guaranteed to change when changing streams.
   uint32_t mStreamSourceID;

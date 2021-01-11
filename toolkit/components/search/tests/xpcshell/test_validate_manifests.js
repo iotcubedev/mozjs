@@ -43,7 +43,7 @@ async function getSearchExtensions() {
 add_task(async function test_validate_manifest() {
   let searchExtensions = await getSearchExtensions();
   ok(
-    searchExtensions.length > 0,
+    !!searchExtensions.length,
     `Found ${searchExtensions.length} search extensions`
   );
   for (const xpi of searchExtensions) {
@@ -59,9 +59,7 @@ add_task(async function test_validate_manifest() {
       } catch (e) {
         ok(
           false,
-          `FAIL manifest for ${
-            xpi.leafName
-          } in locale ${locale} failed ${e} :: ${e.stack}`
+          `FAIL manifest for ${xpi.leafName} in locale ${locale} failed ${e} :: ${e.stack}`
         );
       }
     }

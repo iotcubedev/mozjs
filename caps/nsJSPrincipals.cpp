@@ -3,22 +3,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsIPrincipal.h"
 #include "xpcpublic.h"
 #include "nsString.h"
-#include "nsIObjectOutputStream.h"
-#include "nsIObjectInputStream.h"
 #include "nsJSPrincipals.h"
 #include "plstr.h"
 #include "nsCOMPtr.h"
-#include "nsIServiceManager.h"
 #include "nsMemory.h"
 #include "nsStringBuffer.h"
-
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/StructuredCloneTags.h"
 // for mozilla::dom::workerinternals::kJSPrincipalsDebugToken
 #include "mozilla/dom/workerinternals/JSSettings.h"
 // for mozilla::dom::worklet::kJSPrincipalsDebugToken
-#include "mozilla/dom/WorkletPrincipal.h"
+#include "mozilla/dom/WorkletPrincipals.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 
 using namespace mozilla;
@@ -89,9 +87,8 @@ JS_PUBLIC_API void JSPrincipals::dump() {
             NS_SUCCEEDED(rv) ? str.get() : "(unknown)");
   } else if (debugToken == dom::workerinternals::kJSPrincipalsDebugToken) {
     fprintf(stderr, "Web Worker principal singleton (%p)\n", this);
-  } else if (debugToken ==
-             mozilla::dom::WorkletPrincipal::kJSPrincipalsDebugToken) {
-    fprintf(stderr, "Web Worklet principal singleton (%p)\n", this);
+  } else if (debugToken == dom::WorkletPrincipals::kJSPrincipalsDebugToken) {
+    fprintf(stderr, "Web Worklet principal (%p)\n", this);
   } else {
     fprintf(stderr,
             "!!! JSPrincipals (%p) is not nsJSPrincipals instance - bad token: "
@@ -309,14 +306,15 @@ bool nsJSPrincipals::ReadKnownPrincipalType(JSContext* aCx,
     return false;
   }
 
-  nsresult rv;
-  nsCOMPtr<nsIPrincipal> prin = PrincipalInfoToPrincipal(info, &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  auto principalOrErr = PrincipalInfoToPrincipal(info);
+  if (NS_WARN_IF(principalOrErr.isErr())) {
     xpc::Throw(aCx, NS_ERROR_DOM_DATA_CLONE_ERR);
     return false;
   }
 
-  *aOutPrincipals = get(prin.forget().take());
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+
+  *aOutPrincipals = get(principal.forget().take());
   return true;
 }
 
@@ -345,13 +343,14 @@ static bool WritePrincipalInfo(JSStructuredCloneWriter* aWriter,
          JS_WriteBytes(aWriter, aBaseDomain.get(), aBaseDomain.Length());
 }
 
-static bool WritePrincipalInfo(JSStructuredCloneWriter* aWriter,
-                               const PrincipalInfo& aInfo) {
+/* static */
+bool nsJSPrincipals::WritePrincipalInfo(JSStructuredCloneWriter* aWriter,
+                                        const PrincipalInfo& aInfo) {
   if (aInfo.type() == PrincipalInfo::TNullPrincipalInfo) {
     const NullPrincipalInfo& nullInfo = aInfo;
     return JS_WriteUint32Pair(aWriter, SCTAG_DOM_NULL_PRINCIPAL, 0) &&
-           WritePrincipalInfo(aWriter, nullInfo.attrs(), nullInfo.spec(),
-                              EmptyCString(), EmptyCString());
+           ::WritePrincipalInfo(aWriter, nullInfo.attrs(), nullInfo.spec(),
+                                EmptyCString(), EmptyCString());
   }
   if (aInfo.type() == PrincipalInfo::TSystemPrincipalInfo) {
     return JS_WriteUint32Pair(aWriter, SCTAG_DOM_SYSTEM_PRINCIPAL, 0);
@@ -374,8 +373,8 @@ static bool WritePrincipalInfo(JSStructuredCloneWriter* aWriter,
   MOZ_ASSERT(aInfo.type() == PrincipalInfo::TContentPrincipalInfo);
   const ContentPrincipalInfo& cInfo = aInfo;
   return JS_WriteUint32Pair(aWriter, SCTAG_DOM_CONTENT_PRINCIPAL, 0) &&
-         WritePrincipalInfo(aWriter, cInfo.attrs(), cInfo.spec(),
-                            cInfo.originNoSuffix(), cInfo.baseDomain());
+         ::WritePrincipalInfo(aWriter, cInfo.attrs(), cInfo.spec(),
+                              cInfo.originNoSuffix(), cInfo.baseDomain());
 }
 
 bool nsJSPrincipals::write(JSContext* aCx, JSStructuredCloneWriter* aWriter) {
@@ -386,4 +385,10 @@ bool nsJSPrincipals::write(JSContext* aCx, JSStructuredCloneWriter* aWriter) {
   }
 
   return WritePrincipalInfo(aWriter, info);
+}
+
+bool nsJSPrincipals::isSystemOrAddonPrincipal() {
+  JS::AutoSuppressGCAnalysis suppress;
+  return this->IsSystemPrincipal() ||
+         this->GetIsAddonOrExpandedAddonPrincipal();
 }

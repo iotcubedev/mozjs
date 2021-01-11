@@ -42,14 +42,13 @@ class MediaStreamTrackAudioSourceNodeEngine final : public AudioNodeEngine {
 class MediaStreamTrackAudioSourceNode
     : public AudioNode,
       public PrincipalChangeObserver<MediaStreamTrack>,
-      public SupportsWeakPtr<MediaStreamTrackAudioSourceNode> {
+      public SupportsWeakPtr {
  public:
   static already_AddRefed<MediaStreamTrackAudioSourceNode> Create(
       AudioContext& aContext,
       const MediaStreamTrackAudioSourceOptions& aOptions, ErrorResult& aRv);
 
   NS_DECL_ISUPPORTS_INHERITED
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackAudioSourceNode)
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrackAudioSourceNode,
                                            AudioNode)
 
@@ -62,7 +61,7 @@ class MediaStreamTrackAudioSourceNode
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
-  void DestroyMediaStream() override;
+  void DestroyMediaTrack() override;
 
   uint16_t NumberOfInputs() const override { return 0; }
 
@@ -94,7 +93,7 @@ class MediaStreamTrackAudioSourceNode
     void NotifyEnded(MediaStreamTrack* aTrack) override {
       if (mNode) {
         mNode->MarkInactive();
-        mNode->DestroyMediaStream();
+        mNode->DestroyMediaTrack();
         mNode = nullptr;
       }
     }

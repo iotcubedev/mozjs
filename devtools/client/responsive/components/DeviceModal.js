@@ -13,11 +13,18 @@ const {
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
-const DeviceForm = createFactory(require("./DeviceForm"));
-const DeviceList = createFactory(require("./DeviceList"));
+const DeviceForm = createFactory(
+  require("devtools/client/responsive/components/DeviceForm")
+);
+const DeviceList = createFactory(
+  require("devtools/client/responsive/components/DeviceList")
+);
 
-const { getFormatStr, getStr } = require("../utils/l10n");
-const Types = require("../types");
+const {
+  getFormatStr,
+  getStr,
+} = require("devtools/client/responsive/utils/l10n");
+const Types = require("devtools/client/responsive/types");
 
 class DeviceModal extends PureComponent {
   static get propTypes() {
@@ -101,12 +108,7 @@ class DeviceModal extends PureComponent {
   }
 
   onDeviceModalSubmit() {
-    const {
-      devices,
-      onDeviceListUpdate,
-      onUpdateDeviceDisplayed,
-      onUpdateDeviceModal,
-    } = this.props;
+    const { devices, onDeviceListUpdate, onUpdateDeviceDisplayed } = this.props;
 
     const preferredDevices = {
       added: new Set(),
@@ -130,7 +132,6 @@ class DeviceModal extends PureComponent {
     }
 
     onDeviceListUpdate(preferredDevices);
-    onUpdateDeviceModal(false);
   }
 
   onEditCustomDevice(newDevice) {

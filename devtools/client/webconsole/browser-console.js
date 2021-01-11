@@ -4,8 +4,13 @@
 
 "use strict";
 
-var Services = require("Services");
-var WebConsole = require("devtools/client/webconsole/webconsole");
+const Services = require("Services");
+const WebConsole = require("devtools/client/webconsole/webconsole");
+const { TargetList } = require("devtools/shared/resources/target-list");
+const {
+  ResourceWatcher,
+} = require("devtools/shared/resources/resource-watcher");
+const { Utils } = require("devtools/client/webconsole/utils");
 
 loader.lazyRequireGetter(this, "Telemetry", "devtools/client/shared/telemetry");
 loader.lazyRequireGetter(
@@ -40,6 +45,8 @@ class BrowserConsole extends WebConsole {
     super(null, iframeWindow, chromeWindow, true);
 
     this._browserConsoleTarget = target;
+    this._targetList = new TargetList(target.client.mainRoot, target);
+    this._resourceWatcher = new ResourceWatcher(this._targetList);
     this._telemetry = new Telemetry();
     this._bcInitializer = null;
     this._bcDestroyer = null;
@@ -47,6 +54,14 @@ class BrowserConsole extends WebConsole {
 
   get currentTarget() {
     return this._browserConsoleTarget;
+  }
+
+  get targetList() {
+    return this._targetList;
+  }
+
+  get resourceWatcher() {
+    return this._resourceWatcher;
   }
 
   /**
@@ -60,14 +75,25 @@ class BrowserConsole extends WebConsole {
       return this._bcInitializer;
     }
 
-    // Only add the shutdown observer if we've opened a Browser Console window.
-    ShutdownObserver.init();
+    this._bcInitializer = (async () => {
+      // Only add the shutdown observer if we've opened a Browser Console window.
+      ShutdownObserver.init();
 
-    // browserconsole is not connected with a toolbox so we pass -1 as the
-    // toolbox session id.
-    this._telemetry.toolOpened("browserconsole", -1, this);
+      // browserconsole is not connected with a toolbox so we pass -1 as the
+      // toolbox session id.
+      this._telemetry.toolOpened("browserconsole", -1, this);
 
-    this._bcInitializer = super.init();
+      // Bug 1605763: Call super.init before fetching targets in order to build the
+      // console UI first; have it listen for targets and be able to display first
+      // targets as soon as they get available.
+      await super.init(false);
+      await this.targetList.startListening();
+
+      // Reports the console as created only after everything is done,
+      // including TargetList.startListening.
+      const id = Utils.supportsString(this.hudId);
+      Services.obs.notifyObservers(id, "web-console-created");
+    })();
     return this._bcInitializer;
   }
 
@@ -87,6 +113,12 @@ class BrowserConsole extends WebConsole {
       // toolbox session id.
       this._telemetry.toolClosed("browserconsole", -1, this);
 
+      // Wait for any pending connection initialization.
+      await Promise.all(
+        this.ui.getAllProxies().map(proxy => proxy.getConnectionPromise())
+      );
+
+      await this.targetList.stopListening();
       await super.destroy();
       await this.currentTarget.destroy();
       this.chromeWindow.close();

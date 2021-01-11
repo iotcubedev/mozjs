@@ -27,14 +27,13 @@ using mozilla::Utf8Unit;
 
 using JS::ReadOnlyCompileOptions;
 
-enum class OffThread { Compile, Decode, DecodeBinAST };
+enum class OffThread { Compile, Decode };
 
 static bool CanDoOffThread(JSContext* cx, const ReadOnlyCompileOptions& options,
                            size_t length, OffThread what) {
   static const size_t TINY_LENGTH = 5 * 1000;
   static const size_t HUGE_SRC_LENGTH = 100 * 1000;
   static const size_t HUGE_BC_LENGTH = 367 * 1000;
-  static const size_t HUGE_BINAST_LENGTH = 70 * 1000;
 
   // These are heuristics which the caller may choose to ignore (e.g., for
   // testing purposes).
@@ -55,14 +54,10 @@ static bool CanDoOffThread(JSContext* cx, const ReadOnlyCompileOptions& options,
       if (what == OffThread::Decode && length < HUGE_BC_LENGTH) {
         return false;
       }
-      if (what == OffThread::DecodeBinAST && length < HUGE_BINAST_LENGTH) {
-        return false;
-      }
     }
   }
 
-  return cx->runtime()->canUseParallelParsing() && CanUseExtraThreads() &&
-         !mozilla::recordreplay::IsRecordingOrReplaying();
+  return cx->runtime()->canUseParallelParsing() && CanUseExtraThreads();
 }
 
 JS_PUBLIC_API bool JS::CanCompileOffThread(
@@ -202,26 +197,3 @@ JS_PUBLIC_API void JS::CancelMultiOffThreadScriptsDecoder(
   HelperThreadState().cancelParseTask(cx->runtime(),
                                       ParseTaskKind::MultiScriptsDecode, token);
 }
-
-#ifdef JS_BUILD_BINAST
-
-JS_PUBLIC_API bool JS::CanDecodeBinASTOffThread(
-    JSContext* cx, const ReadOnlyCompileOptions& options, size_t length) {
-  return CanDoOffThread(cx, options, length, OffThread::DecodeBinAST);
-}
-
-JS_PUBLIC_API bool JS::DecodeBinASTOffThread(
-    JSContext* cx, const ReadOnlyCompileOptions& options, const uint8_t* buf,
-    size_t length, OffThreadCompileCallback callback, void* callbackData) {
-  return StartOffThreadDecodeBinAST(cx, options, buf, length, callback,
-                                    callbackData);
-}
-
-JS_PUBLIC_API JSScript* JS::FinishOffThreadBinASTDecode(
-    JSContext* cx, JS::OffThreadToken* token) {
-  MOZ_ASSERT(cx);
-  MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
-  return HelperThreadState().finishBinASTDecodeTask(cx, token);
-}
-
-#endif  // JS_BUILD_BINAST

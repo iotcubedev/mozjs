@@ -27,11 +27,6 @@
 #include <algorithm>
 #include "ImageContainer.h"
 
-#ifdef XP_MACOSX
-#  include "mozilla/gfx/MacIOSurface.h"
-#  include "mozilla/layers/NativeLayerCA.h"
-#endif
-
 namespace mozilla {
 using namespace mozilla::gfx;
 
@@ -373,7 +368,7 @@ static RefPtr<gfx::Path> BuildPathFromPolygon(const RefPtr<DrawTarget>& aDT,
 
 static void DrawSurface(gfx::DrawTarget* aDest, const gfx::Rect& aDestRect,
                         const gfx::Rect& /* aClipRect */,
-                        const gfx::Color& aColor,
+                        const gfx::DeviceColor& aColor,
                         const gfx::DrawOptions& aOptions,
                         gfx::SourceSurface* aMask,
                         const gfx::Matrix* aMaskTransform) {
@@ -381,7 +376,8 @@ static void DrawSurface(gfx::DrawTarget* aDest, const gfx::Rect& aDestRect,
 }
 
 static void DrawSurface(gfx::DrawTarget* aDest, const gfx::Polygon& aPolygon,
-                        const gfx::Rect& aClipRect, const gfx::Color& aColor,
+                        const gfx::Rect& aClipRect,
+                        const gfx::DeviceColor& aColor,
                         const gfx::DrawOptions& aOptions,
                         gfx::SourceSurface* aMask,
                         const gfx::Matrix* aMaskTransform) {
@@ -670,6 +666,10 @@ void BasicCompositor::DrawGeometry(
   // offset can be anywhere.
   IntRect clipRectInRenderTargetSpace =
       aClipRect + mRenderTarget->GetClipSpaceOrigin();
+  if (Maybe<IntRect> rtClip = mRenderTarget->GetClipRect()) {
+    clipRectInRenderTargetSpace =
+        clipRectInRenderTargetSpace.Intersect(*rtClip);
+  }
   buffer->PushClipRect(Rect(clipRectInRenderTargetSpace));
   Rect deviceSpaceClipRect(clipRectInRenderTargetSpace - offset);
 
@@ -1026,74 +1026,57 @@ Maybe<gfx::IntRect> BasicCompositor::BeginRenderingToNativeLayer(
     const nsIntRegion& aOpaqueRegion, NativeLayer* aNativeLayer) {
   IntRect rect = aNativeLayer->GetRect();
 
+  // We only support a single invalid rect per native layer. This is a
+  // limitation that's imposed by the AttemptVideo[ConvertAnd]Scale functions,
+  // which require knowing the combined clip in DrawGeometry and can only handle
+  // a single clip rect.
+  IntRect invalidRect;
   if (mShouldInvalidateWindow) {
-    mInvalidRegion = rect;
+    invalidRect = rect;
   } else {
-    mInvalidRegion.And(aInvalidRegion, rect);
+    IntRegion invalidRegion;
+    invalidRegion.And(aInvalidRegion, rect);
+    if (invalidRegion.IsEmpty()) {
+      return Nothing();
+    }
+    invalidRect = invalidRegion.GetBounds();
   }
-
-  if (mInvalidRegion.IsEmpty()) {
-    return Nothing();
-  }
+  mInvalidRegion = invalidRect;
 
   RefPtr<CompositingRenderTarget> target;
-#ifdef XP_MACOSX
-  NativeLayerCA* nativeLayer = aNativeLayer->AsNativeLayerCA();
-  MOZ_RELEASE_ASSERT(nativeLayer, "Unexpected native layer type");
-  nativeLayer->SetSurfaceIsFlipped(false);
-  CFTypeRefPtr<IOSurfaceRef> surf = nativeLayer->NextSurface();
-  if (!surf) {
+  aNativeLayer->SetSurfaceIsFlipped(false);
+  IntRegion invalidRelativeToLayer = invalidRect - rect.TopLeft();
+  RefPtr<DrawTarget> dt = aNativeLayer->NextSurfaceAsDrawTarget(
+      gfx::IntRect({}, aNativeLayer->GetSize()), invalidRelativeToLayer,
+      BackendType::SKIA);
+  if (!dt) {
     return Nothing();
   }
-  IntRegion invalidRelativeToLayer = mInvalidRegion.MovedBy(-rect.TopLeft());
-  nativeLayer->InvalidateRegionThroughoutSwapchain(invalidRelativeToLayer);
-  invalidRelativeToLayer = nativeLayer->CurrentSurfaceInvalidRegion();
-  mInvalidRegion = invalidRelativeToLayer.MovedBy(rect.TopLeft());
-  MOZ_RELEASE_ASSERT(!mInvalidRegion.IsEmpty());
   mCurrentNativeLayer = aNativeLayer;
-  mCurrentIOSurface = new MacIOSurface(std::move(surf));
-  mCurrentIOSurface->Lock(false);
-  RefPtr<DrawTarget> dt =
-      mCurrentIOSurface->GetAsDrawTargetLocked(BackendType::SKIA);
   IntRegion clearRegion;
   clearRegion.Sub(mInvalidRegion, aOpaqueRegion);
   // Set up a render target for drawing directly to dt.
   target = CreateRootRenderTarget(dt, rect, clearRegion);
-#else
-  MOZ_CRASH("Unexpected native layer on this platform");
-#endif
 
   MOZ_RELEASE_ASSERT(target);
   SetRenderTarget(target);
 
-  gfxUtils::ClipToRegion(mRenderTarget->mDrawTarget, mInvalidRegion);
-
-  mRenderTarget->mDrawTarget->PushClipRect(Rect(aClipRect.valueOr(rect)));
+  IntRect clipRect = invalidRect;
+  if (aClipRect) {
+    clipRect = clipRect.Intersect(*aClipRect);
+  }
+  mRenderTarget->SetClipRect(Some(clipRect));
 
   return Some(rect);
 }
 
 void BasicCompositor::EndRenderingToNativeLayer() {
-  // Pop aClipRect/bounds rect
-  mRenderTarget->mDrawTarget->PopClip();
-
-  // Pop mInvalidRegion
-  mRenderTarget->mDrawTarget->PopClip();
-
-  MOZ_RELEASE_ASSERT(mCurrentNativeLayer);
-
+  mRenderTarget->SetClipRect(Nothing());
   SetRenderTarget(mNativeLayersReferenceRT);
 
-#ifdef XP_MACOSX
-  NativeLayerCA* nativeLayer = mCurrentNativeLayer->AsNativeLayerCA();
-  MOZ_RELEASE_ASSERT(nativeLayer, "Unexpected native layer type");
-  mCurrentIOSurface->Unlock(false);
-  mCurrentIOSurface = nullptr;
-  nativeLayer->NotifySurfaceReady();
+  MOZ_RELEASE_ASSERT(mCurrentNativeLayer);
+  mCurrentNativeLayer->NotifySurfaceReady();
   mCurrentNativeLayer = nullptr;
-#else
-  MOZ_CRASH("Unexpected native layer on this platform");
-#endif
 }
 
 void BasicCompositor::EndFrame() {
@@ -1108,8 +1091,9 @@ void BasicCompositor::EndFrame() {
       float g = float(rand()) / float(RAND_MAX);
       float b = float(rand()) / float(RAND_MAX);
       // We're still clipped to mInvalidRegion, so just fill the bounds.
-      mRenderTarget->mDrawTarget->FillRect(Rect(mInvalidRegion.GetBounds()),
-                                           ColorPattern(Color(r, g, b, 0.2f)));
+      mRenderTarget->mDrawTarget->FillRect(
+          Rect(mInvalidRegion.GetBounds()),
+          ColorPattern(DeviceColor(r, g, b, 0.2f)));
     }
 
     // Pop aInvalidRegion
@@ -1135,6 +1119,15 @@ void BasicCompositor::EndFrame() {
   mShouldInvalidateWindow = false;
 }
 
+RefPtr<SurfacePoolHandle> BasicCompositor::GetSurfacePoolHandle() {
+#ifdef XP_MACOSX
+  if (!mSurfacePoolHandle) {
+    mSurfacePoolHandle = SurfacePool::Create(0)->GetHandleForGL(nullptr);
+  }
+#endif
+  return mSurfacePoolHandle;
+}
+
 void BasicCompositor::TryToEndRemoteDrawing() {
   if (mIsDestroyed || !mRenderTarget) {
     return;
@@ -1149,7 +1142,7 @@ void BasicCompositor::TryToEndRemoteDrawing() {
     RefPtr<Runnable> runnable =
         NS_NewRunnableFunction("layers::BasicCompositor::TryToEndRemoteDrawing",
                                [self]() { self->TryToEndRemoteDrawing(); });
-    MessageLoop::current()->PostDelayedTask(runnable.forget(), retryMs);
+    GetCurrentSerialEventTarget()->DelayedDispatch(runnable.forget(), retryMs);
   } else {
     EndRemoteDrawing();
   }

@@ -23,6 +23,7 @@
 #include <algorithm>
 
 using namespace mozilla;
+using mozilla::dom::Document;
 using mozilla::dom::Element;
 using mozilla::dom::HTMLMeterElement;
 
@@ -35,7 +36,7 @@ NS_IMPL_FRAMEARENA_HELPERS(nsMeterFrame)
 nsMeterFrame::nsMeterFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
     : nsContainerFrame(aStyle, aPresContext, kClassID), mBarDiv(nullptr) {}
 
-nsMeterFrame::~nsMeterFrame() {}
+nsMeterFrame::~nsMeterFrame() = default;
 
 void nsMeterFrame::DestroyFrom(nsIFrame* aDestructRoot,
                                PostDestroyData& aPostDestroyData) {
@@ -136,7 +137,7 @@ void nsMeterFrame::ReflowBarFrame(nsIFrame* aBarFrame,
 
   size = NSToCoordRound(size * position);
 
-  if (!vertical && (wm.IsVertical() ? wm.IsVerticalRL() : !wm.IsBidiLTR())) {
+  if (!vertical && wm.IsPhysicalRTL()) {
     xoffset += aReflowInput.ComputedWidth() - size;
   }
 
@@ -193,7 +194,8 @@ LogicalSize nsMeterFrame::ComputeAutoSize(
 
   const WritingMode wm = GetWritingMode();
   LogicalSize autoSize(wm);
-  autoSize.BSize(wm) = autoSize.ISize(wm) = fontMet->Font().size;  // 1em
+  autoSize.BSize(wm) = autoSize.ISize(wm) =
+      fontMet->Font().size.ToAppUnits();  // 1em
 
   if (ResolvedOrientationIsVertical() == wm.IsVertical()) {
     autoSize.ISize(wm) *= 5;  // 5em
@@ -208,7 +210,7 @@ nscoord nsMeterFrame::GetMinISize(gfxContext* aRenderingContext) {
   RefPtr<nsFontMetrics> fontMet =
       nsLayoutUtils::GetFontMetricsForFrame(this, 1.0f);
 
-  nscoord minISize = fontMet->Font().size;  // 1em
+  nscoord minISize = fontMet->Font().size.ToAppUnits();  // 1em
 
   if (ResolvedOrientationIsVertical() == GetWritingMode().IsVertical()) {
     // The orientation is inline
@@ -229,13 +231,12 @@ bool nsMeterFrame::ShouldUseNativeStyle() const {
   // - both frames use the native appearance;
   // - neither frame has author specified rules setting the border or the
   //   background.
-  return StyleDisplay()->mAppearance == StyleAppearance::Meter &&
+  return StyleDisplay()->EffectiveAppearance() == StyleAppearance::Meter &&
          !PresContext()->HasAuthorSpecifiedRules(
-             this,
-             NS_AUTHOR_SPECIFIED_BORDER | NS_AUTHOR_SPECIFIED_BACKGROUND) &&
+             this, NS_AUTHOR_SPECIFIED_BORDER_OR_BACKGROUND) &&
          barFrame &&
-         barFrame->StyleDisplay()->mAppearance == StyleAppearance::Meterchunk &&
+         barFrame->StyleDisplay()->EffectiveAppearance() ==
+             StyleAppearance::Meterchunk &&
          !PresContext()->HasAuthorSpecifiedRules(
-             barFrame,
-             NS_AUTHOR_SPECIFIED_BORDER | NS_AUTHOR_SPECIFIED_BACKGROUND);
+             barFrame, NS_AUTHOR_SPECIFIED_BORDER_OR_BACKGROUND);
 }

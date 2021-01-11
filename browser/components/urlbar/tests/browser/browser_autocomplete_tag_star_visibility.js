@@ -111,7 +111,10 @@ add_task(async function() {
       );
     }
 
-    await promiseAutocompleteResultPopup(testcase.input);
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: testcase.input,
+    });
 
     Assert.greaterOrEqual(
       UrlbarTestUtils.getResultCount(window),
@@ -140,7 +143,7 @@ add_task(async function() {
     if (testcase.expected.typeImageVisible) {
       Assert.equal(
         result.displayed.typeIcon,
-        'url("chrome://browser/skin/bookmark.svg")',
+        'url("chrome://browser/skin/bookmark-12.svg")',
         "Should have the star image displayed or not as expected"
       );
     } else {

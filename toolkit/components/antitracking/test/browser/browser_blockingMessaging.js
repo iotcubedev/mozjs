@@ -1,6 +1,10 @@
 /* import-globals-from antitracking_head.js */
 
-requestLongerTimeout(6);
+if (AppConstants.MOZ_CODE_COVERAGE) {
+  requestLongerTimeout(12);
+} else {
+  requestLongerTimeout(6);
+}
 
 AntiTracking.runTestInNormalAndPrivateMode(
   "BroadcastChannel",
@@ -138,11 +142,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     new BroadcastChannel("hello");
     ok(true, "BroadcastChanneli can be used");
@@ -252,11 +252,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
     }
 
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     let blob = new Blob([nonBlockingCode.toString() + "; nonBlockingCode();"]);
     ok(blob, "Blob has been created");

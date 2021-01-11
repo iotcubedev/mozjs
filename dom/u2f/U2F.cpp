@@ -11,7 +11,6 @@
 #include "mozilla/dom/WebAuthnTransactionChild.h"
 #include "mozilla/dom/WebAuthnUtil.h"
 #include "nsContentUtils.h"
-#include "nsIEffectiveTLDService.h"
 #include "nsNetUtil.h"
 #include "nsURLParsers.h"
 
@@ -32,17 +31,14 @@ class nsHTMLDocument {
 namespace mozilla {
 namespace dom {
 
-static mozilla::LazyLogModule gU2FLog("u2fmanager");
-
-NS_NAMED_LITERAL_STRING(kFinishEnrollment, "navigator.id.finishEnrollment");
-NS_NAMED_LITERAL_STRING(kGetAssertion, "navigator.id.getAssertion");
+constexpr auto kFinishEnrollment = u"navigator.id.finishEnrollment"_ns;
+constexpr auto kGetAssertion = u"navigator.id.getAssertion"_ns;
 
 // Bug #1436078 - Permit Google Accounts. Remove in Bug #1436085 in Jan 2023.
-NS_NAMED_LITERAL_STRING(kGoogleAccountsAppId1,
-                        "https://www.gstatic.com/securitykey/origins.json");
-NS_NAMED_LITERAL_STRING(
-    kGoogleAccountsAppId2,
-    "https://www.gstatic.com/securitykey/a/google.com/origins.json");
+constexpr auto kGoogleAccountsAppId1 =
+    u"https://www.gstatic.com/securitykey/origins.json"_ns;
+constexpr auto kGoogleAccountsAppId2 =
+    u"https://www.gstatic.com/securitykey/a/google.com/origins.json"_ns;
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(U2F)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -183,7 +179,8 @@ void U2F::ExecuteCallback(T& aResp, nsMainThreadPtrHandle<C>& aCb) {
   MOZ_ASSERT(aCb);
 
   ErrorResult error;
-  aCb->Call(aResp, error);
+  RefPtr<C> temp = aCb.get();  // Make sure it stays alive
+  temp->Call(aResp, error);
   NS_WARNING_ASSERTION(!error.Failed(), "dom::U2F::Promise callback failed");
   error.SuppressException();  // Useful exceptions already emitted
 }
@@ -285,9 +282,19 @@ void U2F::Register(const nsAString& aAppId,
   NS_ConvertUTF16toUTF8 clientData(clientDataJSON);
   uint32_t adjustedTimeoutMillis = AdjustedTimeoutMillis(opt_aTimeoutSeconds);
 
+  BrowsingContext* context = mParent->GetBrowsingContext();
+  if (!context) {
+    RegisterResponse response;
+    response.mErrorCode.Construct(
+        static_cast<uint32_t>(ErrorCode::OTHER_ERROR));
+    ExecuteCallback(response, callback);
+    return;
+  }
+
   WebAuthnMakeCredentialInfo info(mOrigin, adjustedAppId, challenge, clientData,
                                   adjustedTimeoutMillis, excludeList,
-                                  Nothing() /* no extra info for U2F */);
+                                  Nothing(), /* no extra info for U2F */
+                                  context->Id());
 
   MOZ_ASSERT(mTransaction.isNothing());
   mTransaction = Some(U2FTransaction(AsVariant(callback)));
@@ -471,9 +478,19 @@ void U2F::Sign(const nsAString& aAppId, const nsAString& aChallenge,
   NS_ConvertUTF16toUTF8 clientData(clientDataJSON);
   uint32_t adjustedTimeoutMillis = AdjustedTimeoutMillis(opt_aTimeoutSeconds);
 
+  BrowsingContext* context = mParent->GetBrowsingContext();
+  if (!context) {
+    SignResponse response;
+    response.mErrorCode.Construct(
+        static_cast<uint32_t>(ErrorCode::OTHER_ERROR));
+    ExecuteCallback(response, callback);
+    return;
+  }
+
   WebAuthnGetAssertionInfo info(mOrigin, adjustedAppId, challenge, clientData,
                                 adjustedTimeoutMillis, permittedList,
-                                Nothing() /* no extra info for U2F */);
+                                Nothing(), /* no extra info for U2F */
+                                context->Id());
 
   MOZ_ASSERT(mTransaction.isNothing());
   mTransaction = Some(U2FTransaction(AsVariant(callback)));

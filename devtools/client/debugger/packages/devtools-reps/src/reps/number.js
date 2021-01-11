@@ -3,28 +3,29 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 const { getGripType, wrapRender } = require("./rep-utils");
-
-const dom = require("react-dom-factories");
-const { span } = dom;
 
 /**
  * Renders a number
  */
+
 Number.propTypes = {
   object: PropTypes.oneOfType([
     PropTypes.object,
     PropTypes.number,
     PropTypes.bool,
   ]).isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function Number(props) {
-  const value = props.object;
+  const value = stringify(props.object);
+  const config = getElementConfig(props.shouldRenderTooltip, value);
 
-  return span({ className: "objectBox objectBox-number" }, stringify(value));
+  return span(config, value);
 }
 
 function stringify(object) {
@@ -32,6 +33,13 @@ function stringify(object) {
     Object.is(object, -0) || (object.type && object.type == "-0");
 
   return isNegativeZero ? "-0" : String(object);
+}
+
+function getElementConfig(shouldRenderTooltip, value) {
+  return {
+    className: "objectBox objectBox-number",
+    title: shouldRenderTooltip ? value : null,
+  };
 }
 
 function supportsObject(object, noGrip = false) {

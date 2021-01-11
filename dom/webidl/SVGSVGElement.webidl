@@ -12,6 +12,7 @@
 
 interface SVGViewSpec;
 
+[Exposed=Window]
 interface SVGSVGElement : SVGGraphicsElement {
 
   [Constant]
@@ -62,12 +63,12 @@ interface SVGSVGElement : SVGGraphicsElement {
   SVGRect createSVGRect();
   [NewObject]
   SVGTransform createSVGTransform();
-  [NewObject]
-  SVGTransform createSVGTransformFromMatrix(SVGMatrix matrix);
+  [NewObject, Throws]
+  SVGTransform createSVGTransformFromMatrix(optional DOMMatrix2DInit matrix = {});
   [UseCounter]
   Element? getElementById(DOMString elementId);
 };
 
-SVGSVGElement implements SVGFitToViewBox;
-SVGSVGElement implements SVGZoomAndPanValues;
+SVGSVGElement includes SVGFitToViewBox;
+SVGSVGElement includes SVGZoomAndPan;
 

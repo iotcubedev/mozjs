@@ -15,6 +15,7 @@
       this.mInput = null;
       this.mPopupOpen = false;
       this._currentIndex = 0;
+      this._disabledItemClicked = false;
 
       this.setListeners();
     }
@@ -25,7 +26,7 @@
       this.setAttribute("consumeoutsideclicks", "never");
 
       this.textContent = "";
-      this.appendChild(MozXULElement.parseXULToFragment(this._markup));
+      this.appendChild(this.constructor.fragment);
 
       /**
        * This is the default number of rows that we give the autocomplete
@@ -59,16 +60,23 @@
             }
 
             switch (event.type) {
+              case "mousedown":
+                this._disabledItemClicked = !!event.target.closest(
+                  "richlistitem"
+                )?.disabled;
+                break;
               case "mouseup":
                 // Don't call onPopupClick for the scrollbar buttons, thumb,
                 // slider, etc. If we hit the richlistbox and not a
                 // richlistitem, we ignore the event.
                 if (
                   event.target.closest("richlistbox,richlistitem").localName ==
-                  "richlistitem"
+                    "richlistitem" &&
+                  !this._disabledItemClicked
                 ) {
                   this.onPopupClick(event);
                 }
+                this._disabledItemClicked = false;
                 break;
               case "mousemove":
                 if (Date.now() - this.mLastMoveTime <= 30) {
@@ -97,6 +105,7 @@
           },
         };
       }
+      this.richlistbox.addEventListener("mousedown", this.listEvents);
       this.richlistbox.addEventListener("mouseup", this.listEvents);
       this.richlistbox.addEventListener("mousemove", this.listEvents);
     }
@@ -108,9 +117,9 @@
       return this._richlistbox;
     }
 
-    get _markup() {
+    static get markup() {
       return `
-      <richlistbox class="autocomplete-richlistbox" flex="1"></richlistbox>
+      <richlistbox class="autocomplete-richlistbox" flex="1"/>
     `;
     }
 
@@ -337,10 +346,8 @@
         height = lastRowRect.bottom - firstRowRect.top + this._rlbPadding;
       }
 
-      let currentHeight = this.richlistbox.getBoundingClientRect().height;
-      if (height <= currentHeight) {
-        this._collapseUnusedItems();
-      }
+      this._collapseUnusedItems();
+
       this.richlistbox.style.removeProperty("height");
       // We need to get the ceiling of the calculated value to ensure that the box fully contains
       // all of its contents and doesn't cause a scrollbar since nsIBoxObject only expects a
@@ -394,6 +401,7 @@
             "autofill-clear-button",
             "autofill-insecureWarning",
             "generatedPassword",
+            "importableLogins",
             "insecureWarning",
             "loginsFooter",
             "loginWithOrigin",
@@ -424,8 +432,11 @@
             case "autofill-insecureWarning":
               options = { is: "autocomplete-creditcard-insecure-field" };
               break;
+            case "importableLogins":
+              options = { is: "autocomplete-importable-logins-richlistitem" };
+              break;
             case "generatedPassword":
-              options = { is: "autocomplete-two-line-richlistitem" };
+              options = { is: "autocomplete-generated-password-richlistitem" };
               break;
             case "insecureWarning":
               options = { is: "autocomplete-richlistitem-insecure-warning" };
@@ -463,11 +474,9 @@
             this.mousedOverIndex === this._currentIndex)
         ) {
           // try to re-use the existing item
-          let reused = item._reuseAcItem();
-          if (reused) {
-            this._currentIndex++;
-            continue;
-          }
+          item._reuseAcItem();
+          this._currentIndex++;
+          continue;
         } else {
           if (typeof item._cleanup == "function") {
             item._cleanup();
@@ -533,6 +542,7 @@
 
     disconnectedCallback() {
       if (this.listEvents) {
+        this.richlistbox.removeEventListener("mousedown", this.listEvents);
         this.richlistbox.removeEventListener("mouseup", this.listEvents);
         this.richlistbox.removeEventListener("mousemove", this.listEvents);
         delete this.listEvents;
@@ -548,26 +558,6 @@
         if (this._normalMaxRows < 0 && this.mInput) {
           this._normalMaxRows = this.mInput.maxRows;
         }
-
-        // Set an attribute for styling the popup based on the input.
-        let inputID = "";
-        if (
-          this.mInput &&
-          this.mInput.ownerDocument &&
-          this.mInput.ownerDocument.documentURIObject.schemeIs("chrome")
-        ) {
-          inputID = this.mInput.id;
-          // Take care of elements with no id that are inside xbl bindings
-          if (!inputID) {
-            let bindingParent = this.mInput.ownerDocument.getBindingParent(
-              this.mInput
-            );
-            if (bindingParent) {
-              inputID = bindingParent.id;
-            }
-          }
-        }
-        this.setAttribute("autocompleteinput", inputID);
 
         this.mPopupOpen = true;
       });
@@ -586,7 +576,6 @@
         }
         this.input.controller.stopSearch();
 
-        this.removeAttribute("autocompleteinput");
         this.mPopupOpen = false;
 
         // Reset the maxRows property to the cached "normal" value (if there's

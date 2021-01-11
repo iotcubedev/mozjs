@@ -18,12 +18,12 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(WorkletGlobalScope)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WorkletGlobalScope)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsole)
-  tmp->UnlinkHostObjectURIs();
+  tmp->UnlinkObjectsInGlobal();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(WorkletGlobalScope)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsole)
-  tmp->TraverseHostObjectURIs(cb);
+  tmp->TraverseObjectsInGlobal(cb);
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(WorkletGlobalScope)
@@ -36,8 +36,11 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WorkletGlobalScope)
   NS_INTERFACE_MAP_ENTRY(WorkletGlobalScope)
 NS_INTERFACE_MAP_END
 
-WorkletGlobalScope::WorkletGlobalScope()
-    : mCreationTimeStamp(TimeStamp::Now()) {}
+WorkletGlobalScope::WorkletGlobalScope(const Maybe<nsID>& aAgentClusterId,
+                                       bool aSharedMemoryAllowed)
+    : mCreationTimeStamp(TimeStamp::Now()),
+      mAgentClusterId(aAgentClusterId),
+      mSharedMemoryAllowed(aSharedMemoryAllowed) {}
 
 WorkletGlobalScope::~WorkletGlobalScope() = default;
 

@@ -19,6 +19,7 @@ add_task(async function() {
   await waitForOverflowButtonShown();
   registerCleanupFunction(() => CustomizableUI.reset());
 
+  info("Waiting for the overflow panel to open");
   await document.getElementById("nav-bar").overflowable.show();
 
   let charEncodingButton = document.getElementById("characterencoding-button");
@@ -49,11 +50,11 @@ add_task(async function() {
     !charEncodingButton.hasAttribute("disabled"),
     "The Character encoding button gets enabled"
   );
+  charEncodingButton.click();
   let characterEncodingView = document.getElementById(
     "PanelUI-characterEncodingView"
   );
   let subviewShownPromise = subviewShown(characterEncodingView);
-  charEncodingButton.click();
   await subviewShownPromise;
 
   ok(
@@ -73,22 +74,11 @@ add_task(async function() {
   let checkedButtons = characterEncodingView.querySelectorAll(
     "toolbarbutton[checked='true']"
   );
-  is(
-    checkedButtons.length,
-    2,
-    "There should be 2 checked items (1 charset, 1 detector)."
-  );
+  is(checkedButtons.length, 1, "There should be 1 checked item.");
   is(
     checkedButtons[0].getAttribute("label"),
     "Western",
     "The western encoding is correctly selected"
-  );
-  is(
-    characterEncodingView.querySelectorAll(
-      "#PanelUI-characterEncodingView-autodetect toolbarbutton[checked='true']"
-    ).length,
-    1,
-    "There should be 1 checked detector."
   );
 
   panelHidePromise = promiseOverflowHidden(window);

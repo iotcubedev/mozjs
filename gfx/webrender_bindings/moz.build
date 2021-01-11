@@ -11,12 +11,15 @@ EXPORTS.mozilla.webrender += [
     'RenderBufferTextureHost.h',
     'RenderCompositor.h',
     'RenderCompositorOGL.h',
+    'RenderCompositorSWGL.h',
     'RenderEGLImageTextureHost.h',
     'RendererOGL.h',
     'RendererScreenshotGrabber.h',
+    'RenderExternalTextureHost.h',
     'RenderSharedSurfaceTextureHost.h',
     'RenderTextureHost.h',
     'RenderTextureHostOGL.h',
+    'RenderTextureHostWrapper.h',
     'RenderThread.h',
     'webrender_ffi.h',
     'WebRenderAPI.h',
@@ -28,12 +31,15 @@ UNIFIED_SOURCES += [
     'RenderBufferTextureHost.cpp',
     'RenderCompositor.cpp',
     'RenderCompositorOGL.cpp',
+    'RenderCompositorSWGL.cpp',
     'RenderEGLImageTextureHost.cpp',
     'RendererOGL.cpp',
     'RendererScreenshotGrabber.cpp',
+    'RenderExternalTextureHost.cpp',
     'RenderSharedSurfaceTextureHost.cpp',
     'RenderTextureHost.cpp',
     'RenderTextureHostOGL.cpp',
+    'RenderTextureHostWrapper.cpp',
     'RenderThread.cpp',
     'WebRenderAPI.cpp',
     'WebRenderTypes.cpp',
@@ -41,18 +47,22 @@ UNIFIED_SOURCES += [
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     EXPORTS.mozilla.webrender += [
+        'RenderCompositorNative.h',
         'RenderMacIOSurfaceTextureHostOGL.h',
     ]
     UNIFIED_SOURCES += [
+        'RenderCompositorNative.cpp',
         'RenderMacIOSurfaceTextureHostOGL.cpp',
     ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
     EXPORTS.mozilla.webrender += [
+        'RenderAndroidHardwareBufferTextureHost.h',
         'RenderAndroidSurfaceTextureHostOGL.h',
         'RenderCompositorEGL.h',
     ]
     UNIFIED_SOURCES += [
+        'RenderAndroidHardwareBufferTextureHost.cpp',
         'RenderAndroidSurfaceTextureHostOGL.cpp',
         'RenderCompositorEGL.cpp',
     ]
@@ -60,6 +70,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
 if CONFIG['MOZ_ENABLE_D3D10_LAYER']:
     DEFINES['MOZ_ENABLE_D3D10_LAYER'] = True
     EXPORTS.mozilla.webrender += [
+        'DCLayerTree.h',
         'RenderCompositorANGLE.h',
         'RenderD3D11TextureHostOGL.h',
     ]
@@ -67,15 +78,18 @@ if CONFIG['MOZ_ENABLE_D3D10_LAYER']:
         'RenderD3D11TextureHostOGL.cpp',
     ]
     SOURCES += [
+        'DCLayerTree.cpp',
         'RenderCompositorANGLE.cpp',
     ]
 
 if CONFIG['MOZ_WAYLAND']:
     EXPORTS.mozilla.webrender += [
         'RenderCompositorEGL.h',
+        'RenderDMABUFTextureHostOGL.h',
     ]
     SOURCES += [
         'RenderCompositorEGL.cpp',
+        'RenderDMABUFTextureHostOGL.cpp',
     ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk'):
@@ -83,21 +97,16 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('android', 'gtk'):
     CXXFLAGS += CONFIG['CAIRO_FT_CFLAGS']
 
 if CONFIG['COMPILE_ENVIRONMENT']:
-    GENERATED_FILES += [
-        'webrender_ffi_generated.h',
-    ]
-
     EXPORTS.mozilla.webrender += [
         '!webrender_ffi_generated.h',
     ]
 
-    ffi_generated = GENERATED_FILES['webrender_ffi_generated.h']
-    ffi_generated.script = '/layout/style/RunCbindgen.py:generate'
-    ffi_generated.inputs = [
-        '/gfx/webrender_bindings',
-        '/gfx/wr/webrender',
-        '/gfx/wr/webrender_api',
-    ]
+    CbindgenHeader('webrender_ffi_generated.h',
+                   inputs=[
+                       '/gfx/webrender_bindings',
+                       '/gfx/wr/webrender',
+                       '/gfx/wr/webrender_api',
+                   ])
 
 
 include('/ipc/chromium/chromium-config.mozbuild')

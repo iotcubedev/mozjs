@@ -11,8 +11,8 @@ Services.scriptloader.loadSubScript(
   this
 );
 
-var { DebuggerServer } = require("devtools/server/debugger-server");
-var { DebuggerClient } = require("devtools/shared/client/debugger-client");
+var { DevToolsServer } = require("devtools/server/devtools-server");
+var { DevToolsClient } = require("devtools/client/devtools-client");
 var { Toolbox } = require("devtools/client/framework/toolbox");
 loader.lazyRequireGetter(this, "defer", "devtools/shared/defer");
 
@@ -265,7 +265,7 @@ this.removeTab = function removeTab(tab, win) {
 async function attachThreadActorForTab(tab) {
   const target = await TargetFactory.forTab(tab);
   await target.attach();
-  const [, threadFront] = await target.attachThread();
+  const threadFront = await target.attachThread();
   await threadFront.resume();
   return { client: target.client, threadFront };
 }

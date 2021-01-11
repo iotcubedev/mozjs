@@ -80,6 +80,8 @@ class TlsConnectTestBase : public ::testing::Test {
   void ConnectExpectAlert(std::shared_ptr<TlsAgent>& sender, uint8_t alert);
   void ConnectExpectFailOneSide(TlsAgent::Role failingSide);
   void ConnectWithCipherSuite(uint16_t cipher_suite);
+  void CheckEarlyDataLimit(const std::shared_ptr<TlsAgent>& agent,
+                           size_t expected_size);
   // Check that the keys used in the handshake match expectations.
   void CheckKeys(SSLKEAType kea_type, SSLNamedGroup kea_group,
                  SSLAuthType auth_type, SSLSignatureScheme sig_scheme) const;
@@ -120,6 +122,9 @@ class TlsConnectTestBase : public ::testing::Test {
   void EnableSrtp();
   void CheckSrtp() const;
   void SendReceive(size_t total = 50);
+  void AddPsk(const ScopedPK11SymKey& psk, std::string label, SSLHashType hash,
+              uint16_t zeroRttSuite = TLS_NULL_WITH_NULL_NULL);
+  void RemovePsk(std::string label);
   void SetupForZeroRtt();
   void SetupForResume();
   void ZeroRttSendReceive(
@@ -164,7 +169,7 @@ class TlsConnectTestBase : public ::testing::Test {
   // ssl_extension_unittest.cc.
   const std::vector<SECOidTag> algorithms_ = {SEC_OID_APPLY_SSL_POLICY,
                                               SEC_OID_ANSIX9_DSA_SIGNATURE,
-                                              SEC_OID_CURVE25519};
+                                              SEC_OID_CURVE25519, SEC_OID_SHA1};
   std::vector<std::tuple<SECOidTag, uint32_t>> saved_policies_;
 
  private:

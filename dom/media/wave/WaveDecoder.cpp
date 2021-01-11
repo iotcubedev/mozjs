@@ -21,6 +21,7 @@ bool WaveDecoder::IsSupportedType(const MediaContainerType& aContainerType) {
       aContainerType.Type() == MEDIAMIMETYPE("audio/x-pn-wav")) {
     return (aContainerType.ExtendedType().Codecs().IsEmpty() ||
             aContainerType.ExtendedType().Codecs() == "1" ||
+            aContainerType.ExtendedType().Codecs() == "3" ||
             aContainerType.ExtendedType().Codecs() == "6" ||
             aContainerType.ExtendedType().Codecs() == "7");
   }
@@ -40,16 +41,14 @@ nsTArray<UniquePtr<TrackInfo>> WaveDecoder::GetTracksInfo(
   if (codecs.IsEmpty()) {
     tracks.AppendElement(
         CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-            NS_LITERAL_CSTRING("audio/x-wav"), aType));
+            "audio/x-wav"_ns, aType));
     return tracks;
   }
 
   for (const auto& codec : codecs.Range()) {
     tracks.AppendElement(
         CreateTrackInfoWithMIMETypeAndContainerTypeExtraParameters(
-            NS_LITERAL_CSTRING("audio/wave; codecs=") +
-                NS_ConvertUTF16toUTF8(codec),
-            aType));
+            "audio/wave; codecs="_ns + NS_ConvertUTF16toUTF8(codec), aType));
   }
   return tracks;
 }

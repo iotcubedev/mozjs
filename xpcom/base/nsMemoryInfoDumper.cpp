@@ -21,7 +21,6 @@
 #include "nsGZFileWriter.h"
 #include "nsJSEnvironment.h"
 #include "nsPrintfCString.h"
-#include "nsISimpleEnumerator.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIFile.h"
 
@@ -110,7 +109,7 @@ class GCAndCCLogDumpRunnable final : public Runnable,
   NS_IMETHOD OnFinish() override { return NS_OK; }
 
  private:
-  ~GCAndCCLogDumpRunnable() {}
+  ~GCAndCCLogDumpRunnable() = default;
 
   const nsString mIdentifier;
   const bool mDumpAllTraces;
@@ -215,12 +214,11 @@ bool SetupFifo() {
 
   FifoWatcher* fw = FifoWatcher::GetSingleton();
   // Dump our memory reports (but run this on the main thread!).
-  fw->RegisterCallback(NS_LITERAL_CSTRING("memory report"), doMemoryReport);
-  fw->RegisterCallback(NS_LITERAL_CSTRING("minimize memory report"),
-                       doMemoryReport);
+  fw->RegisterCallback("memory report"_ns, doMemoryReport);
+  fw->RegisterCallback("minimize memory report"_ns, doMemoryReport);
   // Dump GC and CC logs (from the main thread).
-  fw->RegisterCallback(NS_LITERAL_CSTRING("gc log"), doGCCCDump);
-  fw->RegisterCallback(NS_LITERAL_CSTRING("abbreviated gc log"), doGCCCDump);
+  fw->RegisterCallback("gc log"_ns, doGCCCDump);
+  fw->RegisterCallback("abbreviated gc log"_ns, doGCCCDump);
 
 #  ifdef DEBUG
   fifoCallbacksRegistered = true;
@@ -241,9 +239,9 @@ void OnFifoEnabledChange(const char* /*unused*/, void* /*unused*/) {
 
 NS_IMPL_ISUPPORTS(nsMemoryInfoDumper, nsIMemoryInfoDumper)
 
-nsMemoryInfoDumper::nsMemoryInfoDumper() {}
+nsMemoryInfoDumper::nsMemoryInfoDumper() = default;
 
-nsMemoryInfoDumper::~nsMemoryInfoDumper() {}
+nsMemoryInfoDumper::~nsMemoryInfoDumper() = default;
 
 /* static */
 void nsMemoryInfoDumper::Initialize() {
@@ -397,6 +395,12 @@ class GZWriterWrapper : public JSONWriteFunc {
     Unused << mGZWriter->Write(aStr);
   }
 
+  void Write(const char* aStr, size_t aLen) override {
+    // Ignore any failure because JSONWriteFunc doesn't have a mechanism for
+    // handling errors.
+    Unused << mGZWriter->Write(aStr, aLen);
+  }
+
   nsresult Finish() { return mGZWriter->Finish(); }
 
  private:
@@ -431,6 +435,9 @@ class HandleReportAndFinishReportingCallbacks final
       // of the form "$PROCESS_NAME (pid $PID)", or just "(pid $PID)" if we
       // don't have a process name.  If we're the main process, we let
       // $PROCESS_NAME be "Main Process".
+      //
+      // `appendAboutMemoryMain()` in aboutMemory.js does much the same thing
+      // for live memory reports.
       if (XRE_IsParentProcess()) {
         // We're the main process.
         process.AssignLiteral("Main Process");
@@ -482,7 +489,7 @@ class HandleReportAndFinishReportingCallbacks final
   }
 
  private:
-  ~HandleReportAndFinishReportingCallbacks() {}
+  ~HandleReportAndFinishReportingCallbacks() = default;
 
   UniquePtr<JSONWriter> mWriter;
   nsCOMPtr<nsIFinishDumpingCallback> mFinishDumping;
@@ -513,7 +520,7 @@ class TempDirFinishCallback final : public nsIFinishDumpingCallback {
     }
 
 #ifdef ANDROID
-    rv = reportsFinalFile->AppendNative(NS_LITERAL_CSTRING("memory-reports"));
+    rv = reportsFinalFile->AppendNative("memory-reports"_ns);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -554,13 +561,13 @@ class TempDirFinishCallback final : public nsIFinishDumpingCallback {
       return rv;
     }
 
-    nsString msg = NS_LITERAL_STRING("nsIMemoryInfoDumper dumped reports to ");
+    nsString msg = u"nsIMemoryInfoDumper dumped reports to "_ns;
     msg.Append(path);
     return cs->LogStringMessage(msg.get());
   }
 
  private:
-  ~TempDirFinishCallback() {}
+  ~TempDirFinishCallback() = default;
 
   nsCOMPtr<nsIFile> mReportsTmpFile;
   nsCString mReportsFilename;
@@ -675,9 +682,9 @@ nsMemoryInfoDumper::DumpMemoryInfoToTempDir(const nsAString& aIdentifier,
   // In Android case, this function will open a file named aFilename under
   // specific folder (/data/local/tmp/memory-reports). Otherwise, it will
   // open a file named aFilename under "NS_OS_TEMP_DIR".
-  rv = nsDumpUtils::OpenTempFile(
-      NS_LITERAL_CSTRING("incomplete-") + reportsFinalFilename,
-      getter_AddRefs(reportsTmpFile), NS_LITERAL_CSTRING("memory-reports"));
+  rv = nsDumpUtils::OpenTempFile("incomplete-"_ns + reportsFinalFilename,
+                                 getter_AddRefs(reportsTmpFile),
+                                 "memory-reports"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -712,7 +719,7 @@ nsresult nsMemoryInfoDumper::OpenDMDFile(const nsAString& aIdentifier, int aPid,
   nsresult rv;
   nsCOMPtr<nsIFile> dmdFile;
   rv = nsDumpUtils::OpenTempFile(dmdFilename, getter_AddRefs(dmdFile),
-                                 NS_LITERAL_CSTRING("memory-reports"));
+                                 "memory-reports"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }

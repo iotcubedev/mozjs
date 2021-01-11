@@ -14,12 +14,12 @@ interface ServiceWorkerContainer : EventTarget {
   // FIXME(nsm):
   // https://github.com/slightlyoff/ServiceWorker/issues/198
   // and discussion at https://etherpad.mozilla.org/serviceworker07apr
-  [Unforgeable] readonly attribute ServiceWorker? controller;
+  readonly attribute ServiceWorker? controller;
 
   [Throws]
   readonly attribute Promise<ServiceWorkerRegistration> ready;
 
-  [NewObject]
+  [NewObject, NeedsCallerType]
   Promise<ServiceWorkerRegistration> register(USVString scriptURL,
                                               optional RegistrationOptions options = {});
 

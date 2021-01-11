@@ -5,7 +5,6 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 XPCSHELL_TESTS_MANIFESTS += ['test/unit/xpcshell.ini']
-BROWSER_CHROME_MANIFESTS += ['test/browser/browser.ini']
 
 TEST_HARNESS_FILES.xpcshell.toolkit.components.downloads.test.data += [
     'test/data/empty.txt',
@@ -23,6 +22,11 @@ CXXFLAGS += CONFIG['TK_CFLAGS']
 SOURCES += [
     'DownloadPlatform.cpp',
 ]
+
+if CONFIG['OS_ARCH'] == 'WINNT':
+    LOCAL_INCLUDES += [
+        '/widget/windows',
+    ]
 
 EXTRA_JS_MODULES += [
     'DownloadCore.jsm',

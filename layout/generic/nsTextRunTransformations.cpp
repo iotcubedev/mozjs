@@ -6,21 +6,20 @@
 
 #include "nsTextRunTransformations.h"
 
-#include "mozilla/ComputedStyleInlines.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/Move.h"
-#include "mozilla/TextEditor.h"
+#include <utility>
 
-#include "nsGkAtoms.h"
-#include "nsStyleConsts.h"
-#include "nsUnicharUtils.h"
-#include "nsUnicodeProperties.h"
-#include "nsSpecialCasingData.h"
-#include "mozilla/gfx/2D.h"
-#include "nsTextFrameUtils.h"
-#include "nsIPersistentProperties2.h"
 #include "GreekCasing.h"
 #include "IrishCasing.h"
+#include "mozilla/ComputedStyleInlines.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/TextEditor.h"
+#include "mozilla/gfx/2D.h"
+#include "nsGkAtoms.h"
+#include "nsSpecialCasingData.h"
+#include "nsStyleConsts.h"
+#include "nsTextFrameUtils.h"
+#include "nsUnicharUtils.h"
+#include "nsUnicodeProperties.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -60,9 +59,9 @@ already_AddRefed<nsTransformedTextRun> nsTransformedTextRun::Create(
 void nsTransformedTextRun::SetCapitalization(uint32_t aStart, uint32_t aLength,
                                              bool* aCapitalization) {
   if (mCapitalize.IsEmpty()) {
-    if (!mCapitalize.AppendElements(GetLength())) {
-      return;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    mCapitalize.AppendElements(GetLength());
     memset(mCapitalize.Elements(), 0, GetLength() * sizeof(bool));
   }
   memcpy(mCapitalize.Elements() + aStart, aCapitalization,
@@ -338,8 +337,7 @@ bool nsCaseTransformTextRunFactory::TransformString(
     const mozilla::unicode::MultiCharMapping* mcm;
     bool inhibitBreakBefore = false;  // have we just deleted preceding hyphen?
 
-    if (NS_IS_HIGH_SURROGATE(ch) && i < length - 1 &&
-        NS_IS_LOW_SURROGATE(str[i + 1])) {
+    if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
       ch = SURROGATE_TO_UCS4(ch, str[i + 1]);
     }
 
@@ -709,11 +707,11 @@ bool nsCaseTransformTextRunFactory::TransformString(
 
       if (!aCaseTransformsOnly) {
         if (!forceNonFullWidth &&
-            (style.other_ & StyleTextTransformOther_FULL_WIDTH)) {
+            (style.other_ & StyleTextTransformOther::FULL_WIDTH)) {
           ch = mozilla::unicode::GetFullWidth(ch);
         }
 
-        if (style.other_ & StyleTextTransformOther_FULL_SIZE_KANA) {
+        if (style.other_ & StyleTextTransformOther::FULL_SIZE_KANA) {
           // clang-format off
           static const uint16_t kSmallKanas[] = {
               // ぁ   ぃ      ぅ      ぇ      ぉ      っ      ゃ      ゅ      ょ

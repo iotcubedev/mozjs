@@ -9,42 +9,34 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-const { ActorChild } = ChromeUtils.import(
-  "resource://gre/modules/ActorChild.jsm"
-);
-
 XPCOMUtils.defineLazyModuleGetters(this, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
 
-class PageInfoChild extends ActorChild {
-  /* nsIMessageListener */
-  receiveMessage(message) {
-    let strings = message.data.strings;
-    let window;
-
-    let frameOuterWindowID = message.data.frameOuterWindowID;
-
-    // If inside frame then get the frame's window and document.
-    if (frameOuterWindowID != undefined) {
-      window = Services.wm.getOuterWindowWithId(frameOuterWindowID);
-    } else {
-      window = message.target.content;
-    }
-
+class PageInfoChild extends JSWindowActorChild {
+  async receiveMessage(message) {
+    let window = this.contentWindow;
     let document = window.document;
 
-    let pageInfoData = {
-      metaViewRows: this.getMetaInfo(document),
-      docInfo: this.getDocumentInfo(document),
-      windowInfo: this.getWindowInfo(window),
-    };
+    //Handles two different types of messages: one for general info (PageInfo:getData)
+    //and one for media info (PageInfo:getMediaData)
+    switch (message.name) {
+      case "PageInfo:getData": {
+        return Promise.resolve({
+          metaViewRows: this.getMetaInfo(document),
+          docInfo: this.getDocumentInfo(document),
+          windowInfo: this.getWindowInfo(window),
+        });
+      }
+      case "PageInfo:getMediaData": {
+        return Promise.resolve({
+          mediaItems: await this.getDocumentMedia(document),
+        });
+      }
+    }
 
-    message.target.sendAsyncMessage("PageInfo:data", pageInfoData);
-
-    // Separate step so page info dialog isn't blank while waiting for this to finish.
-    this.getMediaInfo(document, window, strings, message.target);
+    return undefined;
   }
 
   getMetaInfo(document) {
@@ -110,58 +102,35 @@ class PageInfoChild extends ActorChild {
     return docInfo;
   }
 
-  // Only called once to get the media tab's media elements from the content page.
-  getMediaInfo(document, window, strings, mm) {
-    let frameList = this.goThroughFrames(document, window);
-    this.processFrames(document, frameList, strings, mm);
-  }
-
-  goThroughFrames(document, window) {
-    let frameList = [document];
-    if (window && window.frames.length > 0) {
-      let num = window.frames.length;
-      for (let i = 0; i < num; i++) {
-        // Recurse through the frames.
-        frameList = frameList.concat(
-          this.goThroughFrames(window.frames[i].document, window.frames[i])
-        );
-      }
-    }
-    return frameList;
-  }
-
-  async processFrames(document, frameList, strings, mm) {
+  /**
+   * Returns an array that stores all mediaItems found in the document
+   * Calls getMediaItems for all nodes within the constructed tree walker and forms
+   * resulting array.
+   */
+  async getDocumentMedia(document) {
     let nodeCount = 0;
     let content = document.ownerGlobal;
-    for (let doc of frameList) {
-      let iterator = doc.createTreeWalker(doc, content.NodeFilter.SHOW_ELEMENT);
+    let iterator = document.createTreeWalker(
+      document,
+      content.NodeFilter.SHOW_ELEMENT
+    );
 
-      // Goes through all the elements on the doc. imageViewRows takes only the media elements.
-      while (iterator.nextNode()) {
-        let mediaItems = this.getMediaItems(
-          document,
-          strings,
-          iterator.currentNode
-        );
+    let totalMediaItems = [];
 
-        if (mediaItems.length) {
-          mm.sendAsyncMessage("PageInfo:mediaData", {
-            mediaItems,
-            isComplete: false,
-          });
-        }
+    while (iterator.nextNode()) {
+      let mediaItems = this.getMediaItems(document, iterator.currentNode);
 
-        if (++nodeCount % 500 == 0) {
-          // setTimeout every 500 elements so we don't keep blocking the content process.
-          await new Promise(resolve => setTimeout(resolve, 10));
-        }
+      if (++nodeCount % 500 == 0) {
+        // setTimeout every 500 elements so we don't keep blocking the content process.
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
+      totalMediaItems.push(...mediaItems);
     }
-    // Send that page info media fetching has finished.
-    mm.sendAsyncMessage("PageInfo:mediaData", { isComplete: true });
+
+    return totalMediaItems;
   }
 
-  getMediaItems(document, strings, elem) {
+  getMediaItems(document, elem) {
     // Check for images defined in CSS (e.g. background, borders)
     let computedStyle = elem.ownerGlobal.getComputedStyle(elem);
     // A node can have multiple media items associated with it - for example,
@@ -169,22 +138,22 @@ class PageInfoChild extends ActorChild {
     let mediaItems = [];
     let content = document.ownerGlobal;
 
-    let addImage = (url, type, alt, el, isBg) => {
-      let element = this.serializeElementInfo(
-        document,
+    let addMedia = (url, type, alt, el, isBg, altNotProvided = false) => {
+      let element = this.serializeElementInfo(document, url, el, isBg);
+      mediaItems.push({
         url,
         type,
         alt,
-        el,
-        isBg
-      );
-      mediaItems.push([url, type, alt, element, isBg]);
+        altNotProvided,
+        element,
+        isBg,
+      });
     };
 
     if (computedStyle) {
-      let addImgFunc = (label, urls) => {
+      let addImgFunc = (type, urls) => {
         for (let url of urls) {
-          addImage(url, label, strings.notSet, elem, true);
+          addMedia(url, type, "", elem, true, true);
         }
       };
       // FIXME: This is missing properties. See the implementation of
@@ -192,29 +161,24 @@ class PageInfoChild extends ActorChild {
       //
       // If you don't care about the message you can also pass "all" here and
       // get all the ones the browser knows about.
+      addImgFunc("bg-img", computedStyle.getCSSImageURLs("background-image"));
       addImgFunc(
-        strings.mediaBGImg,
-        computedStyle.getCSSImageURLs("background-image")
-      );
-      addImgFunc(
-        strings.mediaBorderImg,
+        "border-img",
         computedStyle.getCSSImageURLs("border-image-source")
       );
-      addImgFunc(
-        strings.mediaListImg,
-        computedStyle.getCSSImageURLs("list-style-image")
-      );
-      addImgFunc(strings.mediaCursor, computedStyle.getCSSImageURLs("cursor"));
+      addImgFunc("list-img", computedStyle.getCSSImageURLs("list-style-image"));
+      addImgFunc("cursor", computedStyle.getCSSImageURLs("cursor"));
     }
 
     // One swi^H^H^Hif-else to rule them all.
     if (elem instanceof content.HTMLImageElement) {
-      addImage(
+      addMedia(
         elem.src,
-        strings.mediaImg,
-        elem.hasAttribute("alt") ? elem.alt : strings.notSet,
+        "img",
+        elem.getAttribute("alt"),
         elem,
-        false
+        false,
+        !elem.hasAttribute("alt")
       );
     } else if (elem instanceof content.SVGImageElement) {
       try {
@@ -226,40 +190,35 @@ class PageInfoChild extends ActorChild {
             null,
             Services.io.newURI(elem.baseURI)
           ).spec;
-          addImage(href, strings.mediaImg, "", elem, false);
+          addMedia(href, "img", "", elem, false);
         }
       } catch (e) {}
     } else if (elem instanceof content.HTMLVideoElement) {
-      addImage(elem.currentSrc, strings.mediaVideo, "", elem, false);
+      addMedia(elem.currentSrc, "video", "", elem, false);
     } else if (elem instanceof content.HTMLAudioElement) {
-      addImage(elem.currentSrc, strings.mediaAudio, "", elem, false);
+      addMedia(elem.currentSrc, "audio", "", elem, false);
     } else if (elem instanceof content.HTMLLinkElement) {
       if (elem.rel && /\bicon\b/i.test(elem.rel)) {
-        addImage(elem.href, strings.mediaLink, "", elem, false);
+        addMedia(elem.href, "link", "", elem, false);
       }
     } else if (
       elem instanceof content.HTMLInputElement ||
       elem instanceof content.HTMLButtonElement
     ) {
       if (elem.type.toLowerCase() == "image") {
-        addImage(
+        addMedia(
           elem.src,
-          strings.mediaInput,
-          elem.hasAttribute("alt") ? elem.alt : strings.notSet,
+          "input",
+          elem.getAttribute("alt"),
           elem,
-          false
+          false,
+          !elem.hasAttribute("alt")
         );
       }
     } else if (elem instanceof content.HTMLObjectElement) {
-      addImage(
-        elem.data,
-        strings.mediaObject,
-        this.getValueText(elem),
-        elem,
-        false
-      );
+      addMedia(elem.data, "object", this.getValueText(elem), elem, false);
     } else if (elem instanceof content.HTMLEmbedElement) {
-      addImage(elem.src, strings.mediaEmbed, "", elem, false);
+      addMedia(elem.src, "embed", "", elem, false);
     }
 
     return mediaItems;
@@ -270,7 +229,7 @@ class PageInfoChild extends ActorChild {
    * makePreview in pageInfo.js uses to figure out how to display the preview.
    */
 
-  serializeElementInfo(document, url, type, alt, item, isBG) {
+  serializeElementInfo(document, url, item, isBG) {
     let result = {};
     let content = document.ownerGlobal;
 
@@ -344,7 +303,11 @@ class PageInfoChild extends ActorChild {
       img.src = url;
       result.naturalWidth = img.naturalWidth;
       result.naturalHeight = img.naturalHeight;
-    } else {
+    } else if (!(item instanceof content.SVGImageElement)) {
+      // SVG items do not have integer values for height or width,
+      // so we must handle them differently in order to correctly
+      // serialize
+
       // Otherwise, we can use the current width and height
       // of the image.
       result.width = item.width;

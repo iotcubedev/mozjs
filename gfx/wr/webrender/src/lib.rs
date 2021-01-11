@@ -41,6 +41,9 @@ doesn't only contain trivial geometry, it can also store another
 [stacking_contexts]: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Positioning/Understanding_z_index/The_stacking_context
 */
 
+#![cfg_attr(feature = "cargo-clippy", allow(clippy::unreadable_literal, clippy::new_without_default, clippy::too_many_arguments))]
+
+
 // Cribbed from the |matches| crate, for simplicity.
 macro_rules! matches {
     ($expression:expr, $($pattern:tt)+) => {
@@ -67,7 +70,7 @@ extern crate malloc_size_of_derive;
 #[macro_use]
 extern crate serde;
 #[macro_use]
-extern crate thread_profiler;
+extern crate tracy_rs;
 
 extern crate malloc_size_of;
 extern crate svg_fmt;
@@ -81,14 +84,15 @@ mod box_shadow;
 #[cfg(any(feature = "capture", feature = "replay"))]
 mod capture;
 mod clip;
-mod clip_scroll_tree;
+mod space;
+mod spatial_tree;
+mod composite;
 mod debug_colors;
 mod debug_font_data;
 mod debug_render;
 #[cfg(feature = "debugger")]
 mod debug_server;
 mod device;
-mod display_list_flattener;
 mod ellipse;
 mod filterdata;
 mod frame_builder;
@@ -100,19 +104,23 @@ mod glyph_rasterizer;
 mod gpu_cache;
 mod gpu_types;
 mod hit_test;
-mod image;
 mod intern;
 mod internal_types;
+mod lru_cache;
 mod picture;
+mod prepare;
 mod prim_store;
 mod print_tree;
-mod record;
 mod render_backend;
+mod render_target;
+mod render_task_graph;
+mod render_task_cache;
 mod render_task;
 mod renderer;
 mod resource_cache;
 mod scene;
-mod scene_builder;
+mod scene_builder_thread;
+mod scene_building;
 mod screen_capture;
 mod segment;
 mod shade;
@@ -120,14 +128,13 @@ mod spatial_node;
 mod storage;
 mod texture_allocator;
 mod texture_cache;
-mod tiling;
+mod tile_cache;
 mod util;
+mod visibility;
 
 mod shader_source {
     include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 }
-
-pub use crate::record::{ApiRecordingReceiver, BinaryRecorder, WEBRENDER_RECORDING_HEADER};
 
 mod platform {
     #[cfg(target_os = "macos")]
@@ -178,7 +185,6 @@ extern crate rayon;
 extern crate ron;
 #[cfg(feature = "debugger")]
 extern crate serde_json;
-extern crate sha2;
 #[macro_use]
 extern crate smallvec;
 extern crate time;
@@ -198,18 +204,27 @@ pub extern crate api;
 extern crate webrender_build;
 
 #[doc(hidden)]
-pub use crate::device::{build_shader_strings, UploadMethod, VertexUsageHint};
-pub use crate::device::{ProgramBinary, ProgramCache, ProgramCacheObserver};
+pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities};
+pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo};
+pub use crate::device::{UploadMethod, VertexUsageHint, get_gl_target, get_unoptimized_shader_source};
+pub use crate::device::{ProgramBinary, ProgramCache, ProgramCacheObserver, FormatDesc};
 pub use crate::device::Device;
 pub use crate::frame_builder::ChasePrimitive;
+pub use crate::prim_store::PrimitiveDebugId;
 pub use crate::profiler::{ProfilerHooks, set_profiler_hooks};
 pub use crate::renderer::{
-    AsyncPropertySampler, CpuProfile, DebugFlags, OutputImageHandler, RendererKind, ExternalImage,
-    ExternalImageHandler, ExternalImageSource, GpuProfile, GraphicsApi, GraphicsApiInfo,
-    PipelineInfo, Renderer, RendererOptions, RenderResults, RendererStats, SceneBuilderHooks,
-    ThreadListener, ShaderPrecacheFlags, MAX_VERTEX_TEXTURE_WIDTH,
+    AsyncPropertySampler, CpuProfile, DebugFlags, GpuProfile, GraphicsApi,
+    GraphicsApiInfo, PipelineInfo, Renderer, RendererError, RendererOptions, RenderResults,
+    RendererStats, SceneBuilderHooks, ThreadListener, ShaderPrecacheFlags,
+    MAX_VERTEX_TEXTURE_WIDTH, ONE_TIME_USAGE_HINT,
 };
+pub use crate::hit_test::SharedHitTester;
+pub use crate::internal_types::FastHashMap;
 pub use crate::screen_capture::{AsyncScreenshotHandle, RecordedFrameHandle};
 pub use crate::shade::{Shaders, WrShaders};
 pub use api as webrender_api;
 pub use webrender_build::shader::ProgramSourceDigest;
+pub use crate::picture::{TileDescriptor, TileId, InvalidationReason};
+pub use crate::picture::{PrimitiveCompareResult, PrimitiveCompareResultDetail, CompareHelperResult};
+pub use crate::picture::{TileNode, TileNodeKind, TileSerializer, TileCacheInstanceSerializer, TileOffset, TileCacheLoggerUpdateLists};
+pub use crate::intern::ItemUid;

@@ -4,12 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/dom/ReferrerPolicyBinding.h"
 #include "nsIClassInfoImpl.h"
-#include "nsICookieService.h"
+#include "nsIEffectiveTLDService.h"
 #include "nsIHttpChannel.h"
 #include "nsIObjectInputStream.h"
 #include "nsIObjectOutputStream.h"
-#include "nsIURIFixup.h"
+#include "nsIOService.h"
 #include "nsIURL.h"
 
 #include "nsWhitespaceTokenizer.h"
@@ -18,10 +19,12 @@
 #include "nsCharSeparatedTokenizer.h"
 #include "ReferrerInfo.h"
 
-#include "mozilla/AntiTrackingCommon.h"
-#include "mozilla/net/CookieSettings.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/ContentBlocking.h"
+#include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/net/HttpBaseChannel.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/StaticPrefs_network.h"
 #include "mozilla/StyleSheet.h"
 
 static mozilla::LazyLogModule gReferrerInfoLog("ReferrerInfo");
@@ -39,13 +42,6 @@ NS_IMPL_CLASSINFO(ReferrerInfo, nullptr, nsIClassInfo::MAIN_THREAD_ONLY,
 
 NS_IMPL_ISUPPORTS_CI(ReferrerInfo, nsIReferrerInfo, nsISerializable)
 
-#define DEFAULT_RP 3
-#define DEFAULT_TRACKER_RP 3
-#define DEFAULT_PRIVATE_RP 2
-#define DEFAULT_TRACKER_PRIVATE_RP 2
-
-#define DEFAULT_REFERRER_HEADER_LENGTH_LIMIT 4096
-
 #define MAX_REFERRER_SENDING_POLICY 2
 #define MAX_CROSS_ORIGIN_SENDING_POLICY 2
 #define MAX_TRIMMING_POLICY 2
@@ -53,76 +49,6 @@ NS_IMPL_ISUPPORTS_CI(ReferrerInfo, nsIReferrerInfo, nsISerializable)
 #define MIN_REFERRER_SENDING_POLICY 0
 #define MIN_CROSS_ORIGIN_SENDING_POLICY 0
 #define MIN_TRIMMING_POLICY 0
-
-static uint32_t sDefaultRp = DEFAULT_RP;
-static uint32_t sDefaultTrackerRp = DEFAULT_TRACKER_RP;
-static uint32_t defaultPrivateRp = DEFAULT_PRIVATE_RP;
-static uint32_t defaultTrackerPrivateRp = DEFAULT_TRACKER_PRIVATE_RP;
-
-static bool sUserSpoofReferrerSource = false;
-static bool sUserHideOnionReferrerSource = false;
-static uint32_t sUserReferrerSendingPolicy = 0;
-static uint32_t sUserXOriginSendingPolicy = 0;
-static uint32_t sUserTrimmingPolicy = 0;
-static uint32_t sUserXOriginTrimmingPolicy = 0;
-static uint32_t sReferrerHeaderLimit = DEFAULT_REFERRER_HEADER_LENGTH_LIMIT;
-
-static void CachePreferrenceValue() {
-  static bool sPrefCached = false;
-  if (sPrefCached) {
-    return;
-  }
-
-  Preferences::AddBoolVarCache(&sUserSpoofReferrerSource,
-                               "network.http.referer.spoofSource");
-  Preferences::AddBoolVarCache(&sUserHideOnionReferrerSource,
-                               "network.http.referer.hideOnionSource");
-  Preferences::AddUintVarCache(&sUserReferrerSendingPolicy,
-                               "network.http.sendRefererHeader");
-  Preferences::AddUintVarCache(&sReferrerHeaderLimit,
-                               "network.http.referer.referrerLengthLimit",
-                               DEFAULT_REFERRER_HEADER_LENGTH_LIMIT);
-  sUserReferrerSendingPolicy =
-      clamped<uint32_t>(sUserReferrerSendingPolicy, MIN_REFERRER_SENDING_POLICY,
-                        MAX_REFERRER_SENDING_POLICY);
-
-  Preferences::AddUintVarCache(&sUserXOriginSendingPolicy,
-                               "network.http.referer.XOriginPolicy");
-  sUserXOriginSendingPolicy = clamped<uint32_t>(
-      sUserXOriginSendingPolicy, MIN_CROSS_ORIGIN_SENDING_POLICY,
-      MAX_CROSS_ORIGIN_SENDING_POLICY);
-
-  Preferences::AddUintVarCache(&sUserTrimmingPolicy,
-                               "network.http.referer.trimmingPolicy");
-  sUserTrimmingPolicy = clamped<uint32_t>(
-      sUserTrimmingPolicy, MIN_TRIMMING_POLICY, MAX_TRIMMING_POLICY);
-
-  Preferences::AddUintVarCache(&sUserXOriginTrimmingPolicy,
-                               "network.http.referer.XOriginTrimmingPolicy");
-  sUserXOriginTrimmingPolicy = clamped<uint32_t>(
-      sUserXOriginTrimmingPolicy, MIN_TRIMMING_POLICY, MAX_TRIMMING_POLICY);
-
-  Preferences::AddUintVarCache(
-      &sDefaultRp, "network.http.referer.defaultPolicy", DEFAULT_RP);
-  Preferences::AddUintVarCache(&sDefaultTrackerRp,
-                               "network.http.referer.defaultPolicy.trackers",
-                               DEFAULT_TRACKER_RP);
-  Preferences::AddUintVarCache(&defaultPrivateRp,
-                               "network.http.referer.defaultPolicy.pbmode",
-                               DEFAULT_PRIVATE_RP);
-  Preferences::AddUintVarCache(
-      &defaultTrackerPrivateRp,
-      "network.http.referer.defaultPolicy.trackers.pbmode",
-      DEFAULT_TRACKER_PRIVATE_RP);
-
-  sPrefCached = true;
-}
-
-/* static */
-bool ReferrerInfo::HideOnionReferrerSource() {
-  CachePreferrenceValue();
-  return sUserHideOnionReferrerSource;
-}
 
 struct LegacyReferrerPolicyTokenMap {
   const char* mToken;
@@ -233,44 +159,78 @@ const char* ReferrerInfo::ReferrerPolicyToString(ReferrerPolicyEnum aPolicy) {
 }
 
 /* static */
+uint32_t ReferrerInfo::GetUserReferrerSendingPolicy() {
+  return clamped<uint32_t>(
+      StaticPrefs::network_http_sendRefererHeader_DoNotUseDirectly(),
+      MIN_REFERRER_SENDING_POLICY, MAX_REFERRER_SENDING_POLICY);
+}
+
+/* static */
+uint32_t ReferrerInfo::GetUserXOriginSendingPolicy() {
+  return clamped<uint32_t>(
+      StaticPrefs::network_http_referer_XOriginPolicy_DoNotUseDirectly(),
+      MIN_CROSS_ORIGIN_SENDING_POLICY, MAX_CROSS_ORIGIN_SENDING_POLICY);
+}
+
+/* static */
+uint32_t ReferrerInfo::GetUserTrimmingPolicy() {
+  return clamped<uint32_t>(
+      StaticPrefs::network_http_referer_trimmingPolicy_DoNotUseDirectly(),
+      MIN_TRIMMING_POLICY, MAX_TRIMMING_POLICY);
+}
+
+/* static */
+uint32_t ReferrerInfo::GetUserXOriginTrimmingPolicy() {
+  return clamped<uint32_t>(
+      StaticPrefs::
+          network_http_referer_XOriginTrimmingPolicy_DoNotUseDirectly(),
+      MIN_TRIMMING_POLICY, MAX_TRIMMING_POLICY);
+}
+
+/* static */
 ReferrerPolicy ReferrerInfo::GetDefaultReferrerPolicy(nsIHttpChannel* aChannel,
                                                       nsIURI* aURI,
                                                       bool privateBrowsing) {
-  CachePreferrenceValue();
   bool thirdPartyTrackerIsolated = false;
-  nsCOMPtr<nsILoadInfo> loadInfo;
-  if (aChannel) {
-    loadInfo = aChannel->LoadInfo();
-  }
-  nsCOMPtr<nsICookieSettings> cs;
-  if (loadInfo) {
-    Unused << loadInfo->GetCookieSettings(getter_AddRefs(cs));
-  }
-  if (!cs) {
-    cs = net::CookieSettings::Create();
-  }
-  if (aChannel && aURI && cs->GetRejectThirdPartyTrackers()) {
-    uint32_t rejectedReason = 0;
-    thirdPartyTrackerIsolated =
-        !AntiTrackingCommon::IsFirstPartyStorageAccessGrantedFor(
-            aChannel, aURI, &rejectedReason);
-    // Here we intentionally do not notify about the rejection reason, if any
-    // in order to avoid this check to have any visible side-effects (e.g. a
-    // web console report.)
+  if (aChannel && aURI) {
+    nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+    nsCOMPtr<nsICookieJarSettings> cjs;
+    Unused << loadInfo->GetCookieJarSettings(getter_AddRefs(cjs));
+    if (!cjs) {
+      cjs = net::CookieJarSettings::Create();
+    }
+
+    // We only check if the channel is isolated if it's in the parent process
+    // with the rejection of third party contexts is enabled. We don't need to
+    // check this in content processes since the tracking state of the channel
+    // is unknown here and the referrer policy would be updated when the channel
+    // starts connecting in the parent process.
+    if (XRE_IsParentProcess() && cjs->GetRejectThirdPartyContexts()) {
+      uint32_t rejectedReason = 0;
+      thirdPartyTrackerIsolated =
+          !ContentBlocking::ShouldAllowAccessFor(aChannel, aURI,
+                                                 &rejectedReason) &&
+          rejectedReason !=
+              nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN;
+      // Here we intentionally do not notify about the rejection reason, if any
+      // in order to avoid this check to have any visible side-effects (e.g. a
+      // web console report.)
+    }
   }
 
   uint32_t defaultToUse;
   if (thirdPartyTrackerIsolated) {
     if (privateBrowsing) {
-      defaultToUse = defaultTrackerPrivateRp;
+      defaultToUse =
+          StaticPrefs::network_http_referer_defaultPolicy_trackers_pbmode();
     } else {
-      defaultToUse = sDefaultTrackerRp;
+      defaultToUse = StaticPrefs::network_http_referer_defaultPolicy_trackers();
     }
   } else {
     if (privateBrowsing) {
-      defaultToUse = defaultPrivateRp;
+      defaultToUse = StaticPrefs::network_http_referer_defaultPolicy_pbmode();
     } else {
-      defaultToUse = sDefaultRp;
+      defaultToUse = StaticPrefs::network_http_referer_defaultPolicy();
     }
   }
 
@@ -371,12 +331,13 @@ nsresult ReferrerInfo::HandleUserXOriginSendingPolicy(nsIURI* aURI,
   }
 
   // Send an empty referrer if xorigin and leaving a .onion domain.
-  if (sUserHideOnionReferrerSource && !uriHost.Equals(referrerHost) &&
-      StringEndsWith(referrerHost, NS_LITERAL_CSTRING(".onion"))) {
+  if (StaticPrefs::network_http_referer_hideOnionSource() &&
+      !uriHost.Equals(referrerHost) &&
+      StringEndsWith(referrerHost, ".onion"_ns)) {
     return NS_OK;
   }
 
-  switch (sUserXOriginSendingPolicy) {
+  switch (GetUserXOriginSendingPolicy()) {
     // Check policy for sending referrer only when hosts match
     case XOriginSendingPolicy::ePolicySendWhenSameHost: {
       if (!uriHost.Equals(referrerHost)) {
@@ -447,6 +408,14 @@ bool ReferrerInfo::ShouldSetNullOriginHeader(net::HttpBaseChannel* aChannel,
   MOZ_ASSERT(aChannel);
   MOZ_ASSERT(aOriginURI);
 
+  if (StaticPrefs::network_http_referer_hideOnionSource()) {
+    nsAutoCString host;
+    if (NS_SUCCEEDED(aOriginURI->GetAsciiHost(host)) &&
+        StringEndsWith(host, ".onion"_ns)) {
+      return ReferrerInfo::IsCrossOriginRequest(aChannel);
+    }
+  }
+
   // When we're dealing with CORS (mode is "cors"), we shouldn't take the
   // Referrer-Policy into account
   uint32_t corsMode = CORS_NONE;
@@ -498,7 +467,7 @@ nsresult ReferrerInfo::HandleUserReferrerSendingPolicy(nsIHttpChannel* aChannel,
   } else {
     referrerSendingPolicy = ReferrerSendingPolicy::ePolicySendInlineContent;
   }
-  if (sUserReferrerSendingPolicy < referrerSendingPolicy) {
+  if (GetUserReferrerSendingPolicy() < referrerSendingPolicy) {
     return NS_OK;
   }
 
@@ -510,17 +479,14 @@ nsresult ReferrerInfo::HandleUserReferrerSendingPolicy(nsIHttpChannel* aChannel,
 bool ReferrerInfo::IsCrossOriginRequest(nsIHttpChannel* aChannel) {
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
 
-  nsCOMPtr<nsIURI> triggeringURI;
-  loadInfo->TriggeringPrincipal()->GetURI(getter_AddRefs(triggeringURI));
-
-  if (!triggeringURI) {
+  if (!loadInfo->TriggeringPrincipal()->GetIsContentPrincipal()) {
     LOG(("no triggering URI via loadInfo, assuming load is cross-origin"));
     return true;
   }
 
   if (LOG_ENABLED()) {
     nsAutoCString triggeringURISpec;
-    triggeringURI->GetAsciiSpec(triggeringURISpec);
+    loadInfo->TriggeringPrincipal()->GetAsciiSpec(triggeringURISpec);
     LOG(("triggeringURI=%s\n", triggeringURISpec.get()));
   }
 
@@ -530,16 +496,19 @@ bool ReferrerInfo::IsCrossOriginRequest(nsIHttpChannel* aChannel) {
     return true;
   }
 
-  nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
   bool isPrivateWin = loadInfo->GetOriginAttributes().mPrivateBrowsingId > 0;
-
-  rv = ssm->CheckSameOriginURI(triggeringURI, uri, false, isPrivateWin);
-  return (NS_FAILED(rv));
+  bool isSameOrigin = false;
+  rv = loadInfo->TriggeringPrincipal()->IsSameOrigin(uri, isPrivateWin,
+                                                     &isSameOrigin);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return true;
+  }
+  return !isSameOrigin;
 }
 
 ReferrerInfo::TrimmingPolicy ReferrerInfo::ComputeTrimmingPolicy(
     nsIHttpChannel* aChannel) const {
-  uint32_t trimmingPolicy = sUserTrimmingPolicy;
+  uint32_t trimmingPolicy = GetUserTrimmingPolicy();
 
   switch (mPolicy) {
     case ReferrerPolicy::Origin:
@@ -568,9 +537,10 @@ ReferrerInfo::TrimmingPolicy ReferrerInfo::ComputeTrimmingPolicy(
         // Ignore set trimmingPolicy if it is already the strictest
         // policy. Apply the user cross-origin trimming policy if it's more
         // restrictive than the general one.
-        if (sUserXOriginTrimmingPolicy != TrimmingPolicy::ePolicyFullURI &&
+        if (GetUserXOriginTrimmingPolicy() != TrimmingPolicy::ePolicyFullURI &&
             IsCrossOriginRequest(aChannel)) {
-          trimmingPolicy = std::max(trimmingPolicy, sUserXOriginTrimmingPolicy);
+          trimmingPolicy =
+              std::max(trimmingPolicy, GetUserXOriginTrimmingPolicy());
         }
       }
       break;
@@ -588,16 +558,18 @@ ReferrerInfo::TrimmingPolicy ReferrerInfo::ComputeTrimmingPolicy(
 nsresult ReferrerInfo::LimitReferrerLength(
     nsIHttpChannel* aChannel, nsIURI* aReferrer, TrimmingPolicy aTrimmingPolicy,
     nsACString& aInAndOutTrimmedReferrer) const {
-  if (!sReferrerHeaderLimit) {
+  if (!StaticPrefs::network_http_referer_referrerLengthLimit()) {
     return NS_OK;
   }
 
-  if (aInAndOutTrimmedReferrer.Length() <= sReferrerHeaderLimit) {
+  if (aInAndOutTrimmedReferrer.Length() <=
+      StaticPrefs::network_http_referer_referrerLengthLimit()) {
     return NS_OK;
   }
 
   nsAutoString referrerLengthLimit;
-  referrerLengthLimit.AppendInt(sReferrerHeaderLimit);
+  referrerLengthLimit.AppendInt(
+      StaticPrefs::network_http_referer_referrerLengthLimit());
   if (aTrimmingPolicy == ePolicyFullURI ||
       aTrimmingPolicy == ePolicySchemeHostPortPath) {
     // If referrer header is over max Length, down to origin
@@ -611,7 +583,8 @@ nsresult ReferrerInfo::LimitReferrerLength(
     // GetOriginFromReferrerURI() also removes any trailing "/" hence we have to
     // add it back here.
     aInAndOutTrimmedReferrer.AppendLiteral("/");
-    if (aInAndOutTrimmedReferrer.Length() <= sReferrerHeaderLimit) {
+    if (aInAndOutTrimmedReferrer.Length() <=
+        StaticPrefs::network_http_referer_referrerLengthLimit()) {
       AutoTArray<nsString, 2> params = {
           referrerLengthLimit, NS_ConvertUTF8toUTF16(aInAndOutTrimmedReferrer)};
       LogMessageToConsole(aChannel, "ReferrerLengthOverLimitation", params);
@@ -729,8 +702,7 @@ void ReferrerInfo::LogMessageToConsole(
   }
 
   rv = nsContentUtils::ReportToConsoleByWindowID(
-      localizedMsg, nsIScriptError::infoFlag, NS_LITERAL_CSTRING("Security"),
-      windowID, uri);
+      localizedMsg, nsIScriptError::infoFlag, "Security"_ns, windowID, uri);
   Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 
@@ -815,8 +787,15 @@ ReferrerInfo::ReferrerInfo()
       mPolicy(ReferrerPolicy::_empty),
       mSendReferrer(true),
       mInitialized(false),
-      mOverridePolicyByDefault(false),
-      mComputedReferrer(Maybe<nsCString>()) {}
+      mOverridePolicyByDefault(false) {}
+
+ReferrerInfo::ReferrerInfo(const Document& aDoc) : ReferrerInfo() {
+  InitWithDocument(&aDoc);
+}
+
+ReferrerInfo::ReferrerInfo(const Element& aElement) : ReferrerInfo() {
+  InitWithElement(&aElement);
+}
 
 ReferrerInfo::ReferrerInfo(nsIURI* aOriginalReferrer,
                            ReferrerPolicyEnum aPolicy, bool aSendReferrer,
@@ -836,26 +815,26 @@ ReferrerInfo::ReferrerInfo(const ReferrerInfo& rhs)
       mOverridePolicyByDefault(rhs.mOverridePolicyByDefault),
       mComputedReferrer(rhs.mComputedReferrer) {}
 
-already_AddRefed<nsIReferrerInfo> ReferrerInfo::Clone() const {
+already_AddRefed<ReferrerInfo> ReferrerInfo::Clone() const {
   RefPtr<ReferrerInfo> copy(new ReferrerInfo(*this));
   return copy.forget();
 }
 
-already_AddRefed<nsIReferrerInfo> ReferrerInfo::CloneWithNewPolicy(
+already_AddRefed<ReferrerInfo> ReferrerInfo::CloneWithNewPolicy(
     ReferrerPolicyEnum aPolicy) const {
   RefPtr<ReferrerInfo> copy(new ReferrerInfo(*this));
   copy->mPolicy = aPolicy;
   return copy.forget();
 }
 
-already_AddRefed<nsIReferrerInfo> ReferrerInfo::CloneWithNewSendReferrer(
+already_AddRefed<ReferrerInfo> ReferrerInfo::CloneWithNewSendReferrer(
     bool aSendReferrer) const {
   RefPtr<ReferrerInfo> copy(new ReferrerInfo(*this));
   copy->mSendReferrer = aSendReferrer;
   return copy.forget();
 }
 
-already_AddRefed<nsIReferrerInfo> ReferrerInfo::CloneWithNewOriginalReferrer(
+already_AddRefed<ReferrerInfo> ReferrerInfo::CloneWithNewOriginalReferrer(
     nsIURI* aOriginalReferrer) const {
   RefPtr<ReferrerInfo> copy(new ReferrerInfo(*this));
   copy->mOriginalReferrer = aOriginalReferrer;
@@ -980,7 +959,7 @@ ReferrerInfo::Init(nsIReferrerInfo::ReferrerPolicyIDL aReferrerPolicy,
 }
 
 NS_IMETHODIMP
-ReferrerInfo::InitWithDocument(Document* aDocument) {
+ReferrerInfo::InitWithDocument(const Document* aDocument) {
   MOZ_ASSERT(!mInitialized);
   if (mInitialized) {
     return NS_ERROR_ALREADY_INITIALIZED;
@@ -993,8 +972,43 @@ ReferrerInfo::InitWithDocument(Document* aDocument) {
   return NS_OK;
 }
 
+/**
+ * Check whether the given node has referrerpolicy attribute and parse
+ * referrer policy from the attribute.
+ * Currently, referrerpolicy attribute is supported in a, area, img, iframe,
+ * script, or link element.
+ */
+static ReferrerPolicy ReferrerPolicyFromAttribute(const Element& aElement) {
+  if (!aElement.IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area,
+                                    nsGkAtoms::script, nsGkAtoms::iframe,
+                                    nsGkAtoms::link, nsGkAtoms::img)) {
+    return ReferrerPolicy::_empty;
+  }
+  return aElement.GetReferrerPolicyAsEnum();
+}
+
+static bool HasRelNoReferrer(const Element& aElement) {
+  // rel=noreferrer is only support in <a> and <area>
+  if (!aElement.IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area)) {
+    return false;
+  }
+
+  nsAutoString rel;
+  aElement.GetAttr(nsGkAtoms::rel, rel);
+  nsWhitespaceTokenizerTemplate<nsContentUtils::IsHTMLWhitespace> tok(rel);
+
+  while (tok.hasMoreTokens()) {
+    const nsAString& token = tok.nextToken();
+    if (token.LowerCaseEqualsLiteral("noreferrer")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 NS_IMETHODIMP
-ReferrerInfo::InitWithNode(nsINode* aNode) {
+ReferrerInfo::InitWithElement(const Element* aElement) {
   MOZ_ASSERT(!mInitialized);
   if (mInitialized) {
     return NS_ERROR_ALREADY_INITIALIZED;
@@ -1002,15 +1016,15 @@ ReferrerInfo::InitWithNode(nsINode* aNode) {
 
   // Referrer policy from referrerpolicy attribute will have a higher priority
   // than referrer policy from <meta> tag and Referrer-Policy header.
-  GetReferrerPolicyFromAtribute(aNode, mPolicy);
+  mPolicy = ReferrerPolicyFromAttribute(*aElement);
   if (mPolicy == ReferrerPolicy::_empty) {
     // Fallback to use document's referrer poicy if we don't have referrer
     // policy from attribute.
-    mPolicy = aNode->OwnerDoc()->GetReferrerPolicy();
+    mPolicy = aElement->OwnerDoc()->GetReferrerPolicy();
   }
 
-  mSendReferrer = !HasRelNoReferrer(aNode);
-  mOriginalReferrer = aNode->OwnerDoc()->GetDocumentURIAsReferrer();
+  mSendReferrer = !HasRelNoReferrer(*aElement);
+  mOriginalReferrer = aElement->OwnerDoc()->GetDocumentURIAsReferrer();
 
   mInitialized = true;
   return NS_OK;
@@ -1055,11 +1069,9 @@ already_AddRefed<nsIReferrerInfo> ReferrerInfo::CreateForFetch(
     return referrerInfo.forget();
   }
 
-  nsCOMPtr<nsIURI> principalURI;
-  aPrincipal->GetURI(getter_AddRefs(principalURI));
-
   if (!aDoc) {
-    referrerInfo = new ReferrerInfo(principalURI, ReferrerPolicy::_empty);
+    aPrincipal->CreateReferrerInfo(ReferrerPolicy::_empty,
+                                   getter_AddRefs(referrerInfo));
     return referrerInfo.forget();
   }
 
@@ -1075,21 +1087,16 @@ already_AddRefed<nsIReferrerInfo> ReferrerInfo::CreateForFetch(
   nsCOMPtr<nsIURI> docCurURI = aDoc->GetDocumentURI();
   nsCOMPtr<nsIURI> docOrigURI = aDoc->GetOriginalURI();
 
-  nsCOMPtr<nsIURI> referrerURI;
-
-  if (principalURI && docCurURI && docOrigURI) {
+  if (docCurURI && docOrigURI) {
     bool equal = false;
-    principalURI->Equals(docOrigURI, &equal);
+    aPrincipal->EqualsURI(docOrigURI, &equal);
     if (equal) {
-      referrerURI = docCurURI;
+      referrerInfo = new ReferrerInfo(docCurURI, aDoc->GetReferrerPolicy());
+      return referrerInfo.forget();
     }
   }
-
-  if (!referrerURI) {
-    referrerURI = principalURI;
-  }
-
-  referrerInfo = new ReferrerInfo(referrerURI, aDoc->GetReferrerPolicy());
+  aPrincipal->CreateReferrerInfo(aDoc->GetReferrerPolicy(),
+                                 getter_AddRefs(referrerInfo));
   return referrerInfo.forget();
 }
 
@@ -1130,45 +1137,7 @@ already_AddRefed<nsIReferrerInfo> ReferrerInfo::CreateForSVGResources(
   return referrerInfo.forget();
 }
 
-void ReferrerInfo::GetReferrerPolicyFromAtribute(
-    nsINode* aNode, ReferrerPolicyEnum& aPolicy) const {
-  aPolicy = ReferrerPolicy::_empty;
-  mozilla::dom::Element* element = aNode->AsElement();
-
-  if (!element || !element->IsAnyOfHTMLElements(
-                      nsGkAtoms::a, nsGkAtoms::area, nsGkAtoms::script,
-                      nsGkAtoms::iframe, nsGkAtoms::link, nsGkAtoms::img)) {
-    return;
-  }
-
-  aPolicy = element->GetReferrerPolicyAsEnum();
-}
-
-bool ReferrerInfo::HasRelNoReferrer(nsINode* aNode) const {
-  mozilla::dom::Element* element = aNode->AsElement();
-
-  // rel=noreferrer is only support in <a> and <area>
-  if (!element ||
-      !element->IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area)) {
-    return false;
-  }
-
-  nsAutoString rel;
-  element->GetAttr(kNameSpaceID_None, nsGkAtoms::rel, rel);
-  nsWhitespaceTokenizerTemplate<nsContentUtils::IsHTMLWhitespace> tok(rel);
-
-  while (tok.hasMoreTokens()) {
-    const nsAString& token = tok.nextToken();
-    if (token.LowerCaseEqualsLiteral("noreferrer")) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 nsresult ReferrerInfo::ComputeReferrer(nsIHttpChannel* aChannel) {
-  CachePreferrenceValue();
   NS_ENSURE_ARG(aChannel);
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -1230,7 +1199,7 @@ nsresult ReferrerInfo::ComputeReferrer(nsIHttpChannel* aChannel) {
     return NS_OK;
   }
 
-  // Enforce Referrer whitelist, only http, https, ftp scheme are allowed
+  // Enforce Referrer allowlist, only http, https, ftp scheme are allowed
   if (!IsReferrerSchemeAllowed(mOriginalReferrer)) {
     return NS_OK;
   }
@@ -1280,7 +1249,7 @@ nsresult ReferrerInfo::ComputeReferrer(nsIHttpChannel* aChannel) {
 
   // Handle user pref network.http.referer.spoofSource, send spoofed referrer if
   // desired
-  if (sUserSpoofReferrerSource) {
+  if (StaticPrefs::network_http_referer_spoofSource()) {
     nsCOMPtr<nsIURI> userSpoofReferrer;
     rv = NS_GetURIWithoutRef(uri, getter_AddRefs(userSpoofReferrer));
     if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -1291,17 +1260,7 @@ nsresult ReferrerInfo::ComputeReferrer(nsIHttpChannel* aChannel) {
 
   // strip away any userpass; we don't want to be giving out passwords ;-)
   // This is required by Referrer Policy stripping algorithm.
-  nsCOMPtr<nsIURIFixup> urifixup = services::GetURIFixup();
-  if (NS_WARN_IF(!urifixup)) {
-    return NS_ERROR_FAILURE;
-  }
-
-  nsCOMPtr<nsIURI> exposableURI;
-  rv = urifixup->CreateExposableURI(referrer, getter_AddRefs(exposableURI));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+  nsCOMPtr<nsIURI> exposableURI = nsIOService::CreateExposableURI(referrer);
   referrer = exposableURI;
 
   TrimmingPolicy trimmingPolicy = ComputeTrimmingPolicy(aChannel);

@@ -10,6 +10,7 @@ const SELECTORS = {
   savedCreditCardsBtn: "#creditCardAutofill button",
   addressAutofillLearnMore: "#addressAutofillLearnMore",
   creditCardAutofillLearnMore: "#creditCardAutofillLearnMore",
+  reauthCheckbox: "#creditCardReauthenticate checkbox",
 };
 
 // Visibility of form autofill group should be hidden when opening
@@ -23,7 +24,7 @@ add_task(async function test_aboutPreferences() {
     { gBrowser, url: PAGE_PREFS },
     async function(browser) {
       await finalPrefPaneLoaded;
-      await ContentTask.spawn(browser, SELECTORS, selectors => {
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
         is(
           content.document.querySelector(selectors.group).hidden,
           true,
@@ -45,7 +46,7 @@ add_task(async function test_aboutPreferencesPrivacy() {
     { gBrowser, url: PAGE_PRIVACY },
     async function(browser) {
       await finalPrefPaneLoaded;
-      await ContentTask.spawn(browser, SELECTORS, selectors => {
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
         is(
           content.document.querySelector(selectors.group).hidden,
           false,
@@ -72,8 +73,8 @@ add_task(async function test_aboutPreferencesPrivacy() {
         ok(
           content.document
             .querySelector(selectors.creditCardAutofillLearnMore)
-            .href.includes("autofill-card-address"),
-          "Autofill credit cards learn more link should contain autofill-card-address"
+            .href.includes("credit-card-autofill"),
+          "Autofill credit cards learn more link should contain credit-card-autofill"
         );
       });
     }
@@ -94,20 +95,24 @@ add_task(async function test_openManageAutofillDialogs() {
         MANAGE_ADDRESSES_DIALOG_URL,
         MANAGE_CREDIT_CARDS_DIALOG_URL,
       ];
-      await ContentTask.spawn(browser, args, ([selectors, addrUrl, ccUrl]) => {
-        function testManageDialogOpened(expectedUrl) {
-          return {
-            open: openUrl => is(openUrl, expectedUrl, "Manage dialog called"),
-          };
-        }
+      await SpecialPowers.spawn(
+        browser,
+        [args],
+        ([selectors, addrUrl, ccUrl]) => {
+          function testManageDialogOpened(expectedUrl) {
+            return {
+              open: openUrl => is(openUrl, expectedUrl, "Manage dialog called"),
+            };
+          }
 
-        let realgSubDialog = content.window.gSubDialog;
-        content.window.gSubDialog = testManageDialogOpened(addrUrl);
-        content.document.querySelector(selectors.savedAddressesBtn).click();
-        content.window.gSubDialog = testManageDialogOpened(ccUrl);
-        content.document.querySelector(selectors.savedCreditCardsBtn).click();
-        content.window.gSubDialog = realgSubDialog;
-      });
+          let realgSubDialog = content.window.gSubDialog;
+          content.window.gSubDialog = testManageDialogOpened(addrUrl);
+          content.document.querySelector(selectors.savedAddressesBtn).click();
+          content.window.gSubDialog = testManageDialogOpened(ccUrl);
+          content.document.querySelector(selectors.savedCreditCardsBtn).click();
+          content.window.gSubDialog = realgSubDialog;
+        }
+      );
     }
   );
 });
@@ -128,7 +133,7 @@ add_task(async function test_autofillCheckboxes() {
     { gBrowser, url: PAGE_PRIVACY },
     async function(browser) {
       await finalPrefPaneLoaded;
-      await ContentTask.spawn(browser, SELECTORS, selectors => {
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
         is(
           content.document.querySelector(selectors.group).hidden,
           false,
@@ -163,7 +168,7 @@ add_task(async function test_autofillCheckboxes() {
         "Check address autofill is now enabled"
       );
 
-      await ContentTask.spawn(browser, SELECTORS, selectors => {
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
         content.document
           .querySelector(selectors.creditCardAutofillCheckbox)
           .scrollIntoView({ block: "center", behavior: "instant" });
@@ -194,7 +199,7 @@ add_task(async function test_creditCardNotAvailable() {
     { gBrowser, url: PAGE_PRIVACY },
     async function(browser) {
       await finalPrefPaneLoaded;
-      await ContentTask.spawn(browser, SELECTORS, selectors => {
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
         is(
           content.document.querySelector(selectors.group).hidden,
           false,
@@ -205,6 +210,68 @@ add_task(async function test_creditCardNotAvailable() {
           "Autofill credit cards checkbox should not exist"
         );
       });
+    }
+  );
+});
+
+add_task(async function test_creditCardHiddenUI() {
+  const AUTOFILL_CREDITCARDS_HIDE_UI_PREF =
+    "extensions.formautofill.creditCards.hideui";
+
+  await SpecialPowers.pushPrefEnv({
+    set: [[AUTOFILL_CREDITCARDS_HIDE_UI_PREF, true]],
+  });
+  let finalPrefPaneLoaded = TestUtils.topicObserved(
+    "sync-pane-loaded",
+    () => true
+  );
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: PAGE_PRIVACY },
+    async function(browser) {
+      await finalPrefPaneLoaded;
+      await SpecialPowers.spawn(browser, [SELECTORS], selectors => {
+        is(
+          content.document.querySelector(selectors.group).hidden,
+          false,
+          "Form Autofill group should be visible"
+        );
+        ok(
+          !content.document.querySelector(selectors.creditCardAutofillCheckbox),
+          "Autofill credit cards checkbox should not exist"
+        );
+      });
+    }
+  );
+  SpecialPowers.clearUserPref(AUTOFILL_CREDITCARDS_HIDE_UI_PREF);
+});
+
+add_task(async function test_reauth() {
+  await SpecialPowers.pushPrefEnv({
+    set: [[AUTOFILL_CREDITCARDS_AVAILABLE_PREF, true]],
+  });
+  let { OSKeyStore } = ChromeUtils.import(
+    "resource://gre/modules/OSKeyStore.jsm"
+  );
+
+  let finalPrefPaneLoaded = TestUtils.topicObserved(
+    "sync-pane-loaded",
+    () => true
+  );
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: PAGE_PRIVACY },
+    async function(browser) {
+      await finalPrefPaneLoaded;
+      await SpecialPowers.spawn(
+        browser,
+        [SELECTORS, OSKeyStore.canReauth()],
+        (selectors, canReauth) => {
+          is(
+            canReauth,
+            !!content.document.querySelector(selectors.reauthCheckbox),
+            "Re-authentication checkbox should be available if OSKeyStore.canReauth() is `true`"
+          );
+        }
+      );
     }
   );
 });

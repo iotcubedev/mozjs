@@ -9,18 +9,10 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { LocalizationHelper } = require("devtools/shared/l10n");
 
-loader.lazyGetter(this, "Rep", function() {
-  return require("devtools/client/shared/components/reps/reps").REPS.Rep;
-});
-loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/shared/components/reps/reps").MODE;
-});
-
 loader.lazyRequireGetter(
   this,
-  "translateNodeFrontToGrip",
-  "devtools/client/inspector/shared/utils",
-  true
+  "getNodeRep",
+  "devtools/client/inspector/shared/node-reps"
 );
 
 const BOXMODEL_STRINGS_URI = "devtools/client/locales/boxmodel.properties";
@@ -42,14 +34,9 @@ class ComputedProperty extends PureComponent {
   constructor(props) {
     super(props);
 
-    this.onFocus = this.onFocus.bind(this);
     this.renderReferenceElementPreview = this.renderReferenceElementPreview.bind(
       this
     );
-  }
-
-  onFocus() {
-    this.container.focus();
   }
 
   renderReferenceElementPreview() {
@@ -70,14 +57,12 @@ class ComputedProperty extends PureComponent {
       dom.span(
         {
           className: "reference-element-type",
+          role: "button",
           title: BOXMODEL_L10N.getStr("boxmodel.offsetParent.title"),
         },
         referenceElementType
       ),
-      Rep({
-        defaultRep: referenceElement,
-        mode: MODE.TINY,
-        object: translateNodeFrontToGrip(referenceElement),
+      getNodeRep(referenceElement, {
         onInspectIconClick: () =>
           setSelectedNode(referenceElement, { reason: "box-model" }),
         onDOMNodeMouseOver: () =>
@@ -93,32 +78,36 @@ class ComputedProperty extends PureComponent {
     return dom.div(
       {
         className: "computed-property-view",
+        role: "row",
         "data-property-name": name,
-        tabIndex: "0",
         ref: container => {
           this.container = container;
         },
       },
       dom.div(
-        { className: "computed-property-name-container" },
+        {
+          className: "computed-property-name-container",
+          role: "presentation",
+        },
         dom.div(
           {
             className: "computed-property-name theme-fg-color3",
-            tabIndex: "",
+            role: "cell",
             title: name,
-            onClick: this.onFocus,
           },
           name
         )
       ),
       dom.div(
-        { className: "computed-property-value-container" },
+        {
+          className: "computed-property-value-container",
+          role: "presentation",
+        },
         dom.div(
           {
             className: "computed-property-value theme-fg-color1",
             dir: "ltr",
-            tabIndex: "",
-            onClick: this.onFocus,
+            role: "cell",
           },
           value
         ),

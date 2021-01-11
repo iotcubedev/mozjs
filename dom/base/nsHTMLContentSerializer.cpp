@@ -18,7 +18,6 @@
 #include "nsNameSpaceManager.h"
 #include "nsString.h"
 #include "nsUnicharUtils.h"
-#include "nsIServiceManager.h"
 #include "nsIDocumentEncoder.h"
 #include "nsGkAtoms.h"
 #include "nsIURI.h"
@@ -28,9 +27,6 @@
 #include "nsContentUtils.h"
 #include "nsIScriptElement.h"
 #include "nsAttrName.h"
-#include "nsIDocShell.h"
-#include "nsIEditor.h"
-#include "nsIHTMLEditor.h"
 #include "mozilla/dom/Element.h"
 #include "nsParserConstants.h"
 
@@ -44,7 +40,7 @@ nsresult NS_NewHTMLContentSerializer(nsIContentSerializer** aSerializer) {
 
 nsHTMLContentSerializer::nsHTMLContentSerializer() { mIsHTMLSerializer = true; }
 
-nsHTMLContentSerializer::~nsHTMLContentSerializer() {}
+nsHTMLContentSerializer::~nsHTMLContentSerializer() = default;
 
 NS_IMETHODIMP
 nsHTMLContentSerializer::AppendDocumentStart(Document* aDocument) {
@@ -70,8 +66,8 @@ bool nsHTMLContentSerializer::SerializeHTMLAttributes(
 
     // Filter out any attribute starting with [-|_]moz
     nsDependentAtomString attrNameStr(attrName);
-    if (StringBeginsWith(attrNameStr, NS_LITERAL_STRING("_moz")) ||
-        StringBeginsWith(attrNameStr, NS_LITERAL_STRING("-moz"))) {
+    if (StringBeginsWith(attrNameStr, u"_moz"_ns) ||
+        StringBeginsWith(attrNameStr, u"-moz"_ns)) {
       continue;
     }
     aElement->GetAttr(namespaceID, attrName, valueStr);
@@ -111,8 +107,7 @@ bool nsHTMLContentSerializer::SerializeHTMLAttributes(
       nsAutoString header;
       aElement->GetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv, header);
       if (header.LowerCaseEqualsLiteral("content-type")) {
-        valueStr = NS_LITERAL_STRING("text/html; charset=") +
-                   NS_ConvertASCIItoUTF16(mCharset);
+        valueStr = u"text/html; charset="_ns + NS_ConvertASCIItoUTF16(mCharset);
       }
     }
 

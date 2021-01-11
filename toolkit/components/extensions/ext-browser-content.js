@@ -16,11 +16,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
 
-var { ExtensionUtils } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionUtils.jsm"
-);
-const { getWinUtils } = ExtensionUtils;
-
 /* eslint-env mozilla/frame-script */
 
 // Minimum time between two resizes.
@@ -84,7 +79,7 @@ const BrowserListener = {
     this.oldBackground = null;
 
     if (allowScriptsToClose) {
-      getWinUtils(content).allowScriptsToClose();
+      content.windowUtils.allowScriptsToClose();
     }
 
     // Force external links to open in tabs.
@@ -100,7 +95,6 @@ const BrowserListener = {
     addEventListener("load", this, true);
     addEventListener("DOMWindowCreated", this, true);
     addEventListener("DOMContentLoaded", this, true);
-    addEventListener("DOMWindowClose", this, true);
     addEventListener("MozScrolledAreaChanged", this, true);
   },
 
@@ -112,7 +106,6 @@ const BrowserListener = {
     removeEventListener("load", this, true);
     removeEventListener("DOMWindowCreated", this, true);
     removeEventListener("DOMContentLoaded", this, true);
-    removeEventListener("DOMWindowClose", this, true);
     removeEventListener("MozScrolledAreaChanged", this, true);
   },
 
@@ -132,12 +125,12 @@ const BrowserListener = {
   },
 
   loadStylesheets() {
-    let winUtils = getWinUtils(content);
+    let { windowUtils } = content;
 
     for (let url of this.stylesheets) {
-      winUtils.addSheet(
+      windowUtils.addSheet(
         ExtensionCommon.stylesheetMap.get(url),
-        winUtils.AGENT_SHEET
+        windowUtils.AGENT_SHEET
       );
     }
   },
@@ -153,14 +146,6 @@ const BrowserListener = {
       case "DOMWindowCreated":
         if (event.target === content.document) {
           this.loadStylesheets();
-        }
-        break;
-
-      case "DOMWindowClose":
-        if (event.target === content) {
-          event.preventDefault();
-
-          sendAsyncMessage("Extension:DOMWindowClose");
         }
         break;
 
@@ -355,16 +340,6 @@ var WebBrowserChrome = {
       .useRemoteSubframes;
     return E10SUtils.shouldLoadURIInThisProcess(URI, remoteSubframes);
   },
-
-  reloadInFreshProcess(
-    docShell,
-    URI,
-    referrerInfo,
-    triggeringPrincipal,
-    loadFlags
-  ) {
-    return false;
-  },
 };
 
 if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
@@ -373,3 +348,6 @@ if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
     .getInterface(Ci.nsIBrowserChild);
   tabchild.webBrowserChrome = WebBrowserChrome;
 }
+
+// This is a temporary hack to prevent regressions (bug 1471327).
+void content;

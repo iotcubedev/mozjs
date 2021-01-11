@@ -14,6 +14,7 @@
 #include "jstypes.h"
 
 #include "js/CallArgs.h"
+#include "js/HeapAPI.h"
 #include "js/Id.h"
 #include "js/TypeDecls.h"
 
@@ -38,38 +39,6 @@ extern JS_FRIEND_DATA const JSClass* const FunctionClassPtr;
 }  // namespace js
 
 namespace JS {
-
-/**
- * The answer to a successful query as to whether an object is an Array per
- * ES6's internal |IsArray| operation (as exposed by |Array.isArray|).
- */
-enum class IsArrayAnswer { Array, NotArray, RevokedProxy };
-
-/**
- * ES6 7.2.2.
- *
- * Returns false on failure, otherwise returns true and sets |*isArray|
- * indicating whether the object passes ECMAScript's IsArray test.  This is the
- * same test performed by |Array.isArray|.
- *
- * This is NOT the same as asking whether |obj| is an Array or a wrapper around
- * one.  If |obj| is a proxy created by |Proxy.revocable()| and has been
- * revoked, or if |obj| is a proxy whose target (at any number of hops) is a
- * revoked proxy, this method throws a TypeError and returns false.
- */
-extern JS_PUBLIC_API bool IsArray(JSContext* cx, HandleObject obj,
-                                  bool* isArray);
-
-/**
- * Identical to IsArray above, but the nature of the object (if successfully
- * determined) is communicated via |*answer|.  In particular this method
- * returns true and sets |*answer = IsArrayAnswer::RevokedProxy| when called on
- * a revoked proxy.
- *
- * Most users will want the overload above, not this one.
- */
-extern JS_PUBLIC_API bool IsArray(JSContext* cx, HandleObject obj,
-                                  IsArrayAnswer* answer);
 
 /**
  * Per ES6, the [[DefineOwnProperty]] internal method has three different
@@ -205,70 +174,55 @@ class ObjectOpResult {
   }
 
   /*
-   * Report an error or warning if necessary; return true to proceed and
-   * false if an error was reported. Call this when failure should cause
-   * a warning if extraWarnings are enabled.
+   * Report an error if necessary; return true to proceed and
+   * false if an error was reported.
    *
    * The precise rules are like this:
    *
    * -   If ok(), then we succeeded. Do nothing and return true.
-   * -   Otherwise, if |strict| is true, or if cx has both extraWarnings and
-   *     werrorOption enabled, throw a TypeError and return false.
-   * -   Otherwise, if cx has extraWarnings enabled, emit a warning and
-   *     return true.
+   * -   Otherwise, if |strict| is true, throw a TypeError and return false.
    * -   Otherwise, do nothing and return true.
    */
-  bool checkStrictErrorOrWarning(JSContext* cx, HandleObject obj, HandleId id,
-                                 bool strict) {
-    if (ok()) {
+  bool checkStrictModeError(JSContext* cx, HandleObject obj, HandleId id,
+                            bool strict) {
+    if (ok() || !strict) {
       return true;
     }
-    return reportStrictErrorOrWarning(cx, obj, id, strict);
+    return reportError(cx, obj, id);
   }
 
   /*
-   * The same as checkStrictErrorOrWarning(cx, id, strict), except the
+   * The same as checkStrictModeError(cx, id, strict), except the
    * operation is not associated with a particular property id. This is
    * used for [[PreventExtensions]] and [[SetPrototypeOf]]. failureCode()
    * must not be an error that has "{0}" in the error message.
    */
-  bool checkStrictErrorOrWarning(JSContext* cx, HandleObject obj, bool strict) {
-    return ok() || reportStrictErrorOrWarning(cx, obj, strict);
+  bool checkStrictModeError(JSContext* cx, HandleObject obj, bool strict) {
+    if (ok() || !strict) {
+      return true;
+    }
+    return reportError(cx, obj);
   }
 
   /* Throw a TypeError. Call this only if !ok(). */
-  bool reportError(JSContext* cx, HandleObject obj, HandleId id) {
-    return reportStrictErrorOrWarning(cx, obj, id, true);
-  }
+  bool reportError(JSContext* cx, HandleObject obj, HandleId id);
 
   /*
    * The same as reportError(cx, obj, id), except the operation is not
    * associated with a particular property id.
    */
-  bool reportError(JSContext* cx, HandleObject obj) {
-    return reportStrictErrorOrWarning(cx, obj, true);
-  }
+  bool reportError(JSContext* cx, HandleObject obj);
 
-  /* Helper function for checkStrictErrorOrWarning's slow path. */
-  JS_PUBLIC_API bool reportStrictErrorOrWarning(JSContext* cx, HandleObject obj,
-                                                HandleId id, bool strict);
-  JS_PUBLIC_API bool reportStrictErrorOrWarning(JSContext* cx, HandleObject obj,
-                                                bool strict);
-
-  /*
-   * Convenience method. Return true if ok() or if strict is false; otherwise
-   * throw a TypeError and return false.
-   */
+  // Convenience method. Return true if ok(); otherwise throw a TypeError
+  // and return false.
   bool checkStrict(JSContext* cx, HandleObject obj, HandleId id) {
-    return checkStrictErrorOrWarning(cx, obj, id, true);
+    return checkStrictModeError(cx, obj, id, true);
   }
 
-  /*
-   * Convenience method. The same as checkStrict(cx, id), except the
-   * operation is not associated with a particular property id.
-   */
+  // Convenience method. The same as checkStrict(cx, obj, id), except the
+  // operation is not associated with a particular property id.
   bool checkStrict(JSContext* cx, HandleObject obj) {
-    return checkStrictErrorOrWarning(cx, obj, true);
+    return checkStrictModeError(cx, obj, true);
   }
 };
 
@@ -582,7 +536,7 @@ typedef JSObject* (*ClassObjectCreationOp)(JSContext* cx, JSProtoKey key);
 typedef bool (*FinishClassInitOp)(JSContext* cx, JS::HandleObject ctor,
                                   JS::HandleObject proto);
 
-const size_t JSCLASS_CACHED_PROTO_WIDTH = 6;
+const size_t JSCLASS_CACHED_PROTO_WIDTH = 7;
 
 struct MOZ_STATIC_CLASS ClassSpec {
   ClassObjectCreationOp createConstructor;
@@ -642,9 +596,6 @@ struct MOZ_STATIC_CLASS ClassExtension {
   JSObjectMovedOp objectMovedOp;
 };
 
-#define JS_NULL_CLASS_SPEC nullptr
-#define JS_NULL_CLASS_EXT nullptr
-
 struct MOZ_STATIC_CLASS ObjectOps {
   LookupPropertyOp lookupProperty;
   DefinePropertyOp defineProperty;
@@ -657,9 +608,12 @@ struct MOZ_STATIC_CLASS ObjectOps {
   JSFunToStringOp funToString;
 };
 
-#define JS_NULL_OBJECT_OPS nullptr
-
 }  // namespace js
+
+static constexpr const js::ClassSpec* JS_NULL_CLASS_SPEC = nullptr;
+static constexpr const js::ClassExtension* JS_NULL_CLASS_EXT = nullptr;
+
+static constexpr const js::ObjectOps* JS_NULL_OBJECT_OPS = nullptr;
 
 // Classes, objects, and properties.
 
@@ -701,38 +655,34 @@ static const uintptr_t JSCLASS_RESERVED_SLOTS_SHIFT = 8;
 static const uint32_t JSCLASS_RESERVED_SLOTS_WIDTH = 8;
 
 static const uint32_t JSCLASS_RESERVED_SLOTS_MASK =
-    JS_BITMASK(JSCLASS_RESERVED_SLOTS_WIDTH);
+    js::BitMask(JSCLASS_RESERVED_SLOTS_WIDTH);
 
-#define JSCLASS_HAS_RESERVED_SLOTS(n) \
-  (((n)&JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT)
-#define JSCLASS_RESERVED_SLOTS(clasp)                 \
-  (((clasp)->flags >> JSCLASS_RESERVED_SLOTS_SHIFT) & \
-   JSCLASS_RESERVED_SLOTS_MASK)
+static constexpr uint32_t JSCLASS_HAS_RESERVED_SLOTS(uint32_t n) {
+  return (n & JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT;
+}
 
-#define JSCLASS_HIGH_FLAGS_SHIFT \
-  (JSCLASS_RESERVED_SLOTS_SHIFT + JSCLASS_RESERVED_SLOTS_WIDTH)
+static constexpr uint32_t JSCLASS_HIGH_FLAGS_SHIFT =
+    JSCLASS_RESERVED_SLOTS_SHIFT + JSCLASS_RESERVED_SLOTS_WIDTH;
 
 static const uint32_t JSCLASS_INTERNAL_FLAG1 =
     1 << (JSCLASS_HIGH_FLAGS_SHIFT + 0);
 static const uint32_t JSCLASS_IS_GLOBAL = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 1);
 static const uint32_t JSCLASS_INTERNAL_FLAG2 =
     1 << (JSCLASS_HIGH_FLAGS_SHIFT + 2);
-static const uint32_t JSCLASS_INTERNAL_FLAG3 =
-    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 3);
-static const uint32_t JSCLASS_IS_PROXY = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 4);
+static const uint32_t JSCLASS_IS_PROXY = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 3);
 static const uint32_t JSCLASS_SKIP_NURSERY_FINALIZE =
-    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 5);
+    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 4);
 
 // Reserved for embeddings.
-static const uint32_t JSCLASS_USERBIT2 = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 6);
-static const uint32_t JSCLASS_USERBIT3 = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 7);
+static const uint32_t JSCLASS_USERBIT2 = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 5);
+static const uint32_t JSCLASS_USERBIT3 = 1 << (JSCLASS_HIGH_FLAGS_SHIFT + 6);
 
 static const uint32_t JSCLASS_BACKGROUND_FINALIZE =
-    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 8);
+    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 7);
 static const uint32_t JSCLASS_FOREGROUND_FINALIZE =
-    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 9);
+    1 << (JSCLASS_HIGH_FLAGS_SHIFT + 8);
 
-// Bits 26 through 31 are reserved for the CACHED_PROTO_KEY mechanism, see
+// Bits 25 through 31 are reserved for the CACHED_PROTO_KEY mechanism, see
 // below.
 
 // ECMA-262 requires that most constructors used internally create objects
@@ -750,27 +700,27 @@ static const uint32_t JSCLASS_FOREGROUND_FINALIZE =
 // application.
 static const uint32_t JSCLASS_GLOBAL_APPLICATION_SLOTS = 5;
 static const uint32_t JSCLASS_GLOBAL_SLOT_COUNT =
-    JSCLASS_GLOBAL_APPLICATION_SLOTS + JSProto_LIMIT * 2 + 40;
+    JSCLASS_GLOBAL_APPLICATION_SLOTS + JSProto_LIMIT * 2 + 28;
 
-#define JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(n) \
-  (JSCLASS_IS_GLOBAL |                     \
-   JSCLASS_HAS_RESERVED_SLOTS(JSCLASS_GLOBAL_SLOT_COUNT + (n)))
-#define JSCLASS_GLOBAL_FLAGS JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(0)
-#define JSCLASS_HAS_GLOBAL_FLAG_AND_SLOTS(clasp) \
-  (((clasp)->flags & JSCLASS_IS_GLOBAL) &&       \
-   JSCLASS_RESERVED_SLOTS(clasp) >= JSCLASS_GLOBAL_SLOT_COUNT)
+static constexpr uint32_t JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(uint32_t n) {
+  return JSCLASS_IS_GLOBAL |
+         JSCLASS_HAS_RESERVED_SLOTS(JSCLASS_GLOBAL_SLOT_COUNT + n);
+}
+
+static constexpr uint32_t JSCLASS_GLOBAL_FLAGS =
+    JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(0);
 
 // Fast access to the original value of each standard class's prototype.
-static const uint32_t JSCLASS_CACHED_PROTO_SHIFT =
-    JSCLASS_HIGH_FLAGS_SHIFT + 10;
+static const uint32_t JSCLASS_CACHED_PROTO_SHIFT = JSCLASS_HIGH_FLAGS_SHIFT + 9;
 static const uint32_t JSCLASS_CACHED_PROTO_MASK =
-    JS_BITMASK(js::JSCLASS_CACHED_PROTO_WIDTH);
+    js::BitMask(js::JSCLASS_CACHED_PROTO_WIDTH);
 
-#define JSCLASS_HAS_CACHED_PROTO(key) \
-  (uint32_t(key) << JSCLASS_CACHED_PROTO_SHIFT)
-#define JSCLASS_CACHED_PROTO_KEY(clasp)                          \
-  ((JSProtoKey)(((clasp)->flags >> JSCLASS_CACHED_PROTO_SHIFT) & \
-                JSCLASS_CACHED_PROTO_MASK))
+static_assert(JSProto_LIMIT <= (JSCLASS_CACHED_PROTO_MASK + 1),
+              "JSProtoKey must not exceed the maximum cacheable proto-mask");
+
+static constexpr uint32_t JSCLASS_HAS_CACHED_PROTO(JSProtoKey key) {
+  return uint32_t(key) << JSCLASS_CACHED_PROTO_SHIFT;
+}
 
 struct MOZ_STATIC_CLASS JSClassOps {
   /* Function pointer members (may be null). */
@@ -787,9 +737,9 @@ struct MOZ_STATIC_CLASS JSClassOps {
   JSTraceOp trace;
 };
 
-#define JS_NULL_CLASS_OPS nullptr
+static constexpr const JSClassOps* JS_NULL_CLASS_OPS = nullptr;
 
-struct JSClass {
+struct alignas(js::gc::JSClassAlignBytes) JSClass {
   const char* name;
   uint32_t flags;
   const JSClassOps* cOps;
@@ -939,6 +889,21 @@ struct JSClass {
   }
 };
 
+static constexpr uint32_t JSCLASS_RESERVED_SLOTS(const JSClass* clasp) {
+  return (clasp->flags >> JSCLASS_RESERVED_SLOTS_SHIFT) &
+         JSCLASS_RESERVED_SLOTS_MASK;
+}
+
+static constexpr bool JSCLASS_HAS_GLOBAL_FLAG_AND_SLOTS(const JSClass* clasp) {
+  return (clasp->flags & JSCLASS_IS_GLOBAL) &&
+         JSCLASS_RESERVED_SLOTS(clasp) >= JSCLASS_GLOBAL_SLOT_COUNT;
+}
+
+static constexpr JSProtoKey JSCLASS_CACHED_PROTO_KEY(const JSClass* clasp) {
+  return JSProtoKey((clasp->flags >> JSCLASS_CACHED_PROTO_SHIFT) &
+                    JSCLASS_CACHED_PROTO_MASK);
+}
+
 namespace js {
 
 /**
@@ -963,6 +928,7 @@ enum class ESClass {
   Arguments,
   Error,
   BigInt,
+  Function,  // Note: Only JSFunction objects.
 
   /** None of the above. */
   Other

@@ -254,7 +254,7 @@ class TextureData {
 
   static bool IsRemote(LayersBackend aLayersBackend, BackendSelector aSelector);
 
-  virtual ~TextureData() { MOZ_COUNT_DTOR(TextureData); }
+  MOZ_COUNTED_DTOR_VIRTUAL(TextureData)
 
   virtual void FillInfo(TextureData::Info& aInfo) const = 0;
 
@@ -280,7 +280,7 @@ class TextureData {
   virtual void Forget(LayersIPCChannel* aAllocator) {}
 
   virtual bool Serialize(SurfaceDescriptor& aDescriptor) = 0;
-  virtual void GetSubDescriptor(GPUVideoSubDescriptor* aOutDesc) {}
+  virtual void GetSubDescriptor(RemoteDecoderVideoSubDescriptor* aOutDesc) {}
 
   virtual void OnForwardedToHost() {}
 
@@ -313,7 +313,7 @@ class TextureData {
   virtual GPUVideoTextureData* AsGPUVideoTextureData() { return nullptr; }
 
  protected:
-  TextureData() { MOZ_COUNT_CTOR(TextureData); }
+  MOZ_COUNTED_DEFAULT_CTOR(TextureData)
 };
 
 /**
@@ -335,7 +335,7 @@ class TextureData {
  * lifetime. This means that the lifetime of the underlying shared data
  * matches the lifetime of the TextureClient/Host pair. It also means
  * TextureClient/Host do not implement double buffering, which is the
- * responsibility of the compositable (which would use two Texture pairs).
+ * responsibility of the compositable (which would use pairs of Textures).
  * In order to send several different buffers to the compositor side, use
  * several TextureClients.
  */
@@ -610,7 +610,8 @@ class TextureClient : public AtomicRefCountedWithFinalize<TextureClient> {
   const TextureData* GetInternalData() const { return mData; }
 
   uint64_t GetSerial() const { return mSerial; }
-  void GPUVideoDesc(SurfaceDescriptorGPUVideo* aOutDesc);
+  void GetSurfaceDescriptorRemoteDecoder(
+      SurfaceDescriptorRemoteDecoder* aOutDesc);
 
   void CancelWaitForNotifyNotUsed();
 
@@ -905,6 +906,8 @@ class TKeepAlive : public KeepAlive {
 /// Convenience function to set the content of ycbcr texture.
 bool UpdateYCbCrTextureClient(TextureClient* aTexture,
                               const PlanarYCbCrData& aData);
+
+TextureType PreferredCanvasTextureType(const KnowsCompositor&);
 
 }  // namespace layers
 }  // namespace mozilla

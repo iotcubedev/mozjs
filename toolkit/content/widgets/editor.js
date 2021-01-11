@@ -16,9 +16,6 @@
           "nsIURIContentListener",
           "nsISupportsWeakReference",
         ]),
-        onStartURIOpen(uri) {
-          return false;
-        },
         doContent(contentType, isContentPreferred, request, contentHandler) {
           return false;
         },
@@ -111,19 +108,19 @@
     }
 
     set fullZoom(val) {
-      this.markupDocumentViewer.fullZoom = val;
+      this.browsingContext.fullZoom = val;
     }
 
     get fullZoom() {
-      return this.markupDocumentViewer.fullZoom;
+      return this.browsingContext.fullZoom;
     }
 
     set textZoom(val) {
-      this.markupDocumentViewer.textZoom = val;
+      this.browsingContext.textZoom = val;
     }
 
     get textZoom() {
-      return this.markupDocumentViewer.textZoom;
+      return this.browsingContext.textZoom;
     }
 
     get isSyntheticDocument() {
@@ -137,13 +134,51 @@
       return null;
     }
 
+    // Copied from toolkit/content/widgets/browser-custom-element.js.
+    // Send an asynchronous message to the remote child via an actor.
+    // Note: use this only for messages through an actor. For old-style
+    // messages, use the message manager.
+    // The value of the scope argument determines which browsing contexts
+    // are sent to:
+    //   'all' - send to actors associated with all descendant child frames.
+    //   'roots' - send only to actors associated with process roots.
+    //   undefined/'' - send only to the top-level actor and not any descendants.
+    sendMessageToActor(messageName, args, actorName, scope) {
+      if (!this.frameLoader) {
+        return;
+      }
+
+      function sendToChildren(browsingContext, childScope) {
+        let windowGlobal = browsingContext.currentWindowGlobal;
+        // If 'roots' is set, only send if windowGlobal.isProcessRoot is true.
+        if (
+          windowGlobal &&
+          (childScope != "roots" || windowGlobal.isProcessRoot)
+        ) {
+          windowGlobal.getActor(actorName).sendAsyncMessage(messageName, args);
+        }
+
+        // Iterate as long as scope in assigned. Note that we use the original
+        // passed in scope, not childScope here.
+        if (scope) {
+          for (let context of browsingContext.children) {
+            sendToChildren(context, scope);
+          }
+        }
+      }
+
+      // Pass no second argument to always send to the top-level browsing context.
+      sendToChildren(this.browsingContext);
+    }
+
     get outerWindowID() {
       return this.contentWindow.windowUtils.outerWindowID;
     }
 
     makeEditable(editortype, waitForUrlLoad) {
+      let win = this.contentWindow;
       this.editingSession.makeWindowEditable(
-        this.contentWindow,
+        win,
         editortype,
         waitForUrlLoad,
         true,
@@ -165,6 +200,14 @@
     getHTMLEditor(containingWindow) {
       var editor = this.editingSession.getEditorForWindow(containingWindow);
       return editor.QueryInterface(Ci.nsIHTMLEditor);
+    }
+
+    print(aOuterWindowID, aPrintSettings) {
+      if (!this.frameLoader) {
+        throw Components.Exception("No frame loader.", Cr.NS_ERROR_FAILURE);
+      }
+
+      return this.frameLoader.print(aOuterWindowID, aPrintSettings);
     }
   }
 

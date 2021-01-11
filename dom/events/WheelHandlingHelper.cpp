@@ -15,6 +15,7 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_mousewheel.h"
 #include "mozilla/StaticPrefs_test.h"
+#include "mozilla/TextControlElement.h"
 #include "mozilla/dom/WheelEventBinding.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
@@ -23,7 +24,6 @@
 #include "mozilla/dom/Document.h"
 #include "DocumentInlines.h"  // for Document and HTMLBodyElement
 #include "nsIScrollableFrame.h"
-#include "nsITextControlElement.h"
 #include "nsITimer.h"
 #include "nsPluginFrame.h"
 #include "nsPresContext.h"
@@ -69,9 +69,10 @@ bool WheelHandlingUtils::CanScrollOn(nsIScrollableFrame* aScrollFrame,
   NS_ASSERTION(aDirectionX || aDirectionY,
                "One of the delta values must be non-zero at least");
 
-  nsPoint scrollPt = aScrollFrame->GetScrollPosition();
-  nsRect scrollRange = aScrollFrame->GetScrollRange();
-  uint32_t directions = aScrollFrame->GetAvailableScrollingDirections();
+  nsPoint scrollPt = aScrollFrame->GetVisualViewportOffset();
+  nsRect scrollRange = aScrollFrame->GetScrollRangeForUserInputEvents();
+  uint32_t directions =
+      aScrollFrame->GetAvailableScrollingDirectionsForUserInputEvents();
 
   return (aDirectionX && (directions & nsIScrollableFrame::HORIZONTAL) &&
           CanScrollInRange(scrollRange.x, scrollPt.x, scrollRange.XMost(),
@@ -87,9 +88,11 @@ WheelHandlingUtils::GetDisregardedWheelScrollDirection(const nsIFrame* aFrame) {
   if (!content) {
     return Nothing();
   }
-  nsCOMPtr<nsITextControlElement> ctrl = do_QueryInterface(
-      content->IsInAnonymousSubtree() ? content->GetBindingParent() : content);
-  if (!ctrl || !ctrl->IsSingleLineTextControl()) {
+  TextControlElement* textControlElement = TextControlElement::FromNodeOrNull(
+      content->IsInNativeAnonymousSubtree()
+          ? content->GetClosestNativeAnonymousSubtreeRootParent()
+          : content);
+  if (!textControlElement || !textControlElement->IsSingleLineTextControl()) {
     return Nothing();
   }
   // Disregard scroll in the block-flow direction by mouse wheel on a
@@ -297,10 +300,9 @@ void WheelTransaction::OnFailToScrollTarget() {
 
   if (StaticPrefs::test_mousescroll()) {
     // This event is used for automated tests, see bug 442774.
-    nsContentUtils::DispatchTrustedEvent(
+    nsContentUtils::DispatchEventOnlyToChrome(
         sTargetFrame->GetContent()->OwnerDoc(), sTargetFrame->GetContent(),
-        NS_LITERAL_STRING("MozMouseScrollFailed"), CanBubble::eYes,
-        Cancelable::eYes);
+        u"MozMouseScrollFailed"_ns, CanBubble::eYes, Cancelable::eYes);
   }
   // The target frame might be destroyed in the event handler, at that time,
   // we need to finish the current transaction
@@ -324,9 +326,9 @@ void WheelTransaction::OnTimeout(nsITimer* aTimer, void* aClosure) {
 
   if (StaticPrefs::test_mousescroll()) {
     // This event is used for automated tests, see bug 442774.
-    nsContentUtils::DispatchTrustedEvent(
+    nsContentUtils::DispatchEventOnlyToChrome(
         frame->GetContent()->OwnerDoc(), frame->GetContent(),
-        NS_LITERAL_STRING("MozMouseScrollTransactionTimeout"), CanBubble::eYes,
+        u"MozMouseScrollTransactionTimeout"_ns, CanBubble::eYes,
         Cancelable::eYes);
   }
 }

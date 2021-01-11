@@ -6,6 +6,8 @@
 #ifndef nsICanvasRenderingContextInternal_h___
 #define nsICanvasRenderingContextInternal_h___
 
+#include <memory>
+
 #include "mozilla/gfx/2D.h"
 #include "nsISupports.h"
 #include "nsIInputStream.h"
@@ -26,14 +28,19 @@
   }
 
 class nsDisplayListBuilder;
+class nsIDocShell;
 
 namespace mozilla {
+class ClientWebGLContext;
 class PresShell;
 namespace layers {
 class CanvasLayer;
 class CanvasRenderer;
+class CompositableHandle;
 class Layer;
 class LayerManager;
+class LayerTransactionChild;
+class PersistentBufferProvider;
 class WebRenderCanvasData;
 }  // namespace layers
 namespace gfx {
@@ -49,8 +56,14 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   typedef mozilla::layers::Layer Layer;
   typedef mozilla::layers::LayerManager LayerManager;
   typedef mozilla::layers::WebRenderCanvasData WebRenderCanvasData;
+  typedef mozilla::layers::CompositableHandle CompositableHandle;
+  typedef mozilla::layers::LayerTransactionChild LayerTransactionChild;
 
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_ICANVASRENDERINGCONTEXTINTERNAL_IID)
+
+  nsICanvasRenderingContextInternal()
+      : mSharedPtrPtr(
+            std::make_shared<nsICanvasRenderingContextInternal*>(this)) {}
 
   void SetCanvasElement(mozilla::dom::HTMLCanvasElement* parentCanvas) {
     RemovePostRefreshObserver();
@@ -124,6 +137,10 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   virtual already_AddRefed<mozilla::gfx::SourceSurface> GetSurfaceSnapshot(
       gfxAlphaType* out_alphaType = nullptr) = 0;
 
+  virtual RefPtr<mozilla::gfx::SourceSurface> GetFrontBufferSnapshot(bool) {
+    return GetSurfaceSnapshot();
+  }
+
   // If this is called with true, the backing store of the canvas should
   // be created as opaque; all compositing operators should assume the
   // dst alpha is always 1.0.  If this is never called, the context's
@@ -192,6 +209,13 @@ class nsICanvasRenderingContextInternal : public nsISupports,
 
   virtual void OnMemoryPressure() {}
 
+  virtual void OnBeforePaintTransaction() {}
+  virtual void OnDidPaintTransaction() {}
+  virtual mozilla::layers::PersistentBufferProvider* GetBufferProvider() {
+    return nullptr;
+  }
+  virtual mozilla::ClientWebGLContext* AsWebgl() { return nullptr; }
+
   //
   // shmem support
   //
@@ -206,6 +230,9 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   RefPtr<mozilla::dom::HTMLCanvasElement> mCanvasElement;
   RefPtr<mozilla::dom::OffscreenCanvas> mOffscreenCanvas;
   RefPtr<nsRefreshDriver> mRefreshDriver;
+
+ public:
+  const std::shared_ptr<nsICanvasRenderingContextInternal* const> mSharedPtrPtr;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsICanvasRenderingContextInternal,

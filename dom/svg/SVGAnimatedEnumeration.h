@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGENUM_H__
-#define __NS_SVGENUM_H__
+#ifndef DOM_SVG_SVGANIMATEDENUMERATION_H_
+#define DOM_SVG_SVGANIMATEDENUMERATION_H_
 
 #include "DOMSVGAnimatedEnumeration.h"
 #include "nsCycleCollectionParticipant.h"
@@ -34,7 +34,7 @@ struct SVGEnumMapping {
 
 class SVGAnimatedEnumeration {
  public:
-  typedef mozilla::dom::SVGElement SVGElement;
+  using SVGElement = dom::SVGElement;
 
   void Init(uint8_t aAttrEnum, uint16_t aValue) {
     mAnimVal = mBaseVal = uint8_t(aValue);
@@ -43,19 +43,21 @@ class SVGAnimatedEnumeration {
     mIsBaseSet = false;
   }
 
-  nsresult SetBaseValueAtom(const nsAtom* aValue, SVGElement* aSVGElement);
+  // Returns whether aValue corresponded to a key in our mapping (in which case
+  // we actually set the base value) or not (in which case we did not).
+  bool SetBaseValueAtom(const nsAtom* aValue, SVGElement* aSVGElement);
   nsAtom* GetBaseValueAtom(SVGElement* aSVGElement);
-  nsresult SetBaseValue(uint16_t aValue, SVGElement* aSVGElement);
+  void SetBaseValue(uint16_t aValue, SVGElement* aSVGElement, ErrorResult& aRv);
   uint16_t GetBaseValue() const { return mBaseVal; }
 
   void SetAnimValue(uint16_t aValue, SVGElement* aSVGElement);
   uint16_t GetAnimValue() const { return mAnimVal; }
   bool IsExplicitlySet() const { return mIsAnimated || mIsBaseSet; }
 
-  already_AddRefed<mozilla::dom::DOMSVGAnimatedEnumeration> ToDOMAnimatedEnum(
+  already_AddRefed<dom::DOMSVGAnimatedEnumeration> ToDOMAnimatedEnum(
       SVGElement* aSVGElement);
 
-  mozilla::UniquePtr<SMILAttr> ToSMILAttr(SVGElement* aSVGElement);
+  UniquePtr<SMILAttr> ToSMILAttr(SVGElement* aSVGElement);
 
  private:
   SVGEnumValue mAnimVal;
@@ -69,19 +71,17 @@ class SVGAnimatedEnumeration {
  public:
   // DOM wrapper class for the (DOM)SVGAnimatedEnumeration interface where the
   // wrapped class is SVGAnimatedEnumeration.
-  struct DOMAnimatedEnum final
-      : public mozilla::dom::DOMSVGAnimatedEnumeration {
+  struct DOMAnimatedEnum final : public dom::DOMSVGAnimatedEnumeration {
     DOMAnimatedEnum(SVGAnimatedEnumeration* aVal, SVGElement* aSVGElement)
-        : mozilla::dom::DOMSVGAnimatedEnumeration(aSVGElement), mVal(aVal) {}
+        : dom::DOMSVGAnimatedEnumeration(aSVGElement), mVal(aVal) {}
     virtual ~DOMAnimatedEnum();
 
     SVGAnimatedEnumeration* mVal;  // kept alive because it belongs to content
 
-    using mozilla::dom::DOMSVGAnimatedEnumeration::SetBaseVal;
+    using dom::DOMSVGAnimatedEnumeration::SetBaseVal;
     virtual uint16_t BaseVal() override { return mVal->GetBaseValue(); }
-    virtual void SetBaseVal(uint16_t aBaseVal,
-                            mozilla::ErrorResult& aRv) override {
-      aRv = mVal->SetBaseValue(aBaseVal, mSVGElement);
+    virtual void SetBaseVal(uint16_t aBaseVal, ErrorResult& aRv) override {
+      mVal->SetBaseValue(aBaseVal, mSVGElement, aRv);
     }
     virtual uint16_t AnimVal() override {
       // Script may have modified animation parameters or timeline -- DOM
@@ -105,9 +105,8 @@ class SVGAnimatedEnumeration {
 
     // SMILAttr methods
     virtual nsresult ValueFromString(
-        const nsAString& aStr,
-        const mozilla::dom::SVGAnimationElement* aSrcElement, SMILValue& aValue,
-        bool& aPreventCachingOfSandwich) const override;
+        const nsAString& aStr, const dom::SVGAnimationElement* aSrcElement,
+        SMILValue& aValue, bool& aPreventCachingOfSandwich) const override;
     virtual SMILValue GetBaseValue() const override;
     virtual void ClearAnimValue() override;
     virtual nsresult SetAnimValue(const SMILValue& aValue) override;
@@ -116,4 +115,4 @@ class SVGAnimatedEnumeration {
 
 }  // namespace mozilla
 
-#endif  //__NS_SVGENUM_H__
+#endif  // DOM_SVG_SVGANIMATEDENUMERATION_H_

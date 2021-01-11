@@ -72,7 +72,7 @@ class DispatchKeyNeededEvent : public Runnable {
                          const nsString& aInitDataType)
       : Runnable("DispatchKeyNeededEvent"),
         mDecoder(aDecoder),
-        mInitData(aInitData),
+        mInitData(aInitData.Clone()),
         mInitDataType(aInitDataType) {}
   NS_IMETHOD Run() override {
     // Note: Null check the owner, as the decoder could have been shutdown
@@ -497,7 +497,7 @@ void TrackBuffersManager::DoEvictData(const TimeUnit& aPlaybackTime,
     // Buffer has been emptied while the eviction was queued, nothing to do.
     return;
   }
-  if (track.mBufferedRanges.Length() == 0) {
+  if (track.mBufferedRanges.IsEmpty()) {
     MSE_DEBUG(
         "DoEvictData running with no buffered ranges. 0 duration data likely "
         "present in our buffer(s). Evicting all data!");
@@ -738,9 +738,9 @@ void TrackBuffersManager::RemoveAllCodedFrames() {
   }
 
   UpdateBufferedRanges();
-  MOZ_ASSERT(mAudioBufferedRanges.Length() == 0,
+  MOZ_ASSERT(mAudioBufferedRanges.IsEmpty(),
              "Should have no buffered video ranges after evicting everything.");
-  MOZ_ASSERT(mVideoBufferedRanges.Length() == 0,
+  MOZ_ASSERT(mVideoBufferedRanges.IsEmpty(),
              "Should have no buffered video ranges after evicting everything.");
   mSizeSourceBuffer = mVideoTracks.mSizeBuffer + mAudioTracks.mSizeBuffer;
   MOZ_ASSERT(mSizeSourceBuffer == 0,
@@ -826,14 +826,27 @@ void TrackBuffersManager::SegmentParserLoop() {
       return;
     }
 
-    int64_t start, end;
-    MediaResult newData =
-        mParser->ParseStartAndEndTimestamps(*mInputBuffer, start, end);
-    if (!NS_SUCCEEDED(newData) && newData.Code() != NS_ERROR_NOT_AVAILABLE) {
-      RejectAppend(newData, __func__);
-      return;
+    MOZ_ASSERT(mSourceBufferAttributes->GetAppendState() ==
+                   AppendState::PARSING_INIT_SEGMENT ||
+               mSourceBufferAttributes->GetAppendState() ==
+                   AppendState::PARSING_MEDIA_SEGMENT);
+
+    int64_t start = 0;
+    int64_t end = 0;
+    MediaResult newData = NS_ERROR_NOT_AVAILABLE;
+
+    if (mSourceBufferAttributes->GetAppendState() ==
+            AppendState::PARSING_INIT_SEGMENT ||
+        (mSourceBufferAttributes->GetAppendState() ==
+             AppendState::PARSING_MEDIA_SEGMENT &&
+         mFirstInitializationSegmentReceived && !mChangeTypeReceived)) {
+      newData = mParser->ParseStartAndEndTimestamps(*mInputBuffer, start, end);
+      if (NS_FAILED(newData) && newData.Code() != NS_ERROR_NOT_AVAILABLE) {
+        RejectAppend(newData, __func__);
+        return;
+      }
+      mProcessedInput += mInputBuffer->Length();
     }
-    mProcessedInput += mInputBuffer->Length();
 
     // 5. If the append state equals PARSING_INIT_SEGMENT, then run the
     // following steps:
@@ -1720,6 +1733,7 @@ void TrackBuffersManager::ProcessFrames(TrackBuffer& aSamples,
     aSample->mTime = aInterval.mStart;
     aSample->mDuration = aInterval.Length();
     aSample->mTrackInfo = trackBuffer.mLastInfo;
+    MOZ_DIAGNOSTIC_ASSERT(aSample->HasValidTime());
     samplesRange += aInterval;
     sizeNewSamples += aSample->ComputedSizeOfIncludingThis();
     samples.AppendElement(aSample);
@@ -2069,7 +2083,7 @@ void TrackBuffersManager::InsertFrames(TrackBuffer& aSamples,
   TimeIntervals intersection = trackBuffer.mBufferedRanges;
   intersection.Intersection(aIntervals);
 
-  if (intersection.Length()) {
+  if (!intersection.IsEmpty()) {
     if (aSamples[0]->mKeyframe &&
         (mType.Type() == MEDIAMIMETYPE("video/webm") ||
          mType.Type() == MEDIAMIMETYPE("audio/webm"))) {
@@ -2127,7 +2141,7 @@ void TrackBuffersManager::InsertFrames(TrackBuffer& aSamples,
   // We allow a fuzz factor in our interval of half a frame length,
   // as fuzz is +/- value, giving an effective leeway of a full frame
   // length.
-  if (aIntervals.Length()) {
+  if (!aIntervals.IsEmpty()) {
     TimeIntervals range(aIntervals);
     range.SetFuzz(trackBuffer.mLongestFrameDuration / 2);
     trackBuffer.mSanitizedBufferedRanges += range;
@@ -2624,6 +2638,7 @@ const MediaRawData* TrackBuffersManager::GetSample(TrackInfo::TrackType aTrack,
   const RefPtr<MediaRawData>& sample = track[aIndex];
   if (!aIndex || sample->mTimecode <= aExpectedDts + aFuzz ||
       sample->mTime <= aExpectedPts + aFuzz) {
+    MOZ_DIAGNOSTIC_ASSERT(sample->HasValidTime());
     return sample;
   }
 
@@ -2867,7 +2882,7 @@ void TrackBuffersManager::GetDebugInfo(
       range->mStart = ranges.Start(i).ToSeconds();
       range->mEnd = ranges.End(i).ToSeconds();
     }
-    aInfo.mRanges = items;
+    aInfo.mRanges = std::move(items);
   } else if (HasVideo()) {
     aInfo.mNextSampleTime = mVideoTracks.mNextSampleTime.ToSeconds();
     aInfo.mNumSamples = mVideoTracks.mBuffers[0].Length();
@@ -2886,7 +2901,7 @@ void TrackBuffersManager::GetDebugInfo(
       range->mStart = ranges.Start(i).ToSeconds();
       range->mEnd = ranges.End(i).ToSeconds();
     }
-    aInfo.mRanges = items;
+    aInfo.mRanges = std::move(items);
   }
 }
 

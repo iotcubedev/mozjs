@@ -3,7 +3,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
+"use strict";
 const ROOT_URL = getRootDirectory(gTestPath).replace(
   "chrome://mochitests/content/",
   "https://example.com/"
@@ -23,6 +23,8 @@ function processResults(results) {
     gotSocket = data.location.startsWith("socket://127.0.0.1:") || gotSocket;
     gotFile = data.location.endsWith("aboutLicense.css") || gotFile;
     gotSqlite = data.location.endsWith("places.sqlite") || gotSqlite;
+    // check for the write-ahead file as well
+    gotSqlite = data.location.endsWith("places.sqlite-wal") || gotSqlite;
   }
 }
 

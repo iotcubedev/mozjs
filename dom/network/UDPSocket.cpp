@@ -345,12 +345,12 @@ bool UDPSocket::Send(const StringOrBlobOrArrayBufferOrArrayBufferView& aData,
       aRv = strStream->SetData(data.BeginReading(), data.Length());
     } else if (aData.IsArrayBuffer()) {
       const ArrayBuffer& data = aData.GetAsArrayBuffer();
-      data.ComputeLengthAndData();
+      data.ComputeState();
       aRv = strStream->SetData(reinterpret_cast<const char*>(data.Data()),
                                data.Length());
     } else {
       const ArrayBufferView& data = aData.GetAsArrayBufferView();
-      data.ComputeLengthAndData();
+      data.ComputeState();
       aRv = strStream->SetData(reinterpret_cast<const char*>(data.Data()),
                                data.Length());
     }
@@ -479,7 +479,7 @@ nsresult UDPSocket::InitRemote(const nsAString& aLocalAddress,
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIEventTarget> target;
+  nsCOMPtr<nsISerialEventTarget> target;
   if (nsCOMPtr<nsIGlobalObject> global = GetOwnerGlobal()) {
     target = global->EventTargetFor(TaskCategory::Other);
   }
@@ -572,7 +572,7 @@ void UDPSocket::HandleReceivedData(const nsACString& aRemoteAddress,
   }
 
   if (NS_FAILED(DispatchReceivedData(aRemoteAddress, aRemotePort, aData))) {
-    CloseWithReason(NS_ERROR_TYPE_ERR);
+    CloseWithReason(NS_ERROR_UNEXPECTED);
   }
 }
 
@@ -604,7 +604,7 @@ nsresult UDPSocket::DispatchReceivedData(const nsACString& aRemoteAddress,
   init.mData = jsData;
 
   RefPtr<UDPMessageEvent> udpEvent =
-      UDPMessageEvent::Constructor(this, NS_LITERAL_STRING("message"), init);
+      UDPMessageEvent::Constructor(this, u"message"_ns, init);
 
   if (NS_WARN_IF(!udpEvent)) {
     return NS_ERROR_FAILURE;

@@ -4,16 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGGeometryProperty_SVGGeometryProperty_h
-#define mozilla_dom_SVGGeometryProperty_SVGGeometryProperty_h
+#ifndef DOM_SVG_SVGGEOMETRYPROPERTY_H_
+#define DOM_SVG_SVGGEOMETRYPROPERTY_H_
 
+#include "mozilla/SVGImageFrame.h"
 #include "mozilla/dom/SVGElement.h"
 #include "ComputedStyle.h"
 #include "SVGAnimatedLength.h"
 #include "nsComputedDOMStyle.h"
 #include "nsGkAtoms.h"
 #include "nsIFrame.h"
-#include "nsSVGImageFrame.h"
 #include <type_traits>
 
 namespace mozilla {
@@ -126,9 +126,8 @@ float ResolveImpl(ComputedStyle const& aStyle, SVGElement* aElement,
     // specified in:
     // https://svgwg.org/svg2-draft/embedded.html#ImageElement
 
-    auto* f = aElement->GetPrimaryFrame();
-    MOZ_ASSERT(f && f->IsSVGImageFrame());
-    auto* imgf = static_cast<nsSVGImageFrame const*>(f);
+    SVGImageFrame* imgf = do_QueryFrame(aElement->GetPrimaryFrame());
+    MOZ_ASSERT(imgf);
 
     using Other = typename Tag::CounterPart;
     auto const& valueOther = aStyle.StylePosition()->*Other::Getter;
@@ -290,4 +289,4 @@ bool ElementMapsLengthsToStyle(SVGElement const* aElement);
 }  // namespace dom
 }  // namespace mozilla
 
-#endif
+#endif  // DOM_SVG_SVGGEOMETRYPROPERTY_H_

@@ -21,53 +21,38 @@
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIURI.h"
-#include "nsIContentViewer.h"
 #include "mozilla/dom/NodeInfo.h"
 #include "mozilla/dom/ScriptLoader.h"
-#include "nsIAppShell.h"
 #include "nsCRT.h"
 #include "prtime.h"
 #include "mozilla/Logging.h"
-#include "nsNodeUtils.h"
 #include "nsIContent.h"
 #include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/MutationObservers.h"
 #include "mozilla/Preferences.h"
 
 #include "nsGenericHTMLElement.h"
 
 #include "nsIScriptElement.h"
 
-#include "nsIComponentManager.h"
-#include "nsIServiceManager.h"
-
 #include "nsDocElementCreatedNotificationRunner.h"
 #include "nsGkAtoms.h"
 #include "nsContentUtils.h"
 #include "nsIChannel.h"
-#include "nsIHttpChannel.h"
-#include "nsIDocShell.h"
 #include "mozilla/dom/Document.h"
 #include "nsStubDocumentObserver.h"
 #include "nsHTMLDocument.h"
-#include "nsICookieService.h"
 #include "nsTArray.h"
-#include "nsIScriptSecurityManager.h"
-#include "nsIPrincipal.h"
 #include "nsTextFragment.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsNameSpaceManager.h"
 
-#include "nsIStyleSheetLinkingElement.h"
-#include "nsITimer.h"
 #include "nsError.h"
 #include "nsContentPolicyUtils.h"
 #include "nsIScriptContext.h"
-#include "nsStyleLinkElement.h"
 
-#include "nsIPrompt.h"
 #include "nsLayoutCID.h"
-#include "nsIDocShellTreeItem.h"
 
 #include "nsEscape.h"
 #include "nsNodeInfoManager.h"
@@ -566,15 +551,13 @@ HTMLContentSink::~HTMLContentSink() {
     mNotificationTimer->Cancel();
   }
 
-  int32_t numContexts = mContextStack.Length();
-
-  if (mCurrentContext == mHeadContext && numContexts > 0) {
+  if (mCurrentContext == mHeadContext && !mContextStack.IsEmpty()) {
     // Pop off the second html context if it's not done earlier
-    mContextStack.RemoveElementAt(--numContexts);
+    mContextStack.RemoveLastElement();
   }
 
-  int32_t i;
-  for (i = 0; i < numContexts; i++) {
+  for (int32_t i = 0, numContexts = mContextStack.Length(); i < numContexts;
+       i++) {
     SinkContext* sc = mContextStack.ElementAt(i);
     if (sc) {
       sc->End();
@@ -731,11 +714,8 @@ HTMLContentSink::SetParser(nsParserBase* aParser) {
 nsresult HTMLContentSink::CloseHTML() {
   if (mHeadContext) {
     if (mCurrentContext == mHeadContext) {
-      uint32_t numContexts = mContextStack.Length();
-
       // Pop off the second html context if it's not done earlier
-      mCurrentContext = mContextStack.ElementAt(--numContexts);
-      mContextStack.RemoveElementAt(numContexts);
+      mCurrentContext = mContextStack.PopLastElement();
     }
 
     mHeadContext->End();
@@ -857,9 +837,7 @@ void HTMLContentSink::CloseHeadContext() {
   }
 
   if (!mContextStack.IsEmpty()) {
-    uint32_t n = mContextStack.Length() - 1;
-    mCurrentContext = mContextStack.ElementAt(n);
-    mContextStack.RemoveElementAt(n);
+    mCurrentContext = mContextStack.PopLastElement();
   }
 }
 
@@ -872,7 +850,8 @@ void HTMLContentSink::NotifyInsert(nsIContent* aContent,
     // Note that aContent->OwnerDoc() may be different to mDocument already.
     MOZ_AUTO_DOC_UPDATE(aContent ? aContent->OwnerDoc() : mDocument.get(),
                         true);
-    nsNodeUtils::ContentInserted(NODE_FROM(aContent, mDocument), aChildContent);
+    MutationObservers::NotifyContentInserted(NODE_FROM(aContent, mDocument),
+                                             aChildContent);
     mLastNotificationTime = PR_Now();
   }
 

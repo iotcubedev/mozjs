@@ -19,43 +19,52 @@ const Provider = createFactory(
 const FluentReact = require("devtools/client/shared/vendor/fluent-react");
 const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
 
-const actions = require("./src/actions/index");
-const { configureStore } = require("./src/create-store");
+const actions = require("devtools/client/aboutdebugging/src/actions/index");
+const {
+  configureStore,
+} = require("devtools/client/aboutdebugging/src/create-store");
 const {
   setDebugTargetCollapsibilities,
-} = require("./src/modules/debug-target-collapsibilities");
+} = require("devtools/client/aboutdebugging/src/modules/debug-target-collapsibilities");
 
-const { l10n } = require("./src/modules/l10n");
+const { l10n } = require("devtools/client/aboutdebugging/src/modules/l10n");
 
 const {
   addNetworkLocationsObserver,
   getNetworkLocations,
   removeNetworkLocationsObserver,
-} = require("./src/modules/network-locations");
+} = require("devtools/client/aboutdebugging/src/modules/network-locations");
 const {
   addUSBRuntimesObserver,
   getUSBRuntimes,
   removeUSBRuntimesObserver,
-} = require("./src/modules/usb-runtimes");
+} = require("devtools/client/aboutdebugging/src/modules/usb-runtimes");
 
-loader.lazyRequireGetter(this, "adb", "devtools/shared/adb/adb", true);
+loader.lazyRequireGetter(
+  this,
+  "adb",
+  "devtools/client/shared/remote-debugging/adb/adb",
+  true
+);
 loader.lazyRequireGetter(
   this,
   "adbAddon",
-  "devtools/shared/adb/adb-addon",
+  "devtools/client/shared/remote-debugging/adb/adb-addon",
   true
 );
 loader.lazyRequireGetter(
   this,
   "adbProcess",
-  "devtools/shared/adb/adb-process",
+  "devtools/client/shared/remote-debugging/adb/adb-process",
   true
 );
 
 const Router = createFactory(
   require("devtools/client/shared/vendor/react-router-dom").HashRouter
 );
-const App = createFactory(require("./src/components/App"));
+const App = createFactory(
+  require("devtools/client/aboutdebugging/src/components/App")
+);
 
 const AboutDebugging = {
   async init() {
@@ -64,6 +73,9 @@ const AboutDebugging = {
       window.location = "about:devtools?reason=AboutDebugging";
       return;
     }
+
+    const direction = Services.locale.isAppLocaleRTL ? "rtl" : "ltr";
+    document.documentElement.setAttribute("dir", direction);
 
     this.onAdbAddonUpdated = this.onAdbAddonUpdated.bind(this);
     this.onAdbProcessReady = this.onAdbProcessReady.bind(this);
@@ -76,7 +88,10 @@ const AboutDebugging = {
     const width = this.getRoundedViewportWidth();
     this.actions.recordTelemetryEvent("open_adbg", { width });
 
-    await l10n.init(["branding/brand.ftl", "devtools/aboutdebugging.ftl"]);
+    await l10n.init([
+      "branding/brand.ftl",
+      "devtools/client/aboutdebugging.ftl",
+    ]);
 
     this.actions.createThisFirefoxRuntime();
 

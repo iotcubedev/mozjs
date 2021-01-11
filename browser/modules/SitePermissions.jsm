@@ -186,8 +186,8 @@ const GloballyBlockedPermissions = {
     browser.addProgressListener(
       {
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIWebProgressListener,
-          Ci.nsISupportsWeakReference,
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
         ]),
         onLocationChange(aWebProgress, aRequest, aLocation, aFlags) {
           let hasLeftPage =
@@ -263,6 +263,8 @@ var SitePermissions = {
   PROMPT: Services.perms.PROMPT_ACTION,
   ALLOW_COOKIES_FOR_SESSION: Ci.nsICookiePermission.ACCESS_SESSION,
   AUTOPLAY_BLOCKED_ALL: Ci.nsIAutoplay.BLOCKED_ALL,
+  ALLOW_INSECURE_LOAD_FOR_SESSION:
+    Ci.nsIHttpsOnlyModePermission.LOAD_INSECURE_ALLOW_SESSION,
 
   // Permission scopes.
   SCOPE_REQUEST: "{SitePermissions.SCOPE_REQUEST}",
@@ -276,28 +278,6 @@ var SitePermissions = {
   _defaultPrefBranch: Services.prefs.getBranch("permissions.default."),
 
   /**
-   * Deprecated! Please use getAllByPrincipal(principal) instead.
-   * Gets all custom permissions for a given URI.
-   * Install addon permission is excluded, check bug 1303108.
-   *
-   * @return {Array} a list of objects with the keys:
-   *          - id: the permissionId of the permission
-   *          - scope: the scope of the permission (e.g. SitePermissions.SCOPE_TEMPORARY)
-   *          - state: a constant representing the current permission state
-   *            (e.g. SitePermissions.ALLOW)
-   */
-  getAllByURI(uri) {
-    if (!(uri instanceof Ci.nsIURI)) {
-      throw new Error("uri parameter should be an nsIURI");
-    }
-
-    let principal = uri
-      ? Services.scriptSecurityManager.createContentPrincipal(uri, {})
-      : null;
-    return this.getAllByPrincipal(principal);
-  },
-
-  /**
    * Gets all custom permissions for a given principal.
    * Install addon permission is excluded, check bug 1303108.
    *
@@ -309,18 +289,39 @@ var SitePermissions = {
    */
   getAllByPrincipal(principal) {
     let result = [];
+    if (!principal) {
+      throw new Error("principal argument cannot be null.");
+    }
     if (!this.isSupportedPrincipal(principal)) {
       return result;
     }
 
     let permissions = Services.perms.getAllForPrincipal(principal);
-    while (permissions.hasMoreElements()) {
-      let permission = permissions.getNext();
-
+    for (let permission of permissions) {
       // filter out unknown permissions
       if (gPermissionObject[permission.type]) {
         // Hide canvas permission when privacy.resistFingerprinting is false.
         if (permission.type == "canvas" && !this.resistFingerprinting) {
+          continue;
+        }
+
+        // Hide exception permission when HTTPS-Only Mode is disabled.
+        if (
+          permission.type == "https-only-load-insecure" &&
+          !this.httpsOnlyModeEnabled
+        ) {
+          continue;
+        }
+
+        /* Hide persistent storage permission when extension principal
+         * have WebExtensions-unlimitedStorage permission. */
+        if (
+          permission.type == "persistent-storage" &&
+          SitePermissions.getForPrincipal(
+            principal,
+            "WebExtensions-unlimitedStorage"
+          ).state == SitePermissions.ALLOW
+        ) {
           continue;
         }
 
@@ -402,24 +403,8 @@ var SitePermissions = {
   },
 
   /**
-   * Deprecated! Please use isSupportedPrincipal(principal) instead.
    * Checks whether a UI for managing permissions should be exposed for a given
-   * URI. This excludes file URIs, for instance, as they don't have a host,
-   * even though nsIPermissionManager can still handle them.
-   *
-   * @param {nsIURI} uri
-   *        The URI to check.
-   *
-   * @return {boolean} if the URI is supported.
-   */
-  isSupportedURI(uri) {
-    return uri && ["http", "https", "moz-extension"].includes(uri.scheme);
-  },
-
-  /**
-   * Checks whether a UI for managing permissions should be exposed for a given
-   * principal. This excludes file URIs, for instance, as they don't have a host,
-   * even though nsIPermissionManager can still handle them.
+   * principal.
    *
    * @param {nsIPrincipal} principal
    *        The principal to check.
@@ -427,10 +412,16 @@ var SitePermissions = {
    * @return {boolean} if the principal is supported.
    */
   isSupportedPrincipal(principal) {
-    return (
-      principal &&
-      principal.URI &&
-      ["http", "https", "moz-extension"].includes(principal.URI.scheme)
+    if (!principal) {
+      return false;
+    }
+    if (!(principal instanceof Ci.nsIPrincipal)) {
+      throw new Error(
+        "Argument passed as principal is not an instance of Ci.nsIPrincipal"
+      );
+    }
+    return ["http", "https", "moz-extension", "file"].some(scheme =>
+      principal.schemeIs(scheme)
     );
   },
 
@@ -447,6 +438,12 @@ var SitePermissions = {
       if (!this.resistFingerprinting) {
         permissions = permissions.filter(permission => permission !== "canvas");
       }
+      // Hide exception permission when HTTPS-Only Mode is disabled.
+      if (!this.httpsOnlyModeEnabled) {
+        permissions = permissions.filter(
+          permission => permission !== "https-only-load-insecure"
+        );
+      }
       this._permissionsArray = permissions;
     }
 
@@ -454,7 +451,7 @@ var SitePermissions = {
   },
 
   /**
-   * Called when the privacy.resistFingerprinting preference changes its value.
+   * Called when a preference changes its value.
    *
    * @param {string} data
    *        The last argument passed to the preference change observer
@@ -463,7 +460,7 @@ var SitePermissions = {
    * @param {string} latest
    *        The latest value of the preference
    */
-  onResistFingerprintingChanged(data, previous, latest) {
+  invalidatePermissionList(data, previous, latest) {
     // Ensure that listPermissions() will reconstruct its return value the next
     // time it's called.
     this._permissionsArray = null;
@@ -545,37 +542,6 @@ var SitePermissions = {
     let key = "permissions.default." + permissionID;
     return Services.prefs.setIntPref(key, state);
   },
-  /**
-   * Returns the state and scope of a particular permission for a given URI.
-   *
-   * This method will NOT dispatch a "PermissionStateChange" event on the specified
-   * browser if a temporary permission was removed because it has expired.
-   *
-   * @param {nsIURI} uri
-   *        The URI to check.
-   * @param {String} permissionID
-   *        The id of the permission.
-   * @param {Browser} browser (optional)
-   *        The browser object to check for temporary permissions.
-   *
-   * @return {Object} an object with the keys:
-   *           - state: The current state of the permission
-   *             (e.g. SitePermissions.ALLOW)
-   *           - scope: The scope of the permission
-   *             (e.g. SitePermissions.SCOPE_PERSISTENT)
-   */
-  get(uri, permissionID, browser) {
-    if ((!uri && !browser) || (uri && !(uri instanceof Ci.nsIURI))) {
-      throw new Error(
-        "uri parameter should be an nsIURI or a browser parameter is needed"
-      );
-    }
-
-    let principal = uri
-      ? Services.scriptSecurityManager.createContentPrincipal(uri, {})
-      : null;
-    return this.getForPrincipal(principal, permissionID, browser);
-  },
 
   /**
    * Returns the state and scope of a particular permission for a given principal.
@@ -597,6 +563,11 @@ var SitePermissions = {
    *             (e.g. SitePermissions.SCOPE_PERSISTENT)
    */
   getForPrincipal(principal, permissionID, browser) {
+    if (!principal && !browser) {
+      throw new Error(
+        "Atleast one of the arguments, either principal or browser should not be null."
+      );
+    }
     let defaultState = this.getDefault(permissionID);
     let result = { state: defaultState, scope: this.SCOPE_PERSISTENT };
     if (this.isSupportedPrincipal(principal)) {
@@ -643,38 +614,6 @@ var SitePermissions = {
   },
 
   /**
-   * Deprecated! Use setForPrincipal(...) instead.
-   * Sets the state of a particular permission for a given URI or browser.
-   * This method will dispatch a "PermissionStateChange" event on the specified
-   * browser if a temporary permission was set
-   *
-   * @param {nsIURI} uri
-   *        The URI to set the permission for.
-   *        Note that this will be ignored if the scope is set to SCOPE_TEMPORARY
-   * @param {String} permissionID
-   *        The id of the permission.
-   * @param {SitePermissions state} state
-   *        The state of the permission.
-   * @param {SitePermissions scope} scope (optional)
-   *        The scope of the permission. Defaults to SCOPE_PERSISTENT.
-   * @param {Browser} browser (optional)
-   *        The browser object to set temporary permissions on.
-   *        This needs to be provided if the scope is SCOPE_TEMPORARY!
-   */
-  set(uri, permissionID, state, scope = this.SCOPE_PERSISTENT, browser = null) {
-    if ((!uri && !browser) || (uri && !(uri instanceof Ci.nsIURI))) {
-      throw new Error(
-        "uri parameter should be an nsIURI or a browser parameter is needed"
-      );
-    }
-
-    let principal = uri
-      ? Services.scriptSecurityManager.createContentPrincipal(uri, {})
-      : null;
-    return this.setForPrincipal(principal, permissionID, state, scope, browser);
-  },
-
-  /**
    * Sets the state of a particular permission for a given principal or browser.
    * This method will dispatch a "PermissionStateChange" event on the specified
    * browser if a temporary permission was set
@@ -699,6 +638,11 @@ var SitePermissions = {
     scope = this.SCOPE_PERSISTENT,
     browser = null
   ) {
+    if (!principal && !browser) {
+      throw new Error(
+        "Atleast one of the arguments, either principal or browser should not be null."
+      );
+    }
     if (scope == this.SCOPE_GLOBAL && state == this.BLOCK) {
       GloballyBlockedPermissions.set(browser, permissionID);
       browser.dispatchEvent(
@@ -721,6 +665,15 @@ var SitePermissions = {
       throw new Error(
         "ALLOW_COOKIES_FOR_SESSION can only be set on the cookie permission"
       );
+    }
+
+    if (state == this.ALLOW_INSECURE_LOAD_FOR_SESSION) {
+      if (permissionID !== "https-only-load-insecure") {
+        throw new Error(
+          "ALLOW_INSECURE_LOAD_FOR_SESSION can only be set on the https-only-load-insecure permission"
+        );
+      }
+      scope = this.SCOPE_SESSION;
     }
 
     // Save temporary permissions.
@@ -768,32 +721,6 @@ var SitePermissions = {
   },
 
   /**
-   * Deprecated! Please use removeFromPrincipal(principal, permissionID, browser).
-   * Removes the saved state of a particular permission for a given URI and/or browser.
-   * This method will dispatch a "PermissionStateChange" event on the specified
-   * browser if a temporary permission was removed.
-   *
-   * @param {nsIURI} uri
-   *        The URI to remove the permission for.
-   * @param {String} permissionID
-   *        The id of the permission.
-   * @param {Browser} browser (optional)
-   *        The browser object to remove temporary permissions on.
-   */
-  remove(uri, permissionID, browser) {
-    if ((!uri && !browser) || (uri && !(uri instanceof Ci.nsIURI))) {
-      throw new Error(
-        "uri parameter should be an nsIURI or a browser parameter is needed"
-      );
-    }
-
-    let principal = uri
-      ? Services.scriptSecurityManager.createContentPrincipal(uri, {})
-      : null;
-    return this.removeFromPrincipal(principal, permissionID, browser);
-  },
-
-  /**
    * Removes the saved state of a particular permission for a given principal and/or browser.
    * This method will dispatch a "PermissionStateChange" event on the specified
    * browser if a temporary permission was removed.
@@ -806,6 +733,11 @@ var SitePermissions = {
    *        The browser object to remove temporary permissions on.
    */
   removeFromPrincipal(principal, permissionID, browser) {
+    if (!principal && !browser) {
+      throw new Error(
+        "Atleast one of the arguments, either principal or browser should not be null."
+      );
+    }
     if (this.isSupportedPrincipal(principal)) {
       Services.perms.removeFromPrincipal(principal, permissionID);
     }
@@ -874,6 +806,9 @@ var SitePermissions = {
    * Returns the localized label for the given permission state, to be used in
    * a UI for managing permissions.
    *
+   * @param {string} permissionID
+   *        The permission to get the label for.
+   *
    * @param {SitePermissions state} state
    *        The state to get the label for.
    *
@@ -897,6 +832,7 @@ var SitePermissions = {
       case this.ALLOW:
         return gStringBundle.GetStringFromName("state.multichoice.allow");
       case this.ALLOW_COOKIES_FOR_SESSION:
+      case this.ALLOW_INSECURE_LOAD_FOR_SESSION:
         return gStringBundle.GetStringFromName(
           "state.multichoice.allowForSession"
         );
@@ -936,6 +872,7 @@ var SitePermissions = {
         }
         return gStringBundle.GetStringFromName("state.current.allowed");
       case this.ALLOW_COOKIES_FOR_SESSION:
+      case this.ALLOW_INSECURE_LOAD_FOR_SESSION:
         return gStringBundle.GetStringFromName(
           "state.current.allowedForSession"
         );
@@ -978,6 +915,9 @@ var gPermissionObject = {
    *  - states
    *    Array of permission states to be exposed to the user.
    *    Defaults to ALLOW, BLOCK and the default state (see getDefault).
+   *
+   *  - getMultichoiceStateLabel
+   *    Optional method to overwrite SitePermissions#getMultichoiceStateLabel with custom label logic.
    */
 
   "autoplay-media": {
@@ -1025,12 +965,8 @@ var gPermissionObject = {
             "state.multichoice.autoplayallow"
           );
       }
-      throw new Error(`Unkown state: ${state}`);
+      throw new Error(`Unknown state: ${state}`);
     },
-  },
-
-  image: {
-    states: [SitePermissions.ALLOW, SitePermissions.BLOCK],
   },
 
   cookie: {
@@ -1041,8 +977,7 @@ var gPermissionObject = {
     ],
     getDefault() {
       if (
-        Services.prefs.getIntPref("network.cookie.cookieBehavior") ==
-        Ci.nsICookieService.BEHAVIOR_REJECT
+        Services.cookies.cookieBehavior == Ci.nsICookieService.BEHAVIOR_REJECT
       ) {
         return SitePermissions.BLOCK;
       }
@@ -1097,6 +1032,10 @@ var gPermissionObject = {
     exactHostMatch: true,
   },
 
+  xr: {
+    exactHostMatch: true,
+  },
+
   "focus-tab-by-prompt": {
     exactHostMatch: true,
     states: [SitePermissions.UNKNOWN, SitePermissions.ALLOW],
@@ -1125,6 +1064,19 @@ var gPermissionObject = {
       return SitePermissions.UNKNOWN;
     },
   },
+
+  "https-only-load-insecure": {
+    exactHostMatch: true,
+    labelID: "https-only-load-insecure",
+    getDefault() {
+      return SitePermissions.BLOCK;
+    },
+    states: [
+      SitePermissions.BLOCK,
+      SitePermissions.ALLOW_INSECURE_LOAD_FOR_SESSION,
+      SitePermissions.ALLOW,
+    ],
+  },
 };
 
 if (!Services.prefs.getBoolPref("dom.webmidi.enabled")) {
@@ -1146,5 +1098,12 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "resistFingerprinting",
   "privacy.resistFingerprinting",
   false,
-  SitePermissions.onResistFingerprintingChanged.bind(SitePermissions)
+  SitePermissions.invalidatePermissionList.bind(SitePermissions)
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  SitePermissions,
+  "httpsOnlyModeEnabled",
+  "dom.security.https_only_mode",
+  false,
+  SitePermissions.invalidatePermissionList.bind(SitePermissions)
 );

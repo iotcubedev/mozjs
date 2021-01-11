@@ -33,7 +33,7 @@ async function testEarlyDebuggerStatement(client, tab, targetFront) {
     ok(false, "Pause shouldn't be called before we've attached!");
   };
 
-  // using the DebuggerClient to listen to the pause packet, as the
+  // using the DevToolsClient to listen to the pause packet, as the
   // threadFront is not yet attached.
   client.on("paused", onPaused);
 
@@ -44,7 +44,7 @@ async function testEarlyDebuggerStatement(client, tab, targetFront) {
   client.off("paused", onPaused);
 
   // Now attach and resume...
-  const [, threadFront] = await targetFront.attachThread();
+  const threadFront = await targetFront.attachThread();
   await threadFront.resume();
   ok(true, "Pause wasn't called before we've attached.");
 

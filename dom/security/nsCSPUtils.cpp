@@ -13,7 +13,6 @@
 #include "nsIChannel.h"
 #include "nsICryptoHash.h"
 #include "nsIScriptError.h"
-#include "nsIServiceManager.h"
 #include "nsIStringBundle.h"
 #include "nsIURL.h"
 #include "nsReadableUtils.h"
@@ -106,8 +105,8 @@ bool CSP_ShouldResponseInheritCSP(nsIChannel* aChannel) {
     rv = uri->GetSpec(aboutSpec);
     NS_ENSURE_SUCCESS(rv, false);
     // also allow about:blank#foo
-    if (StringBeginsWith(aboutSpec, NS_LITERAL_CSTRING("about:blank")) ||
-        StringBeginsWith(aboutSpec, NS_LITERAL_CSTRING("about:srcdoc"))) {
+    if (StringBeginsWith(aboutSpec, "about:blank"_ns) ||
+        StringBeginsWith(aboutSpec, "about:srcdoc"_ns)) {
       return true;
     }
   }
@@ -264,12 +263,16 @@ CSPDirective CSP_ContentTypeToDirective(nsContentPolicyType aType) {
     case nsIContentPolicy::TYPE_INTERNAL_MODULE:
     case nsIContentPolicy::TYPE_INTERNAL_MODULE_PRELOAD:
     case nsIContentPolicy::TYPE_INTERNAL_WORKER_IMPORT_SCRIPTS:
+    case nsIContentPolicy::TYPE_INTERNAL_AUDIOWORKLET:
+    case nsIContentPolicy::TYPE_INTERNAL_PAINTWORKLET:
+    case nsIContentPolicy::TYPE_INTERNAL_CHROMEUTILS_COMPILED_SCRIPT:
       return nsIContentSecurityPolicy::SCRIPT_SRC_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_STYLESHEET:
       return nsIContentSecurityPolicy::STYLE_SRC_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_FONT:
+    case nsIContentPolicy::TYPE_INTERNAL_FONT_PRELOAD:
       return nsIContentSecurityPolicy::FONT_SRC_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_MEDIA:
@@ -297,7 +300,6 @@ CSPDirective CSP_ContentTypeToDirective(nsContentPolicyType aType) {
     case nsIContentPolicy::TYPE_OBJECT_SUBREQUEST:
       return nsIContentSecurityPolicy::OBJECT_SRC_DIRECTIVE;
 
-    case nsIContentPolicy::TYPE_XBL:
     case nsIContentPolicy::TYPE_DTD:
     case nsIContentPolicy::TYPE_OTHER:
     case nsIContentPolicy::TYPE_SPECULATIVE:
@@ -316,6 +318,7 @@ CSPDirective CSP_ContentTypeToDirective(nsContentPolicyType aType) {
       return nsIContentSecurityPolicy::NO_DIRECTIVE;
 
     // Fall through to error for all other directives
+    // Note that we should never end up here for navigate-to
     default:
       MOZ_ASSERT(false, "Can not map nsContentPolicyType to CSPDirective");
   }
@@ -493,7 +496,7 @@ nsresult CSP_AppendCSPFromHeader(nsIContentSecurityPolicy* aCsp,
 
 nsCSPBaseSrc::nsCSPBaseSrc() : mInvalidated(false) {}
 
-nsCSPBaseSrc::~nsCSPBaseSrc() {}
+nsCSPBaseSrc::~nsCSPBaseSrc() = default;
 
 // ::permits is only called for external load requests, therefore:
 // nsCSPKeywordSrc and nsCSPHashSource fall back to this base class
@@ -526,7 +529,7 @@ nsCSPSchemeSrc::nsCSPSchemeSrc(const nsAString& aScheme) : mScheme(aScheme) {
   ToLowerCase(mScheme);
 }
 
-nsCSPSchemeSrc::~nsCSPSchemeSrc() {}
+nsCSPSchemeSrc::~nsCSPSchemeSrc() = default;
 
 bool nsCSPSchemeSrc::permits(nsIURI* aUri, const nsAString& aNonce,
                              bool aWasRedirected, bool aReportOnly,
@@ -561,7 +564,7 @@ nsCSPHostSrc::nsCSPHostSrc(const nsAString& aHost)
   ToLowerCase(mHost);
 }
 
-nsCSPHostSrc::~nsCSPHostSrc() {}
+nsCSPHostSrc::~nsCSPHostSrc() = default;
 
 /*
  * Checks whether the current directive permits a specific port.
@@ -582,8 +585,21 @@ bool permitsPort(const nsAString& aEnforcementScheme,
 
   int32_t resourcePort;
   nsresult rv = aResourceURI->GetPort(&resourcePort);
-  NS_ENSURE_SUCCESS(rv, false);
+  if (NS_FAILED(rv) && aEnforcementPort.IsEmpty()) {
+    // If we cannot get a Port (e.g. because of an Custom Protocol handler)
+    // We need to check if a default port is associated with the Scheme
+    if (aEnforcementScheme.IsEmpty()) {
+      return false;
+    }
+    int defaultPortforScheme =
+        NS_GetDefaultPort(NS_ConvertUTF16toUTF8(aEnforcementScheme).get());
 
+    // If there is no default port associated with the Scheme (
+    // defaultPortforScheme == -1) or it is an externally handled protocol (
+    // defaultPortforScheme == 0 ) and the csp does not enforce a port - we can
+    // allow not having a port
+    return (defaultPortforScheme == -1 || defaultPortforScheme == -0);
+  }
   // Avoid unnecessary string creation/manipulation and don't block the
   // load if the resource to be loaded uses the default port for that
   // scheme and there is no port to be enforced.
@@ -683,7 +699,7 @@ bool nsCSPHostSrc::permits(nsIURI* aUri, const nsAString& aNonce,
     // designating a globally unique identifier (such as blob:, data:, or
     // filesystem:) At the moment firefox does not support filesystem; but for
     // future compatibility we support it in CSP according to the spec,
-    // see: 4.2.2 Matching Source Expressions Note, that whitelisting any of
+    // see: 4.2.2 Matching Source Expressions Note, that allowlisting any of
     // these schemes would call nsCSPSchemeSrc::permits().
     if (aUri->SchemeIs("blob") || aUri->SchemeIs("data") ||
         aUri->SchemeIs("filesystem")) {
@@ -752,8 +768,8 @@ bool nsCSPHostSrc::permits(nsIURI* aUri, const nsAString& aNonce,
         return false;
       }
     }
-    // otherwise mPath whitelists a specific file, and we have to
-    // check if the loading resource matches that whitelisted file.
+    // otherwise mPath refers to a specific file, and we have to
+    // check if the loading resource matches the file.
     else {
       if (!mPath.Equals(decodedUriPath)) {
         return false;
@@ -815,7 +831,7 @@ nsCSPKeywordSrc::nsCSPKeywordSrc(enum CSPKeyword aKeyword)
                "'self' should have been replaced in the parser");
 }
 
-nsCSPKeywordSrc::~nsCSPKeywordSrc() {}
+nsCSPKeywordSrc::~nsCSPKeywordSrc() = default;
 
 bool nsCSPKeywordSrc::permits(nsIURI* aUri, const nsAString& aNonce,
                               bool aWasRedirected, bool aReportOnly,
@@ -838,10 +854,10 @@ bool nsCSPKeywordSrc::allows(enum CSPKeyword aKeyword,
        mInvalidated ? "yes" : "false"));
 
   if (mInvalidated) {
-    // only 'self' and 'unsafe-inline' are keywords that can be ignored. Please
-    // note that the parser already translates 'self' into a uri (see assertion
-    // in constructor).
-    MOZ_ASSERT(mKeyword == CSP_UNSAFE_INLINE,
+    // only 'self', 'report-sample' and 'unsafe-inline' are keywords that can be
+    // ignored. Please note that the parser already translates 'self' into a uri
+    // (see assertion in constructor).
+    MOZ_ASSERT(mKeyword == CSP_UNSAFE_INLINE || mKeyword == CSP_REPORT_SAMPLE,
                "should only invalidate unsafe-inline");
     return false;
   }
@@ -866,7 +882,7 @@ void nsCSPKeywordSrc::toString(nsAString& outStr) const {
 
 nsCSPNonceSrc::nsCSPNonceSrc(const nsAString& aNonce) : mNonce(aNonce) {}
 
-nsCSPNonceSrc::~nsCSPNonceSrc() {}
+nsCSPNonceSrc::~nsCSPNonceSrc() = default;
 
 bool nsCSPNonceSrc::permits(nsIURI* aUri, const nsAString& aNonce,
                             bool aWasRedirected, bool aReportOnly,
@@ -875,6 +891,25 @@ bool nsCSPNonceSrc::permits(nsIURI* aUri, const nsAString& aNonce,
     CSPUTILSLOG(("nsCSPNonceSrc::permits, aUri: %s, aNonce: %s",
                  aUri->GetSpecOrDefault().get(),
                  NS_ConvertUTF16toUTF8(aNonce).get()));
+  }
+
+  if (aReportOnly && aWasRedirected && aNonce.IsEmpty()) {
+    /* Fix for Bug 1505412
+     *  If we land here, we're currently handling a script-preload which got
+     *  redirected. Preloads do not have any info about the nonce assiociated.
+     *  Because of Report-Only the preload passes the 1st CSP-check so the
+     *  preload does not get retried with a nonce attached.
+     *  Currently we're relying on the script-manager to
+     *  provide a fake loadinfo to check the preloads against csp.
+     *  So during HTTPChannel->OnRedirect we cant check csp for this case.
+     *  But as the script-manager already checked the csp,
+     *  a report would already have been send,
+     *  if the nonce didnt match.
+     *  So we can pass the check here for Report-Only Cases.
+     */
+    MOZ_ASSERT(aParserCreated == false,
+               "Skipping nonce-check is only allowed for Preloads");
+    return true;
   }
 
   // nonces can not be invalidated by strict-dynamic
@@ -914,7 +949,7 @@ nsCSPHashSrc::nsCSPHashSrc(const nsAString& aAlgo, const nsAString& aHash)
   ToLowerCase(mAlgorithm);
 }
 
-nsCSPHashSrc::~nsCSPHashSrc() {}
+nsCSPHashSrc::~nsCSPHashSrc() = default;
 
 bool nsCSPHashSrc::allows(enum CSPKeyword aKeyword,
                           const nsAString& aHashOrNonce,
@@ -966,7 +1001,7 @@ void nsCSPHashSrc::toString(nsAString& outStr) const {
 
 nsCSPReportURI::nsCSPReportURI(nsIURI* aURI) : mReportURI(aURI) {}
 
-nsCSPReportURI::~nsCSPReportURI() {}
+nsCSPReportURI::~nsCSPReportURI() = default;
 
 bool nsCSPReportURI::visit(nsCSPSrcVisitor* aVisitor) const { return false; }
 
@@ -985,7 +1020,7 @@ nsCSPSandboxFlags::nsCSPSandboxFlags(const nsAString& aFlags) : mFlags(aFlags) {
   ToLowerCase(mFlags);
 }
 
-nsCSPSandboxFlags::~nsCSPSandboxFlags() {}
+nsCSPSandboxFlags::~nsCSPSandboxFlags() = default;
 
 bool nsCSPSandboxFlags::visit(nsCSPSrcVisitor* aVisitor) const { return false; }
 
@@ -1058,7 +1093,12 @@ void nsCSPDirective::toDomCSPStruct(mozilla::dom::CSP& outCSP) const {
   for (uint32_t i = 0; i < mSrcs.Length(); i++) {
     src.Truncate();
     mSrcs[i]->toString(src);
-    srcs.AppendElement(src, mozilla::fallible);
+    if (!srcs.AppendElement(src, mozilla::fallible)) {
+      // XXX(Bug 1632090) Instead of extending the array 1-by-1 (which might
+      // involve multiple reallocations) and potentially crashing here,
+      // SetCapacity could be called outside the loop once.
+      mozalloc_handle_oom(0);
+    }
   }
 
   switch (mDirective) {
@@ -1219,7 +1259,7 @@ nsCSPChildSrcDirective::nsCSPChildSrcDirective(CSPDirective aDirective)
       mRestrictFrames(false),
       mRestrictWorkers(false) {}
 
-nsCSPChildSrcDirective::~nsCSPChildSrcDirective() {}
+nsCSPChildSrcDirective::~nsCSPChildSrcDirective() = default;
 
 bool nsCSPChildSrcDirective::restrictsContentType(
     nsContentPolicyType aContentType) const {
@@ -1249,7 +1289,7 @@ bool nsCSPChildSrcDirective::equals(CSPDirective aDirective) const {
 nsCSPScriptSrcDirective::nsCSPScriptSrcDirective(CSPDirective aDirective)
     : nsCSPDirective(aDirective), mRestrictWorkers(false) {}
 
-nsCSPScriptSrcDirective::~nsCSPScriptSrcDirective() {}
+nsCSPScriptSrcDirective::~nsCSPScriptSrcDirective() = default;
 
 bool nsCSPScriptSrcDirective::restrictsContentType(
     nsContentPolicyType aContentType) const {
@@ -1274,7 +1314,7 @@ nsBlockAllMixedContentDirective::nsBlockAllMixedContentDirective(
     CSPDirective aDirective)
     : nsCSPDirective(aDirective) {}
 
-nsBlockAllMixedContentDirective::~nsBlockAllMixedContentDirective() {}
+nsBlockAllMixedContentDirective::~nsBlockAllMixedContentDirective() = default;
 
 void nsBlockAllMixedContentDirective::toString(nsAString& outStr) const {
   outStr.AppendASCII(CSP_CSPDirectiveToString(
@@ -1291,7 +1331,7 @@ void nsBlockAllMixedContentDirective::getDirName(nsAString& outStr) const {
 nsUpgradeInsecureDirective::nsUpgradeInsecureDirective(CSPDirective aDirective)
     : nsCSPDirective(aDirective) {}
 
-nsUpgradeInsecureDirective::~nsUpgradeInsecureDirective() {}
+nsUpgradeInsecureDirective::~nsUpgradeInsecureDirective() = default;
 
 void nsUpgradeInsecureDirective::toString(nsAString& outStr) const {
   outStr.AppendASCII(CSP_CSPDirectiveToString(
@@ -1424,7 +1464,7 @@ bool nsCSPPolicy::allows(nsContentPolicyType aContentType,
 
 bool nsCSPPolicy::allows(nsContentPolicyType aContentType,
                          enum CSPKeyword aKeyword) const {
-  return allows(aContentType, aKeyword, NS_LITERAL_STRING(""), false);
+  return allows(aContentType, aKeyword, u""_ns, false);
 }
 
 void nsCSPPolicy::toString(nsAString& outStr) const {
@@ -1452,6 +1492,31 @@ bool nsCSPPolicy::hasDirective(CSPDirective aDir) const {
     }
   }
   return false;
+}
+
+bool nsCSPPolicy::allowsNavigateTo(nsIURI* aURI, bool aWasRedirected,
+                                   bool aEnforceAllowlist) const {
+  bool allowsNavigateTo = true;
+
+  for (unsigned long i = 0; i < mDirectives.Length(); i++) {
+    if (mDirectives[i]->equals(
+            nsIContentSecurityPolicy::NAVIGATE_TO_DIRECTIVE)) {
+      // Early return if we can skip the allowlist AND 'unsafe-allow-redirects'
+      // is present.
+      if (!aEnforceAllowlist &&
+          mDirectives[i]->allows(CSP_UNSAFE_ALLOW_REDIRECTS, EmptyString(),
+                                 false)) {
+        return true;
+      }
+      // Otherwise, check against the allowlist.
+      if (!mDirectives[i]->permits(aURI, EmptyString(), aWasRedirected, false,
+                                   false, false)) {
+        allowsNavigateTo = false;
+      }
+    }
+  }
+
+  return allowsNavigateTo;
 }
 
 /*

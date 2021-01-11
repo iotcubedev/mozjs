@@ -18,11 +18,16 @@ enum SupportedType {
   "image/svg+xml"
 };
 
-// the latter is Mozilla-specific
-[Constructor]
+[Exposed=Window]
 interface DOMParser {
+  [Throws]
+  constructor();
+
   [NewObject, Throws]
   Document parseFromString(DOMString str, SupportedType type);
+
+  [NewObject, ChromeOnly, Throws]
+  Document parseFromSafeString(DOMString str, SupportedType type);
 
   // Mozilla-specific stuff
   [NewObject, Throws, ChromeOnly]
@@ -39,7 +44,7 @@ interface DOMParser {
 
   // Can be used to allow a DOMParser to load DTDs from URLs that
   // normally would not be allowed based on the document principal.
-  [Func="IsChromeOrXBLOrUAWidget"]
-    void forceEnableDTD();
+  [Func="IsChromeOrUAWidget"]
+  void forceEnableDTD();
 };
 

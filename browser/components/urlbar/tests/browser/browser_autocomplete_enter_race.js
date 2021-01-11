@@ -28,7 +28,10 @@ add_task(async function setup() {
 
 add_task(
   taskWithNewTab(async function test_keyword() {
-    await promiseAutocompleteResultPopup("keyword bear");
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "keyword bear",
+    });
     gURLBar.focus();
     EventUtils.sendString("d");
     EventUtils.synthesizeKey("KEY_Enter");
@@ -43,7 +46,11 @@ add_task(
 
 add_task(
   taskWithNewTab(async function test_sametext() {
-    await promiseAutocompleteResultPopup("example.com", window, true);
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "example.com",
+      fireInputEvent: true,
+    });
 
     // Simulate re-entering the same text searched the last time. This may happen
     // through a copy paste, but clipboard handling is not much reliable, so just
@@ -65,7 +72,10 @@ add_task(
 
 add_task(
   taskWithNewTab(async function test_after_empty_search() {
-    await promiseAutocompleteResultPopup("");
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "",
+    });
     gURLBar.focus();
     gURLBar.value = "e";
     EventUtils.synthesizeKey("x");
@@ -130,15 +140,18 @@ add_task(
   taskWithNewTab(async function test_delay() {
     // This is needed to clear the current value, otherwise autocomplete may think
     // the user removed text from the end.
-    await promiseAutocompleteResultPopup("");
+    await UrlbarTestUtils.promiseAutocompleteResultPopup({
+      window,
+      value: "",
+    });
     await UrlbarTestUtils.promisePopupClose(window);
 
     // Set a large delay.
     const TIMEOUT = 3000;
-    let delay = Preferences.get("browser.urlbar.delay");
-    Preferences.set("browser.urlbar.delay", TIMEOUT);
+    let delay = UrlbarPrefs.get("delay");
+    UrlbarPrefs.set("delay", TIMEOUT);
     registerCleanupFunction(function() {
-      Preferences.set("browser.urlbar.delay", delay);
+      UrlbarPrefs.set("delay", delay);
     });
 
     let start = Cu.now();

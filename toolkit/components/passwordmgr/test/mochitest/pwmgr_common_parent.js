@@ -197,7 +197,7 @@ addMessageListener("proxyLoginManager", msg => {
     rv = LoginHelper.loginToVanillaObject(rv);
   } else if (
     Array.isArray(rv) &&
-    rv.length > 0 &&
+    !!rv.length &&
     rv[0] instanceof Ci.nsILoginInfo
   ) {
     rv = rv.map(login => LoginHelper.loginToVanillaObject(login));
@@ -218,14 +218,14 @@ addMessageListener("setMasterPassword", ({ enable }) => {
   }
 });
 
-function onFormSubmit(message) {
-  sendAsyncMessage("formSubmissionProcessed", message.data, message.objects);
-}
+LoginManagerParent.setListenerForTests((msg, { origin, data }) => {
+  if (msg == "FormSubmit") {
+    sendAsyncMessage("formSubmissionProcessed", { origin, data });
+  } else if (msg == "PasswordEditedOrGenerated") {
+    sendAsyncMessage("passwordEditedOrGenerated", { origin, data });
+  }
+});
 
-Services.mm.addMessageListener("PasswordManager:onFormSubmit", onFormSubmit);
 addMessageListener("cleanup", () => {
-  Services.mm.removeMessageListener(
-    "PasswordManager:onFormSubmit",
-    onFormSubmit
-  );
+  LoginManagerParent.setListenerForTests(null);
 });

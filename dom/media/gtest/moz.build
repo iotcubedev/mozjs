@@ -6,6 +6,7 @@
 
 include('/media/webrtc/webrtc.mozbuild')
 
+DEFINES['ENABLE_SET_CUBEB_BACKEND'] = True
 
 LOCAL_INCLUDES += [
     '/media/webrtc/signaling/src/common',
@@ -19,10 +20,13 @@ UNIFIED_SOURCES += [
     'TestAudioBuffers.cpp',
     'TestAudioCallbackDriver.cpp',
     'TestAudioCompactor.cpp',
+    'TestAudioDriftCorrection.cpp',
     'TestAudioMixer.cpp',
     'TestAudioPacketizer.cpp',
+    'TestAudioRingBuffer.cpp',
     'TestAudioSegment.cpp',
     'TestAudioTrackEncoder.cpp',
+    'TestAudioTrackGraph.cpp',
     'TestBenchmarkStorage.cpp',
     'TestBitWriter.cpp',
     'TestBlankVideoDataCreator.cpp',
@@ -30,6 +34,7 @@ UNIFIED_SOURCES += [
     'TestDataMutex.cpp',
     'TestDecoderBenchmark.cpp',
     'TestDriftCompensation.cpp',
+    'TestDynamicResampler.cpp',
     'TestGMPUtils.cpp',
     'TestGroupId.cpp',
     'TestIntervalSet.cpp',
@@ -117,4 +122,7 @@ if CONFIG['CC_TYPE'] in ('clang', 'gcc'):
     CXXFLAGS += ['-Wno-error=shadow']
 
 if CONFIG['CC_TYPE'] in ('clang', 'clang-cl'):
-    CXXFLAGS += ['-Wno-unused-private-field']
+    CXXFLAGS += [
+        '-Wno-inconsistent-missing-override',
+        '-Wno-unused-private-field',
+    ]

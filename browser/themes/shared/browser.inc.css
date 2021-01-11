@@ -6,13 +6,18 @@
 %include addons/extension-controlled.inc.css
 
 %filter substitution
+%define identityBoxPaddingInline 6px
+%define identityBoxMarginInlineEnd 2px
+%define lwtPopupBrighttextLinkColor #74c0ff
 %define themeTransition background-color 0.1s cubic-bezier(.17,.67,.83,.67)
-%define lwtPopupBrighttextLinkColor #45a1ff
+%define urlbarBreakoutExtend 2px
 
 :root {
   /* Note: Setting this to 0 (without px) breaks CSS calculations for OSX. */
   --space-above-tabbar: 0px;
   --tabs-navbar-shadow-size: 1px;
+  --short-notification-background: #0250BB;
+  --short-notification-gradient: #9059FF;
 }
 
 :root[extradragspace][tabsintitlebar]:not([inFullscreen]) {
@@ -56,7 +61,7 @@
 #PersonalToolbar {
   overflow: -moz-hidden-unscrollable;
   max-height: 4em;
-  padding: 0 6px 2px;
+  padding: 2px 6px;
 }
 
 :root[uidensity=compact] #PersonalToolbar {
@@ -87,6 +92,26 @@
   min-height: 22px;
 }
 
+#PlacesToolbarDropIndicator {
+  list-style-image: url(chrome://browser/skin/toolbar-drag-indicator.svg);
+  pointer-events: none;
+}
+
+/* rules for menupopup drop indicators */
+menupopup::part(drop-indicator-bar) {
+  position: relative;
+  /* these two margins must together compensate the indicator's height */
+  margin-block: -1px;
+}
+
+menupopup::part(drop-indicator) {
+  list-style-image: none;
+  height: 2px;
+  margin-inline-end: -4em;
+  background-color: Highlight;
+  pointer-events: none;
+}
+
 /* Required for Library animation */
 
 #navigator-toolbox {
@@ -98,7 +123,7 @@
 }
 
 #library-animatable-box[animate] {
-  display: -moz-box;
+  display: block;
 }
 
 /* Back / Forward context menu */
@@ -119,6 +144,25 @@
   list-style-image: url("chrome://browser/skin/forward.svg") !important;
 }
 
+/* Find bar */
+
+.browserContainer > findbar {
+  background-color: var(--toolbar-non-lwt-bgcolor);
+  color: var(--toolbar-non-lwt-textcolor);
+  text-shadow: none;
+}
+
+:root:not([lwtheme-image]) .browserContainer > findbar:-moz-lwtheme {
+  background-color: var(--lwt-accent-color);
+  background-image: linear-gradient(var(--toolbar-bgcolor), var(--toolbar-bgcolor));
+  border-top-color: var(--chrome-content-separator-color);
+  color: var(--toolbar-color);
+}
+
+:root:not([lwtheme-image]) .browserContainer > findbar:-moz-lwtheme:-moz-window-inactive {
+  background-color: var(--lwt-accent-color-inactive, var(--lwt-accent-color));
+}
+
 /* Private browsing and accessibility indicators */
 
 .accessibility-indicator,
@@ -128,8 +172,7 @@
   background-position: center;
   width: 24px;
   height: 24px;
-  margin-left: 7px;
-  margin-right: 7px;
+  margin-inline: 7px;
   position: relative;
   /* Need to ensure this gets positioned on top of the position:relative #navigator-toolbox
    * in case the dark/light themes give that item a background. */
@@ -140,9 +183,8 @@
   background-image: url("chrome://browser/skin/accessibility.svg");
   -moz-user-focus: normal;
   /* Clear default button styling */
-  -moz-appearance: none;
-  margin-top: unset;
-  margin-bottom: unset;
+  appearance: none;
+  margin-block: unset;
   min-width: unset;
   color: unset;
   text-shadow: unset;
@@ -174,12 +216,15 @@
 
 #DateTimePickerPanel[side="top"],
 #DateTimePickerPanel[side="bottom"] {
-  margin-left: 0;
-  margin-right: 0;
+  margin-inline: 0;
 }
 
 #widget-overflow .webextension-popup-browser {
   background: #fff;
+
+  /* height set via JS can be lower than the stack min-height,
+     ensure the browser takes up at least that min-height */
+  min-height: 100%;
 }
 
 #addon-progress-notification-progressmeter {
@@ -195,6 +240,7 @@
 
 #cfr-notification-header {
   width: 100%;
+  display: block;
   text-align: center;
   box-shadow: 0px 1px 0px rgba(0, 0, 0, 0.2);
 }
@@ -213,6 +259,7 @@
   margin: 7px;
   color: inherit;
   cursor: default;
+  justify-self: end;
 }
 
 #cfr-notification-header-image {
@@ -234,6 +281,108 @@
   width: 343px;
 }
 
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] {
+  background: radial-gradient(circle farthest-side at top right, var(--short-notification-gradient), var(--short-notification-background));
+  width: unset;
+  max-width: 700px;
+  overflow-wrap: break-word;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"]:-moz-locale-dir(rtl) {
+  background: radial-gradient(circle farthest-side at top left, var(--short-notification-gradient), var(--short-notification-background));
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-body-container,
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-footer-container,
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] #cfr-notification-header-link {
+  display: none;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] #cfr-notification-header {
+  box-shadow: none;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] description {
+  font-weight: 400;
+  margin: unset;
+  margin-inline: 12px;
+  transform: translateY(50%);
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button-container,
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-header-container {
+  display: inline-flex;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button-container {
+  float: inline-end;
+  background-color: transparent;
+  flex-direction: row-reverse;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-primary-button {
+  background-color: rgba(216, 216, 216, 0.2);
+  border: none;
+  border-radius: 2px;
+  margin: 4px;
+  padding: 3px 12px;
+  flex: 1;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-primary-button:after {
+  content: url(chrome://browser/skin/back-12.svg);
+  -moz-context-properties: fill;
+  fill: currentColor;
+  transform: scaleX(-1) translateY(2px);
+  float: inline-end;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"]:-moz-locale-dir(rtl) .popup-notification-button.popup-notification-primary-button:after {
+  transform: scaleX(1) translateY(2px);
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-primary-button:hover {
+  background-color: rgba(216, 216, 216, 0.4);
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-primary-button:active {
+  background-color: rgba(216, 216, 216, 0.5);
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-secondary-button {
+  margin: 3px;
+  border: none;
+  border-radius: 2px;
+  background-image: url(chrome://browser/skin/stop.svg);
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px;
+  -moz-context-properties: fill;
+  fill: white;
+  height: 22px;
+  width: 22px;
+  padding: 0;
+  align-self: center;
+  flex: none;
+  display: block;
+  font-size: 0;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-button.popup-notification-secondary-button:hover {
+  background-color: rgba(216, 216, 216, 0.4);
+}
+
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_MILESTONE_MESSAGE"] .popup-notification-header-container {
+  color: white;
+  max-width: unset;
+}
+
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_SOCIAL_TRACKING_PROTECTION"] {
+  width: 386px;
+}
+
 #contextual-feature-recommendation-notification .popup-notification-icon {
   margin-inline-end: 4px;
 }
@@ -244,6 +393,7 @@
 }
 
 #contextual-feature-recommendation-notification .popup-notification-body-container {
+  width: 100%;
   padding-bottom: 0;
 }
 
@@ -291,6 +441,10 @@
   padding-bottom: 20px;
 }
 
+#contextual-feature-recommendation-notification[data-notification-bucket="CFR_SOCIAL_TRACKING_PROTECTION"] .popup-notification-description {
+  font-size: 13px;
+}
+
 #cfr-notification-feature-steps {
   display: flex;
   flex-direction: column;
@@ -298,18 +452,13 @@
 }
 
 #cfr-notification-feature-steps li {
-  padding-inline-start: 9px;
+  margin-inline-start: 10px;
   position: relative;
+  display: list-item;
 }
 
 #cfr-notification-feature-steps li:not(:last-child) {
   margin-bottom: 5px;
-}
-
-#cfr-notification-feature-steps li:before {
-  content: "\2022";
-  position: absolute;
-  inset-inline-start: 0;
 }
 
 #contextual-feature-recommendation-notification[data-notification-category="message_and_animation"] #cfr-notification-footer-text {
@@ -323,6 +472,7 @@
   margin: 0;
 }
 
+#contextual-feature-recommendation-notification .popup-notification-learnmore-link,
 #cfr-notification-footer-users,
 #cfr-notification-footer-learn-more-link {
   font-size: 12px;
@@ -331,8 +481,7 @@
 #cfr-notification-footer-addon-info {
   align-items: center;
   display: flex;
-  margin-top: 10px;
-  margin-bottom: 6px;
+  margin-block: 10px 6px;
 }
 
 #cfr-notification-footer-filled-stars,
@@ -474,4 +623,68 @@
 
 #content-mask {
   background: rgba(0, 0, 0, 0.5);
+}
+
+/* nhnt11: Workaround to insert a linebreak after the DoH doorhanger's title.
+ * The title uses the inline html|b that usually contains the hostname for
+ * permission prompts to achieve bold formatting. This is always the 2nd child.
+ */
+.popup-notification-description[popupid="doh-first-time"] > html|b:first-of-type {
+  display: block;
+  margin-bottom: 4px; /* matches the margin-bottom on description elements */
+}
+
+/* Password Manager Doorhanger */
+
+.ac-dropmarker {
+  appearance: none;
+  justify-self: end;
+  margin-inline-end: 8px;
+  align-self: center;
+}
+
+.ac-dropmarker::part(icon) {
+  list-style-image: url(chrome://global/skin/icons/arrow-dropdown-12.svg);
+  -moz-context-properties: fill;
+  fill: -moz-DialogText;
+}
+
+.ac-has-end-icon {
+  /* icon width + icon end margin */
+  padding-inline-end: calc(12px + 8px);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* ENABLE DEVTOOLS POPUP */
+
+#enable-devtools-popup {
+%if defined(XP_MACOSX) || defined(XP_WIN)
+  font-size: 1.18em;
+%endif
+}
+
+#sharing-tabs-warning-panel > hbox[type="window"] > vbox > label > #sharing-warning-screen-panel-header,
+#sharing-tabs-warning-panel > hbox[type="screen"] > vbox > label > #sharing-warning-window-panel-header {
+  display: none;
+}
+
+#sharing-tabs-warning-panel {
+  max-width: 400px;
+}
+
+#sharing-warning-proceed-to-tab {
+  appearance: none;
+  border-style: none;
+  margin: 0;
+  background-color: rgb(0,96,223);
+  color: rgb(255,255,255);
+  border-radius: 5px;
+  padding: 10px;
+  margin-top: 15px;
+  margin-bottom: 10px;
+}
+
+#sharing-warning-proceed-to-tab:hover {
+  background-color: rgb(0,62,170);
 }

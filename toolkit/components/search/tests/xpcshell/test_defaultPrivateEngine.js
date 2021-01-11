@@ -14,9 +14,13 @@ let originalDefault;
 let originalPrivateDefault;
 
 add_task(async function setup() {
-  useTestEngineConfig();
+  await useTestEngines();
 
   Services.prefs.setCharPref(SearchUtils.BROWSER_SEARCH_PREF + "region", "US");
+  Services.prefs.setBoolPref(
+    SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
+    true
+  );
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault",
     true
@@ -45,7 +49,13 @@ add_task(async function test_defaultPrivateEngine() {
     "Should have the original default as the default engine"
   );
 
+  let promise = promiseDefaultNotification("private");
   Services.search.defaultPrivateEngine = engine1;
+  Assert.equal(
+    await promise,
+    engine1,
+    "Should have notified setting the private engine to the new one"
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine1,
@@ -56,7 +66,13 @@ add_task(async function test_defaultPrivateEngine() {
     originalDefault,
     "Should not have changed the original default engine"
   );
+  promise = promiseDefaultNotification("private");
   await Services.search.setDefaultPrivate(engine2);
+  Assert.equal(
+    await promise,
+    engine2,
+    "Should have notified setting the private engine to the new one using async api"
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine2,
@@ -76,7 +92,13 @@ add_task(async function test_defaultPrivateEngine() {
     "Should not have changed the original default engine"
   );
 
+  promise = promiseDefaultNotification("private");
   await Services.search.setDefaultPrivate(engine1);
+  Assert.equal(
+    await promise,
+    engine1,
+    "Should have notified reverting the private engine to the selected one using async api"
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine1,
@@ -107,12 +129,33 @@ add_task(async function test_defaultPrivateEngine() {
 });
 
 add_task(async function test_defaultPrivateEngine_turned_off() {
+  Services.search.defaultEngine = originalDefault;
+  Services.search.defaultPrivateEngine = engine1;
+
+  let promise = promiseDefaultNotification("private");
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault",
     false
   );
+  Assert.equal(
+    await promise,
+    originalDefault,
+    "Should have notified setting the first engine correctly."
+  );
 
-  Services.search.defaultPrivateEngine = engine1;
+  promise = promiseDefaultNotification("normal");
+  let privatePromise = promiseDefaultNotification("private");
+  Services.search.defaultEngine = engine1;
+  Assert.equal(
+    await promise,
+    engine1,
+    "Should have notified setting the first engine correctly."
+  );
+  Assert.equal(
+    await privatePromise,
+    engine1,
+    "Should have notified setting of the private engine as well."
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine1,
@@ -123,7 +166,13 @@ add_task(async function test_defaultPrivateEngine_turned_off() {
     engine1,
     "Should keep the default engine in sync with the pref off"
   );
+  promise = promiseDefaultNotification("private");
   Services.search.defaultPrivateEngine = engine2;
+  Assert.equal(
+    await promise,
+    engine2,
+    "Should have notified setting the second engine correctly."
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine2,
@@ -131,10 +180,24 @@ add_task(async function test_defaultPrivateEngine_turned_off() {
   );
   Assert.equal(
     Services.search.defaultEngine,
-    engine2,
-    "Should keep the default engine in sync with the pref off"
+    engine1,
+    "Should not change the normal mode default engine"
   );
+  Assert.equal(
+    Services.prefs.getBoolPref(
+      SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault",
+      false
+    ),
+    true,
+    "Should have set the separate private default pref to true"
+  );
+  promise = promiseDefaultNotification("private");
   Services.search.defaultPrivateEngine = engine1;
+  Assert.equal(
+    await promise,
+    engine1,
+    "Should have notified resetting to the first engine again"
+  );
   Assert.equal(
     Services.search.defaultPrivateEngine,
     engine1,
@@ -145,47 +208,40 @@ add_task(async function test_defaultPrivateEngine_turned_off() {
     engine1,
     "Should keep the default engine in sync with the pref off"
   );
+});
 
-  // Test that hiding the currently-default engine affects the defaultEngine getter
-  // We fallback first to the original default...
-  engine1.hidden = true;
-  Assert.equal(
-    Services.search.defaultPrivateEngine,
-    originalDefault,
-    "Should reset to the original engine"
-  );
-  Assert.equal(
-    Services.search.defaultEngine,
-    originalDefault,
-    "Should also reset the normal default to the original engine"
+add_task(async function test_defaultPrivateEngine_ui_turned_off() {
+  engine1.hidden = false;
+  engine2.hidden = false;
+  Services.prefs.setBoolPref(
+    SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault",
+    true
   );
 
-  // ... and then to the first visible engine in the list, so move our second
-  // engine to that position.
-  await Services.search.moveEngine(engine2, 0);
-  originalDefault.hidden = true;
+  Services.search.defaultEngine = engine2;
+  Services.search.defaultPrivateEngine = engine1;
+
+  let promise = promiseDefaultNotification("private");
+  Services.prefs.setBoolPref(
+    SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
+    false
+  );
   Assert.equal(
-    Services.search.defaultPrivateEngine,
+    await promise,
     engine2,
-    "Should correctly set the second engine as private default"
-  );
-  Assert.equal(
-    Services.search.defaultEngine,
-    engine2,
-    "Should also set the normal default to the second engine"
+    "Should have notified for resetting of the private pref."
   );
 
-  // Test that setting defaultPrivateEngine to an already-hidden engine works, but
-  // doesn't change the return value of the getter
+  promise = promiseDefaultNotification("normal");
   Services.search.defaultPrivateEngine = engine1;
   Assert.equal(
-    Services.search.defaultPrivateEngine,
-    engine2,
-    "Should not change anything if attempted to be set to a hidden engine"
+    await promise,
+    engine1,
+    "Should have notified setting the first engine correctly."
   );
   Assert.equal(
-    Services.search.defaultEngine,
-    engine2,
-    "Should also keep the normal default if attempted to be set to a hidden engine"
+    Services.search.defaultPrivateEngine,
+    engine1,
+    "Should be set to the first engine correctly"
   );
 });

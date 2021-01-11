@@ -11,10 +11,9 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/TimeStamp.h"
+#include "GeckoProfiler.h"
 #include "nsHashKeys.h"
 #include "nsContentUtils.h"
-#include "nsIConsoleService.h"
-#include "nsIScriptError.h"
 #include "nsPrintfCString.h"
 #include "nsQueryObject.h"
 #include "nsRefPtrHashtable.h"
@@ -51,8 +50,7 @@ static void LogError(JSContext* aCx, const nsCString& aMessage) {
   }
 }
 
-namespace mozilla {
-namespace telemetry {
+namespace mozilla::telemetry {
 
 class Timer final {
  public:
@@ -71,6 +69,8 @@ class Timer final {
     auto delta = TimeStamp::Now() - mStartTime;
     return mInSeconds ? delta.ToSeconds() : delta.ToMilliseconds();
   }
+
+  TimeStamp& StartTime() { return mStartTime; }
 
   bool& InSeconds() { return mInSeconds; }
 
@@ -151,7 +151,7 @@ class Timers final {
 
   int32_t TimeElapsed(JSContext* aCx, const nsAString& aHistogram,
                       JS::HandleObject aObj, const nsAString& aKey,
-                      bool aCanceledOkay = false, bool aDelete = false);
+                      bool aCanceledOkay = false);
 
   bool Start(JSContext* aCx, const nsAString& aHistogram, JS::HandleObject aObj,
              const nsAString& aKey, bool aInSeconds = false);
@@ -187,12 +187,6 @@ Timers::Timers() : mTimers(dom::RootingCx()) {
 
   mTimers = JS::NewMapObject(jsapi.cx());
   MOZ_RELEASE_ASSERT(mTimers);
-
-  // Telemetry is disabled when recording/replaying, so don't report errors
-  // when it is used.
-  if (recordreplay::IsRecordingOrReplaying()) {
-    mSuppressErrors = true;
-  }
 }
 
 JSObject* Timers::Get(JSContext* aCx, const nsAString& aHistogram,
@@ -281,13 +275,8 @@ bool Timers::Delete(JSContext* aCx, const nsAString& aHistogram,
 
 int32_t Timers::TimeElapsed(JSContext* aCx, const nsAString& aHistogram,
                             JS::HandleObject aObj, const nsAString& aKey,
-                            bool aCanceledOkay, bool aDelete) {
-  RefPtr<Timer> timer;
-  if (aDelete) {
-    timer = GetAndDelete(aCx, aHistogram, aObj, aKey);
-  } else {
-    timer = Get(aCx, aHistogram, aObj, aKey, false);
-  }
+                            bool aCanceledOkay) {
+  RefPtr<Timer> timer = Get(aCx, aHistogram, aObj, aKey, false);
   if (!timer) {
     if (!aCanceledOkay && !mSuppressErrors) {
       LogError(aCx, nsPrintfCString(
@@ -325,11 +314,19 @@ bool Timers::Start(JSContext* aCx, const nsAString& aHistogram,
 int32_t Timers::Finish(JSContext* aCx, const nsAString& aHistogram,
                        JS::HandleObject aObj, const nsAString& aKey,
                        bool aCanceledOkay) {
-  int32_t delta = TimeElapsed(aCx, aHistogram, aObj, aKey, aCanceledOkay, true);
-  if (delta == -1) {
-    return delta;
+  RefPtr<Timer> timer = GetAndDelete(aCx, aHistogram, aObj, aKey);
+  if (!timer) {
+    if (!aCanceledOkay && !mSuppressErrors) {
+      LogError(aCx, nsPrintfCString(
+                        "TelemetryStopwatch: finishing nonexisting stopwatch. "
+                        "Histogram: \"%s\", key: \"%s\"",
+                        NS_ConvertUTF16toUTF8(aHistogram).get(),
+                        NS_ConvertUTF16toUTF8(aKey).get()));
+    }
+    return -1;
   }
 
+  int32_t delta = timer->Elapsed();
   NS_ConvertUTF16toUTF8 histogram(aHistogram);
   nsresult rv;
   if (!aKey.IsVoid()) {
@@ -338,6 +335,16 @@ int32_t Timers::Finish(JSContext* aCx, const nsAString& aHistogram,
   } else {
     rv = TelemetryHistogram::Accumulate(histogram.get(), delta);
   }
+#ifdef MOZ_GECKO_PROFILER
+  nsCString markerText = histogram;
+  if (!aKey.IsVoid()) {
+    markerText.AppendLiteral(":");
+    markerText.Append(NS_ConvertUTF16toUTF8(aKey));
+  }
+  profiler_add_text_marker("TelemetryStopwatch", markerText,
+                           JS::ProfilingCategoryPair::OTHER, timer->StartTime(),
+                           TimeStamp::Now());
+#endif
   if (NS_FAILED(rv) && rv != NS_ERROR_NOT_AVAILABLE && !mSuppressErrors) {
     LogError(aCx, nsPrintfCString(
                       "TelemetryStopwatch: failed to update the Histogram "
@@ -430,5 +437,4 @@ void Stopwatch::SetTestModeEnabled(const dom::GlobalObject& aGlobal,
   Timers::Singleton().SuppressErrors() = aTesting;
 }
 
-}  // namespace telemetry
-}  // namespace mozilla
+}  // namespace mozilla::telemetry

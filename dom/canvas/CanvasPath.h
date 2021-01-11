@@ -28,14 +28,11 @@ class CanvasPath final : public nsWrapperCache {
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
 
+  static already_AddRefed<CanvasPath> Constructor(const GlobalObject& aGlobal);
   static already_AddRefed<CanvasPath> Constructor(const GlobalObject& aGlobal,
-                                                  ErrorResult& rv);
+                                                  CanvasPath& aCanvasPath);
   static already_AddRefed<CanvasPath> Constructor(const GlobalObject& aGlobal,
-                                                  CanvasPath& aCanvasPath,
-                                                  ErrorResult& rv);
-  static already_AddRefed<CanvasPath> Constructor(const GlobalObject& aGlobal,
-                                                  const nsAString& aPathString,
-                                                  ErrorResult& rv);
+                                                  const nsAString& aPathString);
 
   void ClosePath();
   void MoveTo(double x, double y);
@@ -69,7 +66,7 @@ class CanvasPath final : public nsWrapperCache {
                ErrorResult& aError);
 
  private:
-  virtual ~CanvasPath() {}
+  virtual ~CanvasPath() = default;
 
   nsCOMPtr<nsISupports> mParent;
   static gfx::Float ToFloat(double aValue) { return gfx::Float(aValue); }

@@ -14,17 +14,17 @@
 #ifdef XP_WIN
 #  include "WMFDecoderModule.h"
 #endif
+#include "GPUVideoImage.h"
 #include "ImageContainer.h"  // for PlanarYCbCrData and BufferRecycleBin
-#include "mozilla/layers/VideoBridgeChild.h"
-#include "mozilla/layers/ImageClient.h"
+#include "MediaInfo.h"
 #include "PDMFactory.h"
 #include "RemoteDecoderManagerChild.h"
 #include "RemoteDecoderManagerParent.h"
-#include "GPUVideoImage.h"
-#include "MediaInfo.h"
-#include "mozilla/Telemetry.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/layers/ImageClient.h"
 #include "mozilla/layers/TextureClient.h"
+#include "mozilla/layers/VideoBridgeChild.h"
 
 namespace mozilla {
 
@@ -37,9 +37,8 @@ class KnowsCompositorVideo : public layers::KnowsCompositor {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(KnowsCompositorVideo, override)
 
   layers::TextureForwarder* GetTextureForwarder() override {
-    return mTextureFactoryIdentifier.mParentProcessType == GeckoProcessType_GPU
-               ? VideoBridgeChild::GetSingletonToGPUProcess()
-               : VideoBridgeChild::GetSingletonToParentProcess();
+    auto* vbc = VideoBridgeChild::GetSingleton();
+    return (vbc && vbc->CanSend()) ? vbc : nullptr;
   }
   layers::LayersIPCActor* GetLayersIPCActor() override {
     return GetTextureForwarder();
@@ -47,10 +46,7 @@ class KnowsCompositorVideo : public layers::KnowsCompositor {
 
   static already_AddRefed<KnowsCompositorVideo> TryCreateForIdentifier(
       const layers::TextureFactoryIdentifier& aIdentifier) {
-    VideoBridgeChild* child =
-        (aIdentifier.mParentProcessType == GeckoProcessType_GPU)
-            ? VideoBridgeChild::GetSingletonToGPUProcess()
-            : VideoBridgeChild::GetSingletonToParentProcess();
+    VideoBridgeChild* child = VideoBridgeChild::GetSingleton();
     if (!child) {
       return nullptr;
     }
@@ -128,7 +124,7 @@ RefPtr<mozilla::layers::Image> RemoteVideoDecoderChild::DeserializeImage(
       delete[] reinterpret_cast<uint8_t*>(memOrShmem.get_uintptr_t());
       break;
     case MemoryOrShmem::TShmem:
-      DeallocShmem(memOrShmem.get_Shmem());
+      // Memory buffer will be recycled by the parent automatically.
       break;
     default:
       MOZ_ASSERT(false, "Unknown MemoryOrShmem type");
@@ -141,38 +137,42 @@ RefPtr<mozilla::layers::Image> RemoteVideoDecoderChild::DeserializeImage(
   return image;
 }
 
-mozilla::ipc::IPCResult RemoteVideoDecoderChild::RecvOutput(
+MediaResult RemoteVideoDecoderChild::ProcessOutput(
     const DecodedOutputIPDL& aDecodedData) {
   AssertOnManagerThread();
-  MOZ_ASSERT(aDecodedData.type() == DecodedOutputIPDL::TRemoteVideoDataIPDL);
+  MOZ_ASSERT(aDecodedData.type() ==
+             DecodedOutputIPDL::TArrayOfRemoteVideoDataIPDL);
 
-  const RemoteVideoDataIPDL& aData = aDecodedData.get_RemoteVideoDataIPDL();
+  const nsTArray<RemoteVideoDataIPDL>& arrayData =
+      aDecodedData.get_ArrayOfRemoteVideoDataIPDL();
 
-  if (aData.sd().type() == SurfaceDescriptor::TSurfaceDescriptorBuffer) {
-    RefPtr<Image> image = DeserializeImage(
-        aData.sd().get_SurfaceDescriptorBuffer(), aData.frameSize());
+  for (auto&& data : arrayData) {
+    RefPtr<Image> image;
+    if (data.sd().type() == SurfaceDescriptor::TSurfaceDescriptorBuffer) {
+      image = DeserializeImage(data.sd().get_SurfaceDescriptorBuffer(),
+                               data.frameSize());
+    } else {
+      // The Image here creates a TextureData object that takes ownership
+      // of the SurfaceDescriptor, and is responsible for making sure that
+      // it gets deallocated.
+      SurfaceDescriptorRemoteDecoder remoteSD =
+          static_cast<const SurfaceDescriptorGPUVideo&>(data.sd());
+      remoteSD.source() = Some(GetManager()->GetSource());
+      image = new GPUVideoImage(GetManager(), remoteSD, data.frameSize());
+    }
 
     RefPtr<VideoData> video = VideoData::CreateFromImage(
-        aData.display(), aData.base().offset(), aData.base().time(),
-        aData.base().duration(), image, aData.base().keyframe(),
-        aData.base().timecode());
+        data.display(), data.base().offset(), data.base().time(),
+        data.base().duration(), image, data.base().keyframe(),
+        data.base().timecode());
 
-    mDecodedData.AppendElement(std::move(video));
-  } else {
-    // The Image here creates a TextureData object that takes ownership
-    // of the SurfaceDescriptor, and is responsible for making sure that
-    // it gets deallocated.
-    RefPtr<Image> image =
-        new GPUVideoImage(GetManager(), aData.sd(), aData.frameSize());
-
-    RefPtr<VideoData> video = VideoData::CreateFromImage(
-        aData.display(), aData.base().offset(), aData.base().time(),
-        aData.base().duration(), image, aData.base().keyframe(),
-        aData.base().timecode());
-
+    if (!video) {
+      // OOM
+      return MediaResult(NS_ERROR_OUT_OF_MEMORY, __func__);
+    }
     mDecodedData.AppendElement(std::move(video));
   }
-  return IPC_OK();
+  return NS_OK;
 }
 
 MediaResult RemoteVideoDecoderChild::InitIPDL(
@@ -199,11 +199,9 @@ MediaResult RemoteVideoDecoderChild::InitIPDL(
   bool success = false;
   nsCString errorDescription;
   VideoDecoderInfoIPDL decoderInfo(aVideoInfo, aFramerate);
-  if (manager->SendPRemoteDecoderConstructor(this, decoderInfo, aOptions,
-                                             ToMaybe(aIdentifier), &success,
-                                             &errorDescription)) {
-    mCanSend = true;
-  }
+  Unused << manager->SendPRemoteDecoderConstructor(this, decoderInfo, aOptions,
+                                                   ToMaybe(aIdentifier),
+                                                   &success, &errorDescription);
 
   return success ? MediaResult(NS_OK)
                  : MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR, errorDescription);
@@ -241,11 +239,9 @@ MediaResult GpuRemoteVideoDecoderChild::InitIPDL(
   bool success = false;
   nsCString errorDescription;
   VideoDecoderInfoIPDL decoderInfo(aVideoInfo, aFramerate);
-  if (manager->SendPRemoteDecoderConstructor(this, decoderInfo, aOptions,
-                                             Some(aIdentifier), &success,
-                                             &errorDescription)) {
-    mCanSend = true;
-  }
+  Unused << manager->SendPRemoteDecoderConstructor(this, decoderInfo, aOptions,
+                                                   Some(aIdentifier), &success,
+                                                   &errorDescription);
 
   return success ? MediaResult(NS_OK)
                  : MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR, errorDescription);
@@ -255,9 +251,9 @@ RemoteVideoDecoderParent::RemoteVideoDecoderParent(
     RemoteDecoderManagerParent* aParent, const VideoInfo& aVideoInfo,
     float aFramerate, const CreateDecoderParams::OptionSet& aOptions,
     const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
-    TaskQueue* aManagerTaskQueue, TaskQueue* aDecodeTaskQueue, bool* aSuccess,
-    nsCString* aErrorDescription)
-    : RemoteDecoderParent(aParent, aManagerTaskQueue, aDecodeTaskQueue),
+    nsISerialEventTarget* aManagerThread, TaskQueue* aDecodeTaskQueue,
+    bool* aSuccess, nsCString* aErrorDescription)
+    : RemoteDecoderParent(aParent, aManagerThread, aDecodeTaskQueue),
       mVideoInfo(aVideoInfo) {
   if (aIdentifier) {
     // Check to see if we have a direct PVideoBridge connection to the
@@ -268,10 +264,16 @@ RemoteVideoDecoderParent::RemoteVideoDecoderParent(
         KnowsCompositorVideo::TryCreateForIdentifier(*aIdentifier);
   }
 
+  RefPtr<layers::ImageContainer> container = new layers::ImageContainer();
+  if (mKnowsCompositor && XRE_IsRDDProcess()) {
+    // Ensure to allocate recycle allocator
+    container->EnsureRecycleAllocatorForRDD(mKnowsCompositor);
+  }
+
   CreateDecoderParams params(mVideoInfo);
   params.mTaskQueue = mDecodeTaskQueue;
   params.mKnowsCompositor = mKnowsCompositor;
-  params.mImageContainer = new layers::ImageContainer();
+  params.mImageContainer = container;
   params.mRate = CreateDecoderParams::VideoFrameRate(aFramerate);
   params.mOptions = aOptions;
   MediaResult error(NS_OK);
@@ -313,11 +315,15 @@ RemoteVideoDecoderParent::RemoteVideoDecoderParent(
 }
 
 MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
-    const MediaDataDecoder::DecodedData& aData) {
+    const MediaDataDecoder::DecodedData& aData,
+    DecodedOutputIPDL& aDecodedData) {
   MOZ_ASSERT(OnManagerThread());
+
+  nsTArray<RemoteVideoDataIPDL> array;
 
   // If the video decoder bridge has shut down, stop.
   if (mKnowsCompositor && !mKnowsCompositor->GetTextureForwarder()) {
+    aDecodedData = std::move(array);
     return NS_OK;
   }
 
@@ -342,33 +348,35 @@ MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
                                                            mKnowsCompositor);
       }
 
-      if (texture && !texture->IsAddedToCompositableClient()) {
-        texture->InitIPDLActor(mKnowsCompositor);
-        texture->SetAddedToCompositableClient();
-      }
       if (texture) {
+        if (!texture->IsAddedToCompositableClient()) {
+          texture->InitIPDLActor(mKnowsCompositor);
+          texture->SetAddedToCompositableClient();
+        }
         sd = mParent->StoreImage(video->mImage, texture);
         size = texture->GetSize();
       }
-    } else {
-      PlanarYCbCrImage* image =
-          static_cast<PlanarYCbCrImage*>(video->mImage.get());
+    }
+
+    // If failed to create a GPU accelerated surface descriptor, fall back to
+    // copying frames via shmem.
+    if (!IsSurfaceDescriptorValid(sd)) {
+      PlanarYCbCrImage* image = video->mImage->AsPlanarYCbCrImage();
+      if (!image) {
+        return MediaResult(NS_ERROR_UNEXPECTED,
+                           "Expected Planar YCbCr image in "
+                           "RemoteVideoDecoderParent::ProcessDecodedData");
+      }
 
       SurfaceDescriptorBuffer sdBuffer;
-      Shmem buffer;
-      if (!AllocShmem(image->GetDataSize(), Shmem::SharedMemory::TYPE_BASIC,
-                      &buffer)) {
+      ShmemBuffer buffer = AllocateBuffer(image->GetDataSize());
+      if (!buffer.Valid()) {
         return MediaResult(NS_ERROR_OUT_OF_MEMORY,
                            "AllocShmem failed in "
                            "RemoteVideoDecoderParent::ProcessDecodedData");
       }
-      if (image->GetDataSize() > buffer.Size<uint8_t>()) {
-        return MediaResult(NS_ERROR_OUT_OF_MEMORY,
-                           "AllocShmem returned less than requested in "
-                           "RemoteVideoDecoderParent::ProcessDecodedData");
-      }
 
-      sdBuffer.data() = std::move(buffer);
+      sdBuffer.data() = std::move(buffer.Get());
       image->BuildSurfaceDescriptorBuffer(sdBuffer);
 
       sd = sdBuffer;
@@ -379,8 +387,11 @@ MediaResult RemoteVideoDecoderParent::ProcessDecodedData(
         MediaDataIPDL(data->mOffset, data->mTime, data->mTimecode,
                       data->mDuration, data->mKeyframe),
         video->mDisplay, size, sd, video->mFrameID);
-    Unused << SendOutput(output);
+
+    array.AppendElement(output);
   }
+
+  aDecodedData = std::move(array);
 
   return NS_OK;
 }

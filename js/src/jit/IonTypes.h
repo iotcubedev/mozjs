@@ -10,6 +10,7 @@
 #include "mozilla/HashFunctions.h"
 
 #include <algorithm>
+#include <initializer_list>
 #include <stdint.h>
 
 #include "jsfriendapi.h"
@@ -41,9 +42,9 @@ class IonCompilationId {
 
 namespace jit {
 
-typedef uint32_t RecoverOffset;
-typedef uint32_t SnapshotOffset;
-typedef uint32_t BailoutId;
+using RecoverOffset = uint32_t;
+using SnapshotOffset = uint32_t;
+using BailoutId = uint32_t;
 
 // The maximum size of any buffer associated with an assembler or code object.
 // This is chosen to not overflow a signed integer, leaving room for an extra
@@ -56,61 +57,55 @@ static const uint32_t SNAPSHOT_MAX_NARGS = 127;
 static const SnapshotOffset INVALID_RECOVER_OFFSET = uint32_t(-1);
 static const SnapshotOffset INVALID_SNAPSHOT_OFFSET = uint32_t(-1);
 
-// Different kinds of bailouts. When extending this enum, make sure to check
-// the bits reserved for bailout kinds in Bailouts.h
-enum BailoutKind {
+// Different kinds of bailouts.
+enum class BailoutKind : uint8_t {
   // Normal bailouts, that don't need to be handled specially when restarting
   // in baseline.
 
   // An inevitable bailout (MBail instruction or type barrier that always bails)
-  Bailout_Inevitable,
+  Inevitable,
 
   // Bailing out during a VM call. Many possible causes that are hard
   // to distinguish statically at snapshot construction time.
   // We just lump them together.
-  Bailout_DuringVMCall,
+  DuringVMCall,
 
-  // Call to a non-JSFunction (problem for |apply|)
-  Bailout_NonJSFunctionCallee,
+  // Too many arguments for apply calls.
+  TooManyArguments,
 
   // Dynamic scope chain lookup produced |undefined|
-  Bailout_DynamicNameNotFound,
-
-  // Input string contains 'arguments' or 'eval'
-  Bailout_StringArgumentsEval,
+  DynamicNameNotFound,
 
   // Bailout on overflow, but don't immediately invalidate.
   // Used for abs, sub and LoadUnboxedScalar (when loading a uint32 that
   // doesn't fit in an int32).
-  Bailout_Overflow,
+  Overflow,
 
   // floor, ceiling and round bail if input is NaN, if output would be -0 or
   // doesn't fit in int32 range
-  Bailout_Round,
+  Round,
 
   // Non-primitive value used as input for ToDouble, ToInt32, ToString, etc.
   // For ToInt32, can also mean that input can't be converted without precision
   // loss (e.g. 5.5).
-  Bailout_NonPrimitiveInput,
+  NonPrimitiveInput,
 
   // For ToInt32, would lose precision when converting (e.g. 5.5).
-  Bailout_PrecisionLoss,
+  PrecisionLoss,
 
   // We tripped a type barrier (object was not in the expected TypeSet)
-  Bailout_TypeBarrierO,
+  TypeBarrierO,
   // We tripped a type barrier (value was not in the expected TypeSet)
-  Bailout_TypeBarrierV,
-  // We tripped a type monitor (wrote an unexpected type in a property)
-  Bailout_MonitorTypes,
+  TypeBarrierV,
 
   // We hit a hole in an array.
-  Bailout_Hole,
+  Hole,
+
+  // The object has dense array elements
+  NoDenseElementsGuard,
 
   // Array access with negative index
-  Bailout_NegativeIndex,
-
-  // Array access with non integer index
-  Bailout_NonIntegerIndex,
+  NegativeIndex,
 
   // Pretty specific case:
   //  - need a type barrier on a property write
@@ -118,161 +113,172 @@ enum BailoutKind {
   //    the value
   //  - we need to guard that we're not given an object of that one other type
   //    also used for the unused GuardClass instruction
-  Bailout_ObjectIdentityOrTypeGuard,
+  ObjectIdentityOrTypeGuard,
+
+  // JSString was not equal to the expected JSAtom
+  SpecificAtomGuard,
+
+  // Symbol was not equal the expected JS::Symbol.
+  SpecificSymbolGuard,
 
   // Unbox expects a given type, bails out if it doesn't get it.
-  Bailout_NonInt32Input,
-  Bailout_NonNumericInput,  // unboxing a double works with int32 too
-  Bailout_NonBooleanInput,
-  Bailout_NonObjectInput,
-  Bailout_NonStringInput,
-  Bailout_NonSymbolInput,
-  Bailout_NonBigIntInput,
-
-  // Atomic operations require shared memory, bail out if the typed array
-  // maps unshared memory.
-  Bailout_NonSharedTypedArrayInput,
+  NonInt32Input,
+  NonNumericInput,  // unboxing a double works with int32 too
+  NonBooleanInput,
+  NonObjectInput,
+  NonStringInput,
+  NonSymbolInput,
+  NonBigIntInput,
 
   // We hit a |debugger;| statement.
-  Bailout_Debugger,
-
-  // |this| used uninitialized in a derived constructor
-  Bailout_UninitializedThis,
-
-  // Derived constructors must return object or undefined
-  Bailout_BadDerivedConstructorReturn,
+  Debugger,
 
   // We hit this code for the first time.
-  Bailout_FirstExecution,
+  FirstExecution,
+
+  // Array length did not fit in int32.
+  NonInt32ArrayLength,
 
   // END Normal bailouts
 
   // Bailouts caused by invalid assumptions based on Baseline code.
   // Causes immediate invalidation.
 
-  // Like Bailout_Overflow, but causes immediate invalidation.
-  Bailout_OverflowInvalidate,
+  // Like BailoutKind::Overflow, but causes immediate invalidation.
+  OverflowInvalidate,
 
   // Used for integer division, multiplication and modulo.
   // If there's a remainder, bails to return a double.
   // Can also signal overflow or result of -0.
   // Can also signal division by 0 (returns inf, a double).
-  Bailout_DoubleOutput,
+  DoubleOutput,
 
   // END Invalid assumptions bailouts
 
   // A bailout at the very start of a function indicates that there may be
   // a type mismatch in the arguments that necessitates a reflow.
-  Bailout_ArgumentCheck,
+  ArgumentCheck,
 
   // A bailout triggered by a bounds-check failure.
-  Bailout_BoundsCheck,
-  // A bailout triggered by a typed object whose backing buffer was detached.
-  Bailout_Detached,
+  BoundsCheck,
 
   // A shape guard based on TI information failed.
   // (We saw an object whose shape does not match that / any of those observed
   // by the baseline IC.)
-  Bailout_ShapeGuard,
+  ShapeGuard,
+
+  // Bailout triggered by MGuardProto or MGuardNullProto.
+  ProtoGuard,
+
+  // Bailout triggered by MGuardValue.
+  ValueGuard,
+
+  // Bailout triggered by MGuardNullOrUndefined.
+  NullOrUndefinedGuard,
 
   // When we're trying to use an uninitialized lexical.
-  Bailout_UninitializedLexical,
+  UninitializedLexical,
 
   // A bailout to baseline from Ion on exception to handle Debugger hooks.
-  Bailout_IonExceptionDebugMode
+  IonExceptionDebugMode,
+
+  Limit
 };
 
 inline const char* BailoutKindString(BailoutKind kind) {
   switch (kind) {
     // Normal bailouts.
-    case Bailout_Inevitable:
-      return "Bailout_Inevitable";
-    case Bailout_DuringVMCall:
-      return "Bailout_DuringVMCall";
-    case Bailout_NonJSFunctionCallee:
-      return "Bailout_NonJSFunctionCallee";
-    case Bailout_DynamicNameNotFound:
-      return "Bailout_DynamicNameNotFound";
-    case Bailout_StringArgumentsEval:
-      return "Bailout_StringArgumentsEval";
-    case Bailout_Overflow:
-      return "Bailout_Overflow";
-    case Bailout_Round:
-      return "Bailout_Round";
-    case Bailout_NonPrimitiveInput:
-      return "Bailout_NonPrimitiveInput";
-    case Bailout_PrecisionLoss:
-      return "Bailout_PrecisionLoss";
-    case Bailout_TypeBarrierO:
-      return "Bailout_TypeBarrierO";
-    case Bailout_TypeBarrierV:
-      return "Bailout_TypeBarrierV";
-    case Bailout_MonitorTypes:
-      return "Bailout_MonitorTypes";
-    case Bailout_Hole:
-      return "Bailout_Hole";
-    case Bailout_NegativeIndex:
-      return "Bailout_NegativeIndex";
-    case Bailout_NonIntegerIndex:
-      return "Bailout_NonIntegerIndex";
-    case Bailout_ObjectIdentityOrTypeGuard:
-      return "Bailout_ObjectIdentityOrTypeGuard";
-    case Bailout_NonInt32Input:
-      return "Bailout_NonInt32Input";
-    case Bailout_NonNumericInput:
-      return "Bailout_NonNumericInput";
-    case Bailout_NonBooleanInput:
-      return "Bailout_NonBooleanInput";
-    case Bailout_NonObjectInput:
-      return "Bailout_NonObjectInput";
-    case Bailout_NonStringInput:
-      return "Bailout_NonStringInput";
-    case Bailout_NonSymbolInput:
-      return "Bailout_NonSymbolInput";
-    case Bailout_NonBigIntInput:
-      return "Bailout_NonBigIntInput";
-    case Bailout_NonSharedTypedArrayInput:
-      return "Bailout_NonSharedTypedArrayInput";
-    case Bailout_Debugger:
-      return "Bailout_Debugger";
-    case Bailout_UninitializedThis:
-      return "Bailout_UninitializedThis";
-    case Bailout_BadDerivedConstructorReturn:
-      return "Bailout_BadDerivedConstructorReturn";
-    case Bailout_FirstExecution:
-      return "Bailout_FirstExecution";
+    case BailoutKind::Inevitable:
+      return "BailoutKind::Inevitable";
+    case BailoutKind::DuringVMCall:
+      return "BailoutKind::DuringVMCall";
+    case BailoutKind::TooManyArguments:
+      return "BailoutKind::TooManyArguments";
+    case BailoutKind::DynamicNameNotFound:
+      return "BailoutKind::DynamicNameNotFound";
+    case BailoutKind::Overflow:
+      return "BailoutKind::Overflow";
+    case BailoutKind::Round:
+      return "BailoutKind::Round";
+    case BailoutKind::NonPrimitiveInput:
+      return "BailoutKind::NonPrimitiveInput";
+    case BailoutKind::PrecisionLoss:
+      return "BailoutKind::PrecisionLoss";
+    case BailoutKind::TypeBarrierO:
+      return "BailoutKind::TypeBarrierO";
+    case BailoutKind::TypeBarrierV:
+      return "BailoutKind::TypeBarrierV";
+    case BailoutKind::Hole:
+      return "BailoutKind::Hole";
+    case BailoutKind::NoDenseElementsGuard:
+      return "BailoutKind::NoDenseElementsGuard";
+    case BailoutKind::NegativeIndex:
+      return "BailoutKind::NegativeIndex";
+    case BailoutKind::ObjectIdentityOrTypeGuard:
+      return "BailoutKind::ObjectIdentityOrTypeGuard";
+    case BailoutKind::SpecificAtomGuard:
+      return "BailoutKind::SpecifcAtomGuard";
+    case BailoutKind::SpecificSymbolGuard:
+      return "BailoutKind::SpecifcSymbolGuard";
+    case BailoutKind::NonInt32Input:
+      return "BailoutKind::NonInt32Input";
+    case BailoutKind::NonNumericInput:
+      return "BailoutKind::NonNumericInput";
+    case BailoutKind::NonBooleanInput:
+      return "BailoutKind::NonBooleanInput";
+    case BailoutKind::NonObjectInput:
+      return "BailoutKind::NonObjectInput";
+    case BailoutKind::NonStringInput:
+      return "BailoutKind::NonStringInput";
+    case BailoutKind::NonSymbolInput:
+      return "BailoutKind::NonSymbolInput";
+    case BailoutKind::NonBigIntInput:
+      return "BailoutKind::NonBigIntInput";
+    case BailoutKind::Debugger:
+      return "BailoutKind::Debugger";
+    case BailoutKind::FirstExecution:
+      return "BailoutKind::FirstExecution";
+    case BailoutKind::NonInt32ArrayLength:
+      return "BailoutKind::NonInt32ArrayLength";
 
     // Bailouts caused by invalid assumptions.
-    case Bailout_OverflowInvalidate:
-      return "Bailout_OverflowInvalidate";
-    case Bailout_DoubleOutput:
-      return "Bailout_DoubleOutput";
+    case BailoutKind::OverflowInvalidate:
+      return "BailoutKind::OverflowInvalidate";
+    case BailoutKind::DoubleOutput:
+      return "BailoutKind::DoubleOutput";
 
     // Other bailouts.
-    case Bailout_ArgumentCheck:
-      return "Bailout_ArgumentCheck";
-    case Bailout_BoundsCheck:
-      return "Bailout_BoundsCheck";
-    case Bailout_Detached:
-      return "Bailout_Detached";
-    case Bailout_ShapeGuard:
-      return "Bailout_ShapeGuard";
-    case Bailout_UninitializedLexical:
-      return "Bailout_UninitializedLexical";
-    case Bailout_IonExceptionDebugMode:
-      return "Bailout_IonExceptionDebugMode";
-    default:
-      MOZ_CRASH("Invalid BailoutKind");
+    case BailoutKind::ArgumentCheck:
+      return "BailoutKind::ArgumentCheck";
+    case BailoutKind::BoundsCheck:
+      return "BailoutKind::BoundsCheck";
+    case BailoutKind::ShapeGuard:
+      return "BailoutKind::ShapeGuard";
+    case BailoutKind::ProtoGuard:
+      return "BailoutKind::ProtoGuard";
+    case BailoutKind::ValueGuard:
+      return "BailoutKind::ValueGuard";
+    case BailoutKind::NullOrUndefinedGuard:
+      return "BailoutKind::NullOrUndefinedGuard";
+    case BailoutKind::UninitializedLexical:
+      return "BailoutKind::UninitializedLexical";
+    case BailoutKind::IonExceptionDebugMode:
+      return "BailoutKind::IonExceptionDebugMode";
+
+    case BailoutKind::Limit:
+      break;
   }
+
+  MOZ_CRASH("Invalid BailoutKind");
 }
 
 static const uint32_t ELEMENT_TYPE_BITS = 5;
 static const uint32_t ELEMENT_TYPE_SHIFT = 0;
 static const uint32_t ELEMENT_TYPE_MASK = (1 << ELEMENT_TYPE_BITS) - 1;
-static const uint32_t VECTOR_SCALE_BITS = 3;
-static const uint32_t VECTOR_SCALE_SHIFT =
+static const uint32_t VECTOR_TYPE_BITS = 1;
+static const uint32_t VECTOR_TYPE_SHIFT =
     ELEMENT_TYPE_BITS + ELEMENT_TYPE_SHIFT;
-static const uint32_t VECTOR_SCALE_MASK = (1 << VECTOR_SCALE_BITS) - 1;
+static const uint32_t VECTOR_TYPE_MASK = (1 << VECTOR_TYPE_BITS) - 1;
 
 // The integer SIMD types have a lot of operations that do the exact same thing
 // for signed and unsigned integer types. Sometimes it is simpler to treat
@@ -289,12 +295,22 @@ enum class SimdSign {
 
 class SimdConstant {
  public:
-  enum Type { Int8x16, Int16x8, Int32x4, Float32x4, Undefined = -1 };
+  enum Type {
+    Int8x16,
+    Int16x8,
+    Int32x4,
+    Int64x2,
+    Float32x4,
+    Float64x2,
+    Undefined = -1
+  };
 
   typedef int8_t I8x16[16];
   typedef int16_t I16x8[8];
   typedef int32_t I32x4[4];
+  typedef int64_t I64x2[2];
   typedef float F32x4[4];
+  typedef double F64x2[2];
 
  private:
   Type type_;
@@ -302,7 +318,9 @@ class SimdConstant {
     I8x16 i8x16;
     I16x8 i16x8;
     I32x4 i32x4;
+    I64x2 i64x2;
     F32x4 f32x4;
+    F64x2 f64x2;
   } u;
 
   bool defined() const { return type_ != Undefined; }
@@ -347,6 +365,18 @@ class SimdConstant {
     std::fill_n(cst.u.i32x4, 4, v);
     return cst;
   }
+  static SimdConstant CreateX2(const int64_t* array) {
+    SimdConstant cst;
+    cst.type_ = Int64x2;
+    memcpy(cst.u.i64x2, array, sizeof(cst.u));
+    return cst;
+  }
+  static SimdConstant SplatX2(int64_t v) {
+    SimdConstant cst;
+    cst.type_ = Int64x2;
+    std::fill_n(cst.u.i64x2, 2, v);
+    return cst;
+  }
   static SimdConstant CreateX4(const float* array) {
     SimdConstant cst;
     cst.type_ = Float32x4;
@@ -357,6 +387,18 @@ class SimdConstant {
     SimdConstant cst;
     cst.type_ = Float32x4;
     std::fill_n(cst.u.f32x4, 4, v);
+    return cst;
+  }
+  static SimdConstant CreateX2(const double* array) {
+    SimdConstant cst;
+    cst.type_ = Float64x2;
+    memcpy(cst.u.f64x2, array, sizeof(cst.u));
+    return cst;
+  }
+  static SimdConstant SplatX2(double v) {
+    SimdConstant cst;
+    cst.type_ = Float64x2;
+    std::fill_n(cst.u.f64x2, 2, v);
     return cst;
   }
 
@@ -370,8 +412,14 @@ class SimdConstant {
   static SimdConstant CreateSimd128(const int32_t* array) {
     return CreateX4(array);
   }
+  static SimdConstant CreateSimd128(const int64_t* array) {
+    return CreateX2(array);
+  }
   static SimdConstant CreateSimd128(const float* array) {
     return CreateX4(array);
+  }
+  static SimdConstant CreateSimd128(const double* array) {
+    return CreateX2(array);
   }
 
   Type type() const {
@@ -397,9 +445,19 @@ class SimdConstant {
     return u.i32x4;
   }
 
+  const I64x2& asInt64x2() const {
+    MOZ_ASSERT(defined() && type_ == Int64x2);
+    return u.i64x2;
+  }
+
   const F32x4& asFloat32x4() const {
     MOZ_ASSERT(defined() && type_ == Float32x4);
     return u.f32x4;
+  }
+
+  const F64x2& asFloat64x2() const {
+    MOZ_ASSERT(defined() && type_ == Float64x2);
+    return u.f64x2;
   }
 
   bool operator==(const SimdConstant& rhs) const {
@@ -407,13 +465,17 @@ class SimdConstant {
     if (type() != rhs.type()) {
       return false;
     }
-    // Takes negative zero into accuont, as it's a bit comparison.
+    // Takes negative zero into account, as it's a bit comparison.
     return memcmp(&u, &rhs.u, sizeof(u)) == 0;
   }
   bool operator!=(const SimdConstant& rhs) const { return !operator==(rhs); }
 
+  bool isIntegerZero() const {
+    return type_ <= Int64x2 && u.i64x2[0] == 0 && u.i64x2[1] == 0;
+  }
+
   // SimdConstant is a HashPolicy
-  typedef SimdConstant Lookup;
+  using Lookup = SimdConstant;
   static HashNumber hash(const SimdConstant& val) {
     uint32_t hash = mozilla::HashBytes(&val.u, sizeof(val.u));
     return mozilla::AddToHash(hash, val.type_);
@@ -428,8 +490,9 @@ enum class IntConversionBehavior {
   // will fail if the resulting int32 isn't strictly equal to the input.
   Normal,             // Succeeds on -0: converts to 0.
   NegativeZeroCheck,  // Fails on -0.
-  // These two will convert the input to an int32 with loss of precision.
+  // These three will convert the input to an int32 with loss of precision.
   Truncate,
+  TruncateNoWrap,
   ClampToUint8,
 };
 
@@ -450,6 +513,7 @@ enum class MIRType : uint8_t {
   String,
   Symbol,
   BigInt,
+  Simd128,
   // Types above are primitive (including undefined and null).
   Object,
   MagicOptimizedArguments,    // JS_OPTIMIZED_ARGUMENTS magic value.
@@ -460,28 +524,16 @@ enum class MIRType : uint8_t {
   // Types above are specialized.
   Value,
   ObjectOrNull,
-  None,         // Invalid, used as a placeholder.
-  Slots,        // A slots vector
-  Elements,     // An elements vector
-  Pointer,      // An opaque pointer that receives no special treatment
-  RefOrNull,    // Wasm Ref/AnyRef/NullRef: a raw JSObject* or a raw (void*)0
-  Shape,        // A Shape pointer.
-  ObjectGroup,  // An ObjectGroup pointer.
-  Last = ObjectGroup,
-  // Representing both SIMD.IntBxN and SIMD.UintBxN.
-  Int8x16 = Int32 | (4 << VECTOR_SCALE_SHIFT),
-  Int16x8 = Int32 | (3 << VECTOR_SCALE_SHIFT),
-  Int32x4 = Int32 | (2 << VECTOR_SCALE_SHIFT),
-  Float32x4 = Float32 | (2 << VECTOR_SCALE_SHIFT),
-  Bool8x16 = Boolean | (4 << VECTOR_SCALE_SHIFT),
-  Bool16x8 = Boolean | (3 << VECTOR_SCALE_SHIFT),
-  Bool32x4 = Boolean | (2 << VECTOR_SCALE_SHIFT),
-  Doublex2 = Double | (1 << VECTOR_SCALE_SHIFT)
+  None,          // Invalid, used as a placeholder.
+  Slots,         // A slots vector
+  Elements,      // An elements vector
+  Pointer,       // An opaque pointer that receives no special treatment
+  RefOrNull,     // Wasm Ref/AnyRef/NullRef: a raw JSObject* or a raw (void*)0
+  StackResults,  // Wasm multi-value stack result area, which may contain refs
+  Shape,         // A Shape pointer.
+  ObjectGroup,   // An ObjectGroup pointer.
+  Last = ObjectGroup
 };
-
-static inline bool IsSimdType(MIRType type) {
-  return ((uint8_t(type) >> VECTOR_SCALE_SHIFT) & VECTOR_SCALE_MASK) != 0;
-}
 
 static inline MIRType MIRTypeFromValueType(JSValueType type) {
   // This function does not deal with magic types. Magic constants should be
@@ -557,6 +609,8 @@ static inline size_t MIRTypeToSize(MIRType type) {
       return 4;
     case MIRType::Double:
       return 8;
+    case MIRType::Simd128:
+      return 16;
     case MIRType::Pointer:
     case MIRType::RefOrNull:
       return sizeof(uintptr_t);
@@ -613,26 +667,14 @@ static inline const char* StringFromMIRType(MIRType type) {
       return "Pointer";
     case MIRType::RefOrNull:
       return "RefOrNull";
+    case MIRType::StackResults:
+      return "StackResults";
     case MIRType::Shape:
       return "Shape";
     case MIRType::ObjectGroup:
       return "ObjectGroup";
-    case MIRType::Int32x4:
-      return "Int32x4";
-    case MIRType::Int16x8:
-      return "Int16x8";
-    case MIRType::Int8x16:
-      return "Int8x16";
-    case MIRType::Float32x4:
-      return "Float32x4";
-    case MIRType::Bool32x4:
-      return "Bool32x4";
-    case MIRType::Bool16x8:
-      return "Bool16x8";
-    case MIRType::Bool8x16:
-      return "Bool8x16";
-    case MIRType::Doublex2:
-      return "Doublex2";
+    case MIRType::Simd128:
+      return "Simd128";
   }
   MOZ_CRASH("Unknown MIRType.");
 }
@@ -693,18 +735,19 @@ static inline MIRType ScalarTypeToMIRType(Scalar::Type type) {
     case Scalar::BigInt64:
     case Scalar::BigUint64:
       MOZ_CRASH("NYI");
+    case Scalar::Simd128:
+      return MIRType::Simd128;
     case Scalar::MaxTypedArrayViewType:
       break;
   }
   MOZ_CRASH("unexpected kind");
 }
 
-static inline const char* PropertyNameToExtraName(PropertyName* name) {
-  JS::AutoCheckCannotGC nogc;
-  if (!name->hasLatin1Chars()) {
-    return nullptr;
-  }
-  return reinterpret_cast<const char*>(name->latin1Chars(nogc));
+static constexpr bool NeedsPostBarrier(MIRType type) {
+  MOZ_ASSERT(type != MIRType::Value);
+  MOZ_ASSERT(type != MIRType::ObjectOrNull);
+  return type == MIRType::Object || type == MIRType::String ||
+         type == MIRType::BigInt;
 }
 
 #ifdef DEBUG
@@ -719,15 +762,36 @@ static inline const char* PropertyNameToExtraName(PropertyName* name) {
 #endif  // DEBUG
 
 enum ABIArgType {
+  // A pointer sized integer
   ArgType_General = 0x1,
-  ArgType_Double = 0x2,
-  ArgType_Float32 = 0x3,
-  ArgType_Int64 = 0x4,
+  // A 32-bit integer
+  ArgType_Int32 = 0x2,
+  // A 64-bit integer
+  ArgType_Int64 = 0x3,
+  // A 32-bit floating point number
+  ArgType_Float32 = 0x4,
+  // A 64-bit floating point number
+  ArgType_Float64 = 0x5,
 
   RetType_Shift = 0x0,
   ArgType_Shift = 0x3,
   ArgType_Mask = 0x7
 };
+
+namespace detail {
+
+static constexpr int MakeABIFunctionType(
+    ABIArgType ret, std::initializer_list<ABIArgType> args) {
+  int abiType = ret << RetType_Shift;
+  int i = 1;
+  for (auto arg : args) {
+    abiType |= (arg << (ArgType_Shift * i));
+    i++;
+  }
+  return abiType;
+}
+
+}  // namespace detail
 
 enum ABIFunctionType {
   // VM functions that take 0-9 non-double arguments
@@ -744,13 +808,13 @@ enum ABIFunctionType {
 
   // int64 f(double)
   Args_Int64_Double =
-      (ArgType_Int64 << RetType_Shift) | (ArgType_Double << ArgType_Shift),
+      (ArgType_Int64 << RetType_Shift) | (ArgType_Float64 << ArgType_Shift),
 
   // double f()
-  Args_Double_None = ArgType_Double << RetType_Shift,
+  Args_Double_None = ArgType_Float64 << RetType_Shift,
 
   // int f(double)
-  Args_Int_Double = Args_General0 | (ArgType_Double << ArgType_Shift),
+  Args_Int_Double = Args_General0 | (ArgType_Float64 << ArgType_Shift),
 
   // int f(float32)
   Args_Int_Float32 = Args_General0 | (ArgType_Float32 << ArgType_Shift),
@@ -765,7 +829,7 @@ enum ABIFunctionType {
                         (ArgType_General << (ArgType_Shift * 2)),
 
   // double f(double)
-  Args_Double_Double = Args_Double_None | (ArgType_Double << ArgType_Shift),
+  Args_Double_Double = Args_Double_None | (ArgType_Float64 << ArgType_Shift),
 
   // double f(int)
   Args_Double_Int = Args_Double_None | (ArgType_General << ArgType_Shift),
@@ -777,11 +841,11 @@ enum ABIFunctionType {
   // double f(double, int)
   Args_Double_DoubleInt = Args_Double_None |
                           (ArgType_General << (ArgType_Shift * 1)) |
-                          (ArgType_Double << (ArgType_Shift * 2)),
+                          (ArgType_Float64 << (ArgType_Shift * 2)),
 
   // double f(double, double)
   Args_Double_DoubleDouble =
-      Args_Double_Double | (ArgType_Double << (ArgType_Shift * 2)),
+      Args_Double_Double | (ArgType_Float64 << (ArgType_Shift * 2)),
 
   // float f(float, float)
   Args_Float32_Float32Float32 =
@@ -789,32 +853,38 @@ enum ABIFunctionType {
 
   // double f(int, double)
   Args_Double_IntDouble = Args_Double_None |
-                          (ArgType_Double << (ArgType_Shift * 1)) |
+                          (ArgType_Float64 << (ArgType_Shift * 1)) |
                           (ArgType_General << (ArgType_Shift * 2)),
 
   // int f(int, double)
-  Args_Int_IntDouble = Args_General0 | (ArgType_Double << (ArgType_Shift * 1)) |
+  Args_Int_IntDouble = Args_General0 |
+                       (ArgType_Float64 << (ArgType_Shift * 1)) |
                        (ArgType_General << (ArgType_Shift * 2)),
+
+  // int f(double, int)
+  Args_Int_DoubleInt = Args_General0 |
+                       (ArgType_General << (ArgType_Shift * 1)) |
+                       (ArgType_Float64 << (ArgType_Shift * 2)),
 
   // double f(double, double, double)
   Args_Double_DoubleDoubleDouble =
-      Args_Double_DoubleDouble | (ArgType_Double << (ArgType_Shift * 3)),
+      Args_Double_DoubleDouble | (ArgType_Float64 << (ArgType_Shift * 3)),
 
   // double f(double, double, double, double)
   Args_Double_DoubleDoubleDoubleDouble =
-      Args_Double_DoubleDoubleDouble | (ArgType_Double << (ArgType_Shift * 4)),
+      Args_Double_DoubleDoubleDouble | (ArgType_Float64 << (ArgType_Shift * 4)),
 
   // int f(double, int, int)
   Args_Int_DoubleIntInt = Args_General0 |
                           (ArgType_General << (ArgType_Shift * 1)) |
                           (ArgType_General << (ArgType_Shift * 2)) |
-                          (ArgType_Double << (ArgType_Shift * 3)),
+                          (ArgType_Float64 << (ArgType_Shift * 3)),
 
   // int f(int, double, int, int)
   Args_Int_IntDoubleIntInt = Args_General0 |
                              (ArgType_General << (ArgType_Shift * 1)) |
                              (ArgType_General << (ArgType_Shift * 2)) |
-                             (ArgType_Double << (ArgType_Shift * 3)) |
+                             (ArgType_Float64 << (ArgType_Shift * 3)) |
                              (ArgType_General << (ArgType_Shift * 4)),
 
   Args_Int_GeneralGeneralGeneralInt64 =
@@ -827,8 +897,56 @@ enum ABIFunctionType {
                                       (ArgType_General << (ArgType_Shift * 1)) |
                                       (ArgType_General << (ArgType_Shift * 2)) |
                                       (ArgType_Int64 << (ArgType_Shift * 3)) |
-                                      (ArgType_Int64 << (ArgType_Shift * 4))
+                                      (ArgType_Int64 << (ArgType_Shift * 4)),
+
+  Args_Int32_General =
+      detail::MakeABIFunctionType(ArgType_Int32, {ArgType_General}),
+  Args_Int32_GeneralInt32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32}),
+  Args_Int32_GeneralInt32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32}),
+  Args_Int32_GeneralInt32Int32Int32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32,
+                      ArgType_Int32, ArgType_Int32}),
+  Args_Int32_GeneralInt32Int32Int32Int32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32,
+                      ArgType_Int32, ArgType_Int32, ArgType_Int32}),
+  Args_Int32_GeneralInt32Int32Int32General = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_Int32,
+                      ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Int32Int64 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_Int64}),
+  Args_Int32_GeneralInt32Int32General = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General}),
+  Args_Int32_GeneralInt32Int64Int64 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int32, ArgType_Int64, ArgType_Int64}),
+  Args_Int32_GeneralInt32GeneralInt32 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_Int32, ArgType_General, ArgType_Int32}),
+  Args_Int32_GeneralInt32GeneralInt32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_Int32, ArgType_General,
+                      ArgType_Int32, ArgType_Int32}),
+  Args_Int32_GeneralGeneral = detail::MakeABIFunctionType(
+      ArgType_Int32, {ArgType_General, ArgType_General}),
+  Args_Int32_GeneralGeneralInt32Int32 = detail::MakeABIFunctionType(
+      ArgType_Int32,
+      {ArgType_General, ArgType_General, ArgType_Int32, ArgType_Int32}),
+  Args_General_GeneralInt32 = detail::MakeABIFunctionType(
+      ArgType_General, {ArgType_General, ArgType_Int32}),
+  Args_General_GeneralInt32Int32 = detail::MakeABIFunctionType(
+      ArgType_General, {ArgType_General, ArgType_Int32, ArgType_Int32}),
+  Args_General_GeneralInt32Int32General = detail::MakeABIFunctionType(
+      ArgType_General,
+      {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General}),
 };
+
+static constexpr ABIFunctionType MakeABIFunctionType(
+    ABIArgType ret, std::initializer_list<ABIArgType> args) {
+  return ABIFunctionType(detail::MakeABIFunctionType(ret, args));
+}
 
 enum class BarrierKind : uint32_t {
   // No barrier is needed.
@@ -854,11 +972,20 @@ enum class RoundingMode { Down, Up, NearestTiesToEven, TowardsZero };
 static const uint32_t MAX_UNCHECKED_LEAF_FRAME_SIZE = 64;
 
 // Truncating conversion modifiers.
-typedef uint32_t TruncFlags;
+using TruncFlags = uint32_t;
 static const TruncFlags TRUNC_UNSIGNED = TruncFlags(1) << 0;
 static const TruncFlags TRUNC_SATURATING = TruncFlags(1) << 1;
 
 enum BranchDirection { FALSE_BRANCH, TRUE_BRANCH };
+
+template <typename T>
+constexpr T SplatByteToUInt(uint8_t val, uint8_t x) {
+  T splatted = val;
+  for (; x > 1; x--) {
+    splatted |= splatted << 8;
+  }
+  return splatted;
+}
 
 }  // namespace jit
 }  // namespace js

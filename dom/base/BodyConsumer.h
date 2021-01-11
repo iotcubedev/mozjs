@@ -10,6 +10,7 @@
 #include "mozilla/dom/AbortSignal.h"
 #include "mozilla/dom/MutableBlobStorage.h"
 #include "nsIInputStreamPump.h"
+#include "nsNetUtil.h"
 #include "nsIObserver.h"
 #include "nsWeakReference.h"
 
@@ -70,7 +71,8 @@ class BodyConsumer final : public nsIObserver,
 
   void BeginConsumeBodyMainThread(ThreadSafeWorkerRef* aWorkerRef);
 
-  void OnBlobResult(Blob* aBlob, ThreadSafeWorkerRef* aWorkerRef = nullptr);
+  void OnBlobResult(BlobImpl* aBlobImpl,
+                    ThreadSafeWorkerRef* aWorkerRef = nullptr);
 
   void ContinueConsumeBody(nsresult aStatus, uint32_t aLength, uint8_t* aResult,
                            bool aShuttingDown = false);

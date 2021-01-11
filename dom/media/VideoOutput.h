@@ -6,7 +6,7 @@
 #ifndef VideoOutput_h
 #define VideoOutput_h
 
-#include "MediaStreamListener.h"
+#include "MediaTrackListener.h"
 #include "VideoFrameContainer.h"
 
 namespace mozilla {
@@ -33,7 +33,7 @@ static bool SetImageToBlackPixel(PlanarYCbCrImage* aImage) {
   return aImage->CopyData(data);
 }
 
-class VideoOutput : public DirectMediaStreamTrackListener {
+class VideoOutput : public DirectMediaTrackListener {
  protected:
   virtual ~VideoOutput() = default;
 
@@ -41,7 +41,7 @@ class VideoOutput : public DirectMediaStreamTrackListener {
     TimeStamp now = TimeStamp::Now();
     size_t nrChunksInPast = 0;
     for (const auto& idChunkPair : mFrames) {
-      const VideoChunk& chunk = idChunkPair.second();
+      const VideoChunk& chunk = idChunkPair.second;
       if (chunk.mTimeStamp > now) {
         break;
       }
@@ -72,8 +72,8 @@ class VideoOutput : public DirectMediaStreamTrackListener {
     PrincipalHandle lastPrincipalHandle = PRINCIPAL_HANDLE_NONE;
 
     for (const auto& idChunkPair : mFrames) {
-      ImageContainer::FrameID frameId = idChunkPair.first();
-      const VideoChunk& chunk = idChunkPair.second();
+      ImageContainer::FrameID frameId = idChunkPair.first;
+      const VideoChunk& chunk = idChunkPair.second;
       const VideoFrame& frame = chunk.mFrame;
       Image* image = frame.GetImage();
       if (frame.GetForceBlack() || !mEnabled) {
@@ -119,7 +119,7 @@ class VideoOutput : public DirectMediaStreamTrackListener {
     }
 
     mVideoFrameContainer->SetCurrentFrames(
-        mFrames[0].second().mFrame.GetIntrinsicSize(), images);
+        mFrames[0].second.mFrame.GetIntrinsicSize(), images);
     mMainThread->Dispatch(NewRunnableMethod("VideoFrameContainer::Invalidate",
                                             mVideoFrameContainer,
                                             &VideoFrameContainer::Invalidate));
@@ -130,8 +130,7 @@ class VideoOutput : public DirectMediaStreamTrackListener {
       : mMutex("VideoOutput::mMutex"),
         mVideoFrameContainer(aContainer),
         mMainThread(aMainThread) {}
-  void NotifyRealtimeTrackData(MediaStreamGraph* aGraph,
-                               StreamTime aTrackOffset,
+  void NotifyRealtimeTrackData(MediaTrackGraph* aGraph, TrackTime aTrackOffset,
                                const MediaSegment& aMedia) override {
     MOZ_ASSERT(aMedia.GetType() == MediaSegment::VIDEO);
     const VideoSegment& video = static_cast<const VideoSegment&>(aMedia);
@@ -143,13 +142,14 @@ class VideoOutput : public DirectMediaStreamTrackListener {
         // future. If this happens, we clear the buffered frames and start over.
         mFrames.ClearAndRetainStorage();
       }
-      mFrames.AppendElement(MakePair(mVideoFrameContainer->NewFrameID(), *i));
+      mFrames.AppendElement(
+          std::make_pair(mVideoFrameContainer->NewFrameID(), *i));
       mLastFrameTime = i->mTimeStamp;
     }
 
     SendFramesEnsureLocked();
   }
-  void NotifyRemoved(MediaStreamGraph* aGraph) override {
+  void NotifyRemoved(MediaTrackGraph* aGraph) override {
     // Doesn't need locking by mMutex, since the direct listener is removed from
     // the track before we get notified.
     if (mFrames.Length() <= 1) {
@@ -165,11 +165,11 @@ class VideoOutput : public DirectMediaStreamTrackListener {
     // there might be old frames lingering. We'll find the current one and
     // re-send that.
     DropPastFrames();
-    mFrames.RemoveElementsAt(1, mFrames.Length() - 1);
+    mFrames.RemoveLastElements(mFrames.Length() - 1);
     SendFrames();
     mFrames.ClearAndRetainStorage();
   }
-  void NotifyEnded(MediaStreamGraph* aGraph) override {
+  void NotifyEnded(MediaTrackGraph* aGraph) override {
     // Doesn't need locking by mMutex, since for the track to end, it must have
     // been ended by the source, meaning that the source won't append more data.
     if (mFrames.IsEmpty()) {
@@ -181,14 +181,14 @@ class VideoOutput : public DirectMediaStreamTrackListener {
     SendFrames();
     mFrames.ClearAndRetainStorage();
   }
-  void NotifyEnabledStateChanged(MediaStreamGraph* aGraph,
+  void NotifyEnabledStateChanged(MediaTrackGraph* aGraph,
                                  bool aEnabled) override {
     MutexAutoLock lock(mMutex);
     mEnabled = aEnabled;
     // Since mEnabled will affect whether frames are real, or black, we assign
     // new FrameIDs whenever this changes.
     for (auto& idChunkPair : mFrames) {
-      idChunkPair.first() = mVideoFrameContainer->NewFrameID();
+      idChunkPair.first = mVideoFrameContainer->NewFrameID();
     }
     SendFramesEnsureLocked();
   }
@@ -201,7 +201,7 @@ class VideoOutput : public DirectMediaStreamTrackListener {
   bool mEnabled = true;
   // This array is accessed from both the direct video thread, and the graph
   // thread. Protected by mMutex.
-  nsTArray<Pair<ImageContainer::FrameID, VideoChunk>> mFrames;
+  nsTArray<std::pair<ImageContainer::FrameID, VideoChunk>> mFrames;
   const RefPtr<VideoFrameContainer> mVideoFrameContainer;
   const RefPtr<AbstractThread> mMainThread;
   const layers::ImageContainer::ProducerID mProducerID =

@@ -20,15 +20,16 @@ add_task(async function() {
   // listen for new sources arriving.
   const toolbox = await openNewTabAndToolbox(INITIAL_URL, "webconsole");
   const service = toolbox.sourceMapURLService;
-  const tab = toolbox.target.tab;
 
   let sourceSeen = waitForSourceLoad(toolbox, JS_URL);
-  BrowserTestUtils.loadURI(tab.linkedBrowser, PAGE_URL);
+  await navigateTo(PAGE_URL);
   await sourceSeen;
 
   info(`checking original location for ${JS_URL}:${GENERATED_LINE}`);
-  let newLoc = await service.originalPositionFor(JS_URL, GENERATED_LINE);
-  is(newLoc.sourceUrl, ORIGINAL_URL_1, "check mapped URL");
+  let newLoc = await new Promise(r =>
+    service.subscribeByURL(JS_URL, GENERATED_LINE, undefined, r)
+  );
+  is(newLoc.url, ORIGINAL_URL_1, "check mapped URL");
   is(newLoc.line, ORIGINAL_LINE, "check mapped line number");
 
   // Reload the page.  The sjs ensures that a different source file
@@ -40,8 +41,10 @@ add_task(async function() {
   info(
     `checking post-reload original location for ${JS_URL}:${GENERATED_LINE}`
   );
-  newLoc = await service.originalPositionFor(JS_URL, GENERATED_LINE);
-  is(newLoc.sourceUrl, ORIGINAL_URL_2, "check post-reload mapped URL");
+  newLoc = await new Promise(r =>
+    service.subscribeByURL(JS_URL, GENERATED_LINE, undefined, r)
+  );
+  is(newLoc.url, ORIGINAL_URL_2, "check post-reload mapped URL");
   is(newLoc.line, ORIGINAL_LINE, "check post-reload mapped line number");
 
   await toolbox.destroy();

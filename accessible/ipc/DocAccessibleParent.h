@@ -20,6 +20,10 @@ namespace a11y {
 
 class xpcAccessibleGeneric;
 
+#if !defined(XP_WIN)
+class DocAccessiblePlatformExtParent;
+#endif
+
 /*
  * These objects live in the main process and comunicate with and represent
  * an accessible document in a content process.
@@ -98,7 +102,7 @@ class DocAccessibleParent : public ProxyAccessible,
 #if defined(XP_WIN)
       const LayoutDeviceIntRect& aCaretRect,
 #endif
-      const int32_t& aOffset) final;
+      const int32_t& aOffset, const bool& aIsSelectionCollapsed) final;
 
   virtual mozilla::ipc::IPCResult RecvTextChangeEvent(
       const uint64_t& aID, const nsString& aStr, const int32_t& aStart,
@@ -136,6 +140,9 @@ class DocAccessibleParent : public ProxyAccessible,
   virtual mozilla::ipc::IPCResult RecvAnnouncementEvent(
       const uint64_t& aID, const nsString& aAnnouncement,
       const uint16_t& aPriority) override;
+
+  virtual mozilla::ipc::IPCResult RecvTextSelectionChangeEvent(
+      const uint64_t& aID, nsTArray<TextRangeData>&& aSelection) override;
 #endif
 
   mozilla::ipc::IPCResult RecvRoleChangedEvent(const a11y::role& aRole) final;
@@ -241,6 +248,14 @@ class DocAccessibleParent : public ProxyAccessible,
 #if !defined(XP_WIN)
   virtual mozilla::ipc::IPCResult RecvBatch(
       const uint64_t& aBatchType, nsTArray<BatchData>&& aData) override;
+
+  virtual bool DeallocPDocAccessiblePlatformExtParent(
+      PDocAccessiblePlatformExtParent* aActor) override;
+
+  virtual PDocAccessiblePlatformExtParent*
+  AllocPDocAccessiblePlatformExtParent() override;
+
+  DocAccessiblePlatformExtParent* GetPlatformExtension();
 #endif
 
   /**
@@ -284,7 +299,7 @@ class DocAccessibleParent : public ProxyAccessible,
   uint32_t AddSubtree(ProxyAccessible* aParent,
                       const nsTArray<AccessibleData>& aNewTree, uint32_t aIdx,
                       uint32_t aIdxInParent);
-  MOZ_MUST_USE bool CheckDocTree() const;
+  [[nodiscard]] bool CheckDocTree() const;
   xpcAccessibleGeneric* GetXPCAccessible(ProxyAccessible* aProxy);
 
   nsTArray<uint64_t> mChildDocs;
@@ -297,6 +312,7 @@ class DocAccessibleParent : public ProxyAccessible,
 #  if defined(MOZ_SANDBOX)
   mscom::PreservedStreamPtr mParentProxyStream;
   mscom::PreservedStreamPtr mDocProxyStream;
+  mscom::PreservedStreamPtr mTopLevelDocProxyStream;
 #  endif  // defined(MOZ_SANDBOX)
 #endif    // defined(XP_WIN)
 

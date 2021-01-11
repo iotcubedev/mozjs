@@ -7,6 +7,7 @@
 #include "WebBrowserPersistDocumentParent.h"
 
 #include "mozilla/dom/Attr.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/Comment.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLAnchorElement.h"
@@ -29,17 +30,13 @@
 #include "nsDOMAttributeMap.h"
 #include "nsFrameLoader.h"
 #include "nsGlobalWindowOuter.h"
-#include "nsIComponentRegistrar.h"
 #include "nsIContent.h"
 #include "nsIDOMWindowUtils.h"
-#include "nsIDocShell.h"
 #include "mozilla/dom/Document.h"
 #include "nsIDocumentEncoder.h"
 #include "nsILoadContext.h"
 #include "nsIProtocolHandler.h"
 #include "nsISHEntry.h"
-#include "nsISupportsPrimitives.h"
-#include "nsIRemoteTab.h"
 #include "nsIURIMutator.h"
 #include "nsIWebBrowserPersist.h"
 #include "nsIWebNavigation.h"
@@ -143,8 +140,7 @@ WebBrowserPersistLocalDocument::GetContentDisposition(nsAString& aCD) {
   }
   nsCOMPtr<nsIDOMWindowUtils> utils =
       nsGlobalWindowOuter::Cast(window)->WindowUtils();
-  nsresult rv =
-      utils->GetDocumentMetadata(NS_LITERAL_STRING("content-disposition"), aCD);
+  nsresult rv = utils->GetDocumentMetadata(u"content-disposition"_ns, aCD);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     aCD.SetIsVoid(true);
   }
@@ -249,7 +245,7 @@ class ResourceReader final : public nsIWebBrowserPersistDocumentReceiver {
   nsresult OnWalkURI(const nsACString& aURISpec,
                      nsContentPolicyType aContentPolicyType);
   nsresult OnWalkURI(nsIURI* aURI, nsContentPolicyType aContentPolicyType);
-  nsresult OnWalkAttribute(Element* aElement,
+  nsresult OnWalkAttribute(dom::Element* aElement,
                            nsContentPolicyType aContentPolicyType,
                            const char* aAttribute,
                            const char* aNamespaceURI = "");
@@ -291,12 +287,17 @@ nsresult ResourceReader::OnWalkSubframe(nsINode* aNode) {
   RefPtr<nsFrameLoader> loader = loaderOwner->GetFrameLoader();
   NS_ENSURE_STATE(loader);
 
+  RefPtr<dom::BrowsingContext> context = loader->GetBrowsingContext();
+  NS_ENSURE_STATE(context);
+
+  if (loader->IsRemoteFrame()) {
+    mVisitor->VisitBrowsingContext(mParent, context);
+    return NS_OK;
+  }
+
   ++mOutstandingDocuments;
-  // Pass in 0 as the outer window ID so that we start
-  // persisting the root of this subframe, and not some other
-  // subframe child of this subframe.
   ErrorResult err;
-  loader->StartPersistence(0, this, err);
+  loader->StartPersistence(context, this, err);
   nsresult rv = err.StealNSResult();
   if (NS_FAILED(rv)) {
     if (rv == NS_ERROR_NO_CONTENT) {
@@ -354,7 +355,7 @@ nsresult ResourceReader::OnWalkURI(const nsACString& aURISpec,
   return OnWalkURI(uri, aContentPolicyType);
 }
 
-static void ExtractAttribute(Element* aElement, const char* aAttribute,
+static void ExtractAttribute(dom::Element* aElement, const char* aAttribute,
                              const char* aNamespaceURI, nsCString& aValue) {
   // Find the named URI attribute on the (element) node and store
   // a reference to the URI that maps onto a local file name
@@ -373,7 +374,7 @@ static void ExtractAttribute(Element* aElement, const char* aAttribute,
   }
 }
 
-nsresult ResourceReader::OnWalkAttribute(Element* aElement,
+nsresult ResourceReader::OnWalkAttribute(dom::Element* aElement,
                                          nsContentPolicyType aContentPolicyType,
                                          const char* aAttribute,
                                          const char* aNamespaceURI) {
@@ -658,7 +659,7 @@ nsresult PersistNodeFixup::FixupAnchor(nsINode* aNode) {
   RefPtr<nsDOMAttributeMap> attrMap = element->Attributes();
 
   // Make all anchor links absolute so they point off onto the Internet
-  nsString attribute(NS_LITERAL_STRING("href"));
+  nsString attribute(u"href"_ns);
   RefPtr<dom::Attr> attr = attrMap->GetNamedItem(attribute);
   if (attr) {
     nsString oldValue;
@@ -754,21 +755,21 @@ nsresult PersistNodeFixup::FixupXMLStyleSheetLink(
     nsContentUtils::GetPseudoAttributeValue(data, nsGkAtoms::media, media);
 
     nsAutoString newData;
-    AppendXMLAttr(NS_LITERAL_STRING("href"), aHref, newData);
+    AppendXMLAttr(u"href"_ns, aHref, newData);
     if (!title.IsEmpty()) {
-      AppendXMLAttr(NS_LITERAL_STRING("title"), title, newData);
+      AppendXMLAttr(u"title"_ns, title, newData);
     }
     if (!media.IsEmpty()) {
-      AppendXMLAttr(NS_LITERAL_STRING("media"), media, newData);
+      AppendXMLAttr(u"media"_ns, media, newData);
     }
     if (!type.IsEmpty()) {
-      AppendXMLAttr(NS_LITERAL_STRING("type"), type, newData);
+      AppendXMLAttr(u"type"_ns, type, newData);
     }
     if (!charset.IsEmpty()) {
-      AppendXMLAttr(NS_LITERAL_STRING("charset"), charset, newData);
+      AppendXMLAttr(u"charset"_ns, charset, newData);
     }
     if (!alternate.IsEmpty()) {
-      AppendXMLAttr(NS_LITERAL_STRING("alternate"), alternate, newData);
+      AppendXMLAttr(u"alternate"_ns, alternate, newData);
     }
     aPI->SetData(newData, IgnoreErrors());
   }
@@ -829,8 +830,7 @@ PersistNodeFixup::FixupNode(nsINode* aNodeIn, bool* aSerializeCloneKids,
     nsAutoString commentText;
     commentText.AssignLiteral(" base ");
     if (!href.IsEmpty()) {
-      commentText +=
-          NS_LITERAL_STRING("href=\"") + href + NS_LITERAL_STRING("\" ");
+      commentText += u"href=\""_ns + href + u"\" "_ns;
     }
     *aNodeOut = ownerDoc->CreateComment(commentText).take();
     return NS_OK;
@@ -1009,7 +1009,7 @@ PersistNodeFixup::FixupNode(nsINode* aNodeIn, bool* aSerializeCloneKids,
       FixupAttribute(*aNodeOut, "src");
 
       nsAutoString valueStr;
-      NS_NAMED_LITERAL_STRING(valueAttr, "value");
+      constexpr auto valueAttr = u"value"_ns;
       // Update element node attributes with user-entered form state
       RefPtr<dom::HTMLInputElement> outElt =
           dom::HTMLInputElement::FromNode((*aNodeOut)->AsContent());

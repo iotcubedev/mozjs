@@ -19,9 +19,17 @@
 #include "CubebUtils.h"
 #include "nsPrintfCString.h"
 #include "AudioConverter.h"
+#include "UnderrunHandler.h"
 #if defined(XP_WIN)
 #  include "nsXULAppAPI.h"
 #endif
+#include "Tracing.h"
+#include "webaudio/blink/DenormalDisabler.h"
+#include "AudioThreadRegistry.h"
+
+// Use abort() instead of exception in SoundTouch.
+#define ST_NO_EXCEPTION_HANDLING 1
+#include "soundtouch/SoundTouchFactory.h"
 
 namespace mozilla {
 
@@ -130,7 +138,9 @@ AudioStream::AudioStream(DataSource& aSource)
       mTimeStretcher(nullptr),
       mState(INITIALIZED),
       mDataSource(aSource),
-      mPrefillQuirk(false) {
+      mPrefillQuirk(false),
+      mAudioThreadId(0),
+      mSandboxed(CubebUtils::SandboxEnabled()) {
 #if defined(XP_WIN)
   if (XRE_IsContentProcess()) {
     audio::AudioNotificationReceiver::Register(this);
@@ -169,11 +179,23 @@ nsresult AudioStream::EnsureTimeStretcherInitializedUnlocked() {
     mTimeStretcher->setSampleRate(mAudioClock.GetInputRate());
     mTimeStretcher->setChannels(mOutChannels);
     mTimeStretcher->setPitch(1.0);
+
+    // SoundTouch v2.1.2 uses automatic time-stretch settings with the following
+    // values:
+    // Tempo 0.5: 90ms sequence, 20ms seekwindow, 8ms overlap
+    // Tempo 2.0: 40ms sequence, 15ms seekwindow, 8ms overlap
+    // We are going to use a smaller 10ms sequence size to improve speech
+    // clarity, giving more resolution at high tempo and less reverb at low
+    // tempo. Maintain 15ms seekwindow and 8ms overlap for smoothness.
+    mTimeStretcher->setSetting(SETTING_SEQUENCE_MS, 10);
+    mTimeStretcher->setSetting(SETTING_SEEKWINDOW_MS, 15);
+    mTimeStretcher->setSetting(SETTING_OVERLAP_MS, 8);
   }
   return NS_OK;
 }
 
 nsresult AudioStream::SetPlaybackRate(double aPlaybackRate) {
+  TRACE();
   // MUST lock since the rate transposer is used from the cubeb callback,
   // and rate changes can cause the buffer to be reallocated
   MonitorAutoLock mon(mMonitor);
@@ -204,6 +226,7 @@ nsresult AudioStream::SetPlaybackRate(double aPlaybackRate) {
 }
 
 nsresult AudioStream::SetPreservesPitch(bool aPreservesPitch) {
+  TRACE();
   // MUST lock since the rate transposer is used from the cubeb callback,
   // and rate changes can cause the buffer to be reallocated
   MonitorAutoLock mon(mMonitor);
@@ -250,6 +273,7 @@ nsresult AudioStream::Init(uint32_t aNumChannels,
                            AudioConfig::ChannelLayout::ChannelMap aChannelMap,
                            uint32_t aRate, AudioDeviceInfo* aSinkInfo) {
   auto startTime = TimeStamp::Now();
+  TRACE();
 
   LOG("%s channels: %d, rate: %d", __FUNCTION__, aNumChannels, aRate);
   mChannels = aNumChannels;
@@ -286,6 +310,7 @@ nsresult AudioStream::Init(uint32_t aNumChannels,
 
 nsresult AudioStream::OpenCubeb(cubeb* aContext, cubeb_stream_params& aParams,
                                 TimeStamp aStartTime, bool aIsFirst) {
+  TRACE();
   MOZ_ASSERT(aContext);
 
   cubeb_stream* stream = nullptr;
@@ -315,6 +340,7 @@ nsresult AudioStream::OpenCubeb(cubeb* aContext, cubeb_stream_params& aParams,
 }
 
 void AudioStream::SetVolume(double aVolume) {
+  TRACE();
   MOZ_ASSERT(aVolume >= 0.0 && aVolume <= 1.0, "Invalid volume");
 
   {
@@ -333,6 +359,7 @@ void AudioStream::SetVolume(double aVolume) {
 }
 
 nsresult AudioStream::Start() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   MOZ_ASSERT(mState == INITIALIZED);
   mState = STARTED;
@@ -350,6 +377,7 @@ nsresult AudioStream::Start() {
 }
 
 void AudioStream::Pause() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   MOZ_ASSERT(mState != INITIALIZED, "Must be Start()ed.");
   MOZ_ASSERT(mState != STOPPED, "Already Pause()ed.");
@@ -370,6 +398,7 @@ void AudioStream::Pause() {
 }
 
 void AudioStream::Resume() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   MOZ_ASSERT(mState != INITIALIZED, "Must be Start()ed.");
   MOZ_ASSERT(mState != STARTED, "Already Start()ed.");
@@ -390,6 +419,7 @@ void AudioStream::Resume() {
 }
 
 void AudioStream::Shutdown() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   LOG("Shutdown, state %d", mState);
 
@@ -407,6 +437,7 @@ void AudioStream::Shutdown() {
 
 #if defined(XP_WIN)
 void AudioStream::ResetDefaultDevice() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   if (mState != STARTED && mState != STOPPED) {
     return;
@@ -421,18 +452,21 @@ void AudioStream::ResetDefaultDevice() {
 #endif
 
 int64_t AudioStream::GetPosition() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   int64_t frames = GetPositionInFramesUnlocked();
   return frames >= 0 ? mAudioClock.GetPosition(frames) : -1;
 }
 
 int64_t AudioStream::GetPositionInFrames() {
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   int64_t frames = GetPositionInFramesUnlocked();
   return frames >= 0 ? mAudioClock.GetPositionInFrames(frames) : -1;
 }
 
 int64_t AudioStream::GetPositionInFramesUnlocked() {
+  TRACE();
   mMonitor.AssertCurrentThreadOwns();
 
   if (mState == ERRORED) {
@@ -461,6 +495,7 @@ bool AudioStream::IsValidAudioFormat(Chunk* aChunk) {
 }
 
 void AudioStream::GetUnprocessed(AudioBufferWriter& aWriter) {
+  TRACE();
   mMonitor.AssertCurrentThreadOwns();
 
   // Flush the timestretcher pipeline, if we were playing using a playback rate
@@ -496,6 +531,7 @@ void AudioStream::GetUnprocessed(AudioBufferWriter& aWriter) {
 }
 
 void AudioStream::GetTimeStretched(AudioBufferWriter& aWriter) {
+  TRACE();
   mMonitor.AssertCurrentThreadOwns();
 
   // We need to call the non-locking version, because we already have the lock.
@@ -543,9 +579,31 @@ void AudioStream::GetTimeStretched(AudioBufferWriter& aWriter) {
       aWriter.Available());
 }
 
+bool AudioStream::CheckThreadIdChanged() {
+#ifdef MOZ_GECKO_PROFILER
+  auto id = profiler_current_thread_id();
+  if (id != mAudioThreadId) {
+    mAudioThreadId = id;
+    return true;
+  }
+#endif
+  return false;
+}
+
 long AudioStream::DataCallback(void* aBuffer, long aFrames) {
+  if (!mSandboxed && CheckThreadIdChanged()) {
+    CubebUtils::GetAudioThreadRegistry()->Register(mAudioThreadId);
+  }
+  WebCore::DenormalDisabler disabler;
+
+  TRACE_AUDIO_CALLBACK_BUDGET(aFrames, mAudioClock.GetInputRate());
+  TRACE();
   MonitorAutoLock mon(mMonitor);
   MOZ_ASSERT(mState != SHUTDOWN, "No data callback after shutdown");
+
+  if (SoftRealTimeLimitReached()) {
+    DemoteThreadFromRealTime();
+  }
 
   auto writer = AudioBufferWriter(
       MakeSpan<AudioDataValue>(reinterpret_cast<AudioDataValue*>(aBuffer),
@@ -591,6 +649,9 @@ long AudioStream::DataCallback(void* aBuffer, long aFrames) {
   mDumpFile.Write(static_cast<const AudioDataValue*>(aBuffer),
                   aFrames * mOutChannels);
 
+  if (!mSandboxed && writer.Available() != 0) {
+    CubebUtils::GetAudioThreadRegistry()->Unregister(mAudioThreadId);
+  }
   return aFrames - writer.Available();
 }
 
@@ -604,6 +665,7 @@ void AudioStream::StateCallback(cubeb_state aState) {
   } else if (aState == CUBEB_STATE_ERROR) {
     LOGE("StateCallback() state %d cubeb error", mState);
     mState = ERRORED;
+    mDataSource.Errored();
   }
 }
 

@@ -7,16 +7,19 @@
 #ifndef vm_AsyncIteration_h
 #define vm_AsyncIteration_h
 
-#include "builtin/Promise.h"
+#include "builtin/SelfHostingDefines.h"
 #include "js/Class.h"
 #include "vm/GeneratorObject.h"
 #include "vm/JSContext.h"
 #include "vm/JSObject.h"
 #include "vm/List.h"
+#include "vm/PromiseObject.h"
 
 namespace js {
 
 class AsyncGeneratorObject;
+
+extern const JSClass AsyncGeneratorFunctionClass;
 
 // Resume the async generator when the `await` operand fulfills to `value`.
 MOZ_MUST_USE bool AsyncGeneratorAwaitedFulfilled(
@@ -38,6 +41,10 @@ MOZ_MUST_USE bool AsyncGeneratorYieldReturnAwaitedFulfilled(
 MOZ_MUST_USE bool AsyncGeneratorYieldReturnAwaitedRejected(
     JSContext* cx, Handle<AsyncGeneratorObject*> asyncGenObj,
     HandleValue reason);
+
+bool AsyncGeneratorNext(JSContext* cx, unsigned argc, Value* vp);
+bool AsyncGeneratorReturn(JSContext* cx, unsigned argc, Value* vp);
+bool AsyncGeneratorThrow(JSContext* cx, unsigned argc, Value* vp);
 
 // AsyncGeneratorRequest record in the spec.
 // Stores the info from AsyncGenerator#{next,return,throw}.
@@ -187,6 +194,7 @@ class AsyncGeneratorObject : public AbstractGeneratorObject {
 
  public:
   static const JSClass class_;
+  static const JSClassOps classOps_;
 
   static AsyncGeneratorObject* create(JSContext* cx, HandleFunction asyncGen);
 
@@ -293,6 +301,26 @@ class AsyncFromSyncIteratorObject : public NativeObject {
 MOZ_MUST_USE bool AsyncGeneratorResume(
     JSContext* cx, Handle<AsyncGeneratorObject*> asyncGenObj,
     CompletionKind completionKind, HandleValue argument);
+
+class AsyncIteratorObject : public NativeObject {
+ public:
+  static const JSClass class_;
+  static const JSClass protoClass_;
+};
+
+// Iterator Helpers proposal
+class AsyncIteratorHelperObject : public NativeObject {
+ public:
+  static const JSClass class_;
+
+  enum { GeneratorSlot, SlotCount };
+
+  static_assert(GeneratorSlot == ASYNC_ITERATOR_HELPER_GENERATOR_SLOT,
+                "GeneratorSlot must match self-hosting define for generator "
+                "object slot.");
+};
+
+AsyncIteratorHelperObject* NewAsyncIteratorHelper(JSContext* cx);
 
 }  // namespace js
 

@@ -18,12 +18,26 @@ use serde::{Deserialize, Serialize};
 /// convention in the embedding VM's runtime library.
 ///
 /// This list is likely to grow over time.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum LibCall {
     /// probe for stack overflow. These are emitted for functions which need
-    /// when the `probestack_enabled` setting is true.
+    /// when the `enable_probestack` setting is true.
     Probestack,
+    /// udiv.i64
+    UdivI64,
+    /// sdiv.i64
+    SdivI64,
+    /// urem.i64
+    UremI64,
+    /// srem.i64
+    SremI64,
+    /// ishl.i64
+    IshlI64,
+    /// ushr.i64
+    UshrI64,
+    /// sshr.i64
+    SshrI64,
     /// ceil.f32
     CeilF32,
     /// ceil.f64
@@ -46,6 +60,9 @@ pub enum LibCall {
     Memset,
     /// libc.memmove
     Memmove,
+
+    /// Elf __tls_get_addr
+    ElfTlsGetAddr,
 }
 
 impl fmt::Display for LibCall {
@@ -59,18 +76,27 @@ impl FromStr for LibCall {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Probestack" => Ok(LibCall::Probestack),
-            "CeilF32" => Ok(LibCall::CeilF32),
-            "CeilF64" => Ok(LibCall::CeilF64),
-            "FloorF32" => Ok(LibCall::FloorF32),
-            "FloorF64" => Ok(LibCall::FloorF64),
-            "TruncF32" => Ok(LibCall::TruncF32),
-            "TruncF64" => Ok(LibCall::TruncF64),
-            "NearestF32" => Ok(LibCall::NearestF32),
-            "NearestF64" => Ok(LibCall::NearestF64),
-            "Memcpy" => Ok(LibCall::Memcpy),
-            "Memset" => Ok(LibCall::Memset),
-            "Memmove" => Ok(LibCall::Memmove),
+            "Probestack" => Ok(Self::Probestack),
+            "UdivI64" => Ok(Self::UdivI64),
+            "SdivI64" => Ok(Self::SdivI64),
+            "UremI64" => Ok(Self::UremI64),
+            "SremI64" => Ok(Self::SremI64),
+            "IshlI64" => Ok(Self::IshlI64),
+            "UshrI64" => Ok(Self::UshrI64),
+            "SshrI64" => Ok(Self::SshrI64),
+            "CeilF32" => Ok(Self::CeilF32),
+            "CeilF64" => Ok(Self::CeilF64),
+            "FloorF32" => Ok(Self::FloorF32),
+            "FloorF64" => Ok(Self::FloorF64),
+            "TruncF32" => Ok(Self::TruncF32),
+            "TruncF64" => Ok(Self::TruncF64),
+            "NearestF32" => Ok(Self::NearestF32),
+            "NearestF64" => Ok(Self::NearestF64),
+            "Memcpy" => Ok(Self::Memcpy),
+            "Memset" => Ok(Self::Memset),
+            "Memmove" => Ok(Self::Memmove),
+
+            "ElfTlsGetAddr" => Ok(Self::ElfTlsGetAddr),
             _ => Err(()),
         }
     }
@@ -83,18 +109,28 @@ impl LibCall {
     /// Returns `None` if no well-known library routine name exists for that instruction.
     pub fn for_inst(opcode: Opcode, ctrl_type: Type) -> Option<Self> {
         Some(match ctrl_type {
+            types::I64 => match opcode {
+                Opcode::Udiv => Self::UdivI64,
+                Opcode::Sdiv => Self::SdivI64,
+                Opcode::Urem => Self::UremI64,
+                Opcode::Srem => Self::SremI64,
+                Opcode::Ishl => Self::IshlI64,
+                Opcode::Ushr => Self::UshrI64,
+                Opcode::Sshr => Self::SshrI64,
+                _ => return None,
+            },
             types::F32 => match opcode {
-                Opcode::Ceil => LibCall::CeilF32,
-                Opcode::Floor => LibCall::FloorF32,
-                Opcode::Trunc => LibCall::TruncF32,
-                Opcode::Nearest => LibCall::NearestF32,
+                Opcode::Ceil => Self::CeilF32,
+                Opcode::Floor => Self::FloorF32,
+                Opcode::Trunc => Self::TruncF32,
+                Opcode::Nearest => Self::NearestF32,
                 _ => return None,
             },
             types::F64 => match opcode {
-                Opcode::Ceil => LibCall::CeilF64,
-                Opcode::Floor => LibCall::FloorF64,
-                Opcode::Trunc => LibCall::TruncF64,
-                Opcode::Nearest => LibCall::NearestF64,
+                Opcode::Ceil => Self::CeilF64,
+                Opcode::Floor => Self::FloorF64,
+                Opcode::Trunc => Self::TruncF64,
+                Opcode::Nearest => Self::NearestF64,
                 _ => return None,
             },
             _ => return None,
@@ -106,7 +142,7 @@ impl LibCall {
 /// for `inst`.
 ///
 /// If there is an existing reference, use it, otherwise make a new one.
-pub fn get_libcall_funcref(
+pub(crate) fn get_libcall_funcref(
     libcall: LibCall,
     call_conv: CallConv,
     func: &mut Function,
@@ -202,14 +238,14 @@ fn make_funcref(
     func.import_function(ExtFuncData {
         name: ExternalName::LibCall(libcall),
         signature: sigref,
-        colocated: isa.flags().colocated_libcalls(),
+        colocated: isa.flags().use_colocated_libcalls(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use alloc::string::ToString;
 
     #[test]
     fn display() {

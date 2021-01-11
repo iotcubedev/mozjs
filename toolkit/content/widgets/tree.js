@@ -198,6 +198,19 @@
   customElements.define("treechildren", MozTreeChildren);
 
   class MozTreecolPicker extends MozElements.BaseControl {
+    static get entities() {
+      return ["chrome://global/locale/tree.dtd"];
+    }
+
+    static get markup() {
+      return `
+      <image class="tree-columnpicker-icon"></image>
+      <menupopup anonid="popup">
+        <menuseparator anonid="menuseparator"></menuseparator>
+        <menuitem anonid="menuitem" label="&restoreColumnOrder.label;"></menuitem>
+      </menupopup>
+      `;
+    }
     constructor() {
       super();
 
@@ -211,9 +224,8 @@
           tree.stopEditing(true);
           var menuitem = this.querySelector('[anonid="menuitem"]');
           if (event.originalTarget == menuitem) {
-            tree.columns.restoreNaturalOrder();
-            this.removeAttribute("ordinal");
-            tree._ensureColumnOrder();
+            this.style.MozBoxOrdinalGroup = "";
+            tree._ensureColumnOrder(tree.NATURAL_ORDER);
           } else {
             var colindex = event.originalTarget.getAttribute("colindex");
             var column = tree.columns[colindex];
@@ -236,18 +248,7 @@
       }
 
       this.textContent = "";
-      this.appendChild(
-        MozXULElement.parseXULToFragment(
-          `
-        <image class="tree-columnpicker-icon"></image>
-        <menupopup anonid="popup">
-          <menuseparator anonid="menuseparator"></menuseparator>
-          <menuitem anonid="menuitem" label="&restoreColumnOrder.label;"></menuitem>
-        </menupopup>
-      `,
-          ["chrome://global/locale/tree.dtd"]
-        )
-      );
+      this.appendChild(this.constructor.fragment);
     }
 
     buildPopup(aPopup) {
@@ -309,11 +310,11 @@
       };
     }
 
-    get content() {
-      return MozXULElement.parseXULToFragment(`
+    static get markup() {
+      return `
         <label class="treecol-text" flex="1" crop="right"></label>
         <image class="treecol-sortdirection"></image>
-    `);
+      `;
     }
 
     constructor() {
@@ -324,9 +325,9 @@
           return;
         }
         if (this.parentNode.parentNode.enableColumnDrag) {
-          var xulns =
+          var XUL_NS =
             "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-          var cols = this.parentNode.getElementsByTagNameNS(xulns, "treecol");
+          var cols = this.parentNode.getElementsByTagNameNS(XUL_NS, "treecol");
 
           // only start column drag operation if there are at least 2 visible columns
           var visible = 0;
@@ -374,17 +375,21 @@
       }
 
       this.textContent = "";
-      this.appendChild(this.content);
+      this.appendChild(this.constructor.fragment);
       this.initializeAttributeInheritance();
+      if (this.hasAttribute("ordinal")) {
+        this.style.MozBoxOrdinalGroup = this.getAttribute("ordinal");
+      }
     }
 
     set ordinal(val) {
+      this.style.MozBoxOrdinalGroup = val;
       this.setAttribute("ordinal", val);
       return val;
     }
 
     get ordinal() {
-      var val = this.getAttribute("ordinal");
+      var val = this.style.MozBoxOrdinalGroup;
       if (val == "") {
         return "1";
       }
@@ -556,6 +561,12 @@
       };
     }
 
+    static get markup() {
+      return `
+      <treecolpicker class="treecol-image" fixed="true"></treecolpicker>
+      `;
+    }
+
     connectedCallback() {
       if (this.delayConnectedCallback()) {
         return;
@@ -564,11 +575,7 @@
       this.setAttribute("slot", "treecols");
 
       if (!this.querySelector("treecolpicker")) {
-        this.appendChild(
-          MozXULElement.parseXULToFragment(`
-          <treecolpicker class="treecol-image" fixed="true"></treecolpicker>
-        `)
-        );
+        this.appendChild(this.constructor.fragment);
         this.initializeAttributeInheritance();
       }
 
@@ -587,31 +594,40 @@
   class MozTree extends MozElements.BaseControlMixin(
     MozElements.MozElementMixin(XULTreeElement)
   ) {
+    static get markup() {
+      return `
+      <html:link rel="stylesheet" href="chrome://global/content/widgets.css" />
+      <html:slot name="treecols"></html:slot>
+      <stack class="tree-stack" flex="1">
+        <hbox class="tree-rows" flex="1">
+          <hbox flex="1" class="tree-bodybox">
+            <html:slot name="treechildren"></html:slot>
+          </hbox>
+          <scrollbar height="0" minwidth="0" minheight="0" orient="vertical"
+                     class="hidevscroll-scrollbar scrollbar-topmost"
+                     ></scrollbar>
+        </hbox>
+        <html:input class="tree-input" type="text" hidden="true"/>
+      </stack>
+      <hbox class="hidehscroll-box">
+        <scrollbar orient="horizontal" flex="1" increment="16" class="scrollbar-topmost" ></scrollbar>
+        <scrollcorner class="hidevscroll-scrollcorner"></scrollcorner>
+      </hbox>
+      `;
+    }
+
     constructor() {
       super();
+
+      // These enumerated constants are used as the first argument to
+      // _ensureColumnOrder to specify what column ordering should be used.
+      this.CURRENT_ORDER = 0;
+      this.NATURAL_ORDER = 1; // The original order, which is the DOM ordering
+
       this.attachShadow({ mode: "open" });
-      let fragment = MozXULElement.parseXULToFragment(`
-        <html:link rel="stylesheet" href="chrome://global/content/widgets.css" />
-        <html:slot name="treecols"></html:slot>
-        <stack class="tree-stack" flex="1">
-          <hbox class="tree-rows" flex="1">
-            <hbox flex="1" class="tree-bodybox">
-              <html:slot name="treechildren"></html:slot>
-            </hbox>
-            <scrollbar height="0" minwidth="0" minheight="0" orient="vertical"
-                       class="hidevscroll-scrollbar scrollbar-topmost"
-                       ></scrollbar>
-          </hbox>
-          <box class="tree-input-wrapper" left="0" top="0" hidden="true">
-            <html:input class="tree-input" type="text"/>
-          </box>
-        </stack>
-        <hbox class="hidehscroll-box">
-          <scrollbar orient="horizontal" flex="1" increment="16" class="scrollbar-topmost" ></scrollbar>
-          <scrollcorner class="hidevscroll-scrollcorner"></scrollcorner>
-        </hbox>
-      `);
-      let handledElements = fragment.querySelectorAll("scrollbar,scrollcorner");
+      let handledElements = this.constructor.fragment.querySelectorAll(
+        "scrollbar,scrollcorner"
+      );
       let stopAndPrevent = e => {
         e.stopPropagation();
         e.preventDefault();
@@ -623,7 +639,7 @@
         el.addEventListener("dblclick", stopProp);
         el.addEventListener("command", stopProp);
       }
-      this.shadowRoot.appendChild(fragment);
+      this.shadowRoot.appendChild(this.constructor.fragment);
     }
 
     static get inheritedAttributes() {
@@ -738,7 +754,8 @@
         this._touchY = -1;
       });
 
-      this.addEventListener("MozMousePixelScroll", event => {
+      // This event doesn't retarget, so listen on the shadow DOM directly
+      this.shadowRoot.addEventListener("MozMousePixelScroll", event => {
         if (
           !(
             this.getAttribute("allowunderflowscroll") == "true" &&
@@ -749,7 +766,8 @@
         }
       });
 
-      this.addEventListener("DOMMouseScroll", event => {
+      // This event doesn't retarget, so listen on the shadow DOM directly
+      this.shadowRoot.addEventListener("DOMMouseScroll", event => {
         if (
           !(
             this.getAttribute("allowunderflowscroll") == "true" &&
@@ -820,6 +838,55 @@
           return;
         }
 
+        let toggleClose = () => {
+          if (this._editingColumn) {
+            return;
+          }
+
+          let row = this.currentIndex;
+          if (row < 0) {
+            return;
+          }
+
+          if (this.changeOpenState(this.currentIndex, false)) {
+            event.preventDefault();
+            return;
+          }
+
+          let parentIndex = this.view.getParentIndex(this.currentIndex);
+          if (parentIndex >= 0) {
+            this.view.selection.select(parentIndex);
+            this.ensureRowIsVisible(parentIndex);
+            event.preventDefault();
+          }
+        };
+
+        let toggleOpen = () => {
+          if (this._editingColumn) {
+            return;
+          }
+
+          let row = this.currentIndex;
+          if (row < 0) {
+            return;
+          }
+
+          if (this.changeOpenState(row, true)) {
+            event.preventDefault();
+            return;
+          }
+          let c = row + 1;
+          let view = this.view;
+          if (c < view.rowCount && view.getParentIndex(c) == row) {
+            // If already opened, select the first child.
+            // The getParentIndex test above ensures that the children
+            // are already populated and ready.
+            this.view.selection.timedSelect(c, this._selectDelay);
+            this.ensureRowIsVisible(c);
+            event.preventDefault();
+          }
+        };
+
         switch (event.keyCode) {
           case KeyEvent.DOM_VK_RETURN: {
             if (this._handleEnter(event)) {
@@ -838,50 +905,18 @@
             break;
           }
           case KeyEvent.DOM_VK_LEFT: {
-            if (this._editingColumn) {
-              return;
-            }
-
-            let row = this.currentIndex;
-            if (row < 0) {
-              return;
-            }
-
-            if (this.changeOpenState(this.currentIndex, false)) {
-              event.preventDefault();
-              return;
-            }
-            let parentIndex = this.view.getParentIndex(this.currentIndex);
-            if (parentIndex >= 0) {
-              this.view.selection.select(parentIndex);
-              this.ensureRowIsVisible(parentIndex);
-              event.preventDefault();
+            if (!this.isRTL) {
+              toggleClose();
+            } else {
+              toggleOpen();
             }
             break;
           }
           case KeyEvent.DOM_VK_RIGHT: {
-            if (this._editingColumn) {
-              return;
-            }
-
-            let row = this.currentIndex;
-            if (row < 0) {
-              return;
-            }
-
-            if (this.changeOpenState(row, true)) {
-              event.preventDefault();
-              return;
-            }
-            let c = row + 1;
-            let view = this.view;
-            if (c < view.rowCount && view.getParentIndex(c) == row) {
-              // If already opened, select the first child.
-              // The getParentIndex test above ensures that the children
-              // are already populated and ready.
-              this.view.selection.timedSelect(c, this._selectDelay);
-              this.ensureRowIsVisible(c);
-              event.preventDefault();
+            if (!this.isRTL) {
+              toggleOpen();
+            } else {
+              toggleClose();
             }
             break;
           }
@@ -995,6 +1030,10 @@
       return this.treeBody;
     }
 
+    get isRTL() {
+      return document.defaultView.getComputedStyle(this).direction == "rtl";
+    }
+
     set editable(val) {
       if (val) {
         this.setAttribute("editable", "true");
@@ -1093,27 +1132,36 @@
       return this.getAttribute("_selectDelay") || 50;
     }
 
-    _ensureColumnOrder() {
+    // The first argument (order) can be either one of these constants:
+    //   this.CURRENT_ORDER
+    //   this.NATURAL_ORDER
+    _ensureColumnOrder(order = this.CURRENT_ORDER) {
       if (this.columns) {
         // update the ordinal position of each column to assure that it is
         // an odd number and 2 positions above its next sibling
         var cols = [];
 
-        for (
-          let col = this.columns.getFirstColumn();
-          col;
-          col = col.getNext()
-        ) {
-          cols.push(col.element);
+        if (order == this.CURRENT_ORDER) {
+          for (
+            let col = this.columns.getFirstColumn();
+            col;
+            col = col.getNext()
+          ) {
+            cols.push(col.element);
+          }
+        } else {
+          // order == this.NATURAL_ORDER
+          cols = this.getElementsByTagName("treecol");
         }
+
         for (let i = 0; i < cols.length; ++i) {
-          cols[i].setAttribute("ordinal", i * 2 + 1);
+          cols[i].ordinal = i * 2 + 1;
         }
         // update the ordinal positions of splitters to even numbers, so that
         // they are in between columns
         var splitters = this.getElementsByTagName("splitter");
         for (let i = 0; i < splitters.length; ++i) {
-          splitters[i].setAttribute("ordinal", (i + 1) * 2);
+          splitters[i].style.MozBoxOrdinalGroup = (i + 1) * 2;
         }
       }
     }
@@ -1160,8 +1208,7 @@
     }
 
     _getColumnAtX(aX, aThresh, aPos) {
-      var isRTL =
-        document.defaultView.getComputedStyle(this).direction == "rtl";
+      let isRTL = this.isRTL;
 
       if (aPos) {
         aPos.value = isRTL ? "after" : "before";
@@ -1268,10 +1315,7 @@
       if (row < 0 || row >= this.view.rowCount || !column) {
         return false;
       }
-      if (
-        column.type != window.TreeColumn.TYPE_TEXT &&
-        column.type != window.TreeColumn.TYPE_PASSWORD
-      ) {
+      if (column.type !== window.TreeColumn.TYPE_TEXT) {
         return false;
       }
       if (column.cycler || !this.view.isEditable(row, column)) {
@@ -1285,11 +1329,6 @@
 
       var input = this.inputField;
 
-      // XUL positioning doesn't work with HTML elements and CSS absolute
-      // positioning doesn't work well with XUL elements, which is why we need
-      // this wrapper
-      var inputWrapper = this.shadowRoot.querySelector(".tree-input-wrapper");
-
       this.ensureCellIsVisible(row, column);
 
       // Get the coordinates of the text inside the cell.
@@ -1299,9 +1338,9 @@
       var cellRect = this.getCoordsForCellItem(row, column, "cell");
 
       // Calculate the top offset of the textbox.
-      var style = window.getComputedStyle(inputWrapper);
+      var style = window.getComputedStyle(input);
       var topadj = parseInt(style.borderTopWidth) + parseInt(style.paddingTop);
-      inputWrapper.top = textRect.y - topadj;
+      input.style.top = `${textRect.y - topadj}px`;
 
       // The leftside of the textbox is aligned to the left side of the text
       // in LTR mode, and left side of the cell in RTL mode.
@@ -1314,14 +1353,13 @@
         widthdiff = textRect.x - cellRect.x;
       }
 
-      inputWrapper.left = left;
-      inputWrapper.height =
-        textRect.height +
+      input.style.left = `${left}px`;
+      input.style.height = `${textRect.height +
         topadj +
         parseInt(style.borderBottomWidth) +
-        parseInt(style.paddingBottom);
-      inputWrapper.width = cellRect.width - widthdiff;
-      inputWrapper.hidden = false;
+        parseInt(style.paddingBottom)}px`;
+      input.style.width = `${cellRect.width - widthdiff}px`;
+      input.hidden = false;
 
       input.value = this.view.getCellText(row, column);
 
@@ -1352,8 +1390,7 @@
         var value = input.value;
         this.view.setCellText(editingRow, editingColumn, value);
       }
-      var inputWrapper = this.shadowRoot.querySelector(".tree-input-wrapper");
-      inputWrapper.hidden = true;
+      input.hidden = true;
       input.value = "";
       this.removeAttribute("editing");
     }

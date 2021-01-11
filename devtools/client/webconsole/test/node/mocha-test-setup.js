@@ -5,12 +5,16 @@
 
 "use strict";
 
-const mcRoot = `${__dirname}/../../../../../`;
-const getModule = mcPath => `module.exports = require("${mcRoot}${mcPath}");`;
+require("@babel/register")({
+  // by default everything is ignored
+  ignore: [/node_modules/],
+});
 
-const {
-  Services: { pref },
-} = require("devtools-modules");
+const mcRoot = `${__dirname}/../../../../../`;
+const getModule = mcPath =>
+  `module.exports = require("${(mcRoot + mcPath).replace(/\\/gi, "/")}");`;
+
+const { pref } = require("devtools-services");
 pref("devtools.debugger.remote-timeout", 10000);
 pref("devtools.hud.loglimit", 10000);
 pref("devtools.webconsole.filter.error", true);
@@ -28,14 +32,20 @@ pref("devtools.webconsole.sidebarToggle", true);
 pref("devtools.webconsole.groupWarningMessages", false);
 pref("devtools.webconsole.input.editor", false);
 pref("devtools.webconsole.input.autocomplete", true);
+pref("devtools.webconsole.input.eagerEvaluation", true);
 pref("devtools.browserconsole.contentMessages", true);
-pref("devtools.webconsole.features.editor", true);
 pref("devtools.webconsole.input.editorWidth", 800);
 pref("devtools.webconsole.input.editorOnboarding", true);
+pref("devtools.webconsole.input.context", false);
+pref("devtools.contenttoolbox.webconsole.input.context", false);
 
 global.loader = {
   lazyServiceGetter: () => {},
-  lazyGetter: (context, name, fn) => {},
+  lazyGetter: (context, name, fn) => {
+    try {
+      global[name] = fn();
+    } catch (_) {}
+  },
   lazyRequireGetter: (context, name, path, destruct) => {
     if (path === "devtools/shared/async-storage") {
       global[
@@ -84,6 +94,14 @@ global.ChromeUtils = {
   defineModuleGetter: () => {},
 };
 
+global.define = function() {};
+
+// Used for the HTMLTooltip component.
+// And set "isSystemPrincipal: false" because can't support XUL element in node.
+global.document.nodePrincipal = {
+  isSystemPrincipal: false,
+};
+
 // Point to vendored-in files and mocks when needed.
 const requireHacker = require("require-hacker");
 requireHacker.global_hook("default", (path, module) => {
@@ -99,7 +117,15 @@ requireHacker.global_hook("default", (path, module) => {
     react: () => getModule("devtools/client/shared/vendor/react-dev"),
     "devtools/client/shared/vendor/react": () =>
       getModule("devtools/client/shared/vendor/react-dev"),
-    chrome: () => `module.exports = { Cc: {}, Ci: {}, Cu: {} }`,
+    "chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/stub-generator-helpers": () =>
+      getModule(
+        "devtools/client/webconsole/test/browser/stub-generator-helpers"
+      ),
+
+    chrome: () =>
+      `module.exports = { Cc: {}, Ci: {}, Cu: { now: () => {}}, components: {stack: {caller: ""}} }`,
+    ChromeUtils: () =>
+      `module.exports = { addProfilerMarker: () => {}, import: () => ({}) }`,
     // Some modules depend on Chrome APIs which don't work in mocha. When such a module
     // is required, replace it with a mock version.
     "devtools/shared/l10n": () =>
@@ -108,12 +134,11 @@ requireHacker.global_hook("default", (path, module) => {
       ),
     "devtools/shared/plural-form": () =>
       getModule("devtools/client/webconsole/test/node/fixtures/PluralForm"),
-    Services: () => `module.exports = require("devtools-modules/src/Services")`,
-    "Services.default": () =>
-      `module.exports = require("devtools-modules/src/Services")`,
-    "devtools/shared/client/object-client": () => `() => {}`,
-    "devtools/shared/client/long-string-client": () => `() => {}`,
-    "devtools/client/shared/components/SmartTrace": () => "{}",
+    Services: () => `module.exports = require("devtools-services")`,
+    "devtools/server/devtools-server": () =>
+      `module.exports = {DevToolsServer: {}}`,
+    "devtools/client/shared/components/SmartTrace": () =>
+      "module.exports = () => null;",
     "devtools/client/netmonitor/src/components/TabboxPanel": () => "{}",
     "devtools/client/webconsole/utils/context-menu": () => "{}",
     "devtools/client/shared/telemetry": () => `module.exports = function() {
@@ -124,9 +149,16 @@ requireHacker.global_hook("default", (path, module) => {
       `module.exports = require("devtools-modules/src/utils/event-emitter")`,
     "devtools/client/shared/unicode-url": () =>
       `module.exports = require("devtools-modules/src/unicode-url")`,
-    "devtools/shared/DevToolsUtils": () => "{}",
+    "devtools/shared/DevToolsUtils": () =>
+      getModule("devtools/client/webconsole/test/node/fixtures/DevToolsUtils"),
     "devtools/server/actors/reflow": () => "{}",
     "devtools/shared/layout/utils": () => "{getCurrentZoom = () => {}}",
+    "resource://gre/modules/AppConstants.jsm": () => "module.exports = {};",
+    "devtools/client/framework/devtools": () => `module.exports = {
+      gDevTools: {
+        isFissionContentToolboxEnabled: () => false,
+      }
+    };`,
   };
 
   if (paths.hasOwnProperty(path)) {

@@ -4,12 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGMarkerElement_h
-#define mozilla_dom_SVGMarkerElement_h
+#ifndef DOM_SVG_SVGMARKERELEMENT_H_
+#define DOM_SVG_SVGMARKERELEMENT_H_
 
 #include "DOMSVGAnimatedAngle.h"
 #include "DOMSVGAnimatedEnumeration.h"
-#include "nsAutoPtr.h"
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedOrient.h"
@@ -18,8 +17,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/SVGElement.h"
 #include "mozilla/dom/SVGMarkerElementBinding.h"
-
-class nsSVGMarkerFrame;
+#include "mozilla/UniquePtr.h"
 
 nsresult NS_NewSVGMarkerElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
@@ -27,16 +25,17 @@ nsresult NS_NewSVGMarkerElement(
 namespace mozilla {
 
 struct SVGMark;
+class SVGMarkerFrame;
 
 namespace dom {
 
 // Non-Exposed Marker Orientation Types
 static const uint16_t SVG_MARKER_ORIENT_AUTO_START_REVERSE = 3;
 
-typedef SVGElement SVGMarkerElementBase;
+using SVGMarkerElementBase = SVGElement;
 
 class SVGMarkerElement : public SVGMarkerElementBase {
-  friend class ::nsSVGMarkerFrame;
+  friend class mozilla::SVGMarkerFrame;
 
  protected:
   friend nsresult(::NS_NewSVGMarkerElement(
@@ -51,7 +50,7 @@ class SVGMarkerElement : public SVGMarkerElementBase {
   // nsIContent interface
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* name) const override;
 
-  // nsSVGSVGElement methods:
+  // SVGSVGElement methods:
   virtual bool HasValidDimensions() const override;
 
   // public helpers
@@ -98,10 +97,10 @@ class SVGMarkerElement : public SVGMarkerElementBase {
   SVGAnimatedPreserveAspectRatio mPreserveAspectRatio;
 
   SVGViewportElement* mCoordCtx;
-  nsAutoPtr<gfx::Matrix> mViewBoxToViewportTransform;
+  UniquePtr<gfx::Matrix> mViewBoxToViewportTransform;
 };
 
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGMarkerElement_h
+#endif  // DOM_SVG_SVGMARKERELEMENT_H_

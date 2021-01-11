@@ -16,7 +16,8 @@ nsGenericHTMLElement* NS_NewHTMLSlotElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
     mozilla::dom::FromParser aFromParser) {
   RefPtr<mozilla::dom::NodeInfo> nodeInfo(std::move(aNodeInfo));
-  return new mozilla::dom::HTMLSlotElement(nodeInfo.forget());
+  auto* nim = nodeInfo->NodeInfoManager();
+  return new (nim) mozilla::dom::HTMLSlotElement(nodeInfo.forget());
 }
 
 namespace mozilla {
@@ -136,7 +137,7 @@ void HTMLSlotElement::AssignedNodes(const AssignedNodesOptions& aOptions,
     return FlattenAssignedNodes(this, aNodes);
   }
 
-  aNodes = mAssignedNodes;
+  aNodes = mAssignedNodes.Clone();
 }
 
 void HTMLSlotElement::AssignedElements(const AssignedNodesOptions& aOptions,
@@ -208,8 +209,8 @@ void HTMLSlotElement::EnqueueSlotChangeEvent() {
 
 void HTMLSlotElement::FireSlotChangeEvent() {
   nsContentUtils::DispatchTrustedEvent(
-      OwnerDoc(), static_cast<nsIContent*>(this),
-      NS_LITERAL_STRING("slotchange"), CanBubble::eYes, Cancelable::eNo);
+      OwnerDoc(), static_cast<nsIContent*>(this), u"slotchange"_ns,
+      CanBubble::eYes, Cancelable::eNo);
 }
 
 JSObject* HTMLSlotElement::WrapNode(JSContext* aCx,

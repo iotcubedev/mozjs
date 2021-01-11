@@ -166,18 +166,13 @@ const REQUEST_COUNT =
   EXPECTED_REQUESTS_TOP.length + EXPECTED_REQUESTS_SUB.length;
 
 add_task(async function() {
-  // Async stacks aren't on by default in all builds
-  await SpecialPowers.pushPrefEnv({
-    set: [["javascript.options.asyncstack", true]],
-  });
-
   // the initNetMonitor function clears the network request list after the
   // page is loaded. That's why we first load a bogus page from SIMPLE_URL,
   // and only then load the real thing from TOP_URL - we want to catch
   // all the requests the page is making, not only the XHRs.
   // We can't use about:blank here, because initNetMonitor checks that the
   // page has actually made at least one request.
-  const { tab, monitor } = await initNetMonitor(SIMPLE_URL);
+  const { monitor } = await initNetMonitor(SIMPLE_URL, { requestCount: 1 });
 
   const { document, store, windowRequire, connector } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
@@ -187,12 +182,12 @@ add_task(async function() {
 
   store.dispatch(Actions.batchEnable(false));
 
-  BrowserTestUtils.loadURI(tab.linkedBrowser, TOP_URL);
+  await navigateTo(TOP_URL);
 
   await waitForNetworkEvents(monitor, REQUEST_COUNT);
 
   is(
-    store.getState().requests.requests.size,
+    store.getState().requests.requests.length,
     REQUEST_COUNT,
     "All the page events should be recorded."
   );
@@ -212,7 +207,7 @@ add_task(async function() {
   let currentTop = 0;
   let currentSub = 0;
   for (let i = 0; i < REQUEST_COUNT; i++) {
-    const requestItem = getSortedRequests(store.getState()).get(i);
+    const requestItem = getSortedRequests(store.getState())[i];
 
     const itemUrl = requestItem.url;
     const itemCauseUri = requestItem.cause.loadingDocumentUri;

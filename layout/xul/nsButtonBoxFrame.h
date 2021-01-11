@@ -42,13 +42,9 @@ class nsButtonBoxFrame : public nsBoxFrame {
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("ButtonBoxFrame"), aResult);
+    return MakeFrameName(u"ButtonBoxFrame"_ns, aResult);
   }
 #endif
-
-  void UpdateMouseThrough() override {
-    AddStateBits(NS_FRAME_MOUSE_THROUGH_NEVER);
-  }
 
  private:
   class nsButtonBoxListener final : public nsIDOMEventListener {
@@ -62,7 +58,7 @@ class nsButtonBoxFrame : public nsBoxFrame {
 
    private:
     friend class nsButtonBoxFrame;
-    virtual ~nsButtonBoxListener() {}
+    virtual ~nsButtonBoxListener() = default;
     nsButtonBoxFrame* mButtonBoxFrame;
   };
 

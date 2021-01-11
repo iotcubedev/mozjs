@@ -31,6 +31,7 @@ EXPORTS += [
 
 EXPORTS.mozilla += [
     'AutoMemMap.h',
+    'IOBuffers.h',
     'ScriptPreloader.h',
     'URLPreloader.h',
 ]
@@ -45,6 +46,7 @@ EXPORTS.mozilla.loader += [
 ]
 
 EXTRA_JS_MODULES += [
+    'ComponentUtils.jsm',
     'XPCOMUtils.jsm',
 ]
 

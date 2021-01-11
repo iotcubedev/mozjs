@@ -113,8 +113,8 @@ function init() {
   return request;
 }
 
-function initOrigin(principal, persistence) {
-  let request = Services.qms.initStoragesForPrincipal(principal, persistence);
+function initStorageAndOrigin(principal, persistence) {
+  let request = Services.qms.initStorageAndOrigin(principal, persistence, "ls");
 
   return request;
 }
@@ -289,16 +289,27 @@ function getLocalStorage(principal) {
   );
 }
 
-function requestFinished(request) {
-  return new Promise(function(resolve, reject) {
-    request.callback = function(requestInner) {
-      if (requestInner.resultCode == Cr.NS_OK) {
-        resolve(requestInner.result);
-      } else {
-        reject(requestInner.resultCode);
-      }
+class RequestError extends Error {
+  constructor(resultCode, resultName) {
+    super(`Request failed (code: ${resultCode}, name: ${resultName})`);
+    this.name = "RequestError";
+    this.resultCode = resultCode;
+    this.resultName = resultName;
+  }
+}
+
+async function requestFinished(request) {
+  await new Promise(function(resolve) {
+    request.callback = function() {
+      resolve();
     };
   });
+
+  if (request.resultCode !== Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
 }
 
 function loadSubscript(path) {

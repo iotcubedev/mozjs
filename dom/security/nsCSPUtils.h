@@ -8,7 +8,6 @@
 #define nsCSPUtils_h___
 
 #include "nsCOMPtr.h"
-#include "nsIContentPolicy.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIURI.h"
 #include "nsLiteralString.h"
@@ -87,7 +86,8 @@ static const char* CSPStrDirectives[] = {
     "child-src",                  // CHILD_SRC_DIRECTIVE
     "block-all-mixed-content",    // BLOCK_ALL_MIXED_CONTENT
     "sandbox",                    // SANDBOX_DIRECTIVE
-    "worker-src"                  // WORKER_SRC_DIRECTIVE
+    "worker-src",                 // WORKER_SRC_DIRECTIVE
+    "navigate-to"                 // NAVIGATE_TO_DIRECTIVE
 };
 
 inline const char* CSP_CSPDirectiveToString(CSPDirective aDir) {
@@ -108,14 +108,15 @@ inline CSPDirective CSP_StringToCSPDirective(const nsAString& aDir) {
   return nsIContentSecurityPolicy::NO_DIRECTIVE;
 }
 
-#define FOR_EACH_CSP_KEYWORD(MACRO)           \
-  MACRO(CSP_SELF, "'self'")                   \
-  MACRO(CSP_UNSAFE_INLINE, "'unsafe-inline'") \
-  MACRO(CSP_UNSAFE_EVAL, "'unsafe-eval'")     \
-  MACRO(CSP_NONE, "'none'")                   \
-  MACRO(CSP_NONCE, "'nonce-")                 \
-  MACRO(CSP_REPORT_SAMPLE, "'report-sample'") \
-  MACRO(CSP_STRICT_DYNAMIC, "'strict-dynamic'")
+#define FOR_EACH_CSP_KEYWORD(MACRO)             \
+  MACRO(CSP_SELF, "'self'")                     \
+  MACRO(CSP_UNSAFE_INLINE, "'unsafe-inline'")   \
+  MACRO(CSP_UNSAFE_EVAL, "'unsafe-eval'")       \
+  MACRO(CSP_NONE, "'none'")                     \
+  MACRO(CSP_NONCE, "'nonce-")                   \
+  MACRO(CSP_REPORT_SAMPLE, "'report-sample'")   \
+  MACRO(CSP_STRICT_DYNAMIC, "'strict-dynamic'") \
+  MACRO(CSP_UNSAFE_ALLOW_REDIRECTS, "'unsafe-allow-redirects'")
 
 enum CSPKeyword {
 #define KEYWORD_ENUM(id_, string_) id_,
@@ -319,7 +320,8 @@ class nsCSPKeywordSrc : public nsCSPBaseSrc {
 
   inline void invalidate() const override {
     // keywords that need to invalidated
-    if (mKeyword == CSP_SELF || mKeyword == CSP_UNSAFE_INLINE) {
+    if (mKeyword == CSP_SELF || mKeyword == CSP_UNSAFE_INLINE ||
+        mKeyword == CSP_REPORT_SAMPLE) {
       mInvalidated = true;
     }
   }
@@ -429,8 +431,8 @@ class nsCSPSrcVisitor {
   virtual bool visitHashSrc(const nsCSPHashSrc& src) = 0;
 
  protected:
-  explicit nsCSPSrcVisitor(){};
-  virtual ~nsCSPSrcVisitor(){};
+  explicit nsCSPSrcVisitor() = default;
+  virtual ~nsCSPSrcVisitor() = default;
 };
 
 /* =============== nsCSPDirective ============= */
@@ -448,7 +450,9 @@ class nsCSPDirective {
   virtual void toString(nsAString& outStr) const;
   void toDomCSPStruct(mozilla::dom::CSP& outCSP) const;
 
-  virtual void addSrcs(const nsTArray<nsCSPBaseSrc*>& aSrcs) { mSrcs = aSrcs; }
+  virtual void addSrcs(const nsTArray<nsCSPBaseSrc*>& aSrcs) {
+    mSrcs = aSrcs.Clone();
+  }
 
   virtual bool restrictsContentType(nsContentPolicyType aContentType) const;
 
@@ -555,7 +559,7 @@ class nsBlockAllMixedContentDirective : public nsCSPDirective {
 /*
  * Upgrading insecure requests includes the following actors:
  * (1) CSP:
- *     The CSP implementation whitelists the http-request
+ *     The CSP implementation allowlists the http-request
  *     in case the policy is executed in enforcement mode.
  *     The CSP implementation however does not allow http
  *     requests to succeed if executed in report-only mode.
@@ -563,7 +567,7 @@ class nsBlockAllMixedContentDirective : public nsCSPDirective {
  *     error back to the page.
  *
  * (2) MixedContent:
- *     The evalution of MixedContent whitelists all http
+ *     The evalution of MixedContent allowlists all http
  *     requests with the promise that the http requests
  *     gets upgraded to https before any data is fetched
  *     from the network.
@@ -661,6 +665,9 @@ class nsCSPPolicy {
   inline uint32_t getNumDirectives() const { return mDirectives.Length(); }
 
   bool visitDirectiveSrcs(CSPDirective aDir, nsCSPSrcVisitor* aVisitor) const;
+
+  bool allowsNavigateTo(nsIURI* aURI, bool aWasRedirected,
+                        bool aEnforceAllowlist) const;
 
  private:
   nsUpgradeInsecureDirective* mUpgradeInsecDir;

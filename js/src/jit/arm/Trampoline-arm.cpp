@@ -14,6 +14,7 @@
 #  include "jit/PerfSpewer.h"
 #endif
 #include "jit/VMFunctions.h"
+#include "vm/JitActivation.h"  // js::jit::JitActivation
 #include "vm/Realm.h"
 
 #include "jit/MacroAssembler-inl.h"
@@ -102,7 +103,7 @@ void JitRuntime::generateEnterJIT(JSContext* cx, MacroAssembler& masm) {
   const Address slot_token(sp, offsetof(EnterJITStack, token));
   const Address slot_vp(sp, offsetof(EnterJITStack, vp));
 
-  MOZ_ASSERT(OsrFrameReg == r3);
+  static_assert(OsrFrameReg == r3);
 
   Assembler* aasm = &masm;
 
@@ -554,6 +555,10 @@ void JitRuntime::generateArgumentsRectifier(MacroAssembler& masm) {
 
 static void PushBailoutFrame(MacroAssembler& masm, uint32_t frameClass,
                              Register spArg) {
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
+
   // the stack should look like:
   // [IonFrame]
   // bailoutFrame.registersnapshot
@@ -900,7 +905,7 @@ uint32_t JitRuntime::generatePreBarrier(JSContext* cx, MacroAssembler& masm,
 
   masm.pushReturnAddress();
 
-  MOZ_ASSERT(PreBarrierReg == r1);
+  static_assert(PreBarrierReg == r1);
   Register temp1 = r2;
   Register temp2 = r3;
   Register temp3 = r4;

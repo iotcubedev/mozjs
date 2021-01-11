@@ -20,14 +20,16 @@
 #include "gc/NurseryAwareHashMap.h"
 #include "gc/ZoneAllocator.h"
 #include "js/UniquePtr.h"
+#include "js/Value.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 
 namespace js {
 
-// The data structure for storing JSObject CCWs, which has a map per target
-// compartment so we can access them easily. String CCWs are stored in a
-// separate map.
+// The data structure use to storing JSObject CCWs for a given source
+// compartment. These are partitioned by target compartment so that we can
+// easily select wrappers by source and target compartment. String CCWs are
+// stored in a per-zone separate map.
 class ObjectWrapperMap {
   static const size_t InitialInnerMapSize = 4;
 
@@ -127,6 +129,31 @@ class ObjectWrapperMap {
     Ptr(const InnerMap::Ptr& p, InnerMap& m) : InnerMap::Ptr(p), map(&m) {}
   };
 
+  // Iterator over compartments that the ObjectWrapperMap has wrappers for.
+  class WrappedCompartmentEnum {
+    OuterMap::Enum iter;
+
+    void settle() {
+      // It's possible for InnerMap to be empty after wrappers have been
+      // removed, e.g. by being nuked.
+      while (!iter.empty() && iter.front().value().empty()) {
+        iter.popFront();
+      }
+    }
+
+   public:
+    explicit WrappedCompartmentEnum(ObjectWrapperMap& map) : iter(map.map) {
+      settle();
+    }
+    bool empty() const { return iter.empty(); }
+    JS::Compartment* front() const { return iter.front().key(); }
+    operator JS::Compartment*() const { return front(); }
+    void popFront() {
+      iter.popFront();
+      settle();
+    }
+  };
+
   explicit ObjectWrapperMap(Zone* zone) : map(zone), zone(zone) {}
   ObjectWrapperMap(Zone* zone, size_t aLen) : map(zone, aLen), zone(zone) {}
 
@@ -223,7 +250,7 @@ class ObjectWrapperMap {
 
 using StringWrapperMap =
     NurseryAwareHashMap<JSString*, JSString*, DefaultHasher<JSString*>,
-                        ZoneAllocPolicy>;
+                        ZoneAllocPolicy, DuplicatesPossible>;
 
 }  // namespace js
 
@@ -328,6 +355,9 @@ class JS::Compartment {
 
   MOZ_MUST_USE inline bool wrap(JSContext* cx, JS::MutableHandleValue vp);
 
+  MOZ_MUST_USE inline bool wrap(JSContext* cx,
+                                MutableHandle<mozilla::Maybe<Value>> vp);
+
   MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandleString strp);
   MOZ_MUST_USE bool wrap(JSContext* cx, js::MutableHandle<JS::BigInt*> bi);
   MOZ_MUST_USE bool wrap(JSContext* cx, JS::MutableHandleObject obj);
@@ -350,25 +380,32 @@ class JS::Compartment {
 
   inline js::StringWrapperMap::Ptr lookupWrapper(JSString* str) const;
 
-  void removeWrapper(js::ObjectWrapperMap::Ptr p) {
-    crossCompartmentObjectWrappers.remove(p);
-  }
+  void removeWrapper(js::ObjectWrapperMap::Ptr p);
 
   bool hasNurseryAllocatedObjectWrapperEntries(const js::CompartmentFilter& f) {
     return crossCompartmentObjectWrappers.hasNurseryAllocatedWrapperEntries(f);
   }
 
+  // Iterator over |wrapped -> wrapper| entries for object CCWs in a given
+  // compartment. Can be optionally restricted by target compartment.
   struct ObjectWrapperEnum : public js::ObjectWrapperMap::Enum {
-    explicit ObjectWrapperEnum(JS::Compartment* c)
+    explicit ObjectWrapperEnum(Compartment* c)
         : js::ObjectWrapperMap::Enum(c->crossCompartmentObjectWrappers) {}
-    explicit ObjectWrapperEnum(JS::Compartment* c,
-                               const js::CompartmentFilter& f)
+    explicit ObjectWrapperEnum(Compartment* c, const js::CompartmentFilter& f)
         : js::ObjectWrapperMap::Enum(c->crossCompartmentObjectWrappers, f) {}
-    explicit ObjectWrapperEnum(JS::Compartment* c, JS::Compartment* target)
+    explicit ObjectWrapperEnum(Compartment* c, Compartment* target)
         : js::ObjectWrapperMap::Enum(c->crossCompartmentObjectWrappers,
                                      target) {
       MOZ_ASSERT(target);
     }
+  };
+
+  // Iterator over compartments that this compartment has CCWs for.
+  struct WrappedObjectCompartmentEnum
+      : public js::ObjectWrapperMap::WrappedCompartmentEnum {
+    explicit WrappedObjectCompartmentEnum(Compartment* c)
+        : js::ObjectWrapperMap::WrappedCompartmentEnum(
+              c->crossCompartmentObjectWrappers) {}
   };
 
   /*
@@ -377,8 +414,11 @@ class JS::Compartment {
    * dangling (full GCs naturally follow pointers across compartments) and
    * when compacting to update cross-compartment pointers.
    */
-  void traceOutgoingCrossCompartmentWrappers(JSTracer* trc);
-  static void traceIncomingCrossCompartmentEdgesForZoneGC(JSTracer* trc);
+  enum EdgeSelector { AllEdges, NonGrayEdges, GrayEdges };
+  void traceWrapperTargetsInCollectedZones(JSTracer* trc,
+                                           EdgeSelector whichEdges);
+  static void traceIncomingCrossCompartmentEdgesForZoneGC(
+      JSTracer* trc, EdgeSelector whichEdges);
 
   void sweepRealms(JSFreeOp* fop, bool keepAtleastOne, bool destroyingRuntime);
   void sweepAfterMinorGC(JSTracer* trc);
@@ -453,30 +493,31 @@ struct WrapperValue {
 };
 
 class MOZ_RAII AutoWrapperVector : public JS::GCVector<WrapperValue, 8>,
-                                   private JS::AutoGCRooter {
+                                   public JS::AutoGCRooter {
  public:
   explicit AutoWrapperVector(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : JS::GCVector<WrapperValue, 8>(cx),
-        JS::AutoGCRooter(cx, JS::AutoGCRooter::Tag::WrapperVector) {
+        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
   }
 
-  friend void AutoGCRooter::trace(JSTracer* trc);
+  void trace(JSTracer* trc);
 
+ private:
   MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
-class MOZ_RAII AutoWrapperRooter : private JS::AutoGCRooter {
+class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
  public:
   AutoWrapperRooter(JSContext* cx,
                     const WrapperValue& v MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Tag::Wrapper), value(v) {
+      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
   }
 
   operator JSObject*() const { return value; }
 
-  friend void JS::AutoGCRooter::trace(JSTracer* trc);
+  void trace(JSTracer* trc);
 
  private:
   WrapperValue value;

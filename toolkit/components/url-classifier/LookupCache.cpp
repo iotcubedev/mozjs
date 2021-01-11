@@ -5,6 +5,7 @@
 
 #include "LookupCache.h"
 #include "HashStore.h"
+#include "nsIFileStreams.h"
 #include "nsISeekableStream.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Telemetry.h"
@@ -320,7 +321,7 @@ void LookupCache::InvalidateExpiredCacheEntries() {
   int64_t nowSec = PR_Now() / PR_USEC_PER_SEC;
 
   for (auto iter = mFullHashCache.Iter(); !iter.Done(); iter.Next()) {
-    CachedFullHashResponse* response = iter.Data();
+    CachedFullHashResponse* response = iter.UserData();
     if (response->negativeCacheExpirySec < nowSec) {
       iter.Remove();
     }
@@ -371,7 +372,7 @@ void LookupCache::GetCacheInfo(nsIUrlClassifierCacheInfo** aCache) const {
     CStringToHexString(prefix, entry->prefix);
 
     // Set expiry of the cache entry.
-    CachedFullHashResponse* response = iter.Data();
+    CachedFullHashResponse* response = iter.UserData();
     entry->expirySec = response->negativeCacheExpirySec;
 
     // Set positive cache.
@@ -411,6 +412,98 @@ bool LookupCache::IsCanonicalizedIP(const nsACString& aHost) {
   return false;
 }
 
+// This is used when the URL is created by CreatePairwiseEntityListURI(),
+// which returns an URI like "toplevel.page/?resource=third.party.domain"
+// The fragment rule for the hostname(toplevel.page) is still the same
+// as Safe Browsing protocol.
+// The difference is that we always keep the path and query string and
+// generate an additional fragment by removing the leading component of
+// third.party.domain. This is to make sure we can find a match when a
+// exceptionlisted domain is eTLD.
+/* static */
+nsresult LookupCache::GetLookupEntitylistFragments(
+    const nsACString& aSpec, nsTArray<nsCString>* aFragments) {
+  aFragments->Clear();
+
+  nsACString::const_iterator begin, end, iter, iter_end;
+  aSpec.BeginReading(begin);
+  aSpec.EndReading(end);
+
+  iter = begin;
+  iter_end = end;
+
+  // Fallback to use default fragment rule when the URL doesn't contain
+  // "/?resoruce=" because this means the URL is not generated in
+  // CreatePairwiseEntityListURI()
+  if (!FindInReadable("/?resource="_ns, iter, iter_end)) {
+    return GetLookupFragments(aSpec, aFragments);
+  }
+
+  const nsACString& topLevelURL = Substring(begin, iter++);
+  const nsACString& thirdPartyURL = Substring(iter_end, end);
+
+  /**
+   * For the top-level URL, we follow the host fragment rule defined
+   * in the Safe Browsing protocol.
+   */
+  nsTArray<nsCString> topLevelURLs;
+  topLevelURLs.AppendElement(topLevelURL);
+
+  if (!IsCanonicalizedIP(topLevelURL)) {
+    topLevelURL.BeginReading(begin);
+    topLevelURL.EndReading(end);
+    int numTopLevelURLComponents = 0;
+    while (RFindInReadable("."_ns, begin, end) &&
+           numTopLevelURLComponents < MAX_HOST_COMPONENTS) {
+      // don't bother checking toplevel domains
+      if (++numTopLevelURLComponents >= 2) {
+        topLevelURL.EndReading(iter);
+        topLevelURLs.AppendElement(Substring(end, iter));
+      }
+      end = begin;
+      topLevelURL.BeginReading(begin);
+    }
+  }
+
+  /**
+   * The whiltelisted domain in the entity list may be eTLD or eTLD+1.
+   * Since the number of the domain name part in the third-party URL searching
+   * is always less than or equal to eTLD+1, we remove the leading
+   * component from the third-party domain to make sure we can find a match
+   * if the exceptionlisted domain stoed in the entity list is eTLD.
+   */
+  nsTArray<nsCString> thirdPartyURLs;
+  thirdPartyURLs.AppendElement(thirdPartyURL);
+
+  if (!IsCanonicalizedIP(thirdPartyURL)) {
+    thirdPartyURL.BeginReading(iter);
+    thirdPartyURL.EndReading(end);
+    if (FindCharInReadable('.', iter, end)) {
+      iter++;
+      nsAutoCString thirdPartyURLToAdd;
+      thirdPartyURLToAdd.Assign(Substring(iter++, end));
+
+      // don't bother checking toplevel domains
+      if (FindCharInReadable('.', iter, end)) {
+        thirdPartyURLs.AppendElement(thirdPartyURLToAdd);
+      }
+    }
+  }
+
+  for (size_t i = 0; i < topLevelURLs.Length(); i++) {
+    for (size_t j = 0; j < thirdPartyURLs.Length(); j++) {
+      nsAutoCString key;
+      key.Assign(topLevelURLs[i]);
+      key.Append("/?resource=");
+      key.Append(thirdPartyURLs[j]);
+
+      aFragments->AppendElement(key);
+    }
+  }
+
+  return NS_OK;
+}
+
 /* static */
 nsresult LookupCache::GetLookupFragments(const nsACString& aSpec,
                                          nsTArray<nsCString>* aFragments)
@@ -447,7 +540,7 @@ nsresult LookupCache::GetLookupFragments(const nsACString& aSpec,
     host.BeginReading(begin);
     host.EndReading(end);
     int numHostComponents = 0;
-    while (RFindInReadable(NS_LITERAL_CSTRING("."), begin, end) &&
+    while (RFindInReadable("."_ns, begin, end) &&
            numHostComponents < MAX_HOST_COMPONENTS) {
       // don't bother checking toplevel domains
       if (++numHostComponents >= 2) {
@@ -497,8 +590,10 @@ nsresult LookupCache::GetLookupFragments(const nsACString& aSpec,
   if (!pathToAdd.Equals(path)) {
     paths.AppendElement(path);
   }
-  // Check an empty path (for whole-domain blacklist entries)
-  paths.AppendElement(EmptyCString());
+  // Check an empty path (for whole-domain blocklist entries)
+  if (!paths.Contains(EmptyCString())) {
+    paths.AppendElement(EmptyCString());
+  }
 
   for (uint32_t hostIndex = 0; hostIndex < hosts.Length(); hostIndex++) {
     for (uint32_t pathIndex = 0; pathIndex < paths.Length(); pathIndex++) {
@@ -565,7 +660,7 @@ void LookupCache::DumpCache() const {
   }
 
   for (auto iter = mFullHashCache.ConstIter(); !iter.Done(); iter.Next()) {
-    CachedFullHashResponse* response = iter.Data();
+    CachedFullHashResponse* response = iter.UserData();
 
     nsAutoCString prefix;
     CStringToHexString(
@@ -883,8 +978,7 @@ nsresult LookupCacheV2::LoadLegacyFile() {
   nsresult rv = store.Open(3);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (store.AddChunks().Length() == 0 &&
-      store.SubChunks().Length() == 0) {
+  if (store.AddChunks().Length() == 0 && store.SubChunks().Length() == 0) {
     // Return when file doesn't exist
     return NS_OK;
   }
@@ -905,7 +999,7 @@ nsresult LookupCacheV2::ClearLegacyFile() {
     return rv;
   }
 
-  rv = file->AppendNative(mTableName + NS_LITERAL_CSTRING(".pset"));
+  rv = file->AppendNative(mTableName + ".pset"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -928,12 +1022,10 @@ nsresult LookupCacheV2::ClearLegacyFile() {
   return NS_OK;
 }
 
-nsCString LookupCacheV2::GetPrefixSetSuffix() const {
-  return NS_LITERAL_CSTRING(".vlpset");
-}
+nsCString LookupCacheV2::GetPrefixSetSuffix() const { return ".vlpset"_ns; }
 
 // Support creating built-in entries for phsihing, malware, unwanted, harmful,
-// tracking/tracking whitelist and flash block tables.
+// tracking/tracking exceptionlist and flash block tables.
 //
 nsresult LookupCacheV2::LoadMozEntries() {
   // We already have the entries, return
@@ -945,32 +1037,26 @@ nsresult LookupCacheV2::LoadMozEntries() {
 
   if (mTableName.EqualsLiteral("moztest-phish-simple")) {
     // Entries for phishing table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/its-a-trap.html"));
+    entries.AppendElement("itisatrap.org/firefox/its-a-trap.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-malware-simple")) {
     // Entries for malware table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/its-an-attack.html"));
+    entries.AppendElement("itisatrap.org/firefox/its-an-attack.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-unwanted-simple")) {
     // Entries for unwanted table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/unwanted.html"));
+    entries.AppendElement("itisatrap.org/firefox/unwanted.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-harmful-simple")) {
     // Entries for harmfule tables
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/harmful.html"));
+    entries.AppendElement("itisatrap.org/firefox/harmful.html"_ns);
   } else if (mTableName.EqualsLiteral("moztest-track-simple")) {
     // Entries for tracking table
-    entries.AppendElement(NS_LITERAL_CSTRING("trackertest.org/"));
-    entries.AppendElement(NS_LITERAL_CSTRING("itisatracker.org/"));
+    entries.AppendElement("trackertest.org/"_ns);
+    entries.AppendElement("itisatracker.org/"_ns);
   } else if (mTableName.EqualsLiteral("moztest-trackwhite-simple")) {
-    // Entries for tracking whitelist table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/?resource=itisatracker.org"));
+    // Entries for tracking entitylist table
+    entries.AppendElement("itisatrap.org/?resource=itisatracker.org"_ns);
   } else if (mTableName.EqualsLiteral("moztest-block-simple")) {
     // Entries for flash block table
-    entries.AppendElement(
-        NS_LITERAL_CSTRING("itisatrap.org/firefox/blocked.html"));
+    entries.AppendElement("itisatrap.org/firefox/blocked.html"_ns);
   } else {
     MOZ_ASSERT_UNREACHABLE();
   }
@@ -982,7 +1068,9 @@ nsresult LookupCacheV2::LoadMozEntries() {
     if (NS_FAILED(add.complete.FromPlaintext(entry))) {
       continue;
     }
-    completes.AppendElement(add, fallible);
+    if (!completes.AppendElement(add, fallible)) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
   }
 
   return Build(prefix, completes);

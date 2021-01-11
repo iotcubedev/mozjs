@@ -22,6 +22,7 @@ class GLContext;
 
 namespace wr {
 
+class RenderDXGITextureHostOGL;
 class RenderBufferTextureHost;
 class RenderTextureHostOGL;
 
@@ -40,9 +41,25 @@ class RenderTextureHost {
   virtual void Unlock() = 0;
   virtual void ClearCachedResources() {}
 
+  // Called asynchronouly when corresponding TextureHost's mCompositableCount
+  // becomes from 0 to 1. For now, it is used only for
+  // SurfaceTextureHost/RenderAndroidSurfaceTextureHostOGL.
   virtual void PrepareForUse() {}
+  // Called asynchronouly when corresponding TextureHost's is actually going to
+  // be used by WebRender. For now, it is used only for
+  // SurfaceTextureHost/RenderAndroidSurfaceTextureHostOGL.
   virtual void NofityForUse() {}
+  // Called asynchronouly when corresponding TextureHost's mCompositableCount
+  // becomes 0. For now, it is used only for
+  // SurfaceTextureHost/RenderAndroidSurfaceTextureHostOGL.
   virtual void NotifyNotUsed() {}
+  // Returns true when RenderTextureHost needs SyncObjectHost::Synchronize()
+  // call, before its usage.
+  virtual bool SyncObjectNeeded() { return false; }
+
+  virtual RenderDXGITextureHostOGL* AsRenderDXGITextureHostOGL() {
+    return nullptr;
+  }
 
  protected:
   virtual ~RenderTextureHost();

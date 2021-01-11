@@ -6,7 +6,9 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import itertools
 import json
+from operator import itemgetter
 import os
+import six
 
 from collections import defaultdict
 
@@ -36,6 +38,7 @@ from mozbuild.frontend.data import (
     IPDLCollection,
     LocalizedPreprocessedFiles,
     LocalizedFiles,
+    SandboxedWasmLibrary,
     SharedLibrary,
     StaticLibrary,
     UnifiedSources,
@@ -98,7 +101,7 @@ class XPIDLManager(object):
 
         The stem of an IDL file is the basename of the file with no .idl extension.
         """
-        return itertools.chain(*[m.stems() for m in self.modules.itervalues()])
+        return itertools.chain(*[m.stems() for m in six.itervalues(self.modules)])
 
 
 class BinariesCollection(object):
@@ -203,9 +206,7 @@ class CommonBackend(BuildBackend):
         if len(self._idl_manager.modules):
             self._write_rust_xpidl_summary(self._idl_manager)
             self._handle_idl_manager(self._idl_manager)
-            self._handle_generated_sources(
-                mozpath.join(self.environment.topobjdir, 'dist/include/%s.h' % stem)
-                for stem in self._idl_manager.idl_stems())
+            self._handle_xpidl_sources()
 
         for config in self._configs:
             self.backend_input_files.add(config.source)
@@ -214,8 +215,12 @@ class CommonBackend(BuildBackend):
         topobjdir = self.environment.topobjdir
         with self._write_file(mozpath.join(topobjdir, 'binaries.json')) as fh:
             d = {
-                'shared_libraries': [s.to_dict() for s in self._binaries.shared_libraries],
-                'programs': [p.to_dict() for p in self._binaries.programs],
+                'shared_libraries': sorted(
+                    (s.to_dict() for s in self._binaries.shared_libraries),
+                    key=itemgetter('basename')),
+                'programs': sorted(
+                    (p.to_dict() for p in self._binaries.programs),
+                    key=itemgetter('program')),
             }
             json.dump(d, fh, sort_keys=True, indent=4)
 
@@ -231,7 +236,6 @@ class CommonBackend(BuildBackend):
         shared_libs = []
         static_libs = []
         objs = []
-        no_pgo_objs = []
 
         seen_objs = set()
         seen_libs = set()
@@ -243,14 +247,10 @@ class CommonBackend(BuildBackend):
 
                 seen_objs.add(o)
                 objs.append(o)
-                # This is slightly odd, but for consistency with the
-                # recursivemake backend we don't replace OBJ_SUFFIX if any
-                # object in a library has `no_pgo` set.
-                if lib.no_pgo_objs or lib.no_pgo:
-                    no_pgo_objs.append(o)
 
         def expand(lib, recurse_objs, system_libs):
-            if isinstance(lib, (HostLibrary, StaticLibrary)):
+            if isinstance(lib, (HostLibrary, StaticLibrary,
+                                SandboxedWasmLibrary)):
                 if lib.no_expand_lib:
                     static_libs.append(lib)
                     recurse_objs = False
@@ -273,9 +273,11 @@ class CommonBackend(BuildBackend):
 
         add_objs(input_bin)
 
-        system_libs = not isinstance(input_bin, (HostLibrary, StaticLibrary))
+        system_libs = not isinstance(input_bin, (HostLibrary, StaticLibrary,
+                                                 SandboxedWasmLibrary))
         for lib in input_bin.linked_libraries:
-            if isinstance(lib, (HostLibrary, StaticLibrary)):
+            if isinstance(lib, (HostLibrary, StaticLibrary,
+                                SandboxedWasmLibrary)):
                 expand(lib, True, system_libs)
             elif isinstance(lib, SharedLibrary):
                 if lib not in seen_libs:
@@ -287,7 +289,7 @@ class CommonBackend(BuildBackend):
                 seen_libs.add(lib)
                 os_libs.append(lib)
 
-        return (objs, no_pgo_objs, shared_libs, os_libs, static_libs)
+        return (objs, shared_libs, os_libs, static_libs)
 
     def _make_list_file(self, kind, objdir, objs, name):
         if not objs:
@@ -326,6 +328,22 @@ class CommonBackend(BuildBackend):
     def _handle_generated_sources(self, files):
         self._generated_sources.update(mozpath.relpath(
             f, self.environment.topobjdir) for f in files)
+
+    def _handle_xpidl_sources(self):
+        bindings_rt_dir = mozpath.join(self.environment.topobjdir, 'dist', 'xpcrs', 'rt')
+        bindings_bt_dir = mozpath.join(self.environment.topobjdir, 'dist', 'xpcrs', 'bt')
+        include_dir = mozpath.join(self.environment.topobjdir, 'dist', 'include')
+
+        self._handle_generated_sources(
+            itertools.chain.from_iterable(
+                (
+                    mozpath.join(include_dir, '%s.h' % stem),
+                    mozpath.join(bindings_rt_dir, '%s.rs' % stem),
+                    mozpath.join(bindings_bt_dir, '%s.rs' % stem),
+                )
+                for stem in self._idl_manager.idl_stems()
+            )
+        )
 
     def _handle_webidl_collection(self, webidls):
 

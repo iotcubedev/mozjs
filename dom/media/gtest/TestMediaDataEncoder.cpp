@@ -18,12 +18,12 @@
 
 #include <fstream>
 
-#define SKIP_IF_NOT_SUPPORTED(mimeType)                       \
-  do {                                                        \
-    RefPtr<PEMFactory> f(new PEMFactory());                   \
-    if (!f->SupportsMimeType(NS_LITERAL_CSTRING(mimeType))) { \
-      return;                                                 \
-    }                                                         \
+#define SKIP_IF_NOT_SUPPORTED(mimeType)                     \
+  do {                                                      \
+    RefPtr<PEMFactory> f(new PEMFactory());                 \
+    if (!f->SupportsMimeType(nsLiteralCString(mimeType))) { \
+      return;                                               \
+    }                                                       \
   } while (0)
 
 #define BLOCK_SIZE 64
@@ -32,7 +32,8 @@
 #define NUM_FRAMES 150UL
 #define FRAME_RATE 30
 #define FRAME_DURATION (1000000 / FRAME_RATE)
-#define BIT_RATE (1000 * 1000)  // 1Mbps
+#define BIT_RATE (1000 * 1000)        // 1Mbps
+#define KEYFRAME_INTERVAL FRAME_RATE  // 1 keyframe per second
 
 using namespace mozilla;
 
@@ -133,22 +134,34 @@ class MediaDataEncoderTest : public testing::Test {
 };
 
 static already_AddRefed<MediaDataEncoder> CreateH264Encoder(
-    MediaDataEncoder::Usage aUsage,
-    MediaDataEncoder::PixelFormat aPixelFormat) {
+    MediaDataEncoder::Usage aUsage, MediaDataEncoder::PixelFormat aPixelFormat,
+    const Maybe<MediaDataEncoder::H264Specific>& aSpecific =
+        Some(MediaDataEncoder::H264Specific(
+            KEYFRAME_INTERVAL,
+            MediaDataEncoder::H264Specific::ProfileLevel::BaselineAutoLevel))) {
   RefPtr<PEMFactory> f(new PEMFactory());
 
-  if (!f->SupportsMimeType(NS_LITERAL_CSTRING(VIDEO_MP4))) {
+  if (!f->SupportsMimeType(nsLiteralCString(VIDEO_MP4))) {
     return nullptr;
   }
 
   VideoInfo videoInfo(WIDTH, HEIGHT);
-  videoInfo.mMimeType = NS_LITERAL_CSTRING(VIDEO_MP4);
+  videoInfo.mMimeType = nsLiteralCString(VIDEO_MP4);
   const RefPtr<TaskQueue> taskQueue(
-      new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK)));
-  CreateEncoderParams c(videoInfo /* track info */, aUsage, taskQueue,
-                        aPixelFormat, FRAME_RATE /* FPS */,
-                        BIT_RATE /* bitrate */);
-  return f->CreateEncoder(c);
+      new TaskQueue(GetMediaThreadPool(MediaThreadType::CONTROLLER)));
+
+  RefPtr<MediaDataEncoder> e;
+  if (aSpecific) {
+    e = f->CreateEncoder(CreateEncoderParams(
+        videoInfo /* track info */, aUsage, taskQueue, aPixelFormat,
+        FRAME_RATE /* FPS */, BIT_RATE /* bitrate */, aSpecific.value()));
+  } else {
+    e = f->CreateEncoder(CreateEncoderParams(
+        videoInfo /* track info */, aUsage, taskQueue, aPixelFormat,
+        FRAME_RATE /* FPS */, BIT_RATE /* bitrate */));
+  }
+
+  return e.forget();
 }
 
 void WaitForShutdown(RefPtr<MediaDataEncoder> aEncoder) {
@@ -189,13 +202,29 @@ static bool EnsureInit(RefPtr<MediaDataEncoder> aEncoder) {
 
   bool succeeded;
   media::Await(
-      GetMediaThreadPool(MediaThreadType::PLAYBACK), aEncoder->Init(),
+      GetMediaThreadPool(MediaThreadType::CONTROLLER), aEncoder->Init(),
       [&succeeded](TrackInfo::TrackType t) {
         EXPECT_EQ(TrackInfo::TrackType::kVideoTrack, t);
         succeeded = true;
       },
       [&succeeded](MediaResult r) { succeeded = false; });
   return succeeded;
+}
+
+TEST_F(MediaDataEncoderTest, H264InitWithoutSpecific) {
+  SKIP_IF_NOT_SUPPORTED(VIDEO_MP4);
+
+  RefPtr<MediaDataEncoder> e =
+      CreateH264Encoder(MediaDataEncoder::Usage::Realtime,
+                        MediaDataEncoder::PixelFormat::YUV420P, Nothing());
+
+#if defined(MOZ_WIDGET_ANDROID)  // Android encoder requires I-frame interval
+  EXPECT_FALSE(EnsureInit(e));
+#else
+  EXPECT_TRUE(EnsureInit(e));
+#endif
+
+  WaitForShutdown(e);
 }
 
 TEST_F(MediaDataEncoderTest, H264Init) {
@@ -218,7 +247,8 @@ static MediaDataEncoder::EncodedData Encode(
   for (size_t i = 0; i < aNumFrames; i++) {
     RefPtr<MediaData> frame = aSource.GetFrame(i);
     media::Await(
-        GetMediaThreadPool(MediaThreadType::PLAYBACK), aEncoder->Encode(frame),
+        GetMediaThreadPool(MediaThreadType::CONTROLLER),
+        aEncoder->Encode(frame),
         [&output, &succeeded](MediaDataEncoder::EncodedData encoded) {
           output.AppendElements(std::move(encoded));
           succeeded = true;
@@ -231,29 +261,20 @@ static MediaDataEncoder::EncodedData Encode(
   }
 
   size_t pending = 0;
-  media::Await(
-      GetMediaThreadPool(MediaThreadType::PLAYBACK), aEncoder->Drain(),
-      [&pending, &output, &succeeded](MediaDataEncoder::EncodedData encoded) {
-        pending = encoded.Length();
-        output.AppendElements(std::move(encoded));
-        succeeded = true;
-      },
-      [&succeeded](MediaResult r) { succeeded = false; });
-  EXPECT_TRUE(succeeded);
-  if (!succeeded) {
-    return output;
-  }
-
-  if (pending > 0) {
+  do {
     media::Await(
-        GetMediaThreadPool(MediaThreadType::PLAYBACK), aEncoder->Drain(),
-        [&succeeded](MediaDataEncoder::EncodedData encoded) {
-          EXPECT_EQ(encoded.Length(), 0UL);
+        GetMediaThreadPool(MediaThreadType::CONTROLLER), aEncoder->Drain(),
+        [&pending, &output, &succeeded](MediaDataEncoder::EncodedData encoded) {
+          pending = encoded.Length();
+          output.AppendElements(std::move(encoded));
           succeeded = true;
         },
         [&succeeded](MediaResult r) { succeeded = false; });
     EXPECT_TRUE(succeeded);
-  }
+    if (!succeeded) {
+      return output;
+    }
+  } while (pending > 0);
 
   return output;
 }

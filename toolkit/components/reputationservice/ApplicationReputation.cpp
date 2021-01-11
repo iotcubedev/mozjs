@@ -14,7 +14,6 @@
 #include "nsIChannel.h"
 #include "nsIHttpChannel.h"
 #include "nsIIOService.h"
-#include "nsIPrefService.h"
 #include "nsISimpleEnumerator.h"
 #include "nsIStreamListener.h"
 #include "nsIStringStream.h"
@@ -25,7 +24,6 @@
 #include "nsIUrlClassifierDBService.h"
 #include "nsIX509Cert.h"
 #include "nsIX509CertDB.h"
-#include "nsIX509CertList.h"
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/BasePrincipal.h"
@@ -38,7 +36,6 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/intl/LocaleService.h"
 
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsDependentSubstring.h"
@@ -162,6 +159,10 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     //".001",
     //".7z",
     //".ace",
+    //".accda", exec       // MS Access database
+    //".accdb", exec       // MS Access database
+    //".accde", exec       // MS Access database
+    //".accdr", exec       // MS Access database
     ".action",  // Mac script
     //".ad", exec // Windows
     //".ade", exec  // MS Access
@@ -195,6 +196,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".cab",        // Windows archive
     ".caction",    // Automator action
     ".cdr",        // Mac disk image
+    //".cer", exec // Signed certificate file
     ".cfg",        // Windows
     ".chi",        // Windows Help
     //".chm", exec // Windows Help
@@ -217,6 +219,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".deb",         // Linux package
     ".definition",  // Automator action
     ".desktop",     // A shortcut that runs other files
+    //".der", exec  // Signed certificate
     ".dex",         // Android
     ".dht",         // HTML
     ".dhtm",        // HTML
@@ -240,6 +243,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".eml",         // MS Outlook
     //".exe", exec // Windows executable
     //".fat",
+    //".fileloc", exec  // Apple finder internet location data file
     ".fon",  // Windows font
     //".fxp", exec // MS FoxPro
     ".gadget",  // Windows
@@ -480,6 +484,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     //".vsx",  exec  // MS Visio
     //".vtx",  exec  // MS Visio
     //".wav",
+    //".webloc",  // MacOS website location file
     //".webp",
     ".website",   // Windows
     ".wflow",     // Automator action
@@ -510,6 +515,7 @@ const char* const ApplicationReputationService::kBinaryFileExtensions[] = {
     ".xml",     // MS Excel
     ".xnk",     // MS Exchange
     ".xrm-ms",  // Windows
+    ".xsd",     // XML schema definition
     ".xsl",     // XML Stylesheet
     //".xxe",
     ".xz",     // Linux archive (xz)
@@ -707,7 +713,8 @@ class PendingLookup final : public nsIStreamListener,
 
   // Parse the XPCOM certificate lists and stick them into the protocol buffer
   // version.
-  nsresult ParseCertificates(nsIArray* aSigArray);
+  nsresult ParseCertificates(
+      const nsTArray<nsTArray<nsTArray<uint8_t>>>& aSigArray);
 
   // Adds the redirects to mBlocklistSpecs to be looked up.
   nsresult AddRedirects(nsIArray* aRedirects);
@@ -949,35 +956,35 @@ ClientDownloadRequest::DownloadType PendingLookup::GetDownloadType(
 
   // From
   // https://cs.chromium.org/chromium/src/chrome/common/safe_browsing/download_protection_util.cc?l=17
-  if (StringEndsWith(aFilename, NS_LITERAL_CSTRING(".zip"))) {
+  if (StringEndsWith(aFilename, ".zip"_ns)) {
     return ClientDownloadRequest::ZIPPED_EXECUTABLE;
-  } else if (StringEndsWith(aFilename, NS_LITERAL_CSTRING(".apk"))) {
+  } else if (StringEndsWith(aFilename, ".apk"_ns)) {
     return ClientDownloadRequest::ANDROID_APK;
-  } else if (StringEndsWith(aFilename, NS_LITERAL_CSTRING(".app")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".applescript")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".cdr")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".dart")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".dc42")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".diskcopy42")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".dmg")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".dmgpart")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".dvdr")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".img")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".imgpart")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".iso")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".mpkg")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".ndif")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".osas")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".osax")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".pkg")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".scpt")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".scptd")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".seplugin")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".smi")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".sparsebundle")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".sparseimage")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".toast")) ||
-             StringEndsWith(aFilename, NS_LITERAL_CSTRING(".udif"))) {
+  } else if (StringEndsWith(aFilename, ".app"_ns) ||
+             StringEndsWith(aFilename, ".applescript"_ns) ||
+             StringEndsWith(aFilename, ".cdr"_ns) ||
+             StringEndsWith(aFilename, ".dart"_ns) ||
+             StringEndsWith(aFilename, ".dc42"_ns) ||
+             StringEndsWith(aFilename, ".diskcopy42"_ns) ||
+             StringEndsWith(aFilename, ".dmg"_ns) ||
+             StringEndsWith(aFilename, ".dmgpart"_ns) ||
+             StringEndsWith(aFilename, ".dvdr"_ns) ||
+             StringEndsWith(aFilename, ".img"_ns) ||
+             StringEndsWith(aFilename, ".imgpart"_ns) ||
+             StringEndsWith(aFilename, ".iso"_ns) ||
+             StringEndsWith(aFilename, ".mpkg"_ns) ||
+             StringEndsWith(aFilename, ".ndif"_ns) ||
+             StringEndsWith(aFilename, ".osas"_ns) ||
+             StringEndsWith(aFilename, ".osax"_ns) ||
+             StringEndsWith(aFilename, ".pkg"_ns) ||
+             StringEndsWith(aFilename, ".scpt"_ns) ||
+             StringEndsWith(aFilename, ".scptd"_ns) ||
+             StringEndsWith(aFilename, ".seplugin"_ns) ||
+             StringEndsWith(aFilename, ".smi"_ns) ||
+             StringEndsWith(aFilename, ".sparsebundle"_ns) ||
+             StringEndsWith(aFilename, ".sparseimage"_ns) ||
+             StringEndsWith(aFilename, ".toast"_ns) ||
+             StringEndsWith(aFilename, ".udif"_ns)) {
     return ClientDownloadRequest::MAC_EXECUTABLE;
   }
 
@@ -992,12 +999,10 @@ nsresult PendingLookup::LookupNext() {
   // If a url is in blocklist we should call PendingLookup::OnComplete directly.
   MOZ_ASSERT(mBlocklistCount == 0);
 
-  int index = mAnylistSpecs.Length() - 1;
   nsCString spec;
-  if (index >= 0) {
+  if (!mAnylistSpecs.IsEmpty()) {
     // Check the source URI only.
-    spec = mAnylistSpecs[index];
-    mAnylistSpecs.RemoveElementAt(index);
+    spec = mAnylistSpecs.PopLastElement();
     RefPtr<PendingDBLookup> lookup(new PendingDBLookup(this));
 
     // We don't need to check whitelist if the file is not a binary file.
@@ -1006,11 +1011,9 @@ nsresult PendingLookup::LookupNext() {
     return lookup->LookupSpec(spec, type);
   }
 
-  index = mBlocklistSpecs.Length() - 1;
-  if (index >= 0) {
+  if (!mBlocklistSpecs.IsEmpty()) {
     // Check the referrer and redirect chain.
-    spec = mBlocklistSpecs[index];
-    mBlocklistSpecs.RemoveElementAt(index);
+    spec = mBlocklistSpecs.PopLastElement();
     RefPtr<PendingDBLookup> lookup(new PendingDBLookup(this));
     return lookup->LookupSpec(spec, LookupType::BlocklistOnly);
   }
@@ -1026,11 +1029,9 @@ nsresult PendingLookup::LookupNext() {
   MOZ_ASSERT_IF(!mIsBinaryFile, mAllowlistSpecs.Length() == 0);
 
   // Only binary signatures remain.
-  index = mAllowlistSpecs.Length() - 1;
-  if (index >= 0) {
-    spec = mAllowlistSpecs[index];
+  if (!mAllowlistSpecs.IsEmpty()) {
+    spec = mAllowlistSpecs.PopLastElement();
     LOG(("PendingLookup::LookupNext: checking %s on allowlist", spec.get()));
-    mAllowlistSpecs.RemoveElementAt(index);
     RefPtr<PendingDBLookup> lookup(new PendingDBLookup(this));
     return lookup->LookupSpec(spec, LookupType::AllowlistOnly);
   }
@@ -1191,19 +1192,19 @@ nsresult PendingLookup::GenerateWhitelistStringsForChain(
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIX509Cert> signer;
-  nsDependentCSubstring signerDER(
-      const_cast<char*>(aChain.element(0).certificate().data()),
-      aChain.element(0).certificate().size());
-  rv = certDB->ConstructX509(signerDER, getter_AddRefs(signer));
+  nsTArray<uint8_t> signerBytes;
+  signerBytes.AppendElements(aChain.element(0).certificate().data(),
+                             aChain.element(0).certificate().size());
+  rv = certDB->ConstructX509(signerBytes, getter_AddRefs(signer));
   NS_ENSURE_SUCCESS(rv, rv);
 
   for (int i = 1; i < aChain.element_size(); ++i) {
     // Get the issuer.
     nsCOMPtr<nsIX509Cert> issuer;
-    nsDependentCSubstring issuerDER(
-        const_cast<char*>(aChain.element(i).certificate().data()),
-        aChain.element(i).certificate().size());
-    rv = certDB->ConstructX509(issuerDER, getter_AddRefs(issuer));
+    nsTArray<uint8_t> issuerBytes;
+    issuerBytes.AppendElements(aChain.element(i).certificate().data(),
+                               aChain.element(i).certificate().size());
+    rv = certDB->ConstructX509(issuerBytes, getter_AddRefs(issuer));
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = GenerateWhitelistStringsForPair(signer, issuer);
@@ -1244,10 +1245,11 @@ nsresult PendingLookup::AddRedirects(nsIArray* aRedirects) {
 
     nsCOMPtr<nsIPrincipal> principal;
     rv = redirectEntry->GetPrincipal(getter_AddRefs(principal));
+    auto* basePrin = BasePrincipal::Cast(principal);
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsCOMPtr<nsIURI> uri;
-    rv = principal->GetURI(getter_AddRefs(uri));
+    rv = basePrin->GetURI(getter_AddRefs(uri));
     NS_ENSURE_SUCCESS(rv, rv);
 
     // Add the spec to our list of local lookups. The most recent redirect is
@@ -1437,11 +1439,11 @@ nsresult PendingLookup::DoLookupInternal() {
   // We can skip parsing certificate for non-binary files because we only
   // check local block list for them.
   if (mIsBinaryFile) {
-    nsCOMPtr<nsIArray> sigArray;
-    rv = mQuery->GetSignatureInfo(getter_AddRefs(sigArray));
+    nsTArray<nsTArray<nsTArray<uint8_t>>> sigArray;
+    rv = mQuery->GetSignatureInfo(sigArray);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    if (sigArray) {
+    if (!sigArray.IsEmpty()) {
       rv = ParseCertificates(sigArray);
       NS_ENSURE_SUCCESS(rv, rv);
     }
@@ -1519,58 +1521,20 @@ nsresult PendingLookup::OnComplete(uint32_t aVerdict, Reason aReason,
   return res;
 }
 
-nsresult PendingLookup::ParseCertificates(nsIArray* aSigArray) {
-  // If we haven't been set for any reason, bail.
-  NS_ENSURE_ARG_POINTER(aSigArray);
-
+nsresult PendingLookup::ParseCertificates(
+    const nsTArray<nsTArray<nsTArray<uint8_t>>>& aSigArray) {
   // Binaries may be signed by multiple chains of certificates. If there are no
   // chains, the binary is unsigned (or we were unable to extract signature
   // information on a non-Windows platform)
-  nsCOMPtr<nsISimpleEnumerator> chains;
-  nsresult rv = aSigArray->Enumerate(getter_AddRefs(chains));
-  NS_ENSURE_SUCCESS(rv, rv);
 
-  bool hasMoreChains = false;
-  rv = chains->HasMoreElements(&hasMoreChains);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  while (hasMoreChains) {
-    nsCOMPtr<nsISupports> chainSupports;
-    rv = chains->GetNext(getter_AddRefs(chainSupports));
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    nsCOMPtr<nsIX509CertList> certList = do_QueryInterface(chainSupports, &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
-
+  // Each chain may have multiple certificates.
+  for (const auto& certList : aSigArray) {
     safe_browsing::ClientDownloadRequest_CertificateChain* certChain =
         mRequest.mutable_signature()->add_certificate_chain();
-    nsCOMPtr<nsISimpleEnumerator> chainElt;
-    rv = certList->GetEnumerator(getter_AddRefs(chainElt));
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    // Each chain may have multiple certificates.
-    bool hasMoreCerts = false;
-    rv = chainElt->HasMoreElements(&hasMoreCerts);
-    while (hasMoreCerts) {
-      nsCOMPtr<nsISupports> certSupports;
-      rv = chainElt->GetNext(getter_AddRefs(certSupports));
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      nsCOMPtr<nsIX509Cert> cert = do_QueryInterface(certSupports, &rv);
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      nsTArray<uint8_t> data;
-      rv = cert->GetRawDER(data);
-      NS_ENSURE_SUCCESS(rv, rv);
-
+    for (const auto& cert : certList) {
       // Add this certificate to the protobuf to send remotely.
-      certChain->add_element()->set_certificate(data.Elements(), data.Length());
-
-      rv = chainElt->HasMoreElements(&hasMoreCerts);
-      NS_ENSURE_SUCCESS(rv, rv);
+      certChain->add_element()->set_certificate(cert.Elements(), cert.Length());
     }
-    rv = chains->HasMoreElements(&hasMoreChains);
-    NS_ENSURE_SUCCESS(rv, rv);
   }
   if (mRequest.signature().certificate_chain_size() > 0) {
     mRequest.mutable_signature()->set_trusted(true);
@@ -1636,7 +1600,7 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
   mRequest.set_user_initiated(true);
 
   nsCString locale;
-  rv = LocaleService::GetInstance()->GetAppLocaleAsLangTag(locale);
+  rv = LocaleService::GetInstance()->GetAppLocaleAsBCP47(locale);
   NS_ENSURE_SUCCESS(rv, rv);
   mRequest.set_locale(locale.get());
   nsCString sha256Hash;
@@ -1701,8 +1665,7 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
 
   if (LOG_ENABLED()) {
     nsAutoCString serializedStr(serialized.c_str(), serialized.length());
-    serializedStr.ReplaceSubstring(NS_LITERAL_CSTRING("\0"),
-                                   NS_LITERAL_CSTRING("\\0"));
+    serializedStr.ReplaceSubstring("\0"_ns, "\\0"_ns);
 
     LOG(("Serialized protocol buffer [this = %p]: (length=%d) %s", this,
          serializedStr.Length(), serializedStr.get()));
@@ -1722,7 +1685,7 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
                        nullptr,  // aLoadingNode
                        nsContentUtils::GetSystemPrincipal(),
                        nullptr,  // aTriggeringPrincipal
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER, getter_AddRefs(mChannel));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -1742,8 +1705,8 @@ nsresult PendingLookup::SendRemoteQueryInternal(Reason& aReason) {
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = uploadChannel->ExplicitSetUploadStream(
-      sstream, NS_LITERAL_CSTRING("application/octet-stream"),
-      serialized.size(), NS_LITERAL_CSTRING("POST"), false);
+      sstream, "application/octet-stream"_ns, serialized.size(), "POST"_ns,
+      false);
   NS_ENSURE_SUCCESS(rv, rv);
 
   uint32_t timeoutMs =
@@ -2017,4 +1980,10 @@ nsresult ApplicationReputationService::QueryReputationInternal(
 
   observerService->AddObserver(lookup, "quit-application", true);
   return lookup->StartLookup();
+}
+
+nsresult ApplicationReputationService::IsBinary(const nsACString& aFileName,
+                                                bool* aBinary) {
+  *aBinary = ::IsBinary(aFileName);
+  return NS_OK;
 }

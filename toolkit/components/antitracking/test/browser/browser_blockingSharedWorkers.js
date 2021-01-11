@@ -1,6 +1,6 @@
 /* import-globals-from antitracking_head.js */
 
-requestLongerTimeout(3);
+requestLongerTimeout(4);
 
 AntiTracking.runTestInNormalAndPrivateMode(
   "SharedWorkers",
@@ -65,11 +65,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     new SharedWorker("a.js", "foo");
     ok(true, "SharedWorker is allowed");

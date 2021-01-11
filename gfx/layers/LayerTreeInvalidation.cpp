@@ -212,7 +212,7 @@ struct LayerPropertiesBase : public LayerProperties {
         mUseClipRect(false) {
     MOZ_COUNT_CTOR(LayerPropertiesBase);
   }
-  virtual ~LayerPropertiesBase() { MOZ_COUNT_DTOR(LayerPropertiesBase); }
+  MOZ_COUNTED_DTOR_OVERRIDE(LayerPropertiesBase)
 
  protected:
   LayerPropertiesBase(const LayerPropertiesBase& a) = delete;
@@ -619,7 +619,7 @@ struct ColorLayerProperties : public LayerPropertiesBase {
     return true;
   }
 
-  Color mColor;
+  DeviceColor mColor;
   IntRect mBounds;
 };
 

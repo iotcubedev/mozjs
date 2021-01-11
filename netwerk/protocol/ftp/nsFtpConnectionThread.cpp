@@ -28,23 +28,19 @@
 #include "nsStreamUtils.h"
 #include "nsIURL.h"
 #include "nsISocketTransport.h"
-#include "nsIStreamListenerTee.h"
-#include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsAuthInformationHolder.h"
 #include "nsIProtocolProxyService.h"
 #include "nsICancelable.h"
 #include "nsIOutputStream.h"
-#include "nsIPrompt.h"
 #include "nsIProtocolHandler.h"
 #include "nsIProxyInfo.h"
-#include "nsIRunnable.h"
 #include "nsISocketTransportService.h"
 #include "nsIURI.h"
-#include "nsIURIMutator.h"
 #include "nsILoadInfo.h"
 #include "nsIAuthPrompt2.h"
 #include "nsIFTPChannelParentInternal.h"
+#include "mozilla/Telemetry.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -80,6 +76,9 @@ nsFtpState::nsFtpState()
       mAnonymous(true),
       mRetryPass(false),
       mStorReplyReceived(false),
+      mRlist1xxReceived(false),
+      mRretr1xxReceived(false),
+      mRstor1xxReceived(false),
       mInternalError(NS_OK),
       mReconnectAndLoginAgain(false),
       mCacheConnection(true),
@@ -260,7 +259,7 @@ nsresult nsFtpState::EstablishControlConnection() {
       mTryingCachedControl = true;
 
       // we have to set charset to connection if server supports utf-8
-      if (mUseUTF8) mChannel->SetContentCharset(NS_LITERAL_CSTRING("UTF-8"));
+      if (mUseUTF8) mChannel->SetContentCharset("UTF-8"_ns);
 
       // we're already connected to this server, skip login.
       mState = FTP_S_PASV;
@@ -801,7 +800,7 @@ nsFtpState::R_pass() {
 }
 
 nsresult nsFtpState::S_pwd() {
-  return SendFTPCommand(NS_LITERAL_CSTRING("PWD" CRLF));
+  return SendFTPCommand(nsLiteralCString("PWD" CRLF));
 }
 
 FTP_STATE
@@ -826,7 +825,7 @@ nsFtpState::R_pwd() {
 }
 
 nsresult nsFtpState::S_syst() {
-  return SendFTPCommand(NS_LITERAL_CSTRING("SYST" CRLF));
+  return SendFTPCommand(nsLiteralCString("SYST" CRLF));
 }
 
 FTP_STATE
@@ -868,7 +867,7 @@ nsFtpState::R_syst() {
 }
 
 nsresult nsFtpState::S_acct() {
-  return SendFTPCommand(NS_LITERAL_CSTRING("ACCT noaccount" CRLF));
+  return SendFTPCommand(nsLiteralCString("ACCT noaccount" CRLF));
 }
 
 FTP_STATE
@@ -879,7 +878,7 @@ nsFtpState::R_acct() {
 }
 
 nsresult nsFtpState::S_type() {
-  return SendFTPCommand(NS_LITERAL_CSTRING("TYPE I" CRLF));
+  return SendFTPCommand(nsLiteralCString("TYPE I" CRLF));
 }
 
 FTP_STATE
@@ -1023,7 +1022,7 @@ nsresult nsFtpState::SetContentType() {
     }
   }
   return mChannel->SetContentType(
-      NS_LITERAL_CSTRING(APPLICATION_HTTP_INDEX_FORMAT));
+      nsLiteralCString(APPLICATION_HTTP_INDEX_FORMAT));
 }
 
 nsresult nsFtpState::S_list() {
@@ -1060,15 +1059,21 @@ nsresult nsFtpState::S_list() {
 FTP_STATE
 nsFtpState::R_list() {
   if (mResponseCode / 100 == 1) {
+    Telemetry::ScalarAdd(
+        Telemetry::ScalarID::NETWORKING_FTP_OPENED_CHANNELS_LISTINGS, 1);
+
+    mRlist1xxReceived = true;
+
     // OK, time to start reading from the data connection.
     if (mDataStream && HasPendingCallback())
       mDataStream->AsyncWait(this, 0, 0, CallbackTarget());
     return FTP_READ_BUF;
   }
 
-  if (mResponseCode / 100 == 2) {
+  if (mResponseCode / 100 == 2 && mRlist1xxReceived) {
     //(DONE)
     mNextState = FTP_COMPLETE;
+    mRlist1xxReceived = false;
     return FTP_COMPLETE;
   }
   return FTP_ERROR;
@@ -1087,12 +1092,22 @@ nsresult nsFtpState::S_retr() {
 FTP_STATE
 nsFtpState::R_retr() {
   if (mResponseCode / 100 == 2) {
+    if (!mRretr1xxReceived) return FTP_ERROR;
+
     //(DONE)
     mNextState = FTP_COMPLETE;
+    mRretr1xxReceived = false;
     return FTP_COMPLETE;
   }
 
   if (mResponseCode / 100 == 1) {
+    mChannel->SetContentType(nsLiteralCString(APPLICATION_OCTET_STREAM));
+
+    Telemetry::ScalarAdd(
+        Telemetry::ScalarID::NETWORKING_FTP_OPENED_CHANNELS_FILES, 1);
+
+    mRretr1xxReceived = true;
+
     if (mDataStream && HasPendingCallback())
       mDataStream->AsyncWait(this, 0, 0, CallbackTarget());
     return FTP_READ_BUF;
@@ -1161,10 +1176,11 @@ nsresult nsFtpState::S_stor() {
 
 FTP_STATE
 nsFtpState::R_stor() {
-  if (mResponseCode / 100 == 2) {
+  if (mResponseCode / 100 == 2 && mRstor1xxReceived) {
     //(DONE)
     mNextState = FTP_COMPLETE;
     mStorReplyReceived = true;
+    mRstor1xxReceived = false;
 
     // Call Close() if it was not called in nsFtpState::OnStoprequest()
     if (!mUploadRequest && !IsClosed()) Close();
@@ -1173,7 +1189,11 @@ nsFtpState::R_stor() {
   }
 
   if (mResponseCode / 100 == 1) {
+    Telemetry::ScalarAdd(
+        Telemetry::ScalarID::NETWORKING_FTP_OPENED_CHANNELS_FILES, 1);
+
     LOG(("FTP:(%p) writing on DT\n", this));
+    mRstor1xxReceived = true;
     return FTP_READ_BUF;
   }
 
@@ -1357,7 +1377,7 @@ nsFtpState::R_pasv() {
     LOG(("FTP:(%p) created DT (%s:%x)\n", this, host.get(), port));
 
     // hook ourself up as a proxy for status notifications
-    rv = mDataTransport->SetEventSink(this, GetCurrentThreadEventTarget());
+    rv = mDataTransport->SetEventSink(this, GetCurrentEventTarget());
     NS_ENSURE_SUCCESS(rv, FTP_ERROR);
 
     if (mAction == PUT) {
@@ -1415,15 +1435,15 @@ nsFtpState::R_pasv() {
 }
 
 nsresult nsFtpState::S_feat() {
-  return SendFTPCommand(NS_LITERAL_CSTRING("FEAT" CRLF));
+  return SendFTPCommand(nsLiteralCString("FEAT" CRLF));
 }
 
 FTP_STATE
 nsFtpState::R_feat() {
   if (mResponseCode / 100 == 2) {
-    if (mResponseMsg.Find(NS_LITERAL_CSTRING(CRLF " UTF8" CRLF), true) > -1) {
+    if (mResponseMsg.Find(nsLiteralCString(CRLF " UTF8" CRLF), true) > -1) {
       // This FTP server supports UTF-8 encoding
-      mChannel->SetContentCharset(NS_LITERAL_CSTRING("UTF-8"));
+      mChannel->SetContentCharset("UTF-8"_ns);
       mUseUTF8 = true;
       return FTP_S_OPTS;
     }
@@ -1435,7 +1455,7 @@ nsFtpState::R_feat() {
 
 nsresult nsFtpState::S_opts() {
   // This command is for compatibility of old FTP spec (IETF Draft)
-  return SendFTPCommand(NS_LITERAL_CSTRING("OPTS UTF8 ON" CRLF));
+  return SendFTPCommand(nsLiteralCString("OPTS UTF8 ON" CRLF));
 }
 
 FTP_STATE
@@ -1639,8 +1659,7 @@ nsresult nsFtpState::SendFTPCommand(const nsACString& command) {
 
   // we don't want to log the password:
   nsAutoCString logcmd(command);
-  if (StringBeginsWith(command, NS_LITERAL_CSTRING("PASS ")))
-    logcmd = "PASS xxxxx";
+  if (StringBeginsWith(command, "PASS "_ns)) logcmd = "PASS xxxxx";
 
   LOG(("FTP:(%p) writing \"%s\"\n", this, logcmd.get()));
 

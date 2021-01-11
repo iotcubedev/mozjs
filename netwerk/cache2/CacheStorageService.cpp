@@ -25,7 +25,6 @@
 #include "nsIURI.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
-#include "nsAutoPtr.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
@@ -119,7 +118,12 @@ CacheStorageService::CacheStorageService()
       mForcedValidEntriesLock("CacheStorageService.mForcedValidEntriesLock"),
       mShutdown(false),
       mDiskPool(MemoryPool::DISK),
-      mMemoryPool(MemoryPool::MEMORY) {
+      mMemoryPool(MemoryPool::MEMORY)
+#ifdef MOZ_TSAN
+      ,
+      mPurgeTimerActive(false)
+#endif
+{
   CacheFileIOManager::Init();
 
   MOZ_ASSERT(XRE_IsParentProcess());
@@ -245,15 +249,17 @@ class WalkMemoryCacheRunnable : public WalkCacheRunnable {
 
       if (!CacheStorageService::IsRunning()) return NS_ERROR_NOT_INITIALIZED;
 
-      CacheEntryTable* entries;
-      if (sGlobalEntryTables->Get(mContextKey, &entries)) {
+      for (auto iterGlobal = sGlobalEntryTables->Iter(); !iterGlobal.Done();
+           iterGlobal.Next()) {
+        CacheEntryTable* entries = iterGlobal.UserData();
+        if (entries->Type() != CacheEntryTable::MEMORY_ONLY) {
+          continue;
+        }
+
         for (auto iter = entries->Iter(); !iter.Done(); iter.Next()) {
           CacheEntry* entry = iter.UserData();
 
-          // Ignore disk entries
-          if (entry->IsUsingDisk()) {
-            continue;
-          }
+          MOZ_ASSERT(!entry->IsUsingDisk());
 
           mSize += entry->GetMetadataMemoryConsumption();
 
@@ -442,7 +448,7 @@ class WalkDiskCacheRunnable : public WalkCacheRunnable {
           }
 
           mPass = ITERATE_METADATA;
-          MOZ_FALLTHROUGH;
+          [[fallthrough]];
 
         case ITERATE_METADATA:
           // Now grab the context iterator.
@@ -651,11 +657,56 @@ nsresult CacheStorageService::Dispatch(nsIRunnable* aEvent) {
   return cacheIOThread->Dispatch(aEvent, CacheIOThread::MANAGEMENT);
 }
 
+namespace CacheStorageEvictHelper {
+
+nsresult ClearStorage(bool const aPrivate, bool const aAnonymous,
+                      OriginAttributes& aOa) {
+  nsresult rv;
+
+  aOa.SyncAttributesWithPrivateBrowsing(aPrivate);
+  RefPtr<LoadContextInfo> info = GetLoadContextInfo(aAnonymous, aOa);
+
+  nsCOMPtr<nsICacheStorage> storage;
+  RefPtr<CacheStorageService> service = CacheStorageService::Self();
+  NS_ENSURE_TRUE(service, NS_ERROR_FAILURE);
+
+  // Clear disk storage
+  rv = service->DiskCacheStorage(info, false, getter_AddRefs(storage));
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = storage->AsyncEvictStorage(nullptr);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  // Clear memory storage
+  rv = service->MemoryCacheStorage(info, getter_AddRefs(storage));
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = storage->AsyncEvictStorage(nullptr);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+nsresult Run(OriginAttributes& aOa) {
+  nsresult rv;
+
+  // Clear all [private X anonymous] combinations
+  rv = ClearStorage(false, false, aOa);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = ClearStorage(false, true, aOa);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = ClearStorage(true, false, aOa);
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = ClearStorage(true, true, aOa);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+}  // namespace CacheStorageEvictHelper
+
 // nsICacheStorageService
 
 NS_IMETHODIMP CacheStorageService::MemoryCacheStorage(
     nsILoadContextInfo* aLoadContextInfo, nsICacheStorage** _retval) {
-  NS_ENSURE_ARG(aLoadContextInfo);
   NS_ENSURE_ARG(_retval);
 
   nsCOMPtr<nsICacheStorage> storage =
@@ -667,7 +718,6 @@ NS_IMETHODIMP CacheStorageService::MemoryCacheStorage(
 NS_IMETHODIMP CacheStorageService::DiskCacheStorage(
     nsILoadContextInfo* aLoadContextInfo, bool aLookupAppCache,
     nsICacheStorage** _retval) {
-  NS_ENSURE_ARG(aLoadContextInfo);
   NS_ENSURE_ARG(_retval);
 
   // TODO save some heap granularity - cache commonly used storages.
@@ -703,7 +753,6 @@ NS_IMETHODIMP CacheStorageService::PinningCacheStorage(
 NS_IMETHODIMP CacheStorageService::AppCacheStorage(
     nsILoadContextInfo* aLoadContextInfo,
     nsIApplicationCache* aApplicationCache, nsICacheStorage** _retval) {
-  NS_ENSURE_ARG(aLoadContextInfo);
   NS_ENSURE_ARG(_retval);
 
   nsCOMPtr<nsICacheStorage> storage;
@@ -778,6 +827,26 @@ NS_IMETHODIMP CacheStorageService::ClearOrigin(nsIPrincipal* aPrincipal) {
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = ClearOriginInternal(origin, aPrincipal->OriginAttributesRef(), false);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP CacheStorageService::ClearOriginAttributes(
+    const nsAString& aOriginAttributes) {
+  nsresult rv;
+
+  if (NS_WARN_IF(aOriginAttributes.IsEmpty())) {
+    return NS_ERROR_FAILURE;
+  }
+
+  OriginAttributes oa;
+  if (!oa.Init(aOriginAttributes)) {
+    NS_ERROR("Could not parse the argument for OriginAttributes");
+    return NS_ERROR_FAILURE;
+  }
+
+  rv = CacheStorageEvictHelper::Run(oa);
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -959,6 +1028,16 @@ class FrecencyComparator {
     return a->GetFrecency() == b->GetFrecency();
   }
   bool LessThan(CacheEntry* a, CacheEntry* b) const {
+    // We deliberately want to keep the '0' frecency entries at the tail of the
+    // aray, because these are new entries and would just slow down purging of
+    // the pools based on frecency.
+    if (a->GetFrecency() == 0.0 && b->GetFrecency() > 0.0) {
+      return false;
+    }
+    if (a->GetFrecency() > 0.0 && b->GetFrecency() == 0.0) {
+      return true;
+    }
+
     return a->GetFrecency() < b->GetFrecency();
   }
 };
@@ -1022,7 +1101,7 @@ static bool AddExactEntry(CacheEntryTable* aEntries, nsACString const& aKey,
   }
 
   LOG(("AddExactEntry [entry=%p put]", aEntry));
-  aEntries->Put(aKey, aEntry);
+  aEntries->Put(aKey, RefPtr{aEntry});
   return true;
 }
 
@@ -1208,9 +1287,15 @@ void CacheStorageService::OnMemoryConsumptionChange(
 
   if (!overLimit) return;
 
-  // It's likely the timer has already been set when we get here,
-  // check outside the lock to save resources.
-  if (mPurgeTimer) return;
+    // It's likely the timer has already been set when we get here,
+    // check outside the lock to save resources.
+#ifdef MOZ_TSAN
+  if (mPurgeTimerActive) {
+#else
+  if (mPurgeTimer) {
+#endif
+    return;
+  }
 
   // We don't know if this is called under the service lock or not,
   // hence rather dispatch.
@@ -1256,6 +1341,9 @@ void CacheStorageService::SchedulePurgeOverMemoryLimit() {
 
   mPurgeTimer = NS_NewTimer();
   if (mPurgeTimer) {
+#ifdef MOZ_TSAN
+    mPurgeTimerActive = true;
+#endif
     nsresult rv;
     rv = mPurgeTimer->InitWithCallback(this, 1000, nsITimer::TYPE_ONE_SHOT);
     LOG(("  timer init rv=0x%08" PRIx32, static_cast<uint32_t>(rv)));
@@ -1269,6 +1357,9 @@ CacheStorageService::Notify(nsITimer* aTimer) {
   mozilla::MutexAutoLock lock(mLock);
 
   if (aTimer == mPurgeTimer) {
+#ifdef MOZ_TSAN
+    mPurgeTimerActive = false;
+#endif
     mPurgeTimer = nullptr;
 
     nsCOMPtr<nsIRunnable> event =
@@ -1314,8 +1405,6 @@ void CacheStorageService::MemoryPool::PurgeOverMemoryLimit() {
     PurgeExpired();
   }
 
-  bool frecencyNeedsSort = true;
-
   // No longer makes sense since:
   // Memory entries are never purged partially, only as a whole when the memory
   // cache limit is overreached.
@@ -1325,18 +1414,18 @@ void CacheStorageService::MemoryPool::PurgeOverMemoryLimit() {
 #if 0
   if (mMemorySize > memoryLimit) {
     LOG(("  memory data consumption over the limit, abandon disk backed data"));
-    PurgeByFrecency(frecencyNeedsSort, CacheEntry::PURGE_DATA_ONLY_DISK_BACKED);
+    PurgeByFrecency(CacheEntry::PURGE_DATA_ONLY_DISK_BACKED);
   }
 
   if (mMemorySize > memoryLimit) {
     LOG(("  metadata consumtion over the limit, abandon disk backed entries"));
-    PurgeByFrecency(frecencyNeedsSort, CacheEntry::PURGE_WHOLE_ONLY_DISK_BACKED);
+    PurgeByFrecency(CacheEntry::PURGE_WHOLE_ONLY_DISK_BACKED);
   }
 #endif
 
   if (mMemorySize > memoryLimit) {
     LOG(("  memory data consumption over the limit, abandon any entry"));
-    PurgeByFrecency(frecencyNeedsSort, CacheEntry::PURGE_WHOLE);
+    PurgeByFrecency(CacheEntry::PURGE_WHOLE);
   }
 
   LOG(("  purging took %1.2fms", (TimeStamp::Now() - start).ToMilliseconds()));
@@ -1369,23 +1458,31 @@ void CacheStorageService::MemoryPool::PurgeExpired() {
   }
 }
 
-void CacheStorageService::MemoryPool::PurgeByFrecency(bool& aFrecencyNeedsSort,
-                                                      uint32_t aWhat) {
+void CacheStorageService::MemoryPool::PurgeByFrecency(uint32_t aWhat) {
   MOZ_ASSERT(IsOnManagementThread());
 
-  if (aFrecencyNeedsSort) {
-    mFrecencyArray.Sort(FrecencyComparator());
-    aFrecencyNeedsSort = false;
-  }
+  // Pretend the limit is 10% lower so that we get rid of more entries at one
+  // shot and save the sorting below.
+  uint32_t const memoryLimit = Limit() * 0.9;
 
-  uint32_t const memoryLimit = Limit();
+  // Let's do our best and try to shorten the array to at least this size so
+  // that it doesn't overgrow.  We will ignore higher priority events and keep
+  // looping to try to purge while the array is larget than this size.
+  static size_t const kFrecencyArrayLengthLimit = 2000;
+
+  LOG(("MemoryPool::PurgeByFrecency, len=%zu", mFrecencyArray.Length()));
+
+  mFrecencyArray.Sort(FrecencyComparator());
 
   for (uint32_t i = 0;
        mMemorySize > memoryLimit && i < mFrecencyArray.Length();) {
-    if (CacheIOThread::YieldAndRerun()) return;
+    if (mFrecencyArray.Length() <= kFrecencyArrayLengthLimit &&
+        CacheIOThread::YieldAndRerun()) {
+      LOG(("MemoryPool::PurgeByFrecency interrupted"));
+      return;
+    }
 
     RefPtr<CacheEntry> entry = mFrecencyArray[i];
-
     if (entry->Purge(aWhat)) {
       LOG(("  abandoned (%d), entry=%p, frecency=%1.10f", aWhat, entry.get(),
            entry->GetFrecency()));
@@ -1395,6 +1492,8 @@ void CacheStorageService::MemoryPool::PurgeByFrecency(bool& aFrecencyNeedsSort,
     // not purged, move to the next one
     ++i;
   }
+
+  LOG(("MemoryPool::PurgeByFrecency done"));
 }
 
 void CacheStorageService::MemoryPool::PurgeAll(uint32_t aWhat) {
@@ -1505,7 +1604,7 @@ nsresult CacheStorageService::AddStorageEntry(
       // Entry is not in the hashtable or has just been truncated...
       entry = new CacheEntry(aContextKey, aURI, aIdExtension, aWriteToDisk,
                              aSkipSizeCheck, aPin);
-      entries->Put(entryKey, entry);
+      entries->Put(entryKey, RefPtr{entry});
       LOG(("  new entry %p for %s", entry.get(), entryKey.get()));
     }
 
@@ -1837,7 +1936,7 @@ nsresult CacheStorageService::DoomStorageEntries(
     // Since we store memory entries also in the disk entries table
     // we need to remove the memory entries from the disk table one
     // by one manually.
-    nsAutoPtr<CacheEntryTable> memoryEntries;
+    mozilla::UniquePtr<CacheEntryTable> memoryEntries;
     sGlobalEntryTables->Remove(memoryStorageID, &memoryEntries);
 
     CacheEntryTable* diskEntries;
@@ -2188,15 +2287,14 @@ CacheStorageService::CollectReports(nsIHandleReportCallback* aHandleReport,
         }
       }
 
-      // These key names are not privacy-sensitive.
       aHandleReport->Callback(
           EmptyCString(),
           nsPrintfCString(
               "explicit/network/cache2/%s-storage(%s)",
               table->Type() == CacheEntryTable::MEMORY_ONLY ? "memory" : "disk",
-              iter1.Key().BeginReading()),
+              aAnonymize ? "<anonymized>" : iter1.Key().BeginReading()),
           nsIMemoryReporter::KIND_HEAP, nsIMemoryReporter::UNITS_BYTES, size,
-          NS_LITERAL_CSTRING("Memory used by the cache storage."), aData);
+          "Memory used by the cache storage."_ns, aData);
     }
   }
 

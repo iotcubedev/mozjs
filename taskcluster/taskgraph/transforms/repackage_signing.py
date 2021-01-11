@@ -9,28 +9,27 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 import os
 
+from six import text_type
 from taskgraph.loader.single_dep import schema
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.attributes import copy_attributes_from_dependent_job
 from taskgraph.util.scriptworker import (
     get_signing_cert_scope_per_platform,
-    get_worker_type_for_scope,
 )
 from taskgraph.transforms.task import task_description_schema
-from voluptuous import Required, Optional
+from voluptuous import Optional
 
 repackage_signing_description_schema = schema.extend({
-    Required('depname', default='repackage'): basestring,
-    Optional('label'): basestring,
+    Optional('label'): text_type,
     Optional('treeherder'): task_description_schema['treeherder'],
     Optional('shipping-product'): task_description_schema['shipping-product'],
     Optional('shipping-phase'): task_description_schema['shipping-phase'],
 })
 
 SIGNING_FORMATS = {
-    "target.installer.exe": ["sha2signcode"],
-    "target.stub-installer.exe": ["sha2signcodestub"],
-    "target.installer.msi": ["sha2signcode"],
+    "target.installer.exe": ["autograph_authenticode_stub"],
+    "target.stub-installer.exe": ["autograph_authenticode_stub"],
+    "target.installer.msi": ["autograph_authenticode"],
 }
 
 transforms = TransformSequence()
@@ -46,10 +45,7 @@ def make_repackage_signing_description(config, jobs):
         attributes['repackage_type'] = 'repackage-signing'
 
         treeherder = job.get('treeherder', {})
-        if attributes.get('nightly'):
-            treeherder.setdefault('symbol', 'rs(N)')
-        else:
-            treeherder.setdefault('symbol', 'rs(B)')
+        treeherder.setdefault('symbol', 'rs(B)')
         dep_th_platform = dep_job.task.get('extra', {}).get('treeherder-platform')
         treeherder.setdefault('platform', dep_th_platform)
         treeherder.setdefault(
@@ -88,14 +84,14 @@ def make_repackage_signing_description(config, jobs):
         )
 
         build_platform = dep_job.attributes.get('build_platform')
-        is_nightly = dep_job.attributes.get('nightly', dep_job.attributes.get('shippable'))
+        is_shippable = dep_job.attributes.get('shippable')
         signing_cert_scope = get_signing_cert_scope_per_platform(
-            build_platform, is_nightly, config
+            build_platform, is_shippable, config
         )
         scopes = [signing_cert_scope]
 
         upstream_artifacts = []
-        for artifact in dep_job.release_artifacts:
+        for artifact in sorted(dep_job.release_artifacts):
             basename = os.path.basename(artifact)
             if basename in SIGNING_FORMATS:
                 upstream_artifacts.append({
@@ -108,7 +104,7 @@ def make_repackage_signing_description(config, jobs):
         task = {
             'label': label,
             'description': description,
-            'worker-type': get_worker_type_for_scope(config, signing_cert_scope),
+            'worker-type': 'linux-signing',
             'worker': {'implementation': 'scriptworker-signing',
                        'upstream-artifacts': upstream_artifacts,
                        'max-run-time': 3600},
@@ -116,6 +112,7 @@ def make_repackage_signing_description(config, jobs):
             'dependencies': dependencies,
             'attributes': attributes,
             'run-on-projects': dep_job.attributes.get('run_on_projects'),
+            'optimization': dep_job.optimization,
             'treeherder': treeherder,
         }
 

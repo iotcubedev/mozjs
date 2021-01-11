@@ -11,11 +11,12 @@
 
 #include "jsmath.h"
 
-#include "frontend/SourceNotes.h"
+#include "frontend/SourceNotes.h"  // SrcNote
 #include "gc/Tracer.h"
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/UniquePtr.h"
+#include "util/Memory.h"
 #include "vm/ArrayObject.h"
 #include "vm/JSAtom.h"
 #include "vm/JSObject.h"
@@ -31,7 +32,7 @@ namespace js {
  * by offset from the bytecode with which they were generated.
  */
 struct GSNCache {
-  typedef HashMap<jsbytecode*, jssrcnote*, PointerHasher<jsbytecode*>,
+  typedef HashMap<jsbytecode*, const SrcNote*, PointerHasher<jsbytecode*>,
                   SystemAllocPolicy>
       Map;
 
@@ -65,7 +66,7 @@ struct EvalCacheLookup {
 };
 
 struct EvalCacheHashPolicy {
-  typedef EvalCacheLookup Lookup;
+  using Lookup = EvalCacheLookup;
 
   static HashNumber hash(const Lookup& l);
   static bool match(const EvalCacheEntry& entry, const EvalCacheLookup& l);
@@ -84,9 +85,9 @@ class NewObjectCache {
   static const unsigned MAX_OBJ_SIZE = 4 * sizeof(void*) + 16 * sizeof(Value);
 
   static void staticAsserts() {
-    JS_STATIC_ASSERT(NewObjectCache::MAX_OBJ_SIZE == sizeof(JSObject_Slots16));
-    JS_STATIC_ASSERT(gc::AllocKind::OBJECT_LAST ==
-                     gc::AllocKind::OBJECT16_BACKGROUND);
+    static_assert(NewObjectCache::MAX_OBJ_SIZE == sizeof(JSObject_Slots16));
+    static_assert(gc::AllocKind::OBJECT_LAST ==
+                  gc::AllocKind::OBJECT16_BACKGROUND);
   }
 
   struct Entry {

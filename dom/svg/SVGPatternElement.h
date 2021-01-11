@@ -4,10 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGPatternElement_h
-#define mozilla_dom_SVGPatternElement_h
+#ifndef DOM_SVG_SVGPATTERNELEMENT_H_
+#define DOM_SVG_SVGPATTERNELEMENT_H_
 
-#include "nsAutoPtr.h"
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedPreserveAspectRatio.h"
@@ -15,20 +14,21 @@
 #include "SVGAnimatedTransformList.h"
 #include "SVGAnimatedViewBox.h"
 #include "mozilla/dom/SVGElement.h"
-
-class nsSVGPatternFrame;
+#include "mozilla/UniquePtr.h"
 
 nsresult NS_NewSVGPatternElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+class SVGPatternFrame;
+
 namespace dom {
 class DOMSVGAnimatedTransformList;
 
-typedef SVGElement SVGPatternElementBase;
+using SVGPatternElementBase = SVGElement;
 
 class SVGPatternElement final : public SVGPatternElementBase {
-  friend class ::nsSVGPatternFrame;
+  friend class mozilla::SVGPatternFrame;
 
  protected:
   friend nsresult(::NS_NewSVGPatternElement(
@@ -48,7 +48,7 @@ class SVGPatternElement final : public SVGPatternElementBase {
 
   virtual nsresult Clone(dom::NodeInfo*, nsINode** aResult) const override;
 
-  // nsSVGSVGElement methods:
+  // SVGSVGElement methods:
   virtual bool HasValidDimensions() const override;
 
   virtual mozilla::SVGAnimatedTransformList* GetAnimatedTransformList(
@@ -85,7 +85,7 @@ class SVGPatternElement final : public SVGPatternElementBase {
   SVGAnimatedEnumeration mEnumAttributes[2];
   static EnumInfo sEnumInfo[2];
 
-  nsAutoPtr<mozilla::SVGAnimatedTransformList> mPatternTransform;
+  UniquePtr<mozilla::SVGAnimatedTransformList> mPatternTransform;
 
   enum { HREF, XLINK_HREF };
   SVGAnimatedString mStringAttributes[2];
@@ -99,4 +99,4 @@ class SVGPatternElement final : public SVGPatternElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGPatternElement_h
+#endif  // DOM_SVG_SVGPATTERNELEMENT_H_

@@ -8,16 +8,14 @@ from __future__ import absolute_import, print_function
 
 import json
 import os
-import re
 import signal
+import subprocess
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "eslint"))
 from eslint import setup_helper
 
 from mozbuild.nodeutil import find_node_executable
-
-from mozprocess import ProcessHandler
 
 from mozlint import result
 
@@ -49,7 +47,8 @@ def setup(root, **lintargs):
 
 def lint(paths, config, binary=None, fix=None, setup=None, **lintargs):
     """Run eslint."""
-    setup_helper.set_project_root(lintargs['root'])
+    log = lintargs["log"]
+    setup_helper.set_project_root(lintargs["root"])
     module_path = setup_helper.get_project_root()
 
     # Valid binaries are:
@@ -64,64 +63,82 @@ def lint(paths, config, binary=None, fix=None, setup=None, **lintargs):
         print(ESLINT_NOT_FOUND_MESSAGE)
         return 1
 
-    extra_args = lintargs.get('extra_args') or []
+    extra_args = lintargs.get("extra_args") or []
     exclude_args = []
-    for path in config.get('exclude', []):
-        exclude_args.extend(['--ignore-pattern', os.path.relpath(path, lintargs['root'])])
+    for path in config.get("exclude", []):
+        exclude_args.extend(
+            ["--ignore-pattern", os.path.relpath(path, lintargs["root"])]
+        )
 
-    cmd_args = [binary,
-                os.path.join(module_path, "node_modules", "eslint", "bin", "eslint.js"),
-                # This keeps ext as a single argument.
-                '--ext', '[{}]'.format(','.join(config['extensions'])),
-                '--format', 'json',
-                ] + extra_args + exclude_args + paths
+    cmd_args = (
+        [
+            binary,
+            os.path.join(module_path, "node_modules", "eslint", "bin", "eslint.js"),
+            # This keeps ext as a single argument.
+            "--ext",
+            "[{}]".format(",".join(config["extensions"])),
+            "--format",
+            "json",
+            "--no-error-on-unmatched-pattern",
+        ]
+        + extra_args
+        + exclude_args
+        + paths
+    )
+    log.debug("Command: {}".format(" ".join(cmd_args)))
 
     # eslint requires that --fix be set before the --ext argument.
     if fix:
-        cmd_args.insert(2, '--fix')
+        cmd_args.insert(2, "--fix")
 
     shell = False
-    if os.environ.get('MSYSTEM') in ('MINGW32', 'MINGW64'):
+    if os.environ.get("MSYSTEM") in ("MINGW32", "MINGW64"):
         # The eslint binary needs to be run from a shell with msys
         shell = True
+    encoding = "utf-8"
 
     orig = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    proc = ProcessHandler(cmd_args, env=os.environ, stream=None, shell=shell)
-    proc.run()
+    proc = subprocess.Popen(
+        cmd_args, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     signal.signal(signal.SIGINT, orig)
 
     try:
-        proc.wait()
+        output, errors = proc.communicate()
     except KeyboardInterrupt:
         proc.kill()
         return []
 
-    if not proc.output:
+    if errors:
+        errors = errors.decode(encoding, "replace")
+        print(ESLINT_ERROR_MESSAGE.format(errors))
+
+    if proc.returncode >= 2:
+        return 1
+
+    if not output:
         return []  # no output means success
-
+    output = output.decode(encoding, "replace")
     try:
-        jsonresult = json.loads(proc.output[0])
+        jsonresult = json.loads(output)
     except ValueError:
-        output = "\n".join(proc.output)
-        if re.search(r'No files matching the pattern "(.*)" were found.', output):
-            print("warning: no files to lint (eslint)")
-            return []
-
         print(ESLINT_ERROR_MESSAGE.format(output))
         return 1
 
     results = []
     for obj in jsonresult:
-        errors = obj['messages']
+        errors = obj["messages"]
 
         for err in errors:
-            err.update({
-                'hint': err.get('fix'),
-                'level': 'error' if err['severity'] == 2 else 'warning',
-                'lineno': err.get('line') or 0,
-                'path': obj['filePath'],
-                'rule': err.get('ruleId'),
-            })
+            err.update(
+                {
+                    "hint": err.get("fix"),
+                    "level": "error" if err["severity"] == 2 else "warning",
+                    "lineno": err.get("line") or 0,
+                    "path": obj["filePath"],
+                    "rule": err.get("ruleId"),
+                }
+            )
             results.append(result.from_config(config, **err))
 
     return results

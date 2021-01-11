@@ -28,7 +28,7 @@ add_task(async function() {
   const toolbox = hud.toolbox;
 
   info("Log one message in the console");
-  ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.log("in-console log");
   });
   await waitFor(() => findMessage(hud, "in-console log"));
@@ -51,17 +51,25 @@ add_task(async function() {
     });
   });
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, [MESSAGES_COUNT], count => {
-    for (let i = 1; i <= count; i++) {
-      content.wrappedJSObject.log("in-inspector log " + i);
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [[MESSAGES_COUNT]],
+    count => {
+      for (let i = 1; i <= count; i++) {
+        content.wrappedJSObject.log("in-inspector log " + i);
+      }
     }
-  });
+  );
 
   info("Waiting for all messages to be logged into the store");
   await onAllMessagesInStore;
 
-  const count = await findMessages(hud, "in-inspector");
-  is(count, 0, "No messages from the inspector actually appear in the console");
+  const inInspectorMessages = await findMessages(hud, "in-inspector");
+  is(
+    inInspectorMessages.length,
+    0,
+    "No messages from the inspector actually appear in the console"
+  );
 
   info("select back the console");
   await toolbox.selectTool("webconsole");
@@ -88,7 +96,7 @@ add_task(async function() {
   const toolbox = hud.toolbox;
 
   info("Log one message in the console");
-  ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.log("in-console log");
   });
   await waitFor(() => findMessage(hud, "in-console log"));
@@ -102,11 +110,15 @@ add_task(async function() {
 
   await toolbox.openSplitConsole();
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, [MESSAGES_COUNT], count => {
-    for (let i = 1; i <= count; i++) {
-      content.wrappedJSObject.log("in-inspector log " + i);
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [[MESSAGES_COUNT]],
+    count => {
+      for (let i = 1; i <= count; i++) {
+        content.wrappedJSObject.log("in-inspector log " + i);
+      }
     }
-  });
+  );
 
   info("Wait for all messages to be visible in the split console");
   const waitForMessagePromises = [];

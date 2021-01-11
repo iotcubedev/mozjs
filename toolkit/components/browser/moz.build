@@ -13,7 +13,6 @@ XPIDL_SOURCES += [
     'nsIEmbeddingSiteWindow.idl',
     'nsIWebBrowser.idl',
     'nsIWebBrowserChrome.idl',
-    'nsIWebBrowserChrome2.idl',
     'nsIWebBrowserChrome3.idl',
     'nsIWebBrowserChromeFocus.idl',
 ]
@@ -40,7 +39,6 @@ FINAL_LIBRARY = 'xul'
 LOCAL_INCLUDES += [
     '/docshell/base',
     '/dom/base',
-    '/dom/svg',
     '/layout/style',
 ]
 

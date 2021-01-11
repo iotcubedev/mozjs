@@ -11,6 +11,7 @@
  * and create derivative works of this document.
  */
 
+[Exposed=Window]
 interface HTMLMediaElement : HTMLElement {
 
   // error state
@@ -115,8 +116,8 @@ partial interface HTMLMediaElement {
   attribute boolean mozPreservesPitch;
 
   // NB: for internal use with the video controls:
-  [Func="IsChromeOrXBLOrUAWidget"] attribute boolean mozAllowCasting;
-  [Func="IsChromeOrXBLOrUAWidget"] attribute boolean mozIsCasting;
+  [Func="IsChromeOrUAWidget"] attribute boolean mozAllowCasting;
+  [Func="IsChromeOrUAWidget"] attribute boolean mozIsCasting;
 
   // Mozilla extension: stream capture
   [Throws]
@@ -153,14 +154,22 @@ partial interface HTMLMediaElement {
   attribute EventHandler onwaitingforkey;
 };
 
-// This is just for testing
+/**
+ * These attributes are general testing attributes and they should only be used
+ * in tests.
+ */
 partial interface HTMLMediaElement {
   [Pref="media.useAudioChannelService.testing"]
   readonly attribute double computedVolume;
+
   [Pref="media.useAudioChannelService.testing"]
   readonly attribute boolean computedMuted;
-  [Pref="media.useAudioChannelService.testing"]
-  readonly attribute unsigned long computedSuspended;
+
+  // Return true if the media is suspended because its document is inactive or
+  // the docshell is inactive and explicitly being set to prohibit all media
+  // from playing.
+  [ChromeOnly]
+  readonly attribute boolean isSuspendedByInactiveDocOrDocShell;
 };
 
 /*

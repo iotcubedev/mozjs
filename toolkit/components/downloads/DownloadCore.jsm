@@ -17,7 +17,6 @@ var EXPORTED_SYMBOLS = [
   "DownloadSaver",
   "DownloadCopySaver",
   "DownloadLegacySaver",
-  "DownloadPDFSaver",
 ];
 
 const { Integration } = ChromeUtils.import(
@@ -34,7 +33,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   FileUtils: "resource://gre/modules/FileUtils.jsm",
   NetUtil: "resource://gre/modules/NetUtil.jsm",
   OS: "resource://gre/modules/osfile.jsm",
-  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
   Services: "resource://gre/modules/Services.jsm",
 });
@@ -50,12 +48,6 @@ XPCOMUtils.defineLazyServiceGetter(
   "gExternalHelperAppService",
   "@mozilla.org/uriloader/external-helper-app-service;1",
   Ci.nsIExternalHelperAppService
-);
-XPCOMUtils.defineLazyServiceGetter(
-  this,
-  "gPrintSettingsService",
-  "@mozilla.org/gfx/printsettings-service;1",
-  Ci.nsIPrintSettingsService
 );
 
 /* global DownloadIntegration */
@@ -143,7 +135,7 @@ var Download = function() {
   this._deferSucceeded = PromiseUtils.defer();
 };
 
-this.Download.prototype = {
+Download.prototype = {
   /**
    * DownloadSource object associated with this download.
    */
@@ -723,6 +715,12 @@ this.Download.prototype = {
    * or file extension, or with a custom application if launcherPath
    * is set.
    *
+   * @param options.openWhere  Optional string indicating how to open when handling
+   *                           download by opening the target file URI.
+   *                           One of "window", "tab", "tabshifted"
+   * @param options.useSystemDefault
+   *                           Optional value indicating how to handle launching this download,
+   *                           this time only. Will override the associated mimeInfo.preferredAction
    * @return {Promise}
    * @resolves When the instruction to launch the file has been
    *           successfully given to the operating system. Note that
@@ -731,14 +729,14 @@ this.Download.prototype = {
    * @rejects  JavaScript exception if there was an error trying to launch
    *           the file.
    */
-  launch() {
+  launch(options = {}) {
     if (!this.succeeded) {
       return Promise.reject(
         new Error("launch can only be called if the download succeeded")
       );
     }
 
-    return DownloadIntegration.launchDownload(this);
+    return DownloadIntegration.launchDownload(this, options);
   },
 
   /*
@@ -1207,6 +1205,7 @@ const kPlainSerializableDownloadProperties = [
   "launcherPath",
   "launchWhenSucceeded",
   "contentType",
+  "handleInternally",
 ];
 
 /**
@@ -1293,7 +1292,7 @@ Download.fromSerializable = function(aSerializable) {
  */
 var DownloadSource = function() {};
 
-this.DownloadSource.prototype = {
+DownloadSource.prototype = {
   /**
    * String containing the URI for the download source.
    */
@@ -1330,12 +1329,40 @@ this.DownloadSource.prototype = {
   adjustChannel: null,
 
   /**
+   * For downloads handled by the (default) DownloadCopySaver, this function
+   * will determine, if provided, if a download can progress or has to be
+   * cancelled based on the HTTP status code of the network channel.
+   *
+   * @note If this is defined this object will not be serializable, thus the
+   *       Download object will not be persisted across sessions.
+   *
+   * @param aDownload
+   *        The download asking.
+   * @param aStatus
+   *        The HTTP status in question
+   *
+   * @return {Boolean} Download can progress
+   */
+  allowHttpStatus: null,
+
+  /**
+   * Represents the loadingPrincipal of the download source,
+   * could be null, in which case the system principal is used instead.
+   */
+  loadingPrincipal: null,
+
+  /**
    * Returns a static representation of the current object state.
    *
    * @return A JavaScript object that can be serialized to JSON.
    */
   toSerializable() {
     if (this.adjustChannel) {
+      // If the callback was used, we can't reproduce this across sessions.
+      return null;
+    }
+
+    if (this.allowHttpStatus) {
       // If the callback was used, we can't reproduce this across sessions.
       return null;
     }
@@ -1356,6 +1383,12 @@ this.DownloadSource.prototype = {
       serializable.referrerInfo = E10SUtils.serializeReferrerInfo(
         this.referrerInfo
       );
+    }
+
+    if (this.loadingPrincipal) {
+      serializable.loadingPrincipal = isString(this.loadingPrincipal)
+        ? this.loadingPrincipal
+        : E10SUtils.serializePrincipal(this.loadingPrincipal);
     }
 
     serializeUnknownProperties(this, serializable);
@@ -1381,28 +1414,29 @@ this.DownloadSource.prototype = {
  *                         this function can adjust the network channel before
  *                         it is opened, for example to change the HTTP headers
  *                         or to upload a stream as POST data.  Optional.
+ *          allowHttpStatus: For downloads handled by the (default)
+ *                           DownloadCopySaver, this function will determine, if
+ *                           provided, if a download can progress or has to be
+ *                           cancelled based on the HTTP status code of the
+ *                           network channel.
  *        }
  *
  * @return The newly created DownloadSource object.
  */
-this.DownloadSource.fromSerializable = function(aSerializable) {
+DownloadSource.fromSerializable = function(aSerializable) {
   let source = new DownloadSource();
   if (isString(aSerializable)) {
     // Convert String objects to primitive strings at this point.
     source.url = aSerializable.toString();
   } else if (aSerializable instanceof Ci.nsIURI) {
     source.url = aSerializable.spec;
-  } else if (aSerializable instanceof Ci.nsIDOMWindow) {
-    source.url = aSerializable.location.href;
-    source.isPrivate = PrivateBrowsingUtils.isContentWindowPrivate(
-      aSerializable
-    );
-    source.windowRef = Cu.getWeakReference(aSerializable);
   } else {
     // Convert String objects to primitive strings at this point.
     source.url = aSerializable.url.toString();
-    if ("isPrivate" in aSerializable) {
-      source.isPrivate = aSerializable.isPrivate;
+    for (let propName of ["isPrivate", "userContextId", "browsingContextId"]) {
+      if (propName in aSerializable) {
+        source[propName] = aSerializable[propName];
+      }
     }
     if ("referrerInfo" in aSerializable) {
       // Quick pass, pass directly nsIReferrerInfo, we don't need to serialize
@@ -1415,8 +1449,23 @@ this.DownloadSource.fromSerializable = function(aSerializable) {
         );
       }
     }
+    if ("loadingPrincipal" in aSerializable) {
+      // Quick pass, pass directly nsIPrincipal, we don't need to serialize
+      // and deserialize
+      if (aSerializable.loadingPrincipal instanceof Ci.nsIPrincipal) {
+        source.loadingPrincipal = aSerializable.loadingPrincipal;
+      } else {
+        source.loadingPrincipal = E10SUtils.deserializePrincipal(
+          aSerializable.loadingPrincipal
+        );
+      }
+    }
     if ("adjustChannel" in aSerializable) {
       source.adjustChannel = aSerializable.adjustChannel;
+    }
+
+    if ("allowHttpStatus" in aSerializable) {
+      source.allowHttpStatus = aSerializable.allowHttpStatus;
     }
 
     deserializeUnknownProperties(
@@ -1438,7 +1487,7 @@ this.DownloadSource.fromSerializable = function(aSerializable) {
  */
 var DownloadTarget = function() {};
 
-this.DownloadTarget.prototype = {
+DownloadTarget.prototype = {
   /**
    * String containing the path of the target file.
    */
@@ -1534,7 +1583,7 @@ this.DownloadTarget.prototype = {
  *
  * @return The newly created DownloadTarget object.
  */
-this.DownloadTarget.fromSerializable = function(aSerializable) {
+DownloadTarget.fromSerializable = function(aSerializable) {
   let target = new DownloadTarget();
   if (isString(aSerializable)) {
     // Convert String objects to primitive strings at this point.
@@ -1639,11 +1688,11 @@ var DownloadError = function(aProperties) {
  *
  * @note These values should not be changed because they can be serialized.
  */
-this.DownloadError.BLOCK_VERDICT_MALWARE = "Malware";
-this.DownloadError.BLOCK_VERDICT_POTENTIALLY_UNWANTED = "PotentiallyUnwanted";
-this.DownloadError.BLOCK_VERDICT_UNCOMMON = "Uncommon";
+DownloadError.BLOCK_VERDICT_MALWARE = "Malware";
+DownloadError.BLOCK_VERDICT_POTENTIALLY_UNWANTED = "PotentiallyUnwanted";
+DownloadError.BLOCK_VERDICT_UNCOMMON = "Uncommon";
 
-this.DownloadError.prototype = {
+DownloadError.prototype = {
   __proto__: Error.prototype,
 
   /**
@@ -1736,7 +1785,7 @@ this.DownloadError.prototype = {
  *
  * @return The newly created DownloadError object.
  */
-this.DownloadError.fromSerializable = function(aSerializable) {
+DownloadError.fromSerializable = function(aSerializable) {
   let e = new DownloadError(aSerializable);
   deserializeUnknownProperties(
     e,
@@ -1761,7 +1810,7 @@ this.DownloadError.fromSerializable = function(aSerializable) {
  */
 var DownloadSaver = function() {};
 
-this.DownloadSaver.prototype = {
+DownloadSaver.prototype = {
   /**
    * Download object for raising notifications and reading properties.
    *
@@ -1861,7 +1910,7 @@ this.DownloadSaver.prototype = {
  *
  * @return The newly created DownloadSaver object.
  */
-this.DownloadSaver.fromSerializable = function(aSerializable) {
+DownloadSaver.fromSerializable = function(aSerializable) {
   let serializable = isString(aSerializable)
     ? { type: aSerializable }
     : aSerializable;
@@ -1872,9 +1921,6 @@ this.DownloadSaver.fromSerializable = function(aSerializable) {
       break;
     case "legacy":
       saver = DownloadLegacySaver.fromSerializable(serializable);
-      break;
-    case "pdf":
-      saver = DownloadPDFSaver.fromSerializable(serializable);
       break;
     default:
       throw new Error("Unrecoginzed download saver type.");
@@ -1887,7 +1933,7 @@ this.DownloadSaver.fromSerializable = function(aSerializable) {
  */
 var DownloadCopySaver = function() {};
 
-this.DownloadCopySaver.prototype = {
+DownloadCopySaver.prototype = {
   __proto__: DownloadSaver.prototype,
 
   /**
@@ -1909,7 +1955,7 @@ this.DownloadCopySaver.prototype = {
   _sha256Hash: null,
 
   /**
-   * Save the signature info as an nsIArray of nsIX509CertList of nsIX509Cert
+   * Save the signature info as an Array of Array of raw bytes of nsIX509Cert
    * if the file is signed. This is empty if the file is unsigned, and null
    * unless BackgroundFileSaver has successfully completed saving the file.
    */
@@ -1936,8 +1982,6 @@ this.DownloadCopySaver.prototype = {
    * Implements "DownloadSaver.execute".
    */
   async execute(aSetProgressBytesFn, aSetPropertiesFn) {
-    let copySaver = this;
-
     this._canceled = false;
 
     let download = this.download;
@@ -1986,6 +2030,8 @@ this.DownloadCopySaver.prototype = {
 
     // Create the object that will save the file in a background thread.
     let backgroundFileSaver = new BackgroundFileSaverStreamListener();
+    backgroundFileSaver.QueryInterface(Ci.nsIStreamListener);
+
     try {
       // When the operation completes, reflect the status in the promise
       // returned by this download execution function.
@@ -2011,59 +2057,16 @@ this.DownloadCopySaver.prototype = {
         },
       };
 
-      // Create a channel from the source, and listen to progress
-      // notifications.
-      let channel = NetUtil.newChannel({
-        uri: download.source.url,
-        loadUsingSystemPrincipal: true,
-        contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
-      });
-      if (channel instanceof Ci.nsIPrivateBrowsingChannel) {
-        channel.setPrivate(download.source.isPrivate);
-      }
-      if (
-        channel instanceof Ci.nsIHttpChannel &&
-        download.source.referrerInfo
-      ) {
-        channel.referrerInfo = download.source.referrerInfo;
-        // Stored computed referrerInfo;
-        download.source.referrerInfo = channel.referrerInfo;
-      }
-
-      // This makes the channel be corretly throttled during page loads
-      // and also prevents its caching.
-      if (channel instanceof Ci.nsIHttpChannelInternal) {
-        channel.channelIsForDownload = true;
-      }
-
       // If we have data that we can use to resume the download from where
       // it stopped, try to use it.
       let resumeAttempted = false;
       let resumeFromBytes = 0;
-      if (
-        channel instanceof Ci.nsIResumableChannel &&
-        this.entityID &&
-        partFilePath &&
-        keepPartialData
-      ) {
-        try {
-          let stat = await OS.File.stat(partFilePath);
-          channel.resumeAt(stat.size, this.entityID);
-          resumeAttempted = true;
-          resumeFromBytes = stat.size;
-        } catch (ex) {
-          if (!(ex instanceof OS.File.Error) || !ex.becauseNoSuchFile) {
-            throw ex;
-          }
-        }
-      }
 
-      channel.notificationCallbacks = {
-        QueryInterface: ChromeUtils.generateQI([Ci.nsIInterfaceRequestor]),
-        getInterface: ChromeUtils.generateQI([Ci.nsIProgressEventSink]),
+      const notificationCallbacks = {
+        QueryInterface: ChromeUtils.generateQI(["nsIInterfaceRequestor"]),
+        getInterface: ChromeUtils.generateQI(["nsIProgressEventSink"]),
         onProgress: function DCSE_onProgress(
           aRequest,
-          aContext,
           aProgress,
           aProgressMax
         ) {
@@ -2079,37 +2082,46 @@ this.DownloadCopySaver.prototype = {
         onStatus() {},
       };
 
-      // If the callback was set, handle it now before opening the channel.
-      if (download.source.adjustChannel) {
-        await download.source.adjustChannel(channel);
-      }
-
-      // Open the channel, directing output to the background file saver.
-      backgroundFileSaver.QueryInterface(Ci.nsIStreamListener);
-      channel.asyncOpen({
+      const streamListener = {
         onStartRequest: function(aRequest) {
           backgroundFileSaver.onStartRequest(aRequest);
 
-          // Check if the request's response has been blocked by Windows
-          // Parental Controls with an HTTP 450 error code.
-          if (
-            aRequest instanceof Ci.nsIHttpChannel &&
-            aRequest.responseStatus == 450
-          ) {
-            // Set a flag that can be retrieved later when handling the
-            // cancellation so that the proper error can be thrown.
-            this.download._blockedByParentalControls = true;
-            aRequest.cancel(Cr.NS_BINDING_ABORTED);
-            return;
+          if (aRequest instanceof Ci.nsIHttpChannel) {
+            // Check if the request's response has been blocked by Windows
+            // Parental Controls with an HTTP 450 error code.
+            if (aRequest.responseStatus == 450) {
+              // Set a flag that can be retrieved later when handling the
+              // cancellation so that the proper error can be thrown.
+              this.download._blockedByParentalControls = true;
+              aRequest.cancel(Cr.NS_BINDING_ABORTED);
+              return;
+            }
+
+            // Check back with the initiator if we should allow a certain
+            // HTTP code. By default, we'll just save error pages too,
+            // however a consumer down the line, such as the WebExtensions
+            // downloads API might want to handle this differently.
+            if (
+              download.source.allowHttpStatus &&
+              !download.source.allowHttpStatus(
+                download,
+                aRequest.responseStatus
+              )
+            ) {
+              aRequest.cancel(Cr.NS_BINDING_ABORTED);
+              return;
+            }
           }
 
-          aSetPropertiesFn({ contentType: channel.contentType });
+          if (aRequest instanceof Ci.nsIChannel) {
+            aSetPropertiesFn({ contentType: aRequest.contentType });
 
-          // Ensure we report the value of "Content-Length", if available,
-          // even if the download doesn't generate any progress events
-          // later.
-          if (channel.contentLength >= 0) {
-            aSetProgressBytesFn(0, channel.contentLength);
+            // Ensure we report the value of "Content-Length", if available,
+            // even if the download doesn't generate any progress events
+            // later.
+            if (aRequest.contentLength >= 0) {
+              aSetProgressBytesFn(0, aRequest.contentLength);
+            }
           }
 
           // If the URL we are downloading from includes a file extension
@@ -2117,15 +2129,15 @@ this.DownloadCopySaver.prototype = {
           // with a "gzip" encoding, we should save the file in its encoded
           // form.  In all other cases, we decode the body while saving.
           if (
-            channel instanceof Ci.nsIEncodedChannel &&
-            channel.contentEncodings
+            aRequest instanceof Ci.nsIEncodedChannel &&
+            aRequest.contentEncodings
           ) {
-            let uri = channel.URI;
+            let uri = aRequest.URI;
             if (uri instanceof Ci.nsIURL && uri.fileExtension) {
               // Only the first, outermost encoding is considered.
-              let encoding = channel.contentEncodings.getNext();
+              let encoding = aRequest.contentEncodings.getNext();
               if (encoding) {
-                channel.applyConversion = gExternalHelperAppService.applyDecodingForExtension(
+                aRequest.applyConversion = gExternalHelperAppService.applyDecodingForExtension(
                   uri.fileExtension,
                   encoding
                 );
@@ -2177,7 +2189,7 @@ this.DownloadCopySaver.prototype = {
               false
             );
           }
-        }.bind(copySaver),
+        }.bind(this),
 
         onStopRequest(aRequest, aStatusCode) {
           try {
@@ -2200,7 +2212,82 @@ this.DownloadCopySaver.prototype = {
             aCount
           );
         },
-      });
+      };
+
+      // Wrap the channel creation, to prevent the listener code from
+      // accidentally using the wrong channel.
+      // The channel that is created here is not necessarily the same channel
+      // that will eventually perform the actual download.
+      // When a HTTP redirect happens, the http backend will create a new
+      // channel, this initial channel will be abandoned, and its properties
+      // will either return incorrect data, or worse, will throw exceptions
+      // upon access.
+      const open = async () => {
+        // Create a channel from the source, and listen to progress
+        // notifications.
+        let channel;
+        if (download.source.loadingPrincipal) {
+          channel = NetUtil.newChannel({
+            uri: download.source.url,
+            contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
+            loadingPrincipal: download.source.loadingPrincipal,
+            securityFlags:
+              Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+          });
+        } else {
+          channel = NetUtil.newChannel({
+            uri: download.source.url,
+            contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
+            loadUsingSystemPrincipal: true,
+          });
+        }
+        if (channel instanceof Ci.nsIPrivateBrowsingChannel) {
+          channel.setPrivate(download.source.isPrivate);
+        }
+        if (
+          channel instanceof Ci.nsIHttpChannel &&
+          download.source.referrerInfo
+        ) {
+          channel.referrerInfo = download.source.referrerInfo;
+          // Stored computed referrerInfo;
+          download.source.referrerInfo = channel.referrerInfo;
+        }
+
+        // This makes the channel be corretly throttled during page loads
+        // and also prevents its caching.
+        if (channel instanceof Ci.nsIHttpChannelInternal) {
+          channel.channelIsForDownload = true;
+        }
+
+        if (
+          channel instanceof Ci.nsIResumableChannel &&
+          this.entityID &&
+          partFilePath &&
+          keepPartialData
+        ) {
+          try {
+            let stat = await OS.File.stat(partFilePath);
+            channel.resumeAt(stat.size, this.entityID);
+            resumeAttempted = true;
+            resumeFromBytes = stat.size;
+          } catch (ex) {
+            if (!(ex instanceof OS.File.Error) || !ex.becauseNoSuchFile) {
+              throw ex;
+            }
+          }
+        }
+
+        channel.notificationCallbacks = notificationCallbacks;
+
+        // If the callback was set, handle it now before opening the channel.
+        if (download.source.adjustChannel) {
+          await download.source.adjustChannel(channel);
+        }
+        channel.asyncOpen(streamListener);
+      };
+
+      // Kick off the download, creating and opening the channel.
+      await open();
 
       // We should check if we have been canceled in the meantime, after
       // all the previous asynchronous operations have been executed and
@@ -2372,7 +2459,7 @@ this.DownloadCopySaver.prototype = {
  *
  * @return The newly created DownloadCopySaver object.
  */
-this.DownloadCopySaver.fromSerializable = function(aSerializable) {
+DownloadCopySaver.fromSerializable = function(aSerializable) {
   let saver = new DownloadCopySaver();
   if ("entityID" in aSerializable) {
     saver.entityID = aSerializable.entityID;
@@ -2397,7 +2484,7 @@ var DownloadLegacySaver = function() {
   this.deferCanceled = PromiseUtils.defer();
 };
 
-this.DownloadLegacySaver.prototype = {
+DownloadLegacySaver.prototype = {
   __proto__: DownloadSaver.prototype,
 
   /**
@@ -2408,7 +2495,7 @@ this.DownloadLegacySaver.prototype = {
   _sha256Hash: null,
 
   /**
-   * Save the signature info as an nsIArray of nsIX509CertList of nsIX509Cert
+   * Save the signature info as an Array of Array of raw bytes of nsIX509Cert
    * if the file is signed. This is empty if the file is unsigned, and null
    * unless BackgroundFileSaver has successfully completed saving the file.
    */
@@ -2739,156 +2826,6 @@ this.DownloadLegacySaver.prototype = {
  * deserializable form only when creating a new object in memory, because it
  * cannot be serialized to disk.
  */
-this.DownloadLegacySaver.fromSerializable = function() {
+DownloadLegacySaver.fromSerializable = function() {
   return new DownloadLegacySaver();
-};
-
-/**
- * This DownloadSaver type creates a PDF file from the current document in a
- * given window, specified using the windowRef property of the DownloadSource
- * object associated with the download.
- *
- * In order to prevent the download from saving a different document than the one
- * originally loaded in the window, any attempt to restart the download will fail.
- *
- * Since this DownloadSaver type requires a live document as a source, it cannot
- * be persisted across sessions, unless the download already succeeded.
- */
-var DownloadPDFSaver = function() {};
-
-this.DownloadPDFSaver.prototype = {
-  __proto__: DownloadSaver.prototype,
-
-  /**
-   * An nsIWebBrowserPrint instance for printing this page.
-   * This is null when saving has not started or has completed,
-   * or while the operation is being canceled.
-   */
-  _webBrowserPrint: null,
-
-  /**
-   * Implements "DownloadSaver.execute".
-   */
-  async execute(aSetProgressBytesFn, aSetPropertiesFn) {
-    if (!this.download.source.windowRef) {
-      throw new DownloadError({
-        message:
-          "PDF saver must be passed an open window, and cannot be restarted.",
-        becauseSourceFailed: true,
-      });
-    }
-
-    let win = this.download.source.windowRef.get();
-
-    // Set windowRef to null to avoid re-trying.
-    this.download.source.windowRef = null;
-
-    if (!win) {
-      throw new DownloadError({
-        message: "PDF saver can't save a window that has been closed.",
-        becauseSourceFailed: true,
-      });
-    }
-
-    this.addToHistory();
-
-    let targetPath = this.download.target.path;
-
-    // An empty target file must exist for the PDF printer to work correctly.
-    let file = await OS.File.open(targetPath, { truncate: true });
-    await file.close();
-
-    let printSettings = gPrintSettingsService.newPrintSettings;
-
-    printSettings.printToFile = true;
-    printSettings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
-    printSettings.toFileName = targetPath;
-
-    printSettings.printSilent = true;
-    printSettings.showPrintProgress = false;
-
-    printSettings.printBGImages = true;
-    printSettings.printBGColors = true;
-    printSettings.headerStrCenter = "";
-    printSettings.headerStrLeft = "";
-    printSettings.headerStrRight = "";
-    printSettings.footerStrCenter = "";
-    printSettings.footerStrLeft = "";
-    printSettings.footerStrRight = "";
-
-    this._webBrowserPrint = win.getInterface(Ci.nsIWebBrowserPrint);
-
-    try {
-      await new Promise((resolve, reject) => {
-        this._webBrowserPrint.print(printSettings, {
-          onStateChange(webProgress, request, stateFlags, status) {
-            if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
-              if (!Components.isSuccessCode(status)) {
-                reject(new DownloadError({ result: status, inferCause: true }));
-              } else {
-                resolve();
-              }
-            }
-          },
-          onProgressChange(
-            webProgress,
-            request,
-            curSelfProgress,
-            maxSelfProgress,
-            curTotalProgress,
-            maxTotalProgress
-          ) {
-            aSetProgressBytesFn(curTotalProgress, maxTotalProgress, false);
-          },
-          onLocationChange() {},
-          onStatusChange() {},
-          onSecurityChange() {},
-          onContentBlockingEvent() {},
-        });
-      });
-    } finally {
-      // Remove the print object to avoid leaks
-      this._webBrowserPrint = null;
-    }
-
-    let fileInfo = await OS.File.stat(targetPath);
-    aSetProgressBytesFn(fileInfo.size, fileInfo.size, false);
-  },
-
-  /**
-   * Implements "DownloadSaver.cancel".
-   */
-  cancel: function DCS_cancel() {
-    if (this._webBrowserPrint) {
-      this._webBrowserPrint.cancel();
-      this._webBrowserPrint = null;
-    }
-  },
-
-  /**
-   * Implements "DownloadSaver.toSerializable".
-   */
-  toSerializable() {
-    if (this.download.succeeded) {
-      return DownloadCopySaver.prototype.toSerializable.call(this);
-    }
-
-    // This object needs a window to recreate itself. If it didn't succeded
-    // it will not be possible to restart. Returning null here will
-    // prevent us from serializing it at all.
-    return null;
-  },
-};
-
-/**
- * Creates a new DownloadPDFSaver object, with its initial state derived from
- * its serializable representation.
- *
- * @param aSerializable
- *        Serializable representation of a DownloadPDFSaver object.
- *
- * @return The newly created DownloadPDFSaver object.
- */
-this.DownloadPDFSaver.fromSerializable = function(aSerializable) {
-  return new DownloadPDFSaver();
 };

@@ -12,19 +12,20 @@
   <link rel="stylesheet" href="chrome://devtools/skin/inspector.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/badge.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/rules.css"/>
+  <link rel="stylesheet" href="chrome://devtools/skin/compatibility.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/computed.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/changes.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/fonts.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/boxmodel.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/layout.css"/>
   <link rel="stylesheet" href="chrome://devtools/skin/animation.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/shared/components/tabs/Tabs.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/shared/components/SidebarToggle.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/inspector/components/InspectorTabPanel.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/shared/components/splitter/SplitBox.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/inspector/layout/components/Accordion.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/shared/components/reps/reps.css"/>
-  <link rel="stylesheet" href="resource://devtools/client/shared/components/tree/TreeView.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/tabs/Tabs.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/SidebarToggle.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/inspector/components/InspectorTabPanel.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/splitter/SplitBox.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/Accordion.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/reps/reps.css"/>
+  <link rel="stylesheet" href="chrome://devtools/content/shared/components/tree/TreeView.css"/>
 
   <script src="chrome://devtools/content/shared/theme-switching.js"></script>
   <script>
@@ -101,6 +102,7 @@
               <button id="pseudo-class-panel-toggle" data-localization="title=inspector.togglePseudo.tooltip" class="devtools-button"></button>
               <button id="class-panel-toggle" data-localization="title=inspector.classPanel.toggleClass.tooltip" class="devtools-button"></button>
               <button id="ruleview-add-rule-button" data-localization="title=inspector.addRule.tooltip" class="devtools-button"></button>
+              <button id="color-scheme-simulation-toggle" data-localization="title=inspector.colorSchemeSimulation.tooltip" class="devtools-button" hidden="true"></button>
               <button id="print-simulation-toggle" data-localization="title=inspector.printSimulation.tooltip" class="devtools-button" hidden="true"></button>
             </div>
           </div>
@@ -110,7 +112,7 @@
           <div id="ruleview-class-panel" class="theme-toolbar ruleview-reveal-panel" hidden="true"></div>
         </div>
 
-        <div id="ruleview-container" class="ruleview">
+        <div id="ruleview-container" class="ruleview" role="document">
           <div id="ruleview-container-focusable" tabindex="-1">
           </div>
         </div>
@@ -125,6 +127,7 @@
                    data-localization="placeholder=inspector.filterStyles.placeholder"/>
             <button id="computed-searchinput-clear" class="devtools-searchinput-clear"></button>
           </div>
+          <div class="devtools-separator"></div>
           <input id="browser-style-checkbox"
                  type="checkbox"
                  class="includebrowserstyles"/>
@@ -132,7 +135,7 @@
                  data-localization="content=inspector.browserStyles.label"></label>
         </div>
 
-        <div id="computed-container">
+        <div id="computed-container" role="document">
           <div id="computed-container-focusable" tabindex="-1">
             <div id="computed-property-container" class="devtools-monospace" tabindex="0" dir="ltr"></div>
             <div id="computed-no-results" class="devtools-sidepanel-no-result" hidden="" data-localization="content=inspector.noProperties"></div>

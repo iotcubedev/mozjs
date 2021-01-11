@@ -123,7 +123,7 @@ var Sanitizer = {
         : parentWindow;
     Services.ww.openWindow(
       win,
-      "chrome://browser/content/sanitize.xul",
+      "chrome://browser/content/sanitize.xhtml",
       "Sanitize",
       "chrome,titlebar,dialog,centerscreen,modal",
       null
@@ -341,8 +341,8 @@ var Sanitizer = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
 
   // This method is meant to be used by tests.
@@ -411,13 +411,14 @@ var Sanitizer = {
           )) {
             let currentDocument = currentWindow.document;
 
-            // searchBar.textbox may not exist due to the search bar binding
-            // not having been constructed yet if the search bar is in the
-            // overflow or menu panel. It won't have a value or edit history in
-            // that case.
+            // searchBar may not exist if it's in the customize mode.
             let searchBar = currentDocument.getElementById("searchbar");
-            if (searchBar && searchBar.textbox) {
-              searchBar.textbox.reset();
+            if (searchBar) {
+              let input = searchBar.textbox;
+              input.value = "";
+              try {
+                input.editor.transactionManager.clear();
+              } catch (e) {}
             }
 
             let tabBrowser = currentWindow.gBrowser;
@@ -552,7 +553,7 @@ var Sanitizer = {
           }
         }
 
-        if (windowList.length == 0) {
+        if (!windowList.length) {
           return;
         }
 
@@ -723,12 +724,10 @@ async function sanitizeInternal(items, aItemsToClear, progress, options = {}) {
       // Catch errors here, so later we can just loop through these.
       handles.push({
         name,
-        promise: item
-          .clear(range, options)
-          .then(
-            () => (progress[name] = "cleared"),
-            ex => annotateError(name, ex)
-          ),
+        promise: item.clear(range, options).then(
+          () => (progress[name] = "cleared"),
+          ex => annotateError(name, ex)
+        ),
       });
     } catch (ex) {
       annotateError(name, ex);
@@ -769,7 +768,7 @@ class PrincipalsCollector {
   async getAllPrincipalsInternal(progress) {
     progress.step = "principals-quota-manager";
     let principals = await new Promise(resolve => {
-      quotaManagerService.listOrigins(request => {
+      quotaManagerService.listOrigins().callback = request => {
         progress.step = "principals-quota-manager-listOrigins";
         if (request.resultCode != Cr.NS_OK) {
           // We are probably shutting down. We don't want to propagate the
@@ -779,19 +778,18 @@ class PrincipalsCollector {
         }
 
         let list = [];
-        for (let item of request.result) {
+        for (const origin of request.result) {
           let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-            item.origin
+            origin
           );
-          let uri = principal.URI;
-          if (isSupportedURI(uri)) {
+          if (isSupportedPrincipal(principal)) {
             list.push(principal);
           }
         }
 
         progress.step = "principals-quota-manager-completed";
         resolve(list);
-      });
+      };
     }).catch(ex => {
       Cu.reportError("QuotaManagerService promise failed: " + ex);
       return [];
@@ -810,9 +808,9 @@ class PrincipalsCollector {
 
     // Let's take the list of unique hosts+OA from cookies.
     progress.step = "principals-cookies";
-    let enumerator = Services.cookies.enumerator;
+    let cookies = Services.cookies.cookies;
     let hosts = new Set();
-    for (let cookie of enumerator) {
+    for (let cookie of cookies) {
       hosts.add(
         cookie.rawHost +
           ChromeUtils.originAttributesToSuffix(cookie.originAttributes)
@@ -837,6 +835,41 @@ class PrincipalsCollector {
 
 async function sanitizeOnShutdown(progress) {
   log("Sanitizing on shutdown");
+  progress.sanitizationPrefs = {
+    network_cookie_lifetimePolicy: Services.prefs.getIntPref(
+      "network.cookie.lifetimePolicy"
+    ),
+    privacy_sanitize_sanitizeOnShutdown: Services.prefs.getBoolPref(
+      "privacy.sanitize.sanitizeOnShutdown"
+    ),
+    privacy_clearOnShutdown_cookies: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.cookies"
+    ),
+    privacy_clearOnShutdown_history: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.history"
+    ),
+    privacy_clearOnShutdown_formdata: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.formdata"
+    ),
+    privacy_clearOnShutdown_downloads: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.downloads"
+    ),
+    privacy_clearOnShutdown_cache: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.cache"
+    ),
+    privacy_clearOnShutdown_sessions: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.sessions"
+    ),
+    privacy_clearOnShutdown_offlineApps: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.offlineApps"
+    ),
+    privacy_clearOnShutdown_siteSettings: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.siteSettings"
+    ),
+    privacy_clearOnShutdown_openWindows: Services.prefs.getBoolPref(
+      "privacy.clearOnShutdown.openWindows"
+    ),
+  };
 
   let needsSyncSavePrefs = false;
   if (Sanitizer.shouldSanitizeOnShutdown) {
@@ -906,8 +939,9 @@ async function sanitizeOnShutdown(progress) {
 
   progress.advancement = "session-permission";
 
+  let exceptions = 0;
   // Let's see if we have to forget some particular site.
-  for (let permission of Services.perms.enumerator) {
+  for (let permission of Services.perms.all) {
     if (
       permission.type != "cookie" ||
       permission.capability != Ci.nsICookiePermission.ACCESS_SESSION
@@ -916,31 +950,32 @@ async function sanitizeOnShutdown(progress) {
     }
 
     // We consider just permissions set for http, https and file URLs.
-    if (!isSupportedURI(permission.principal.URI)) {
+    if (!isSupportedPrincipal(permission.principal)) {
       continue;
     }
 
     log(
       "Custom session cookie permission detected for: " +
-        permission.principal.URI.spec
+        permission.principal.asciiSpec
     );
+    exceptions++;
 
     // We use just the URI here, because permissions ignore OriginAttributes.
     let principals = await principalsCollector.getAllPrincipals(progress);
     let selectedPrincipals = extractMatchingPrincipals(
       principals,
-      permission.principal.URI
+      permission.principal.host
     );
     await maybeSanitizeSessionPrincipals(progress, selectedPrincipals);
   }
-
+  progress.sanitizationPrefs.session_permission_exceptions = exceptions;
   progress.advancement = "done";
 }
 
 // Extracts the principals matching matchUri as root domain.
-function extractMatchingPrincipals(principals, matchUri) {
+function extractMatchingPrincipals(principals, matchHost) {
   return principals.filter(principal => {
-    return Services.eTLD.hasRootDomain(matchUri.host, principal.URI.host);
+    return Services.eTLD.hasRootDomain(matchHost, principal.host);
   });
 }
 
@@ -967,7 +1002,7 @@ async function maybeSanitizeSessionPrincipals(progress, principals) {
 }
 
 function cookiesAllowedForDomainOrSubDomain(principal) {
-  log("Checking principal: " + principal.URI.spec);
+  log("Checking principal: " + principal.asciispec);
 
   // If we have the 'cookie' permission for this principal, let's return
   // immediately.
@@ -991,21 +1026,19 @@ function cookiesAllowedForDomainOrSubDomain(principal) {
     return false;
   }
 
-  for (let perm of Services.perms.enumerator) {
+  for (let perm of Services.perms.all) {
     if (perm.type != "cookie") {
       continue;
     }
 
     // We consider just permissions set for http, https and file URLs.
-    if (!isSupportedURI(perm.principal.URI)) {
+    if (!isSupportedPrincipal(perm.principal)) {
       continue;
     }
 
     // We don't care about scheme, port, and anything else.
-    if (
-      Services.eTLD.hasRootDomain(perm.principal.URI.host, principal.URI.host)
-    ) {
-      log("Recursive cookie check on principal: " + perm.principal.URI.spec);
+    if (Services.eTLD.hasRootDomain(perm.principal.host, principal.host)) {
+      log("Recursive cookie check on principal: " + perm.principal.asciiSpec);
       return cookiesAllowedForDomainOrSubDomain(perm.principal);
     }
   }
@@ -1015,7 +1048,7 @@ function cookiesAllowedForDomainOrSubDomain(principal) {
 }
 
 async function sanitizeSessionPrincipal(progress, principal) {
-  log("Sanitizing principal: " + principal.URI.spec);
+  log("Sanitizing principal: " + principal.asciispec);
 
   await new Promise(resolve => {
     progress.sanitizePrincipal = "started";
@@ -1125,6 +1158,6 @@ async function clearData(range, flags) {
   }
 }
 
-function isSupportedURI(uri) {
-  return uri.scheme == "http" || uri.scheme == "https" || uri.scheme == "file";
+function isSupportedPrincipal(principal) {
+  return ["http", "https", "file"].some(scheme => principal.schemeIs(scheme));
 }

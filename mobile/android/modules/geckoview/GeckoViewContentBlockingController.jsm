@@ -39,28 +39,53 @@ const GeckoViewContentBlockingController = {
       case "ContentBlocking:AddException": {
         const sessionWindow = Services.ww.getWindowByName(
           aData.sessionId,
-          this.window
+          null
         );
-        ContentBlockingAllowList.add(sessionWindow.browser);
+
+        if (ContentBlockingAllowList.canHandle(sessionWindow.browser)) {
+          ContentBlockingAllowList.add(sessionWindow.browser);
+        } else {
+          warn`Could not add content blocking exception`;
+        }
+
         break;
       }
 
       case "ContentBlocking:RemoveException": {
         const sessionWindow = Services.ww.getWindowByName(
           aData.sessionId,
-          this.window
+          null
         );
-        ContentBlockingAllowList.remove(sessionWindow.browser);
+
+        if (ContentBlockingAllowList.canHandle(sessionWindow.browser)) {
+          ContentBlockingAllowList.remove(sessionWindow.browser);
+        } else {
+          warn`Could not remove content blocking exception`;
+        }
+
+        break;
+      }
+
+      case "ContentBlocking:RemoveExceptionByPrincipal": {
+        const principal = E10SUtils.deserializePrincipal(aData.principal);
+        ContentBlockingAllowList.removeByPrincipal(principal);
         break;
       }
 
       case "ContentBlocking:CheckException": {
         const sessionWindow = Services.ww.getWindowByName(
           aData.sessionId,
-          this.window
+          null
         );
-        const res = ContentBlockingAllowList.includes(sessionWindow.browser);
-        aCallback.onSuccess(res);
+
+        if (ContentBlockingAllowList.canHandle(sessionWindow.browser)) {
+          const res = ContentBlockingAllowList.includes(sessionWindow.browser);
+          aCallback.onSuccess(res);
+        } else {
+          warn`Could not check content blocking exception`;
+          aCallback.onSuccess(false);
+        }
+
         break;
       }
 

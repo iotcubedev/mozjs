@@ -8,7 +8,12 @@
 add_task(async function setup() {
   await AddonTestUtils.promiseStartupManager();
 
-  useTestEngineConfig();
+  Services.prefs.setBoolPref(
+    SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
+    true
+  );
+
+  await useTestEngines();
 });
 
 async function checkOrder(expectedOrder) {

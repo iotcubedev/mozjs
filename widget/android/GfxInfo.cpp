@@ -10,10 +10,8 @@
 #include "prenv.h"
 #include "nsExceptionHandler.h"
 #include "nsHashKeys.h"
-#include "nsICrashReporter.h"
 #include "nsVersionComparator.h"
 #include "AndroidBridge.h"
-#include "nsIWindowWatcher.h"
 #include "nsServiceManagerUtils.h"
 
 #include "mozilla/Preferences.h"
@@ -67,11 +65,11 @@ class GfxInfo::GLStrings {
     RefPtr<gl::GLContext> gl;
     nsCString discardFailureId;
     gl = gl::GLContextProvider::CreateHeadless(
-        gl::CreateContextFlags::REQUIRE_COMPAT_PROFILE, &discardFailureId);
+        {gl::CreateContextFlags::REQUIRE_COMPAT_PROFILE}, &discardFailureId);
 
     if (!gl) {
       // Setting mReady to true here means that we won't retry. Everything will
-      // remain blacklisted forever. Ideally, we would like to update that once
+      // remain blocklisted forever. Ideally, we would like to update that once
       // any GLContext is successfully created, like the compositor's GLContext.
       mReady = true;
       return;
@@ -129,8 +127,17 @@ nsresult GfxInfo::GetD2DEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
 
 nsresult GfxInfo::GetDWriteEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
 
+nsresult GfxInfo::GetHasBattery(bool* aHasBattery) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 NS_IMETHODIMP
 GfxInfo::GetDWriteVersion(nsAString& aDwriteVersion) {
+  return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
+GfxInfo::GetEmbeddedInFirefoxReality(bool* aEmbeddedInFirefoxReality) {
   return NS_ERROR_FAILURE;
 }
 
@@ -141,7 +148,12 @@ GfxInfo::GetCleartypeParameters(nsAString& aCleartypeParams) {
 
 NS_IMETHODIMP
 GfxInfo::GetWindowProtocol(nsAString& aWindowProtocol) {
-  return NS_ERROR_FAILURE;
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+GfxInfo::GetDesktopEnvironment(nsAString& aDesktopEnvironment) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 void GfxInfo::EnsureInitialized() {
@@ -206,6 +218,9 @@ void GfxInfo::EnsureInitialized() {
 
   AddCrashReportAnnotations();
 
+  mScreenInfo.mScreenDimensions =
+      mozilla::AndroidBridge::Bridge()->getScreenSize();
+
   mInitialized = true;
 }
 
@@ -223,14 +238,14 @@ GfxInfo::GetAdapterDescription2(nsAString& aAdapterDescription) {
 }
 
 NS_IMETHODIMP
-GfxInfo::GetAdapterRAM(nsAString& aAdapterRAM) {
+GfxInfo::GetAdapterRAM(uint32_t* aAdapterRAM) {
   EnsureInitialized();
-  aAdapterRAM.Truncate();
+  *aAdapterRAM = 0;
   return NS_OK;
 }
 
 NS_IMETHODIMP
-GfxInfo::GetAdapterRAM2(nsAString& aAdapterRAM) {
+GfxInfo::GetAdapterRAM2(uint32_t* aAdapterRAM) {
   EnsureInitialized();
   return NS_ERROR_FAILURE;
 }
@@ -331,6 +346,29 @@ GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active) {
   return NS_ERROR_FAILURE;
 }
 
+NS_IMETHODIMP
+GfxInfo::GetDisplayInfo(nsTArray<nsString>& aDisplayInfo) {
+  EnsureInitialized();
+  nsString displayInfo;
+  displayInfo.AppendPrintf("%dx%d",
+                           (int32_t)mScreenInfo.mScreenDimensions.width,
+                           (int32_t)mScreenInfo.mScreenDimensions.height);
+  aDisplayInfo.AppendElement(displayInfo);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+GfxInfo::GetDisplayWidth(nsTArray<uint32_t>& aDisplayWidth) {
+  aDisplayWidth.AppendElement((uint32_t)mScreenInfo.mScreenDimensions.width);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+GfxInfo::GetDisplayHeight(nsTArray<uint32_t>& aDisplayHeight) {
+  aDisplayHeight.AppendElement((uint32_t)mScreenInfo.mScreenDimensions.height);
+  return NS_OK;
+}
+
 void GfxInfo::AddCrashReportAnnotations() {
   CrashReporter::AnnotateCrashReport(CrashReporter::Annotation::AdapterVendorID,
                                      mGLStrings->Vendor());
@@ -343,12 +381,10 @@ void GfxInfo::AddCrashReportAnnotations() {
 const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
   if (sDriverInfo->IsEmpty()) {
     APPEND_TO_DRIVER_BLOCKLIST2(
-        OperatingSystem::Android,
-        (nsAString&)GfxDriverInfo::GetDeviceVendor(VendorAll),
-        (nsAString&)GfxDriverInfo::GetDriverVendor(DriverVendorAll),
-        GfxDriverInfo::allDevices, nsIGfxInfo::FEATURE_OPENGL_LAYERS,
-        nsIGfxInfo::FEATURE_STATUS_OK, DRIVER_COMPARISON_IGNORED,
-        GfxDriverInfo::allDriverVersions, "FEATURE_OK_FORCE_OPENGL");
+        OperatingSystem::Android, DeviceFamily::All,
+        nsIGfxInfo::FEATURE_OPENGL_LAYERS, nsIGfxInfo::FEATURE_STATUS_OK,
+        DRIVER_COMPARISON_IGNORED, GfxDriverInfo::allDriverVersions,
+        "FEATURE_OK_FORCE_OPENGL");
   }
 
   return *sDriverInfo;
@@ -368,7 +404,7 @@ nsresult GfxInfo::GetFeatureStatusImpl(
     return NS_OK;
   }
 
-  // OpenGL layers are never blacklisted on Android.
+  // OpenGL layers are never blocklisted on Android.
   // This early return is so we avoid potentially slow
   // GLStrings initialization on startup when we initialize GL layers.
   if (aFeature == nsIGfxInfo::FEATURE_OPENGL_LAYERS) {
@@ -448,14 +484,14 @@ nsresult GfxInfo::GetFeatureStatusImpl(
         //   All Galaxy nexus ICS devices
         //   Sony Xperia Ion (LT28) ICS devices
         bool isWhitelisted =
-            cModel.Equals("LT28h", nsCaseInsensitiveCStringComparator()) ||
+            cModel.Equals("LT28h", nsCaseInsensitiveCStringComparator) ||
             cManufacturer.Equals("samsung",
-                                 nsCaseInsensitiveCStringComparator()) ||
+                                 nsCaseInsensitiveCStringComparator) ||
             cModel.Equals(
                 "galaxy nexus",
-                nsCaseInsensitiveCStringComparator());  // some Galaxy Nexus
-                                                        // have
-                                                        // manufacturer=amazon
+                nsCaseInsensitiveCStringComparator);  // some Galaxy Nexus
+                                                      // have
+                                                      // manufacturer=amazon
 
         if (cModel.Find("SGH-I717", true) != -1 ||
             cModel.Find("SGH-I727", true) != -1 ||
@@ -499,29 +535,70 @@ nsresult GfxInfo::GetFeatureStatusImpl(
 
     if (aFeature == FEATURE_WEBRTC_HW_ACCELERATION_ENCODE) {
       if (mozilla::AndroidBridge::Bridge()) {
-        *aStatus = WebRtcHwEncodeSupported();
+        *aStatus = WebRtcHwVp8EncodeSupported();
         aFailureId = "FEATURE_FAILURE_WEBRTC_ENCODE";
         return NS_OK;
       }
     }
     if (aFeature == FEATURE_WEBRTC_HW_ACCELERATION_DECODE) {
       if (mozilla::AndroidBridge::Bridge()) {
-        *aStatus = WebRtcHwDecodeSupported();
+        *aStatus = WebRtcHwVp8DecodeSupported();
         aFailureId = "FEATURE_FAILURE_WEBRTC_DECODE";
         return NS_OK;
       }
     }
-
+    if (aFeature == FEATURE_WEBRTC_HW_ACCELERATION_H264) {
+      if (mozilla::AndroidBridge::Bridge()) {
+        *aStatus = WebRtcHwH264Supported();
+        aFailureId = "FEATURE_FAILURE_WEBRTC_H264";
+        return NS_OK;
+      }
+    }
     if (aFeature == FEATURE_VP8_HW_DECODE ||
         aFeature == FEATURE_VP9_HW_DECODE) {
       NS_LossyConvertUTF16toASCII model(mModel);
       bool isBlocked =
           // GIFV crash, see bug 1232911.
-          model.Equals("GT-N8013", nsCaseInsensitiveCStringComparator());
+          model.Equals("GT-N8013", nsCaseInsensitiveCStringComparator);
 
       if (isBlocked) {
         *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
         aFailureId = "FEATURE_FAILURE_VPx";
+      } else {
+        *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
+      }
+      return NS_OK;
+    }
+
+    if (aFeature == FEATURE_WEBRENDER) {
+      bool isUnblocked = false;
+      const nsCString& gpu = mGLStrings->Renderer();
+      NS_LossyConvertUTF16toASCII model(mModel);
+
+#ifdef NIGHTLY_BUILD
+      // On nightly enable all Adreno 5xx GPUs
+      isUnblocked |= gpu.Find("Adreno (TM) 5", /*ignoreCase*/ true) >= 0;
+#endif
+      // Enable Webrender on all pixel 2 models (Subset of Adreno 5xx)
+      isUnblocked |= model.Find("Pixel 2", /*ignoreCase*/ true) >= 0;
+
+      // Enable Webrender on all Adreno 6xx devices
+      isUnblocked |= gpu.Find("Adreno (TM) 6", /*ignoreCase*/ true) >= 0;
+
+      if (!isUnblocked) {
+        *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
+        aFailureId = "FEATURE_FAILURE_WEBRENDER_BLOCKED_DEVICE";
+      } else {
+        *aStatus = nsIGfxInfo::FEATURE_ALLOW_QUALIFIED;
+      }
+      return NS_OK;
+    }
+
+    if (aFeature == FEATURE_WEBRENDER_SCISSORED_CACHE_CLEARS) {
+      const bool isMali = false;  // TODO
+      if (isMali) {
+        *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
+        aFailureId = "FEATURE_FAILURE_BUG_1603515";
       } else {
         *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
       }
@@ -573,10 +650,10 @@ static void SetCachedFeatureVal(int32_t aFeature, uint32_t aOsVer,
   Preferences::SetInt(FeatureCacheValuePrefName(aFeature).get(), aStatus);
 }
 
-int32_t GfxInfo::WebRtcHwEncodeSupported() {
+int32_t GfxInfo::WebRtcHwVp8EncodeSupported() {
   MOZ_ASSERT(mozilla::AndroidBridge::Bridge());
 
-  // The Android side of this caclulation is very slow, so we cache the result
+  // The Android side of this calculation is very slow, so we cache the result
   // in preferences, invalidating if the OS version changes.
 
   int32_t status = 0;
@@ -585,7 +662,7 @@ int32_t GfxInfo::WebRtcHwEncodeSupported() {
     return status;
   }
 
-  status = mozilla::AndroidBridge::Bridge()->GetHWEncoderCapability()
+  status = mozilla::AndroidBridge::Bridge()->HasHWVP8Encoder()
                ? nsIGfxInfo::FEATURE_STATUS_OK
                : nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
 
@@ -595,7 +672,7 @@ int32_t GfxInfo::WebRtcHwEncodeSupported() {
   return status;
 }
 
-int32_t GfxInfo::WebRtcHwDecodeSupported() {
+int32_t GfxInfo::WebRtcHwVp8DecodeSupported() {
   MOZ_ASSERT(mozilla::AndroidBridge::Bridge());
 
   // The Android side of this caclulation is very slow, so we cache the result
@@ -607,7 +684,7 @@ int32_t GfxInfo::WebRtcHwDecodeSupported() {
     return status;
   }
 
-  status = mozilla::AndroidBridge::Bridge()->GetHWDecoderCapability()
+  status = mozilla::AndroidBridge::Bridge()->HasHWVP8Decoder()
                ? nsIGfxInfo::FEATURE_STATUS_OK
                : nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
 
@@ -616,6 +693,29 @@ int32_t GfxInfo::WebRtcHwDecodeSupported() {
 
   return status;
 }
+
+int32_t GfxInfo::WebRtcHwH264Supported() {
+  MOZ_ASSERT(mozilla::AndroidBridge::Bridge());
+
+  // The Android side of this calculation is very slow, so we cache the result
+  // in preferences, invalidating if the OS version changes.
+
+  int32_t status = 0;
+  if (GetCachedFeatureVal(FEATURE_WEBRTC_HW_ACCELERATION_H264,
+                          mOSVersionInteger, status)) {
+    return status;
+  }
+
+  status = mozilla::AndroidBridge::Bridge()->HasHWH264()
+               ? nsIGfxInfo::FEATURE_STATUS_OK
+               : nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
+
+  SetCachedFeatureVal(FEATURE_WEBRTC_HW_ACCELERATION_H264, mOSVersionInteger,
+                      status);
+
+  return status;
+}
+
 #ifdef DEBUG
 
 // Implement nsIGfxInfoDebug

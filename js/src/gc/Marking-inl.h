@@ -11,6 +11,8 @@
 
 #include "mozilla/Maybe.h"
 
+#include <type_traits>
+
 #include "gc/RelocationOverlay.h"
 #include "vm/BigIntType.h"
 #include "vm/RegExpShared.h"
@@ -33,7 +35,7 @@ struct TaggedPtr<JS::Value> {
   static JS::Value wrap(JS::BigInt* bi) { return JS::BigIntValue(bi); }
   template <typename T>
   static JS::Value wrap(T* priv) {
-    static_assert(mozilla::IsBaseOf<Cell, T>::value,
+    static_assert(std::is_base_of_v<Cell, T>,
                   "Type must be a GC thing derived from js::gc::Cell");
     return JS::PrivateGCThingValue(priv);
   }
@@ -43,7 +45,7 @@ struct TaggedPtr<JS::Value> {
 template <>
 struct TaggedPtr<jsid> {
   static jsid wrap(JSString* str) {
-    return NON_INTEGER_ATOM_TO_JSID(&str->asAtom());
+    return JS::PropertyKey::fromNonIntAtom(str);
   }
   static jsid wrap(JS::Symbol* sym) { return SYMBOL_TO_JSID(sym); }
   static jsid empty() { return JSID_VOID; }
@@ -57,20 +59,16 @@ struct TaggedPtr<TaggedProto> {
 
 template <typename T>
 struct MightBeForwarded {
-  static_assert(mozilla::IsBaseOf<Cell, T>::value, "T must derive from Cell");
-  static_assert(!mozilla::IsSame<Cell, T>::value &&
-                    !mozilla::IsSame<TenuredCell, T>::value,
+  static_assert(std::is_base_of_v<Cell, T>, "T must derive from Cell");
+  static_assert(!std::is_same_v<Cell, T> && !std::is_same_v<TenuredCell, T>,
                 "T must not be Cell or TenuredCell");
 
-  static const bool value = mozilla::IsBaseOf<JSObject, T>::value ||
-                            mozilla::IsBaseOf<Shape, T>::value ||
-                            mozilla::IsBaseOf<BaseShape, T>::value ||
-                            mozilla::IsBaseOf<JSString, T>::value ||
-                            mozilla::IsBaseOf<JS::BigInt, T>::value ||
-                            mozilla::IsBaseOf<JSScript, T>::value ||
-                            mozilla::IsBaseOf<js::LazyScript, T>::value ||
-                            mozilla::IsBaseOf<js::Scope, T>::value ||
-                            mozilla::IsBaseOf<js::RegExpShared, T>::value;
+  static const bool value =
+      std::is_base_of_v<JSObject, T> || std::is_base_of_v<Shape, T> ||
+      std::is_base_of_v<BaseShape, T> || std::is_base_of_v<JSString, T> ||
+      std::is_base_of_v<JS::BigInt, T> ||
+      std::is_base_of_v<js::BaseScript, T> || std::is_base_of_v<js::Scope, T> ||
+      std::is_base_of_v<js::RegExpShared, T>;
 };
 
 template <typename T>
@@ -108,16 +106,18 @@ inline T MaybeForwarded(T t) {
   return t;
 }
 
-inline void RelocationOverlay::forwardTo(Cell* cell) {
-  MOZ_ASSERT(!isForwarded());
+inline RelocationOverlay::RelocationOverlay(Cell* dst) {
+  MOZ_ASSERT(dst->flags() == 0);
+  uintptr_t ptr = uintptr_t(dst);
+  MOZ_ASSERT((ptr & RESERVED_MASK) == 0);
+  header_ = ptr | FORWARD_BIT;
+}
 
-  // Preserve old flags because nursery may check them before checking
-  // if this is a forwarded Cell.
-  //
-  // This is pretty terrible and we should find a better way to implement
-  // Cell::getTrackKind() that doesn't rely on this behavior.
-  uintptr_t gcFlags = dataWithTag_ & Cell::RESERVED_MASK;
-  dataWithTag_ = uintptr_t(cell) | gcFlags | Cell::FORWARD_BIT;
+/* static */
+inline RelocationOverlay* RelocationOverlay::forwardCell(Cell* src, Cell* dst) {
+  MOZ_ASSERT(!src->isForwarded());
+  MOZ_ASSERT(!dst->isForwarded());
+  return new (src) RelocationOverlay(dst);
 }
 
 inline bool IsAboutToBeFinalizedDuringMinorSweep(Cell** cellp) {

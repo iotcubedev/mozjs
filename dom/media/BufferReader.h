@@ -47,7 +47,7 @@ class MOZ_RAII BufferReader {
     mLength = mRemaining;
   }
 
-  ~BufferReader() {}
+  ~BufferReader() = default;
 
   size_t Offset() const { return mLength - mRemaining; }
 
@@ -129,6 +129,16 @@ class MOZ_RAII BufferReader {
       return mozilla::Err(NS_ERROR_FAILURE);
     }
     return mozilla::BigEndian::readInt32(ptr);
+  }
+
+  mozilla::Result<uint32_t, nsresult> ReadLEU32() {
+    auto ptr = Read(4);
+    if (!ptr) {
+      MOZ_LOG(gMP4MetadataLog, mozilla::LogLevel::Error,
+              ("%s: failure", __func__));
+      return mozilla::Err(NS_ERROR_FAILURE);
+    }
+    return mozilla::LittleEndian::readUint32(ptr);
   }
 
   mozilla::Result<uint64_t, nsresult> ReadU64() {
@@ -264,7 +274,7 @@ class MOZ_RAII BufferReader {
   }
 
   template <typename T>
-  MOZ_MUST_USE bool ReadArray(nsTArray<T>& aDest, size_t aLength) {
+  [[nodiscard]] bool ReadArray(nsTArray<T>& aDest, size_t aLength) {
     auto ptr = Read(aLength * sizeof(T));
     if (!ptr) {
       MOZ_LOG(gMP4MetadataLog, mozilla::LogLevel::Error,
@@ -278,7 +288,7 @@ class MOZ_RAII BufferReader {
   }
 
   template <typename T>
-  MOZ_MUST_USE bool ReadArray(FallibleTArray<T>& aDest, size_t aLength) {
+  [[nodiscard]] bool ReadArray(FallibleTArray<T>& aDest, size_t aLength) {
     auto ptr = Read(aLength * sizeof(T));
     if (!ptr) {
       MOZ_LOG(gMP4MetadataLog, mozilla::LogLevel::Error,

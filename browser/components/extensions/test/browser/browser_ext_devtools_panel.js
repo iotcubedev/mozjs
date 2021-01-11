@@ -3,7 +3,7 @@
 "use strict";
 
 // Like most of the mochitest-browser devtools test,
-// on debug test slave, it takes about 50s to run the test.
+// on debug test machine, it takes about 50s to run the test.
 requestLongerTimeout(4);
 
 loadTestSubscript("head_devtools.js");
@@ -440,7 +440,7 @@ add_task(async function test_devtools_page_panels_create() {
   );
   const panelInfo = getPanelInfo(toolbox);
   ok(
-    panelInfo.panelLabel && panelInfo.panelLabel.length > 0,
+    panelInfo.panelLabel && !!panelInfo.panelLabel.length,
     "Expect the registered panel to include a non empty panelLabel property"
   );
   is(

@@ -8,22 +8,23 @@
 '''
 
 import errno
-import os
-import sys
 import json
+import os
 import socket
+import sys
 import traceback
-import urlparse
+try:
+    import urlparse
+except ImportError:
+    import urllib.parse as urlparse
+
+from six import string_types
 
 import mozharness
-from mozharness.base.script import (
-    PostScriptAction,
-    PostScriptRun,
-    PreScriptAction,
-    ScriptMixin,
-)
 from mozharness.base.errors import VirtualenvErrorList
-from mozharness.base.log import WARNING, FATAL
+from mozharness.base.log import FATAL, WARNING
+from mozharness.base.script import (PostScriptAction, PostScriptRun,
+                                    PreScriptAction, ScriptMixin)
 
 external_tools_path = os.path.join(
     os.path.abspath(os.path.dirname(os.path.dirname(mozharness.__file__))),
@@ -161,11 +162,12 @@ class VirtualenvMixin(object):
             # get the output from `pip freeze`
             pip = self.query_python_path("pip")
             if not pip:
-                self.log("package_versions: Program pip not in path", level=error_level)
+                self.log("package_versions: Program pip not in path",
+                         level=error_level)
                 return {}
             pip_freeze_output = self.get_output_from_command(
                 [pip, "freeze"], silent=True, ignore_errors=True)
-            if not isinstance(pip_freeze_output, basestring):
+            if not isinstance(pip_freeze_output, string_types):
                 self.fatal(
                     "package_versions: Error encountered running `pip freeze`: "
                     + pip_freeze_output)
@@ -180,7 +182,8 @@ class VirtualenvMixin(object):
                 # not a package, probably like '-e http://example.com/path#egg=package-dev'
                 continue
             if '==' not in line:
-                self.fatal("pip_freeze_packages: Unrecognized output line: %s" % line)
+                self.fatal(
+                    "pip_freeze_packages: Unrecognized output line: %s" % line)
             package, version = line.split('==', 1)
             packages[package] = version
 
@@ -241,7 +244,8 @@ class VirtualenvMixin(object):
                 command += ["--global-option", opt]
         elif install_method == 'easy_install':
             if not module:
-                self.fatal("module parameter required with install_method='easy_install'")
+                self.fatal(
+                    "module parameter required with install_method='easy_install'")
             if requirements:
                 # Install pip requirements files separately, since they're
                 # not understood by easy_install.
@@ -354,9 +358,28 @@ class VirtualenvMixin(object):
         # Always use the virtualenv that is vendored since that is deterministic.
         # TODO Bug 1408051 - Use the copy of virtualenv under
         # third_party/python/virtualenv once everything is off buildbot
+        # base_work_dir is for when we're running with mozharness.zip, e.g. on
+        # test jobs
+        # abs_src_dir is for when we're running out of a checked out copy of
+        # the source code
+        venv_search_dirs = [
+            os.path.join('{base_work_dir}', 'mozharness'),
+            '{abs_src_dir}',
+        ]
+        for d in venv_search_dirs:
+            file = os.path.join(d, 'third_party', 'python', 'virtualenv', 'virtualenv.py')
+            try:
+                venv_py_path = file.format(**dirs)
+            except KeyError:
+                continue
+            if os.path.exists(venv_py_path):
+                break
+        else:
+            self.fatal("Can't find the virtualenv module")
+
         virtualenv = [
             sys.executable,
-            os.path.join(external_tools_path, 'virtualenv', 'virtualenv.py'),
+            venv_py_path,
         ]
         virtualenv_options = c.get('virtualenv_options', [])
         # Creating symlinks in the virtualenv may cause issues during
@@ -365,7 +388,7 @@ class VirtualenvMixin(object):
         # imports to fail. See
         # https://github.com/pypa/virtualenv/issues/565. Therefore
         # only use --alway-copy when not using Redhat.
-        if self._is_redhat():
+        if self._is_redhat_based():
             self.warning("creating virtualenv without --always-copy "
                          "due to issues on Redhat derived distros")
         else:
@@ -435,7 +458,7 @@ class VirtualenvMixin(object):
         """Import the virtualenv's packages into this Python interpreter."""
         bin_dir = os.path.dirname(self.query_python_path())
         activate = os.path.join(bin_dir, 'activate_this.py')
-        execfile(activate, dict(__file__=activate))
+        exec(open(activate).read(), dict(__file__=activate))
 
 
 # This is (sadly) a mixin for logging methods.
@@ -446,7 +469,8 @@ class PerfherderResourceOptionsMixin(ScriptMixin):
 
         if 'TASKCLUSTER_INSTANCE_TYPE' in os.environ:
             # Include the instance type so results can be grouped.
-            opts.append('taskcluster-%s' % os.environ['TASKCLUSTER_INSTANCE_TYPE'])
+            opts.append('taskcluster-%s' %
+                        os.environ['TASKCLUSTER_INSTANCE_TYPE'])
         else:
             # We assume !taskcluster => buildbot.
             instance = 'unknown'
@@ -458,7 +482,8 @@ class PerfherderResourceOptionsMixin(ScriptMixin):
                 # This file should exist on Linux in EC2.
                 with open('/etc/instance_metadata.json', 'rb') as fh:
                     im = json.load(fh)
-                    instance = im.get('aws_instance_type', u'unknown').encode('ascii')
+                    instance = im.get('aws_instance_type',
+                                      u'unknown').encode('ascii')
             except IOError as e:
                 if e.errno != errno.ENOENT:
                     raise
@@ -487,20 +512,15 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
     after that package is installed (as part of creating the virtualenv).
     That's just the way things have to be.
     """
+
     def __init__(self, *args, **kwargs):
         super(ResourceMonitoringMixin, self).__init__(*args, **kwargs)
 
-        self.register_virtualenv_module('psutil>=3.1.1', method='pip',
+        self.register_virtualenv_module('psutil>=5.6.3', method='pip',
                                         optional=True)
         self.register_virtualenv_module('mozsystemmonitor==0.4',
                                         method='pip', optional=True)
         self.register_virtualenv_module('jsonschema==2.5.1',
-                                        method='pip')
-        # explicitly install functools32, because some slaves aren't using
-        # a version of pip recent enough to install it automatically with
-        # jsonschema (which depends on it)
-        # https://github.com/Julian/jsonschema/issues/233
-        self.register_virtualenv_module('functools32==3.2.3-2',
                                         method='pip')
         self._resource_monitor = None
 
@@ -516,7 +536,8 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
         # Resource Monitor requires Python 2.7, however it's currently optional.
         # Remove when all machines have had their Python version updated (bug 711299).
         if sys.version_info[:2] < (2, 7):
-            self.warning('Resource monitoring will not be enabled! Python 2.7+ required.')
+            self.warning(
+                'Resource monitoring will not be enabled! Python 2.7+ required.')
             return
 
         try:
@@ -561,7 +582,7 @@ class ResourceMonitoringMixin(PerfherderResourceOptionsMixin):
                 upload_dir = self.query_abs_dirs()['abs_blob_upload_dir']
                 if not os.path.exists(upload_dir):
                     os.makedirs(upload_dir)
-                with open(os.path.join(upload_dir, 'resource-usage.json'), 'wb') as fh:
+                with open(os.path.join(upload_dir, 'resource-usage.json'), 'w') as fh:
                     json.dump(self._resource_monitor.as_dict(), fh,
                               sort_keys=True, indent=4)
             except (AttributeError, KeyError):
@@ -754,7 +775,7 @@ class Python3Virtualenv(object):
         self.py3_initialized_venv = True
         self.py3_python_path = os.path.abspath(python_path)
         version = self.get_output_from_command(
-                    [self.py3_python_path, '--version'], env=self.query_env()).split()[-1]
+            [self.py3_python_path, '--version'], env=self.query_env()).split()[-1]
         # Using -m venv is only used on 3.5+ versions
         assert version > '3.5.0'
         self.py3_venv_path = os.path.abspath(venv_path)

@@ -34,12 +34,15 @@ struct DevicePrefs
   FeatureStatus oglCompositing;
   FeatureStatus advancedLayers;
   FeatureStatus useD2D1;
+  FeatureStatus webGPU;
+  FeatureStatus d3d11HwAngle;
 };
 
 struct ContentDeviceData
 {
   DevicePrefs prefs;
   D3D11DeviceStatus d3d11;
+  uint8_t[] cmsOutputProfileData;
 };
 
 // Represents the state of a feature that has failed to initialize.
@@ -58,6 +61,7 @@ struct GPUDeviceData
   FeatureFailure? oglCompositing;
   FeatureFailure? advancedLayers;
   D3D11DeviceStatus? gpuDevice;
+  FeatureFailure? webGPU;
 };
 
 union GfxVarValue

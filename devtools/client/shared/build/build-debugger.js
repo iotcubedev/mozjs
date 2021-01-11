@@ -19,7 +19,7 @@ const mappings = {
   "./source-editor": "devtools/client/shared/sourceeditor/editor",
   "../editor/source-editor": "devtools/client/shared/sourceeditor/editor",
   "./test-flag": "devtools/shared/flags",
-  "./fronts-device": "devtools/shared/fronts/device",
+  "./fronts-device": "devtools/client/fronts/device",
   immutable: "devtools/client/shared/vendor/immutable",
   lodash: "devtools/client/shared/vendor/lodash",
   react: "devtools/client/shared/vendor/react",
@@ -30,7 +30,6 @@ const mappings = {
   reselect: "devtools/client/shared/vendor/reselect",
   "prop-types": "devtools/client/shared/vendor/react-prop-types",
   "devtools-services": "Services",
-  "devtools-shared-utils": "devtools/shared/DevToolsUtils",
   "wasmparser/dist/WasmParser": "devtools/client/shared/vendor/WasmParser",
   "wasmparser/dist/WasmDis": "devtools/client/shared/vendor/WasmDis",
   "whatwg-url": "devtools/client/shared/vendor/whatwg-url",
@@ -73,6 +72,8 @@ const moduleMapping = {
   asyncStoreHelper: "devtools/client/shared/async-store-helper",
   asyncStorage: "devtools/shared/async-storage",
   PluralForm: "devtools/shared/plural-form",
+  DevToolsUtils: "devtools/shared/DevToolsUtils",
+  AppConstants: "resource://gre/modules/AppConstants.jsm",
 };
 
 /*
@@ -202,6 +203,7 @@ function transformMC({ types: t }) {
         if (
           !exists &&
           !value.endsWith("index") &&
+          !value.endsWith(".jsm") &&
           !(value.startsWith("devtools") || mappingValues.includes(value))
         ) {
           value = `${value}/index`;
@@ -264,6 +266,7 @@ Babel.registerPlugin("transform-mc", transformMC);
 module.exports = function(filePath) {
   return [
     "transform-flow-strip-types",
+    "proposal-optional-chaining",
     "proposal-class-properties",
     "transform-modules-commonjs",
     "transform-react-jsx",

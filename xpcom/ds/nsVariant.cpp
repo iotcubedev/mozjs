@@ -31,7 +31,7 @@ static nsresult String2Double(const char* aString, double* aResult) {
 }
 
 static nsresult AString2Double(const nsAString& aString, double* aResult) {
-  char* pChars = ToNewCString(aString);
+  char* pChars = ToNewCString(aString, mozilla::fallible);
   if (!pChars) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -78,8 +78,8 @@ nsresult nsDiscriminatedUnion::ToManageableNumber(
       // This group results in a uint32_t...
 
     case nsIDataType::VTYPE_UINT32:
-      aOutData->u.mInt32Value = u.mUint32Value;
-      aOutData->mType = nsIDataType::VTYPE_INT32;
+      aOutData->u.mUint32Value = u.mUint32Value;
+      aOutData->mType = nsIDataType::VTYPE_UINT32;
       return NS_OK;
 
       // This group results in a double...
@@ -331,7 +331,7 @@ static nsresult CloneArray(uint16_t aInType, const nsIID* aInIID,
       if (aOutIID) {
         *aOutIID = *aInIID;
       }
-      MOZ_FALLTHROUGH;
+      [[fallthrough]];
 
     case nsIDataType::VTYPE_INTERFACE: {
       memcpy(*aOutValue, aInValue, allocSize);
@@ -633,7 +633,7 @@ bool nsDiscriminatedUnion::String2ID(nsID* aPid) const {
       return false;
   }
 
-  char* pChars = ToNewCString(*pString);
+  char* pChars = ToNewCString(*pString, mozilla::fallible);
   if (!pChars) {
     return false;
   }
@@ -688,7 +688,7 @@ nsresult nsDiscriminatedUnion::ToString(nsACString& aOutString) const {
     case nsIDataType::VTYPE_WSTRING_SIZE_IS:
     case nsIDataType::VTYPE_WCHAR:
       NS_ERROR("ToString being called for a string type - screwy logic!");
-      MOZ_FALLTHROUGH;
+      [[fallthrough]];
 
       // XXX We might want stringified versions of these... ???
 

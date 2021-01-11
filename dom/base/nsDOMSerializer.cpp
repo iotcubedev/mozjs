@@ -17,7 +17,7 @@
 
 using namespace mozilla;
 
-nsDOMSerializer::nsDOMSerializer() {}
+nsDOMSerializer::nsDOMSerializer() = default;
 
 static already_AddRefed<nsIDocumentEncoder> SetUpEncoder(
     nsINode& aRoot, const nsAString& aCharset, ErrorResult& aRv) {
@@ -33,7 +33,7 @@ static already_AddRefed<nsIDocumentEncoder> SetUpEncoder(
 
   // This method will fail if no document
   nsresult rv = encoder->NativeInit(
-      doc, NS_LITERAL_STRING("application/xhtml+xml"),
+      doc, u"application/xhtml+xml"_ns,
       nsIDocumentEncoder::OutputRaw |
           nsIDocumentEncoder::OutputDontRewriteEncodingDeclaration);
 

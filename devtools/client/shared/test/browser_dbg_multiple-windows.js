@@ -8,18 +8,18 @@
  * are open.
  */
 
-var { DebuggerServer } = require("devtools/server/debugger-server");
-var { DebuggerClient } = require("devtools/shared/client/debugger-client");
+var { DevToolsServer } = require("devtools/server/devtools-server");
+var { DevToolsClient } = require("devtools/client/devtools-client");
 
 const TAB1_URL = "data:text/html;charset=utf-8,first-tab";
 const TAB2_URL = "data:text/html;charset=utf-8,second-tab";
 
 add_task(async function() {
-  DebuggerServer.init();
-  DebuggerServer.registerAllActors();
+  DevToolsServer.init();
+  DevToolsServer.registerAllActors();
 
-  const transport = DebuggerServer.connectPipe();
-  const client = new DebuggerClient(transport);
+  const transport = DevToolsServer.connectPipe();
+  const client = new DevToolsClient(transport);
   const [type] = await client.connect();
   is(type, "browser", "Root actor should identify itself as a browser.");
 
@@ -75,7 +75,7 @@ async function testNewWindow(client, win) {
 
 async function testFocusFirst(client) {
   const tab = window.gBrowser.selectedTab;
-  await ContentTask.spawn(tab.linkedBrowser, {}, async function() {
+  await ContentTask.spawn(tab.linkedBrowser, null, async function() {
     const onFocus = new Promise(resolve => {
       content.addEventListener("focus", resolve, { once: true });
     });
@@ -100,6 +100,7 @@ async function continue_remove_tab(client, tab) {
   removeTab(tab);
 
   const tabs = await client.mainRoot.listTabs();
+
   // Verify that tabs are no longer included in listTabs.
   const foundTab1 = tabs.some(grip => grip.url == TAB1_URL);
   const foundTab2 = tabs.some(grip => grip.url == TAB2_URL);
@@ -112,6 +113,6 @@ async function continue_remove_tab(client, tab) {
 async function addWindow(url) {
   info("Adding window: " + url);
   const onNewWindow = BrowserTestUtils.waitForNewWindow({ url });
-  window.open(url);
+  window.open(url, "_blank", "noopener");
   return onNewWindow;
 }

@@ -23,9 +23,11 @@ XPCOMUtils.defineLazyPreferenceGetter(
  *  Logs a string to the error console.
  *  @param   string
  *           The string to write to the error console.
+ *  @param   bool
+ *           Whether to log even if logging is disabled.
  */
-function LOG(string) {
-  if (gLogEnabled) {
+function LOG(string, alwaysLog = false) {
+  if (alwaysLog || gLogEnabled) {
     dump("*** UTM:SVC " + string + "\n");
     Services.console.logStringMessage("UTM:SVC " + string);
   }
@@ -342,16 +344,18 @@ TimerManager.prototype = {
   /**
    * See nsIUpdateTimerManager.idl
    */
-  registerTimer: function TM_registerTimer(id, callback, interval) {
-    LOG(`TimerManager:registerTimer - timerID: ${id} interval: ${interval}`);
+  registerTimer: function TM_registerTimer(id, callback, interval, skipFirst) {
+    LOG(
+      `TimerManager:registerTimer - timerID: ${id} interval: ${interval} skipFirst: ${skipFirst}`
+    );
     if (this._timers === null) {
       // Use normal logging since reportError is not available while shutting
       // down.
-      gLogEnabled = true;
       LOG(
         "TimerManager:registerTimer called after profile-before-change " +
           "notification. Ignoring timer registration for id: " +
-          id
+          id,
+        true
       );
       return;
     }
@@ -370,6 +374,9 @@ TimerManager.prototype = {
       lastUpdateTime = 0;
     }
     if (lastUpdateTime == 0) {
+      if (skipFirst) {
+        lastUpdateTime = now;
+      }
       Services.prefs.setIntPref(prefLastUpdate, lastUpdateTime);
     }
     this._timers[id] = { callback, interval, lastUpdateTime };
@@ -392,9 +399,9 @@ TimerManager.prototype = {
 
   classID: Components.ID("{B322A5C0-A419-484E-96BA-D7182163899F}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIUpdateTimerManager,
-    Ci.nsITimerCallback,
-    Ci.nsIObserver,
+    "nsIUpdateTimerManager",
+    "nsITimerCallback",
+    "nsIObserver",
   ]),
 };
 

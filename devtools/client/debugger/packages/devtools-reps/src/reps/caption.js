@@ -3,9 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
-const dom = require("react-dom-factories");
-const { span } = dom;
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 const { wrapRender } = require("./rep-utils");
 
@@ -13,6 +12,9 @@ const { wrapRender } = require("./rep-utils");
  * Renders a caption. This template is used by other components
  * that needs to distinguish between a simple text/value and a label.
  */
+
+// TODO: Is this file actually used anywhere? I can't seem to find a reference to the caption function...
+
 Caption.propTypes = {
   object: PropTypes.oneOfType([PropTypes.number, PropTypes.string]).isRequired,
 };

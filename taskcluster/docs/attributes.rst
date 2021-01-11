@@ -23,19 +23,52 @@ run_on_projects
 ===============
 
 The projects where this task should be in the target task set.  This is how
-requirements like "only run this on inbound" get implemented.  These are
-either project names or the aliases
+requirements like "only run this on autoland" get implemented.
 
- * `integration` -- integration repositories (autoland, inbound, etc)
- * `trunk` -- integration repositories plus mozilla-central
- * `release` -- release repositories including mozilla-central
+.. note::
+
+    Please use this configuration. Running a job for all projects can quickly add up
+    in term of cost while not providing any value for some projects.
+
+`run-on-projects` can use either aliases or project names.
+
+These are the aliases:
+
+ * `integration` -- integration repository (autoland)
+ * `trunk` -- integration repository plus mozilla-central
+ * `release` -- release repositories (beta, release, esr) including mozilla-central
  * `all` -- everywhere (the default)
+
+Project names are the repositories.  They can be:
+
+* `autoland`
+* `mozilla-central`
+* `mozilla-beta`
+* `mozilla-release`
+* `mozilla-esr68`
+* `mozilla-esr78`
+* ... A partial list can be found in taskcluster/taskgraph/util/attributes.py
 
 For try, this attribute applies only if ``-p all`` is specified.  All jobs can
 be specified by name regardless of ``run_on_projects``.
 
 If ``run_on_projects`` is set to an empty list, then the task will not run
 anywhere, unless its build platform is specified explicitly in try syntax.
+
+
+.. note::
+
+    As `try` pushes don't use filter_for_projects by design, there isn't a way
+    to define that a task will run on `try`.
+
+
+.. note::
+
+    A given task `[taskA]` may not respect `run-on-projects` if there another task
+    `[taskB]` which is scheduled to run (such as via run-on-projects) which depends it
+    `[taskA]`. Because by nature of `TaskB` running we must run `TaskA`.
+
+    See `bug 1640603 <https://bugzilla.mozilla.org/show_bug.cgi?id=1640603#c5>`_ as example.
 
 run_on_hg_branches
 ==================
@@ -133,8 +166,12 @@ some kinds, ``-j`` also matches against ``build_platform``.
 test_chunk
 ==========
 
-This is the chunk number of a chunked test suite (talos or unittest).  Note
-that this is a string!
+This is the chunk number of a chunked test suite. Note that this is a string!
+
+test_manifests
+==============
+
+A list of the test manifests that run in this task.
 
 e10s
 ====
@@ -161,7 +198,7 @@ be used for nightlies or releases.
 all_locales
 ===========
 
-For the ``l10n`` and ``nightly-l10n`` kinds, this attribute contains the list
+For the ``l10n`` and ``shippable-l10n`` kinds, this attribute contains the list
 of relevant locales for the platform.
 
 all_locales_with_changesets
@@ -171,12 +208,12 @@ Contains a dict of l10n changesets, mapped by locales (same as in ``all_locales`
 
 l10n_chunk
 ==========
-For the ``l10n`` and ``nightly-l10n`` kinds, this attribute contains the chunk
+For the ``l10n`` and ``shippable-l10n`` kinds, this attribute contains the chunk
 number of the job. Note that this is a string!
 
 chunk_locales
 =============
-For the ``l10n`` and ``nightly-l10n`` kinds, this attribute contains an array of
+For the ``l10n`` and ``shippable-l10n`` kinds, this attribute contains an array of
 the individual locales this chunk is responsible for processing.
 
 locale
@@ -204,22 +241,28 @@ fetch-artifact
 
 For fetch jobs, this is the path to the artifact for that fetch operation.
 
+fetch-alias
+===========
+An alias that can be used instead of the real fetch job name in fetch
+stanzas for jobs.
+
 toolchain-artifact
 ==================
 For toolchain jobs, this is the path to the artifact for that toolchain.
 
 toolchain-alias
 ===============
-For toolchain jobs, this optionally gives an alias that can be used instead of the
-real toolchain job name in the toolchains list for build jobs.
+An alias that can be used instead of the real toolchain job name in fetch
+stanzas for jobs.
 
 always_target
 =============
 
-Tasks with this attribute will be included in the ``target_task_graph`` regardless
-of any target task filtering that occurs. When a task is included in this manner
-(i.e it otherwise would have been filtered out), it will be considered for
-optimization even if the ``optimize_target_tasks`` parameter is False.
+Tasks with this attribute will be included in the ``target_task_graph`` if
+``parameters["tasks_for"]`` is ``hg-push``, regardless of any target task
+filtering that occurs. When a task is included in this manner (i.e it otherwise
+would have been filtered out), it will be considered for optimization even if
+the ``optimize_target_tasks`` parameter is False.
 
 This is meant to be used for tasks which a developer would almost always want to
 run. Typically these tasks will be short running and have a high risk of causing
@@ -247,12 +290,17 @@ artifact_prefix
 Most taskcluster artifacts are public, so we've hardcoded ``public/build`` in a
 lot of places. To support private artifacts, we've moved this to the
 ``artifact_prefix`` attribute. It will default to ``public/build`` but will be
-overrideable per-task.
+overridable per-task.
 
 artifact_map
 ===============
 For beetmover jobs, this indicates which yaml file should be used to
 generate the upstream artifacts and payload instructions to the task.
+
+batch
+=====
+Used by `perftest` to indicates that a task can be run as a batch.
+
 
 enable-full-crashsymbols
 ========================
@@ -326,3 +374,44 @@ disable-build-signing
 =====================
 Some GeckoView-only tasks produce APKs, but not APKs that should be
 signed.  Set this to ``true`` to disable APK signing.
+
+enable-build-signing
+====================
+We enable build-signing for ``shippable``, ``nightly``, and ``enable-build-signing`` tasks.
+
+run-visual-metrics
+==================
+If set to true, will run the visual metrics task on the provided
+video files.
+
+skip-verify-test-packaging
+==========================
+If set to true, this task will not be checked to see that
+MOZ_AUTOMATION_PACKAGE_TESTS is set correctly based on whether or not the task
+has dependent tests. This should only be used in very unique situations, such
+as Windows AArch64 builds that copy test packages between build tasks.
+
+geckodriver
+===========
+If non-empty, declares that the (toolchain) task is a `geckodriver`
+task that produces a binary that should be signed.
+
+rebuild-on-release
+==================
+If true, the digest for this task will also depend on if the branch is a
+release branch.  This will cause tasks like toolchains to be rebuilt as they
+move from e.g. autoland to mozilla-central.
+
+local-toolchain
+===============
+This toolchain is used for local development, so should be built on trunk, even
+if it does not have any in-graph consumers.
+
+artifact-build
+==============
+
+This build is an artifact build.
+
+This deliberately excludes builds that are implemented using the artifact build
+machinery, but are not primarily intended to short-circuit build time. In
+particular the Windows aarch64 builds are not marked this way.

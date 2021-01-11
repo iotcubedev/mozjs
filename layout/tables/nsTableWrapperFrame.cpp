@@ -17,7 +17,6 @@
 #include "prinrval.h"
 #include "nsGkAtoms.h"
 #include "nsHTMLParts.h"
-#include "nsIServiceManager.h"
 #include "nsDisplayList.h"
 #include "nsLayoutUtils.h"
 #include "nsIFrameInlines.h"
@@ -52,7 +51,7 @@ nsTableWrapperFrame::nsTableWrapperFrame(ComputedStyle* aStyle,
                                          ClassID aID)
     : nsContainerFrame(aStyle, aPresContext, aID) {}
 
-nsTableWrapperFrame::~nsTableWrapperFrame() {}
+nsTableWrapperFrame::~nsTableWrapperFrame() = default;
 
 NS_QUERYFRAME_HEAD(nsTableWrapperFrame)
   NS_QUERYFRAME_ENTRY(nsTableWrapperFrame)
@@ -89,7 +88,7 @@ void nsTableWrapperFrame::SetInitialChildList(ChildListID aListID,
                                               nsFrameList& aChildList) {
   if (kCaptionList == aListID) {
 #ifdef DEBUG
-    nsFrame::VerifyDirtyBitSet(aChildList);
+    nsIFrame::VerifyDirtyBitSet(aChildList);
     for (nsIFrame* f : aChildList) {
       MOZ_ASSERT(f->GetParent() == this, "Unexpected parent");
     }
@@ -166,13 +165,14 @@ void nsTableWrapperFrame::RemoveFrame(ChildListID aListID,
 
 void nsTableWrapperFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                            const nsDisplayListSet& aLists) {
-  // No border, background or outline are painted because they all belong
-  // to the inner table.
+  // No border or background is painted because they belong to the inner table.
+  // The outline belongs to the wrapper frame so it can contain the caption.
 
   // If there's no caption, take a short cut to avoid having to create
   // the special display list set and then sort it.
   if (mCaptionFrames.IsEmpty()) {
     BuildDisplayListForInnerTable(aBuilder, aLists);
+    DisplayOutline(aBuilder, aLists);
     return;
   }
 
@@ -193,6 +193,8 @@ void nsTableWrapperFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   set.PositionedDescendants()->SortByContentOrder(GetContent());
   set.Outlines()->SortByContentOrder(GetContent());
   set.MoveTo(aLists);
+
+  DisplayOutline(aBuilder, aLists);
 }
 
 void nsTableWrapperFrame::BuildDisplayListForInnerTable(
@@ -241,11 +243,13 @@ void nsTableWrapperFrame::InitChildReflowInput(nsPresContext& aPresContext,
       pCollapsePadding = &collapsePadding;
     }
     // Propagate our stored CB size if present, minus any margins.
+    //
+    // Note that inner table computed margins are always zero, they're inherited
+    // by the table wrapper, so we need to get our margin from aOuterRI.
     if (!HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
-      LogicalSize* cb = GetProperty(GridItemCBSizeProperty());
-      if (cb) {
+      if (LogicalSize* cb = GetProperty(GridItemCBSizeProperty())) {
         cbSize.emplace(*cb);
-        *cbSize -= aReflowInput.ComputedLogicalMargin().Size(wm);
+        *cbSize -= aOuterRI.ComputedLogicalMargin().Size(wm);
       }
     }
     if (!cbSize) {
@@ -378,16 +382,14 @@ nscoord nsTableWrapperFrame::ChildShrinkWrapISize(
 
   // Shrink-wrap aChildFrame by default, except if we're a stretched grid item.
   auto flags = ComputeSizeFlags::eShrinkWrap;
-  auto parent = GetParent();
-  bool isGridItem = parent && parent->IsGridContainerFrame() &&
-                    !HasAnyStateBits(NS_FRAME_OUT_OF_FLOW);
-  if (MOZ_UNLIKELY(isGridItem) && !StyleMargin()->HasInlineAxisAuto(aWM)) {
+  if (MOZ_UNLIKELY(IsGridItem()) && !StyleMargin()->HasInlineAxisAuto(aWM)) {
+    const auto* parent = GetParent();
     auto inlineAxisAlignment =
         aWM.IsOrthogonalTo(parent->GetWritingMode())
-            ? StylePosition()->UsedAlignSelf(parent->Style())
-            : StylePosition()->UsedJustifySelf(parent->Style());
-    if (inlineAxisAlignment == NS_STYLE_ALIGN_NORMAL ||
-        inlineAxisAlignment == NS_STYLE_ALIGN_STRETCH) {
+            ? StylePosition()->UsedAlignSelf(parent->Style())._0
+            : StylePosition()->UsedJustifySelf(parent->Style())._0;
+    if (inlineAxisAlignment == StyleAlignFlags::NORMAL ||
+        inlineAxisAlignment == StyleAlignFlags::STRETCH) {
       flags = nsIFrame::ComputeSizeFlags::eDefault;
     }
   }
@@ -811,12 +813,11 @@ void nsTableWrapperFrame::Reflow(nsPresContext* aPresContext,
   Maybe<ReflowInput> innerRI;
 
   nsRect origCaptionRect;
-  nsRect origCaptionVisualOverflow;
+  nsRect origCaptionInkOverflow;
   bool captionFirstReflow = false;
   if (mCaptionFrames.NotEmpty()) {
     origCaptionRect = mCaptionFrames.FirstChild()->GetRect();
-    origCaptionVisualOverflow =
-        mCaptionFrames.FirstChild()->GetVisualOverflowRect();
+    origCaptionInkOverflow = mCaptionFrames.FirstChild()->InkOverflowRect();
     captionFirstReflow =
         mCaptionFrames.FirstChild()->HasAnyStateBits(NS_FRAME_FIRST_REFLOW);
   }
@@ -975,9 +976,9 @@ void nsTableWrapperFrame::Reflow(nsPresContext* aPresContext,
   innerRI.reset();
 
   if (mCaptionFrames.NotEmpty()) {
-    nsTableFrame::InvalidateTableFrame(
-        mCaptionFrames.FirstChild(), origCaptionRect, origCaptionVisualOverflow,
-        captionFirstReflow);
+    nsTableFrame::InvalidateTableFrame(mCaptionFrames.FirstChild(),
+                                       origCaptionRect, origCaptionInkOverflow,
+                                       captionFirstReflow);
   }
 
   UpdateOverflowAreas(aDesiredSize);
@@ -1022,6 +1023,6 @@ NS_IMPL_FRAMEARENA_HELPERS(nsTableWrapperFrame)
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsTableWrapperFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("TableWrapper"), aResult);
+  return MakeFrameName(u"TableWrapper"_ns, aResult);
 }
 #endif

@@ -7,6 +7,7 @@
 #include "UrlClassifierFeatureFlash.h"
 #include "mozilla/net/HttpBaseChannel.h"
 #include "mozilla/StaticPrefs_plugins.h"
+#include "nsIXULRuntime.h"
 #include "nsScriptSecurityManager.h"
 #include "nsQueryObject.h"
 
@@ -15,8 +16,8 @@ namespace net {
 
 struct UrlClassifierFeatureFlash::FlashFeature {
   const char* mName;
-  const char* mBlacklistPrefTables;
-  const char* mWhitelistPrefTables;
+  const char* mBlocklistPrefTables;
+  const char* mEntitylistPrefTables;
   bool mSubdocumentOnly;
   nsIHttpChannel::FlashPluginState mFlashPluginState;
   RefPtr<UrlClassifierFeatureFlash> mFeature;
@@ -43,13 +44,13 @@ UrlClassifierFeatureFlash::UrlClassifierFeatureFlash(
     const UrlClassifierFeatureFlash::FlashFeature& aFlashFeature)
     : UrlClassifierFeatureBase(
           nsDependentCString(aFlashFeature.mName),
-          nsDependentCString(aFlashFeature.mBlacklistPrefTables),
-          nsDependentCString(aFlashFeature.mWhitelistPrefTables),
-          EmptyCString(),  // aPrefBlacklistHosts
-          EmptyCString(),  // aPrefWhitelistHosts
-          EmptyCString(),  // aPrefBlacklistTableName
-          EmptyCString(),  // aPrefWhitelistTableName
-          EmptyCString())  // aPrefSkipHosts
+          nsDependentCString(aFlashFeature.mBlocklistPrefTables),
+          nsDependentCString(aFlashFeature.mEntitylistPrefTables),
+          EmptyCString(),  // aPrefBlocklistHosts
+          EmptyCString(),  // aPrefEntitylistHosts
+          EmptyCString(),  // aPrefBlocklistTableName
+          EmptyCString(),  // aPrefEntitylistTableName
+          EmptyCString())  // aPrefExceptionHosts
       ,
       mFlashPluginState(aFlashFeature.mFlashPluginState) {
   static_assert(nsIHttpChannel::FlashPluginDeniedInSubdocuments ==
@@ -96,8 +97,12 @@ void UrlClassifierFeatureFlash::MaybeShutdown() {
 void UrlClassifierFeatureFlash::MaybeCreate(
     nsIChannel* aChannel,
     nsTArray<nsCOMPtr<nsIUrlClassifierFeature>>& aFeatures) {
+  const auto fnIsFlashBlockingEnabled = [] {
+    return StaticPrefs::plugins_flashBlock_enabled() && !FissionAutostart();
+  };
+
   // All disabled.
-  if (!StaticPrefs::plugins_flashBlock_enabled()) {
+  if (!fnIsFlashBlockingEnabled()) {
     return;
   }
 
@@ -157,7 +162,7 @@ UrlClassifierFeatureFlash::ProcessChannel(nsIChannel* aChannel,
   // This is not a blocking feature.
   *aShouldContinue = true;
 
-  UC_LOG(("UrlClassifierFeatureFlash::ProcessChannel, annotating channel[%p]",
+  UC_LOG(("UrlClassifierFeatureFlash::ProcessChannel - annotating channel %p",
           aChannel));
 
   nsCOMPtr<nsIParentChannel> parentChannel;
@@ -179,11 +184,15 @@ UrlClassifierFeatureFlash::ProcessChannel(nsIChannel* aChannel,
 NS_IMETHODIMP
 UrlClassifierFeatureFlash::GetURIByListType(
     nsIChannel* aChannel, nsIUrlClassifierFeature::listType aListType,
-    nsIURI** aURI) {
+    nsIUrlClassifierFeature::URIType* aURIType, nsIURI** aURI) {
   NS_ENSURE_ARG_POINTER(aChannel);
+  NS_ENSURE_ARG_POINTER(aURIType);
   NS_ENSURE_ARG_POINTER(aURI);
 
   // Here we return the channel's URI always.
+  *aURIType = aListType == nsIUrlClassifierFeature::blocklist
+                  ? nsIUrlClassifierFeature::URIType::blocklistURI
+                  : nsIUrlClassifierFeature::URIType::entitylistURI;
   return aChannel->GetURI(aURI);
 }
 

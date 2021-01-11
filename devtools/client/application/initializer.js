@@ -21,22 +21,25 @@ const Provider = createFactory(
   require("devtools/client/shared/vendor/react-redux").Provider
 );
 const { bindActionCreators } = require("devtools/client/shared/vendor/redux");
-const { l10n } = require("./src/modules/l10n");
-
-const { configureStore } = require("./src/create-store");
-const actions = require("./src/actions/index");
-
-const { WorkersListener } = require("devtools/client/shared/workers-listener");
+const { l10n } = require("devtools/client/application/src/modules/l10n");
 
 const {
-  addDebugServiceWorkersListener,
-  canDebugServiceWorkers,
-  removeDebugServiceWorkersListener,
-} = require("devtools/shared/service-workers-debug-helper");
+  configureStore,
+} = require("devtools/client/application/src/create-store");
+const actions = require("devtools/client/application/src/actions/index");
 
-const { services } = require("./src/modules/services");
+const { WorkersListener } = require("devtools/client/shared/workers-listener");
+const Telemetry = require("devtools/client/shared/telemetry");
 
-const App = createFactory(require("./src/components/App"));
+const {
+  services,
+} = require("devtools/client/application/src/modules/application-services");
+
+const App = createFactory(
+  require("devtools/client/application/src/components/App")
+);
+
+const { safeAsyncMethod } = require("devtools/shared/async-utils");
 
 /**
  * Global Application object in this panel. This object is expected by panel.js and is
@@ -44,33 +47,50 @@ const App = createFactory(require("./src/components/App"));
  */
 window.Application = {
   async bootstrap({ toolbox, panel }) {
-    this.updateWorkers = this.updateWorkers.bind(this);
+    // bind event handlers to `this`
+    this.handleOnNavigate = this.handleOnNavigate.bind(this);
     this.updateDomain = this.updateDomain.bind(this);
-    this.updateCanDebugWorkers = this.updateCanDebugWorkers.bind(this);
+    this.onTargetAvailable = this.onTargetAvailable.bind(this);
+    this.onTargetDestroyed = this.onTargetDestroyed.bind(this);
 
-    this.mount = document.querySelector("#mount");
+    // wrap updateWorkers to swallow rejections occurring after destroy
+    this.safeUpdateWorkers = safeAsyncMethod(
+      () => this.updateWorkers(),
+      () => this._destroyed
+    );
+
     this.toolbox = toolbox;
+    // NOTE: the client is the same through the lifecycle of the toolbox, even
+    // though we get it from toolbox.target
     this.client = toolbox.target.client;
 
-    this.store = configureStore();
+    this.telemetry = new Telemetry();
+    this.store = configureStore(this.telemetry, toolbox.sessionId);
     this.actions = bindActionCreators(actions, this.store.dispatch);
-    this.serviceWorkerRegistrationFronts = [];
 
     services.init(this.toolbox);
+    await l10n.init(["devtools/client/application.ftl"]);
 
-    this.workersListener = new WorkersListener(this.client.mainRoot);
-    this.workersListener.addListener(this.updateWorkers);
-    this.toolbox.target.on("navigate", this.updateDomain);
-    addDebugServiceWorkersListener(this.updateCanDebugWorkers);
-
-    // start up updates for the initial state
-    this.updateDomain();
-    this.updateCanDebugWorkers();
     await this.updateWorkers();
+    this.workersListener = new WorkersListener(this.client.mainRoot);
+    this.workersListener.addListener(this.safeUpdateWorkers);
 
-    await l10n.init(["devtools/application.ftl"]);
+    const deviceFront = await this.client.mainRoot.getFront("device");
+    const { canDebugServiceWorkers } = await deviceFront.getDescription();
+    this.actions.updateCanDebugWorkers(
+      canDebugServiceWorkers && services.features.doesDebuggerSupportWorkers
+    );
+
+    // awaiting for watchTargets will return the targets that are currently
+    // available, so we can have our first render with all the data ready
+    await this.toolbox.targetList.watchTargets(
+      [this.toolbox.targetList.TYPES.FRAME],
+      this.onTargetAvailable,
+      this.onTargetDestroyed
+    );
 
     // Render the root Application component.
+    this.mount = document.querySelector("#mount");
     const app = App({
       client: this.client,
       fluentBundles: l10n.getBundles(),
@@ -78,28 +98,61 @@ window.Application = {
     render(Provider({ store: this.store }, app), this.mount);
   },
 
+  handleOnNavigate() {
+    this.updateDomain();
+    this.actions.resetManifest();
+  },
+
   async updateWorkers() {
-    const { service } = await this.client.mainRoot.listAllWorkers();
-    this.actions.updateWorkers(service);
+    const registrationsWithWorkers = await this.client.mainRoot.listAllServiceWorkers();
+    this.actions.updateWorkers(registrationsWithWorkers);
   },
 
   updateDomain() {
     this.actions.updateDomain(this.toolbox.target.url);
   },
 
-  updateCanDebugWorkers() {
-    const canDebugWorkers = canDebugServiceWorkers();
-    this.actions.updateCanDebugWorkers(canDebugWorkers);
+  setupTarget(targetFront) {
+    this.handleOnNavigate(); // update domain and manifest for the new target
+    targetFront.on("navigate", this.handleOnNavigate);
+  },
+
+  cleanUpTarget(targetFront) {
+    targetFront.off("navigate", this.handleOnNavigate);
+  },
+
+  onTargetAvailable({ targetFront }) {
+    if (!targetFront.isTopLevel) {
+      return; // ignore target frames that are not top level for now
+    }
+
+    this.setupTarget(targetFront);
+  },
+
+  onTargetDestroyed({ targetFront }) {
+    if (!targetFront.isTopLevel) {
+      return; // ignore target frames that are not top level for now
+    }
+
+    this.cleanUpTarget(targetFront);
   },
 
   destroy() {
     this.workersListener.removeListener();
-    this.toolbox.target.off("navigate", this.updateDomain);
-    removeDebugServiceWorkersListener(this.updateCanDebugWorkers);
+
+    this.toolbox.targetList.unwatchTargets(
+      [this.toolbox.targetList.TYPES.FRAME],
+      this.onTargetAvailable,
+      this.onTargetDestroyed
+    );
+
+    this.cleanUpTarget(this.toolbox.target);
 
     unmountComponentAtNode(this.mount);
     this.mount = null;
     this.toolbox = null;
     this.client = null;
+    this.workersListener = null;
+    this._destroyed = true;
   },
 };

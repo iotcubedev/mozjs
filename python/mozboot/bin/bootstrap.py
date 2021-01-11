@@ -85,6 +85,15 @@ def fetch_files(repo_url, repo_rev, repo_type):
                 continue
 
             files[name] = zip.read(f)
+
+        # Retrieve distro script
+        url = repo_url + '/archive/%s.zip/third_party/python/distro/distro.py' % repo_rev
+        req = urlopen(url=url, timeout=30)
+        data = BytesIO(req.read())
+        data.seek(0)
+        zip = zipfile.ZipFile(data, 'r')
+        files["distro.py"] = zip.read(zip.infolist()[0])
+
     else:
         raise NotImplementedError('Not sure how to handle repo type.', repo_type)
 
@@ -137,10 +146,6 @@ def ensure_environment(repo_url=None, repo_rev=None, repo_type=None):
 
 def main(args):
     parser = OptionParser()
-    parser.add_option('--vcs', dest='vcs',
-                      default='hg',
-                      help='VCS (hg or git) to use for downloading the source code. '
-                      'Uses hg if omitted.')
     parser.add_option('-r', '--repo-url', dest='repo_url',
                       default='https://hg.mozilla.org/mozilla-central/',
                       help='Base URL of source control repository where bootstrap files can '
@@ -154,13 +159,20 @@ def main(args):
                       'content. Like --repo, you should not need to set this.')
 
     parser.add_option('--application-choice', dest='application_choice',
-                      help='Pass in an application choice (see mozboot.bootstrap.APPLICATIONS) '
+                      help='Pass in an application choice (see "APPLICATIONS" in '
+                      'python/mozboot/mozboot/bootstrap.py) instead of using the '
+                      'default interactive prompt.')
+    parser.add_option('--vcs', dest='vcs', default=None,
+                      help='VCS (hg or git) to use for downloading the source code, '
                       'instead of using the default interactive prompt.')
     parser.add_option('--no-interactive', dest='no_interactive', action='store_true',
                       help='Answer yes to any (Y/n) interactive prompts.')
     parser.add_option('--debug', dest='debug', action='store_true',
                       help='Print extra runtime information useful for debugging and '
                       'bug reports.')
+    parser.add_option('--no-system-changes', dest='no_system_changes', action='store_true',
+                      help='Only executes actions that leave the system '
+                      'configuration alone.')
 
     options, leftover = parser.parse_args(args)
 
@@ -181,7 +193,7 @@ def main(args):
             return 1
 
         dasboot = cls(choice=options.application_choice, no_interactive=options.no_interactive,
-                      vcs=options.vcs)
+                      vcs=options.vcs, no_system_changes=options.no_system_changes)
         dasboot.bootstrap()
 
         return 0

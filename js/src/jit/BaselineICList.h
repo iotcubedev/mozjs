@@ -13,8 +13,6 @@ namespace jit {
 // List of Baseline IC stub kinds. The stub kind determines the structure of the
 // ICStub data.
 #define IC_BASELINE_STUB_KIND_LIST(_) \
-  _(WarmUpCounter_Fallback)           \
-                                      \
   _(TypeMonitor_Fallback)             \
   _(TypeMonitor_SingleObject)         \
   _(TypeMonitor_ObjectGroup)          \
@@ -56,6 +54,8 @@ namespace jit {
                                       \
   _(TypeOf_Fallback)                  \
                                       \
+  _(ToPropertyKey_Fallback)           \
+                                      \
   _(Rest_Fallback)                    \
                                       \
   _(BinaryArith_Fallback)             \
@@ -74,7 +74,6 @@ namespace jit {
 // constructing/spread variants here with different calling conventions needing
 // different trampolines.
 #define IC_BASELINE_FALLBACK_CODE_KIND_LIST(_) \
-  _(WarmUpCounter)                             \
   _(TypeMonitor)                               \
   _(TypeUpdate)                                \
   _(NewArray)                                  \
@@ -97,6 +96,7 @@ namespace jit {
   _(GetIterator)                               \
   _(InstanceOf)                                \
   _(TypeOf)                                    \
+  _(ToPropertyKey)                             \
   _(Rest)                                      \
   _(BinaryArith)                               \
   _(Compare)                                   \

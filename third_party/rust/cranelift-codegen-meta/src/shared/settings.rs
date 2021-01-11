@@ -1,18 +1,52 @@
 use crate::cdsl::settings::{SettingGroup, SettingGroupBuilder};
 
-pub fn define() -> SettingGroup {
+pub(crate) fn define() -> SettingGroup {
     let mut settings = SettingGroupBuilder::new("shared");
+
+    settings.add_enum(
+        "regalloc",
+        r#"Register allocator to use with the MachInst backend.
+
+        This selects the register allocator as an option among those offered by the `regalloc.rs`
+        crate. Please report register allocation bugs to the maintainers of this crate whenever
+        possible.
+
+        Note: this only applies to target that use the MachInst backend. As of 2020-04-17, this
+        means the x86_64 backend doesn't use this yet.
+
+        Possible values:
+
+        - `backtracking` is a greedy, backtracking register allocator as implemented in
+        Spidermonkey's optimizing tier IonMonkey. It may take more time to allocate registers, but
+        it should generate better code in general, resulting in better throughput of generated
+        code.
+        - `backtracking_checked` is the backtracking allocator with additional self checks that may
+        take some time to run, and thus these checks are disabled by default.
+        - `experimental_linear_scan` is an experimental linear scan allocator. It may take less
+        time to allocate registers, but generated code's quality may be inferior. As of
+        2020-04-17, it is still experimental and it should not be used in production settings.
+        - `experimental_linear_scan_checked` is the linear scan allocator with additional self
+        checks that may take some time to run, and thus these checks are disabled by default.
+    "#,
+        vec![
+            "backtracking",
+            "backtracking_checked",
+            "experimental_linear_scan",
+            "experimental_linear_scan_checked",
+        ],
+    );
 
     settings.add_enum(
         "opt_level",
         r#"
         Optimization level:
 
-        - default: Very profitable optimizations enabled, none slow.
-        - best: Enable all optimizations
-        - fastest: Optimize for compile time by disabling most optimizations.
+        - none: Minimise compile time by disabling most optimizations.
+        - speed: Generate the fastest possible code
+        - speed_and_size: like "speed", but also perform transformations
+          aimed at reducing code size.
         "#,
-        vec!["default", "best", "fastest"],
+        vec!["none", "speed", "speed_and_size"],
     );
 
     settings.add_bool(
@@ -20,8 +54,8 @@ pub fn define() -> SettingGroup {
         r#"
         Run the Cranelift IR verifier at strategic times during compilation.
 
-        This makes compilation slower but catches many bugs. The verifier is
-        disabled by default, except when reading Cranelift IR from a text file.
+        This makes compilation slower but catches many bugs. The verifier is always enabled by
+        default, which is useful during development.
         "#,
         true,
     );
@@ -36,7 +70,7 @@ pub fn define() -> SettingGroup {
     );
 
     settings.add_bool(
-        "colocated_libcalls",
+        "use_colocated_libcalls",
         r#"
             Use colocated libcalls.
 
@@ -84,6 +118,32 @@ pub fn define() -> SettingGroup {
         false,
     );
 
+    settings.add_bool(
+        "enable_pinned_reg",
+        r#"Enable the use of the pinned register.
+
+        This register is excluded from register allocation, and is completely under the control of
+        the end-user. It is possible to read it via the get_pinned_reg instruction, and to set it
+        with the set_pinned_reg instruction.
+        "#,
+        false,
+    );
+
+    settings.add_bool(
+        "use_pinned_reg_as_heap_base",
+        r#"Use the pinned register as the heap base.
+
+        Enabling this requires the enable_pinned_reg setting to be set to true. It enables a custom
+        legalization of the `heap_addr` instruction so it will use the pinned register as the heap
+        base, instead of fetching it from a global value.
+
+        Warning! Enabling this means that the pinned register *must* be maintained to contain the
+        heap base address at all times, during the lifetime of a function. Using the pinned
+        register for other purposes when this is set is very likely to cause crashes.
+        "#,
+        false,
+    );
+
     settings.add_bool("enable_simd", "Enable the use of SIMD instructions.", false);
 
     settings.add_bool(
@@ -102,6 +162,14 @@ pub fn define() -> SettingGroup {
             live reference values at that point in the program.
             "#,
         false,
+    );
+
+    settings.add_enum(
+        "tls_model",
+        r#"
+            Defines the model used to perform TLS accesses.
+        "#,
+        vec!["none", "elf_gd", "macho", "coff"],
     );
 
     // Settings specific to the `baldrdash` calling convention.
@@ -150,7 +218,7 @@ pub fn define() -> SettingGroup {
     // BaldrMonkey requires that not-yet-relocated function addresses be encoded
     // as all-ones bitpatterns.
     settings.add_bool(
-        "allones_funcaddrs",
+        "emit_all_ones_funcaddrs",
         "Emit not-yet-relocated function addresses as all-ones bit patterns.",
         false,
     );
@@ -158,7 +226,7 @@ pub fn define() -> SettingGroup {
     // Stack probing options.
 
     settings.add_bool(
-        "probestack_enabled",
+        "enable_probestack",
         r#"
             Enable the use of stack probes, for calling conventions which support this
             functionality.
@@ -191,8 +259,26 @@ pub fn define() -> SettingGroup {
     // Jump table options.
 
     settings.add_bool(
-        "jump_tables_enabled",
+        "enable_jump_tables",
         "Enable the use of jump tables in generated machine code.",
+        true,
+    );
+
+    // Spectre options.
+
+    settings.add_bool(
+        "enable_heap_access_spectre_mitigation",
+        r#"
+        Enable Spectre mitigation on heap bounds checks.
+        
+        This is a no-op for any heap that needs no bounds checks; e.g.,
+        if the limit is static and the guard region is large enough that
+        the index cannot reach past it.
+
+        This option is enabled by default because it is highly
+        recommended for secure sandboxing. The embedder should consider
+        the security implications carefully before disabling this option.
+        "#,
         true,
     );
 

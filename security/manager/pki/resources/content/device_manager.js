@@ -326,7 +326,11 @@ function doLogout() {
 
 // load a new device
 function doLoad() {
-  window.open("load_device.xul", "loaddevice", "chrome,centerscreen,modal");
+  window.browsingContext.topChromeWindow.open(
+    "load_device.xhtml",
+    "loaddevice",
+    "chrome,centerscreen,modal"
+  );
   ClearDeviceList();
   RefreshDeviceList();
 }
@@ -361,8 +365,8 @@ function changePassword() {
   let objects = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
   objects.appendElement(selected_slot.getToken());
   params.objects = objects;
-  window.openDialog(
-    "changepassword.xul",
+  window.browsingContext.topChromeWindow.openDialog(
+    "changepassword.xhtml",
     "",
     "chrome,centerscreen,modal",
     params
@@ -410,7 +414,7 @@ function toggleFIPS() {
     var internal_token = tokendb.getInternalKeyToken(); // nsIPK11Token
     if (!internal_token.hasPassword) {
       // Token has either no or an empty password.
-      doPrompt("fips-nonempty-password-required");
+      doPrompt("fips-nonempty-primary-password-required");
       return;
     }
   }

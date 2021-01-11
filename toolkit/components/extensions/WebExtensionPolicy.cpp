@@ -9,8 +9,10 @@
 #include "mozilla/extensions/WebExtensionPolicy.h"
 
 #include "mozilla/AddonManagerWebAPI.h"
+#include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/StaticPrefs_extensions.h"
+#include "nsContentUtils.h"
 #include "nsEscape.h"
 #include "nsIObserver.h"
 #include "nsISubstitutingProtocolHandler.h"
@@ -131,8 +133,10 @@ WebExtensionPolicy::WebExtensionPolicy(GlobalObject& aGlobal,
     : mId(NS_AtomizeMainThread(aInit.mId)),
       mHostname(aInit.mMozExtensionHostname),
       mName(aInit.mName),
-      mContentSecurityPolicy(aInit.mContentSecurityPolicy),
+      mExtensionPageCSP(aInit.mExtensionPageCSP),
+      mContentScriptCSP(aInit.mContentScriptCSP),
       mLocalizeCallback(aInit.mLocalizeCallback),
+      mIsPrivileged(aInit.mIsPrivileged),
       mPermissions(new AtomSet(aInit.mPermissions)) {
   if (!ParseGlobs(aGlobal, aInit.mWebAccessibleResources, mWebAccessiblePaths,
                   aRv)) {
@@ -157,8 +161,16 @@ WebExtensionPolicy::WebExtensionPolicy(GlobalObject& aGlobal,
         aInit.mBackgroundScripts.Value());
   }
 
-  if (mContentSecurityPolicy.IsVoid()) {
-    EPS().DefaultCSP(mContentSecurityPolicy);
+  if (!aInit.mBackgroundWorkerScript.IsEmpty()) {
+    mBackgroundWorkerScript.Assign(aInit.mBackgroundWorkerScript);
+  }
+
+  if (mExtensionPageCSP.IsVoid()) {
+    EPS().GetDefaultCSP(mExtensionPageCSP);
+  }
+
+  if (mContentScriptCSP.IsVoid()) {
+    EPS().GetDefaultCSP(mContentScriptCSP);
   }
 
   mContentScripts.SetCapacity(aInit.mContentScripts.Length());
@@ -240,6 +252,11 @@ bool WebExtensionPolicy::Enable() {
 
   if (!EPS().RegisterExtension(*this)) {
     return false;
+  }
+
+  if (XRE_IsParentProcess()) {
+    // Reserve a BrowsingContextGroup ID for use by this WebExtensionPolicy.
+    mBrowsingContextGroupId = nsContentUtils::GenerateBrowsingContextId();
   }
 
   Unused << Proto()->SetSubstitution(MozExtensionHostname(), mBaseURI);
@@ -328,6 +345,11 @@ bool WebExtensionPolicy::UseRemoteWebExtensions(GlobalObject& aGlobal) {
 /* static */
 bool WebExtensionPolicy::IsExtensionProcess(GlobalObject& aGlobal) {
   return EPS().IsExtensionProcess();
+}
+
+/* static */
+bool WebExtensionPolicy::BackgroundServiceWorkerEnabled(GlobalObject& aGlobal) {
+  return StaticPrefs::extensions_backgroundServiceWorker_enabled_AtStartup();
 }
 
 namespace {
@@ -479,9 +501,16 @@ void WebExtensionPolicy::GetReadyPromise(
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(WebExtensionPolicy, mParent,
-                                      mLocalizeCallback, mHostPermissions,
-                                      mWebAccessiblePaths, mContentScripts)
+uint64_t WebExtensionPolicy::GetBrowsingContextGroupId() const {
+  MOZ_ASSERT(XRE_IsParentProcess() && mActive);
+  return mBrowsingContextGroupId;
+}
+
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(WebExtensionPolicy, mParent,
+                                               mLocalizeCallback,
+                                               mHostPermissions,
+                                               mWebAccessiblePaths,
+                                               mContentScripts)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WebExtensionPolicy)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -568,9 +597,9 @@ WebExtensionContentScript::WebExtensionContentScript(
     : MozDocumentMatcher(aGlobal, aInit,
                          !aExtension.HasPermission(nsGkAtoms::mozillaAddons),
                          aRv),
-      mCssPaths(aInit.mCssPaths),
-      mJsPaths(aInit.mJsPaths),
       mRunAt(aInit.mRunAt) {
+  mCssPaths.Assign(aInit.mCssPaths);
+  mJsPaths.Assign(aInit.mJsPaths);
   mExtension = &aExtension;
 }
 
@@ -642,6 +671,17 @@ bool MozDocumentMatcher::MatchesURI(const URLInfo& aURL) const {
   return true;
 }
 
+bool MozDocumentMatcher::MatchesWindowGlobal(WindowGlobalChild& aWindow) const {
+  if (aWindow.IsClosed() || !aWindow.IsCurrentGlobal()) {
+    return false;
+  }
+  nsGlobalWindowInner* inner = aWindow.GetWindowGlobal();
+  if (!inner || !inner->GetDocShell()) {
+    return false;
+  }
+  return Matches(inner->GetOuterWindow());
+}
+
 JSObject* MozDocumentMatcher::WrapObject(JSContext* aCx,
                                          JS::HandleObject aGivenProto) {
   return MozDocumentMatcher_Binding::Wrap(aCx, this, aGivenProto);
@@ -670,8 +710,7 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(MozDocumentMatcher)
 
 /* static */
 already_AddRefed<DocumentObserver> DocumentObserver::Constructor(
-    GlobalObject& aGlobal, dom::MozDocumentCallback& aCallbacks,
-    ErrorResult& aRv) {
+    GlobalObject& aGlobal, dom::MozDocumentCallback& aCallbacks) {
   RefPtr<DocumentObserver> matcher =
       new DocumentObserver(aGlobal.GetAsSupports(), aCallbacks);
   return matcher.forget();
@@ -739,7 +778,9 @@ DocInfo::DocInfo(nsPIDOMWindowOuter* aWindow)
 bool DocInfo::IsTopLevel() const {
   if (mIsTopLevel.isNothing()) {
     struct Matcher {
-      bool operator()(Window aWin) { return aWin->IsTopLevelWindow(); }
+      bool operator()(Window aWin) {
+        return aWin->GetBrowsingContext()->IsTop();
+      }
       bool operator()(LoadInfo aLoadInfo) {
         return aLoadInfo->GetIsTopLevelLoad();
       }
@@ -750,7 +791,7 @@ bool DocInfo::IsTopLevel() const {
 }
 
 bool WindowShouldMatchActiveTab(nsPIDOMWindowOuter* aWin) {
-  if (aWin->IsTopLevelWindow()) {
+  if (aWin->GetBrowsingContext()->IsTopContent()) {
     return true;
   }
 
@@ -793,9 +834,11 @@ uint64_t DocInfo::FrameID() const {
       mFrameID.emplace(0);
     } else {
       struct Matcher {
-        uint64_t operator()(Window aWin) { return aWin->WindowID(); }
+        uint64_t operator()(Window aWin) {
+          return aWin->GetBrowsingContext()->Id();
+        }
         uint64_t operator()(LoadInfo aLoadInfo) {
-          return aLoadInfo->GetOuterWindowID();
+          return aLoadInfo->GetBrowsingContextID();
         }
       };
       mFrameID.emplace(mObj.match(Matcher()));
@@ -837,8 +880,9 @@ const URLInfo& DocInfo::PrincipalURL() const {
 
   if (mPrincipalURL.isNothing()) {
     nsIPrincipal* prin = Principal();
+    auto* basePrin = BasePrincipal::Cast(prin);
     nsCOMPtr<nsIURI> uri;
-    if (NS_SUCCEEDED(prin->GetURI(getter_AddRefs(uri)))) {
+    if (NS_SUCCEEDED(basePrin->GetURI(getter_AddRefs(uri)))) {
       MOZ_DIAGNOSTIC_ASSERT(uri);
       mPrincipalURL.emplace(uri);
     } else {

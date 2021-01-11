@@ -11,10 +11,7 @@
 #include "nsContentUtils.h"
 #include "nsCSPParser.h"
 #include "nsCSPUtils.h"
-#include "nsIConsoleService.h"
-#include "nsIContentPolicy.h"
 #include "nsIScriptError.h"
-#include "nsIStringBundle.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsServiceManagerUtils.h"
@@ -74,7 +71,7 @@ nsCSPParser::nsCSPParser(policyTokens& aTokens, nsIURI* aSelfURI,
       mWorkerSrc(nullptr),
       mScriptSrc(nullptr),
       mParsingFrameAncestorsDir(false),
-      mTokens(aTokens),
+      mTokens(aTokens.Clone()),
       mSelfURI(aSelfURI),
       mPolicy(nullptr),
       mCSPContext(aCSPContext),
@@ -312,7 +309,7 @@ bool nsCSPParser::path(nsCSPHostSrc* aCspHost) {
     // www.example.com/ should result in www.example.com/
     // please note that we do not have to perform any pct-decoding here
     // because we are just appending a '/' and not any actual chars.
-    aCspHost->appendPath(NS_LITERAL_STRING("/"));
+    aCspHost->appendPath(u"/"_ns);
     return true;
   }
   // path can begin with "/" but not "//"
@@ -429,7 +426,7 @@ nsCSPBaseSrc* nsCSPParser::keywordSource() {
     if (!CSP_IsDirective(mCurDir[0],
                          nsIContentSecurityPolicy::SCRIPT_SRC_DIRECTIVE)) {
       // Todo: Enforce 'strict-dynamic' within default-src; see Bug 1313937
-      AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("strict-dynamic")};
+      AutoTArray<nsString, 1> params = {u"strict-dynamic"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoringStrictDynamic", params);
       return nullptr;
@@ -467,6 +464,21 @@ nsCSPBaseSrc* nsCSPParser::keywordSource() {
     }
     return new nsCSPKeywordSrc(CSP_UTF16KeywordToEnum(mCurToken));
   }
+
+  if (CSP_IsKeyword(mCurToken, CSP_UNSAFE_ALLOW_REDIRECTS)) {
+    if (!CSP_IsDirective(mCurDir[0],
+                         nsIContentSecurityPolicy::NAVIGATE_TO_DIRECTIVE)) {
+      // Only allow 'unsafe-allow-redirects' within navigate-to.
+      AutoTArray<nsString, 2> params = {u"unsafe-allow-redirects"_ns,
+                                        u"navigate-to"_ns};
+      logWarningErrorToConsole(nsIScriptError::warningFlag,
+                               "IgnoringSourceWithinDirective", params);
+      return nullptr;
+    }
+
+    return new nsCSPKeywordSrc(CSP_UTF16KeywordToEnum(mCurToken));
+  }
+
   return nullptr;
 }
 
@@ -546,7 +558,7 @@ nsCSPNonceSrc* nsCSPParser::nonceSource() {
   // Check if mCurToken begins with "'nonce-" and ends with "'"
   if (!StringBeginsWith(mCurToken,
                         nsDependentString(CSP_EnumToUTF16Keyword(CSP_NONCE)),
-                        nsASCIICaseInsensitiveStringComparator()) ||
+                        nsASCIICaseInsensitiveStringComparator) ||
       mCurToken.Last() != SINGLEQUOTE) {
     return nullptr;
   }
@@ -633,7 +645,7 @@ nsCSPBaseSrc* nsCSPParser::sourceExpression() {
   // the default scheme. However, we still would need to apply the default
   // scheme in case we would parse "*:80".
   if (mCurToken.EqualsASCII("*")) {
-    return new nsCSPHostSrc(NS_LITERAL_STRING("*"));
+    return new nsCSPHostSrc(u"*"_ns);
   }
 
   // Calling resetCurChar allows us to use mCurChar and mEndChar
@@ -858,6 +870,19 @@ nsCSPDirective* nsCSPParser::directiveName() {
     return nullptr;
   }
 
+  // Bug 1529068: Implement navigate-to directive.
+  // Once all corner cases are resolved we can remove that special
+  // if-handling here and let the parser just fall through to
+  // return new nsCSPDirective.
+  if (CSP_IsDirective(mCurToken,
+                      nsIContentSecurityPolicy::NAVIGATE_TO_DIRECTIVE) &&
+      !StaticPrefs::security_csp_enableNavigateTo()) {
+    AutoTArray<nsString, 1> params = {mCurToken};
+    logWarningErrorToConsole(nsIScriptError::warningFlag,
+                             "couldNotProcessUnknownDirective", params);
+    return nullptr;
+  }
+
   // Make sure the directive does not already exist
   // (see http://www.w3.org/TR/CSP11/#parsing)
   if (mPolicy->hasDirective(CSP_StringToCSPDirective(mCurToken))) {
@@ -897,14 +922,11 @@ nsCSPDirective* nsCSPParser::directiveName() {
     return new nsUpgradeInsecureDirective(CSP_StringToCSPDirective(mCurToken));
   }
 
-  // child-src by itself is deprecatd but will be enforced
-  //   * for workers (if worker-src is not explicitly specified)
-  //   * for frames  (if frame-src is not explicitly specified)
+  // if we have a child-src, cache it as a fallback for
+  //   * workers (if worker-src is not explicitly specified)
+  //   * frames  (if frame-src is not explicitly specified)
   if (CSP_IsDirective(mCurToken,
                       nsIContentSecurityPolicy::CHILD_SRC_DIRECTIVE)) {
-    AutoTArray<nsString, 1> params = {mCurToken};
-    logWarningErrorToConsole(nsIScriptError::warningFlag,
-                             "deprecatedChildSrcDirective", params);
     mChildSrc = new nsCSPChildSrcDirective(CSP_StringToCSPDirective(mCurToken));
     return mChildSrc;
   }
@@ -948,7 +970,7 @@ void nsCSPParser::directive() {
   // Make sure that the directive-srcs-array contains at least
   // one directive and one src.
   if (mCurDir.Length() < 1) {
-    AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("directive missing")};
+    AutoTArray<nsString, 1> params = {u"directive missing"_ns};
     logWarningErrorToConsole(nsIScriptError::warningFlag,
                              "failedToParseUnrecognizedSource", params);
     return;
@@ -970,8 +992,7 @@ void nsCSPParser::directive() {
   // by a directive name but does not include any srcs.
   if (cspDir->equals(nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT)) {
     if (mCurDir.Length() > 1) {
-      AutoTArray<nsString, 1> params = {
-          NS_LITERAL_STRING("block-all-mixed-content")};
+      AutoTArray<nsString, 1> params = {u"block-all-mixed-content"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoreSrcForDirective", params);
     }
@@ -984,8 +1005,7 @@ void nsCSPParser::directive() {
   // specified by a directive name but does not include any srcs.
   if (cspDir->equals(nsIContentSecurityPolicy::UPGRADE_IF_INSECURE_DIRECTIVE)) {
     if (mCurDir.Length() > 1) {
-      AutoTArray<nsString, 1> params = {
-          NS_LITERAL_STRING("upgrade-insecure-requests")};
+      AutoTArray<nsString, 1> params = {u"upgrade-insecure-requests"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoreSrcForDirective", params);
     }
@@ -1052,7 +1072,7 @@ void nsCSPParser::directive() {
           !srcStr.EqualsASCII(CSP_EnumToUTF8Keyword(CSP_UNSAFE_EVAL)) &&
           !StringBeginsWith(
               srcStr, nsDependentString(CSP_EnumToUTF16Keyword(CSP_NONCE))) &&
-          !StringBeginsWith(srcStr, NS_LITERAL_STRING("'sha"))) {
+          !StringBeginsWith(srcStr, u"'sha"_ns)) {
         AutoTArray<nsString, 1> params = {srcStr};
         logWarningErrorToConsole(nsIScriptError::warningFlag,
                                  "ignoringSrcForStrictDynamic", params);
@@ -1070,7 +1090,7 @@ void nsCSPParser::directive() {
               cspDir->equals(nsIContentSecurityPolicy::STYLE_SRC_DIRECTIVE))) {
     mUnsafeInlineKeywordSrc->invalidate();
     // log to the console that unsafe-inline will be ignored
-    AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("'unsafe-inline'")};
+    AutoTArray<nsString, 1> params = {u"'unsafe-inline'"_ns};
     logWarningErrorToConsole(nsIScriptError::warningFlag,
                              "ignoringSrcWithinScriptStyleSrc", params);
   }
@@ -1090,7 +1110,7 @@ nsCSPPolicy* nsCSPParser::policy() {
     // All input is already tokenized; set one tokenized array in the form of
     // [ name, src, src, ... ]
     // to mCurDir and call directive which processes the current directive.
-    mCurDir = mTokens[i];
+    mCurDir = mTokens[i].Clone();
     directive();
   }
 
@@ -1139,7 +1159,7 @@ nsCSPPolicy* nsCSPParser::parseContentSecurityPolicy(
   // The tokenizer itself can not fail; all eventual errors
   // are detected in the parser itself.
 
-  nsTArray<nsTArray<nsString> > tokens;
+  nsTArray<CopyableTArray<nsString> > tokens;
   PolicyTokenizer::tokenizePolicy(aPolicyString, tokens);
 
   nsCSPParser parser(tokens, aSelfURI, aCSPContext, aDeliveredViaMetaTag);

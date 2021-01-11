@@ -8,7 +8,7 @@
 #ifndef SkTypeface_mac_DEFINED
 #define SkTypeface_mac_DEFINED
 
-#include "SkTypeface.h"
+#include "include/core/SkTypeface.h"
 
 #if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_IOS)
 
@@ -31,7 +31,9 @@
  *  lifetime of the SkTypeface. This was introduced as a means to work around
  *  https://crbug.com/413332 .
  */
-SK_API extern SkTypeface* SkCreateTypefaceFromCTFont(CTFontRef, CFTypeRef = NULL);
+SK_API extern SkTypeface* SkCreateTypefaceFromCTFont(CTFontRef, CFTypeRef = NULL,
+                                                     const SkFontStyle* = nullptr,
+                                                     const CTFontSymbolicTraits* = nullptr);
 
 /**
  *  Returns the platform-specific CTFontRef handle for a

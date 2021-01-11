@@ -2,7 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { recordTelemetryEvent } from "../aboutLoginsUtils.js";
+import {
+  recordTelemetryEvent,
+  promptForMasterPassword,
+} from "../aboutLoginsUtils.js";
 
 export default class LoginItem extends HTMLElement {
   /**
@@ -51,9 +54,18 @@ export default class LoginItem extends HTMLElement {
     );
     this._form = this.shadowRoot.querySelector("form");
     this._originInput = this.shadowRoot.querySelector("input[name='origin']");
+    this._originDisplayInput = this.shadowRoot.querySelector(
+      "a[name='origin']"
+    );
     this._usernameInput = this.shadowRoot.querySelector(
       "input[name='username']"
     );
+    // type=password field for display which only ever contains spaces the correct
+    // length of the password.
+    this._passwordDisplayInput = this.shadowRoot.querySelector(
+      "input.password-display"
+    );
+    // type=text field for editing the password with the actual password value.
     this._passwordInput = this.shadowRoot.querySelector(
       "input[name='password']"
     );
@@ -72,28 +84,36 @@ export default class LoginItem extends HTMLElement {
     this._timeChanged = this.shadowRoot.querySelector(".time-changed");
     this._timeUsed = this.shadowRoot.querySelector(".time-used");
     this._breachAlert = this.shadowRoot.querySelector(".breach-alert");
-    this._breachAlertLink = this._breachAlert.querySelector(
-      ".breach-alert-link"
+    this._breachAlertLink = this._breachAlert.querySelector(".alert-link");
+    this._breachAlertDate = this._breachAlert.querySelector(".alert-date");
+    this._breachAlertLearnMoreLink = this._breachAlert.querySelector(
+      ".alert-learn-more-link"
     );
-    this._dismissBreachAlert = this.shadowRoot.querySelector(
-      ".dismiss-breach-alert"
+    this._vulnerableAlert = this.shadowRoot.querySelector(".vulnerable-alert");
+    this._vulnerableAlertLink = this._vulnerableAlert.querySelector(
+      ".alert-link"
+    );
+    this._vulnerableAlertLearnMoreLink = this._vulnerableAlert.querySelector(
+      ".alert-learn-more-link"
     );
 
     this.render();
 
-    this._breachAlertLink.addEventListener("click", this);
+    this._breachAlertLearnMoreLink.addEventListener("click", this);
     this._cancelButton.addEventListener("click", this);
     this._copyPasswordButton.addEventListener("click", this);
     this._copyUsernameButton.addEventListener("click", this);
     this._deleteButton.addEventListener("click", this);
-    this._dismissBreachAlert.addEventListener("click", this);
     this._editButton.addEventListener("click", this);
     this._errorMessageLink.addEventListener("click", this);
     this._form.addEventListener("submit", this);
     this._originInput.addEventListener("blur", this);
     this._originInput.addEventListener("click", this);
+    this._originInput.addEventListener("mousedown", this, true);
     this._originInput.addEventListener("auxclick", this);
+    this._originDisplayInput.addEventListener("click", this);
     this._revealCheckbox.addEventListener("click", this);
+    this._vulnerableAlertLearnMoreLink.addEventListener("click", this);
     window.addEventListener("AboutLoginsInitialLoginSelected", this);
     window.addEventListener("AboutLoginsLoadInitialFavicon", this);
     window.addEventListener("AboutLoginsLoginSelected", this);
@@ -101,9 +121,7 @@ export default class LoginItem extends HTMLElement {
   }
 
   focus() {
-    if (!this._breachAlert.hidden) {
-      this._breachAlertLink.focus();
-    } else if (!this._editButton.disabled) {
+    if (!this._editButton.disabled) {
       this._editButton.focus();
     } else if (!this._deleteButton.disabled) {
       this._deleteButton.focus();
@@ -112,12 +130,14 @@ export default class LoginItem extends HTMLElement {
     }
   }
 
-  async render() {
+  async render(
+    { onlyUpdateErrorsAndAlerts } = { onlyUpdateErrorsAndAlerts: false }
+  ) {
     if (this._error) {
       if (this._error.errorMessage.includes("This login already exists")) {
         document.l10n.setAttributes(
           this._errorMessageLink,
-          "about-logins-error-message-duplicate-login",
+          "about-logins-error-message-duplicate-login-with-link",
           {
             loginTitle: this._error.login.title,
           }
@@ -136,7 +156,47 @@ export default class LoginItem extends HTMLElement {
       !this._breachesMap || !this._breachesMap.has(this._login.guid);
     if (!this._breachAlert.hidden) {
       const breachDetails = this._breachesMap.get(this._login.guid);
-      this._breachAlertLink.href = breachDetails.breachAlertURL;
+      this._breachAlertLearnMoreLink.href = breachDetails.breachAlertURL;
+      this._breachAlertLink.href = this._login.origin;
+      document.l10n.setAttributes(
+        this._breachAlertLink,
+        "about-logins-breach-alert-link",
+        { hostname: this._login.displayOrigin }
+      );
+      if (breachDetails.BreachDate) {
+        let breachDate = new Date(breachDetails.BreachDate);
+        this._breachAlertDate.hidden = isNaN(breachDate);
+        if (!isNaN(breachDate)) {
+          document.l10n.setAttributes(
+            this._breachAlertDate,
+            "about-logins-breach-alert-date",
+            {
+              date: breachDate.getTime(),
+            }
+          );
+        }
+      }
+    }
+    this._vulnerableAlert.hidden =
+      !this._vulnerableLoginsMap ||
+      !this._vulnerableLoginsMap.has(this._login.guid) ||
+      !this._breachAlert.hidden;
+    if (!this._vulnerableAlert.hidden) {
+      this._vulnerableAlertLink.href = this._login.origin;
+      document.l10n.setAttributes(
+        this._vulnerableAlertLink,
+        "about-logins-vulnerable-alert-link",
+        {
+          hostname: this._login.displayOrigin,
+        }
+      );
+      this._vulnerableAlertLearnMoreLink.setAttribute(
+        "href",
+        window.AboutLoginsUtils.supportBaseURL + "lockwise-alerts"
+      );
+    }
+    if (onlyUpdateErrorsAndAlerts) {
+      return;
     }
     document.l10n.setAttributes(this._timeCreated, "login-item-time-created", {
       timeCreated: this._login.timeCreated || "",
@@ -160,7 +220,13 @@ export default class LoginItem extends HTMLElement {
     }
 
     this._title.textContent = this._login.title;
+    this._title.title = this._login.title;
     this._originInput.defaultValue = this._login.origin || "";
+    if (this._login.origin) {
+      // Creates anchor element with origin URL
+      this._originDisplayInput.href = this._login.origin || "";
+      this._originDisplayInput.innerText = this._login.origin || "";
+    }
     this._usernameInput.defaultValue = this._login.username || "";
     if (this._login.password) {
       // We use .value instead of .defaultValue since the latter updates the
@@ -169,7 +235,15 @@ export default class LoginItem extends HTMLElement {
       // the password is non-empty since setting the field to an empty value
       // would mark the field as 'dirty' for form validation and thus trigger
       // the error styling since the password field is 'required'.
+      // This element is only in the document while unmasked or editing.
       this._passwordInput.value = this._login.password;
+
+      // In masked non-edit mode we use a different "display" element to render
+      // the masked password so that one cannot simply remove/change
+      // @type=password to reveal the real password.
+      this._passwordDisplayInput.value = " ".repeat(
+        this._login.password.length
+      );
     }
 
     if (this.dataset.editing) {
@@ -189,34 +263,48 @@ export default class LoginItem extends HTMLElement {
         : "login-item-save-changes-button"
     );
     this._updatePasswordRevealState();
+    this._updateOriginDisplayState();
   }
 
   setBreaches(breachesByLoginGUID) {
-    this._breachesMap = breachesByLoginGUID;
-    this.render();
+    this._internalSetMonitorData("_breachesMap", breachesByLoginGUID);
   }
 
   updateBreaches(breachesByLoginGUID) {
-    if (!this._breachesMap) {
-      this._breachesMap = new Map();
-    }
-    for (const [guid, breach] of [...breachesByLoginGUID]) {
-      this._breachesMap.set(guid, breach);
-    }
-    this.setBreaches(this._breachesMap);
+    this._internalUpdateMonitorData("_breachesMap", breachesByLoginGUID);
   }
 
-  dismissBreachAlert() {
-    document.dispatchEvent(
-      new CustomEvent("AboutLoginsDismissBreachAlert", {
-        bubbles: true,
-        detail: this._login,
-      })
+  setVulnerableLogins(vulnerableLoginsByLoginGUID) {
+    this._internalSetMonitorData(
+      "_vulnerableLoginsMap",
+      vulnerableLoginsByLoginGUID
     );
-    this._recordTelemetryEvent({
-      object: "existing_login",
-      method: "dismiss_breach_alert",
-    });
+  }
+
+  updateVulnerableLogins(vulnerableLoginsByLoginGUID) {
+    this._internalUpdateMonitorData(
+      "_vulnerableLoginsMap",
+      vulnerableLoginsByLoginGUID
+    );
+  }
+
+  _internalSetMonitorData(internalMemberName, mapByLoginGUID) {
+    this[internalMemberName] = mapByLoginGUID;
+    this.render({ onlyUpdateErrorsAndAlerts: true });
+  }
+
+  _internalUpdateMonitorData(internalMemberName, mapByLoginGUID) {
+    if (!this[internalMemberName]) {
+      this[internalMemberName] = new Map();
+    }
+    for (const [guid, data] of [...mapByLoginGUID]) {
+      if (data) {
+        this[internalMemberName].set(guid, data);
+      } else {
+        this[internalMemberName].delete(guid);
+      }
+    }
+    this._internalSetMonitorData(internalMemberName, this[internalMemberName]);
   }
 
   showLoginItemError(error) {
@@ -262,10 +350,11 @@ export default class LoginItem extends HTMLElement {
       case "click": {
         let classList = event.currentTarget.classList;
         if (classList.contains("reveal-password-checkbox")) {
-          if (this._revealCheckbox.checked && !this.dataset.isNewLogin) {
-            let masterPasswordAuth = await new Promise(resolve => {
-              window.AboutLoginsUtils.promptForMasterPassword(resolve);
-            });
+          // We prompt for the master password when entering edit mode already.
+          if (this._revealCheckbox.checked && !this.dataset.editing) {
+            let masterPasswordAuth = await promptForMasterPassword(
+              "about-logins-reveal-password-os-auth-dialog-message"
+            );
             if (!masterPasswordAuth) {
               this._revealCheckbox.checked = false;
               return;
@@ -313,9 +402,9 @@ export default class LoginItem extends HTMLElement {
               ? this._copyUsernameButton
               : this._copyPasswordButton;
           if (copyButton.dataset.copyLoginProperty == "password") {
-            let masterPasswordAuth = await new Promise(resolve => {
-              window.AboutLoginsUtils.promptForMasterPassword(resolve);
-            });
+            let masterPasswordAuth = await promptForMasterPassword(
+              "about-logins-copy-password-os-auth-dialog-message"
+            );
             if (!masterPasswordAuth) {
               return;
             }
@@ -363,11 +452,14 @@ export default class LoginItem extends HTMLElement {
           });
           return;
         }
-        if (classList.contains("dismiss-breach-alert")) {
-          this.dismissBreachAlert();
-          return;
-        }
         if (classList.contains("edit-button")) {
+          let masterPasswordAuth = await promptForMasterPassword(
+            "about-logins-edit-login-os-auth-dialog-message"
+          );
+          if (!masterPasswordAuth) {
+            return;
+          }
+
           this._toggleEditing();
           this.render();
 
@@ -378,7 +470,7 @@ export default class LoginItem extends HTMLElement {
           return;
         }
         if (
-          classList.contains("error-message-link") &&
+          event.target.dataset.l10nName == "duplicate-link" &&
           event.currentTarget.dataset.errorGuid
         ) {
           let existingDuplicateLogin = {
@@ -395,11 +487,18 @@ export default class LoginItem extends HTMLElement {
         if (classList.contains("origin-input")) {
           this._handleOriginClick();
         }
-        if (classList.contains("breach-alert-link")) {
-          this._recordTelemetryEvent({
-            object: "existing_login",
-            method: "learn_more_breach",
-          });
+        if (classList.contains("alert-learn-more-link")) {
+          if (event.currentTarget.closest(".breach-alert")) {
+            this._recordTelemetryEvent({
+              object: "existing_login",
+              method: "learn_more_breach",
+            });
+          } else if (event.currentTarget.closest(".vulnerable-alert")) {
+            this._recordTelemetryEvent({
+              object: "existing_login",
+              method: "learn_more_vuln",
+            });
+          }
         }
         break;
       }
@@ -411,6 +510,7 @@ export default class LoginItem extends HTMLElement {
         }
         if (!this.hasPendingChanges()) {
           this._toggleEditing(false);
+          this.render();
           return;
         }
         let loginUpdates = this._loginFromForm();
@@ -437,6 +537,14 @@ export default class LoginItem extends HTMLElement {
 
           this._recordTelemetryEvent({ object: "new_login", method: "save" });
         }
+        break;
+      }
+      case "mousedown": {
+        // No AutoScroll when middle clicking on origin input.
+        if (event.currentTarget == this._originInput && event.button == 1) {
+          event.preventDefault();
+        }
+        break;
       }
     }
   }
@@ -477,9 +585,10 @@ export default class LoginItem extends HTMLElement {
     switch (type) {
       case "delete": {
         options = {
-          title: "confirm-delete-dialog-title",
+          title: "about-logins-confirm-remove-dialog-title",
           message: "confirm-delete-dialog-message",
-          confirmButtonLabel: "confirm-delete-dialog-confirm-button",
+          confirmButtonLabel:
+            "about-logins-confirm-remove-dialog-confirm-button",
         };
         break;
       }
@@ -519,6 +628,24 @@ export default class LoginItem extends HTMLElement {
     return this.dataset.editing && valuesChanged;
   }
 
+  resetForm() {
+    // If the password input (which uses HTML form validation) wasn't connected,
+    // append it to the form so it gets included in the reset, specifically for
+    // .value and the dirty state for validation.
+    let wasConnected = this._passwordInput.isConnected;
+    if (!wasConnected) {
+      this._revealCheckbox.insertAdjacentElement(
+        "beforebegin",
+        this._passwordInput
+      );
+    }
+
+    this._form.reset();
+    if (!wasConnected) {
+      this._passwordInput.remove();
+    }
+  }
+
   /**
    * @param {login} login The login that should be displayed. The login object is
    *                      a plain JS object representation of nsILoginInfo/nsILoginMetaInfo.
@@ -530,7 +657,7 @@ export default class LoginItem extends HTMLElement {
     this._login = login;
     this._error = null;
 
-    this._form.reset();
+    this.resetForm();
 
     if (login.guid) {
       delete this.dataset.isNewLogin;
@@ -629,13 +756,6 @@ export default class LoginItem extends HTMLElement {
   }
 
   _handleOriginClick() {
-    document.dispatchEvent(
-      new CustomEvent("AboutLoginsOpenSite", {
-        bubbles: true,
-        detail: this._login,
-      })
-    );
-
     this._recordTelemetryEvent({
       object: "existing_login",
       method: "open_site",
@@ -677,9 +797,17 @@ export default class LoginItem extends HTMLElement {
   }
 
   _recordTelemetryEvent(eventObject) {
+    // Breach alerts have higher priority than vulnerable logins, the
+    // following conditionals must reflect this priority.
     const extra = eventObject.hasOwnProperty("extra") ? eventObject.extra : {};
     if (this._breachesMap && this._breachesMap.has(this._login.guid)) {
       Object.assign(extra, { breached: "true" });
+      eventObject.extra = extra;
+    } else if (
+      this._vulnerableLoginsMap &&
+      this._vulnerableLoginsMap.has(this._login.guid)
+    ) {
+      Object.assign(extra, { vulnerable: "true" });
       eventObject.extra = extra;
     }
     recordTelemetryEvent(eventObject);
@@ -698,18 +826,22 @@ export default class LoginItem extends HTMLElement {
       delete this.dataset.isNewLogin;
     }
 
+    // Reset cursor to the start of the input for long text names.
+    this._usernameInput.scrollLeft = 0;
+
     if (shouldEdit) {
       this._passwordInput.style.removeProperty("width");
+      this._passwordDisplayInput.style.removeProperty("width");
     } else {
       // Need to set a shorter width than -moz-available so the reveal checkbox
       // will still appear next to the password.
-      this._passwordInput.style.width =
+      this._passwordDisplayInput.style.width = this._passwordInput.style.width =
         (this._login.password || "").length + "ch";
     }
 
     this._deleteButton.disabled = this.dataset.isNewLogin;
     this._editButton.disabled = shouldEdit;
-    let inputTabIndex = !shouldEdit ? -1 : 0;
+    let inputTabIndex = shouldEdit ? 0 : -1;
     this._originInput.readOnly = !this.dataset.isNewLogin;
     this._originInput.tabIndex = inputTabIndex;
     this._usernameInput.readOnly = !shouldEdit;
@@ -718,7 +850,6 @@ export default class LoginItem extends HTMLElement {
     this._passwordInput.tabIndex = inputTabIndex;
     if (shouldEdit) {
       this.dataset.editing = true;
-      this._originInput.focus();
     } else {
       delete this.dataset.editing;
       // Only reset the reveal checkbox when exiting 'edit' mode
@@ -727,14 +858,37 @@ export default class LoginItem extends HTMLElement {
   }
 
   _updatePasswordRevealState() {
-    let titleId = this._revealCheckbox.checked
-      ? "login-item-password-reveal-checkbox-hide"
-      : "login-item-password-reveal-checkbox-show";
-    document.l10n.setAttributes(this._revealCheckbox, titleId);
+    if (
+      window.AboutLoginsUtils &&
+      window.AboutLoginsUtils.passwordRevealVisible === false
+    ) {
+      this._revealCheckbox.hidden = true;
+      return;
+    }
 
     let { checked } = this._revealCheckbox;
     let inputType = checked ? "text" : "password";
     this._passwordInput.type = inputType;
+
+    // Swap which <input> is in the document depending on whether we need the
+    // real .value (which means that the master password was already entered,
+    // if applicable)
+    if (checked || this.dataset.editing) {
+      this._passwordDisplayInput.replaceWith(this._passwordInput);
+    } else {
+      this._passwordInput.replaceWith(this._passwordDisplayInput);
+    }
+  }
+
+  _updateOriginDisplayState() {
+    // Switches between the origin input and anchor tag depending
+    // if a new login is being created.
+    if (this.dataset.isNewLogin) {
+      this._originDisplayInput.replaceWith(this._originInput);
+      this._originInput.focus();
+    } else {
+      this._originInput.replaceWith(this._originDisplayInput);
+    }
   }
 }
 customElements.define("login-item", LoginItem);

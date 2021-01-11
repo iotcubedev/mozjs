@@ -4,20 +4,18 @@
 
 package org.mozilla.geckoview.test
 
-import org.mozilla.geckoview.GeckoSession
-import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
-import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
-import org.mozilla.geckoview.test.util.Callbacks
-
-import android.support.test.filters.MediumTest
-import android.support.test.filters.LargeTest
-import android.support.test.runner.AndroidJUnit4
-
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.LargeTest
+import androidx.test.filters.MediumTest
 import org.hamcrest.Matchers.*
 import org.junit.Assume.assumeThat
 import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.*
+import org.mozilla.geckoview.test.util.Callbacks
+import org.mozilla.geckoview.test.util.UiThreadUtils
 
 @RunWith(AndroidJUnit4::class)
 @MediumTest
@@ -191,18 +189,12 @@ class ProgressDelegateTest : BaseSessionTest() {
                 assertThat("Host should match",
                            securityInfo.host,
                            equalTo("example.com"))
-                assertThat("Organization should match",
-                           securityInfo.organization,
-                           equalTo(""))
-                assertThat("Subject name should match",
-                           securityInfo.subjectName,
-                           equalTo("CN=example.com"))
-                assertThat("Issuer common name should match",
-                           securityInfo.issuerCommonName,
-                           equalTo("Temporary Certificate Authority"))
-                assertThat("Issuer organization should match",
-                           securityInfo.issuerOrganization,
-                           equalTo("Mozilla Testing"))
+                assertThat("Subject should match",
+                        securityInfo.certificate?.subjectX500Principal?.name,
+                        equalTo("CN=example.com"))
+                assertThat("Issuer should match",
+                        securityInfo.certificate?.issuerX500Principal?.name,
+                        equalTo("OU=Profile Guided Optimization,O=Mozilla Testing,CN=Temporary Certificate Authority"))
                 assertThat("Security mode should match",
                            securityInfo.securityMode,
                            equalTo(GeckoSession.ProgressDelegate.SecurityInformation.SECURITY_MODE_IDENTIFIED))
@@ -237,18 +229,12 @@ class ProgressDelegateTest : BaseSessionTest() {
                 assertThat("Host should match",
                            securityInfo.host,
                            equalTo("mozilla-modern.badssl.com"))
-                assertThat("Organization should match",
-                           securityInfo.organization,
-                           equalTo("Lucas Garron"))
-                assertThat("Subject name should match",
-                           securityInfo.subjectName,
+                assertThat("Subject should match",
+                           securityInfo.certificate?.subjectX500Principal?.name,
                            equalTo("CN=*.badssl.com,O=Lucas Garron,L=Walnut Creek,ST=California,C=US"))
-                assertThat("Issuer common name should match",
-                           securityInfo.issuerCommonName,
-                           equalTo("DigiCert SHA2 Secure Server CA"))
-                assertThat("Issuer organization should match",
-                           securityInfo.issuerOrganization,
-                           equalTo("DigiCert Inc"))
+                assertThat("Issuer should match",
+                           securityInfo.certificate?.issuerX500Principal?.name,
+                           equalTo("CN=DigiCert SHA2 Secure Server CA,O=DigiCert Inc,C=US"))
                 assertThat("Security mode should match",
                            securityInfo.securityMode,
                            equalTo(GeckoSession.ProgressDelegate.SecurityInformation.SECURITY_MODE_IDENTIFIED))
@@ -388,5 +374,54 @@ class ProgressDelegateTest : BaseSessionTest() {
                 assertThat("Old session state and new should match", sessionState, equalTo(oldState))
             }
         })
+    }
+
+    @NullDelegate(GeckoSession.HistoryDelegate::class)
+    @Test fun noHistoryDelegateOnSessionStateChange() {
+        sessionRule.session.loadTestPath(HELLO_HTML_PATH)
+        sessionRule.waitForPageStop()
+
+        sessionRule.waitUntilCalled(object : Callbacks.ProgressDelegate {
+            @AssertCalled(count = 1)
+            override fun onSessionStateChange(session: GeckoSession, sessionState: GeckoSession.SessionState) {
+            }
+        })
+    }
+
+    @Test(expected = UiThreadUtils.TimeoutException::class)
+    fun handlingLargeDataURIs() {
+        sessionRule.delegateUntilTestEnd(object : Callbacks.ProgressDelegate {
+            @AssertCalled(count = 1)
+            override fun onPageStart(session: GeckoSession, url: String) {
+            }
+        });
+
+        val dataBytes = ByteArray(3 * 1024 * 1024)
+        val uri = GeckoSession.createDataUri(dataBytes, "*/*")
+
+        sessionRule.session.loadTestPath(DATA_URI_PATH)
+        sessionRule.session.waitForPageStop()
+
+        sessionRule.session.evaluateJS("document.querySelector('#largeLink').href = \"$uri\"")
+        sessionRule.session.evaluateJS("document.querySelector('#largeLink').click()")
+        sessionRule.session.waitForPageStop()
+    }
+
+    @Test fun handlingSmallDataURIs() {
+        sessionRule.delegateUntilTestEnd(object : Callbacks.ProgressDelegate {
+            @AssertCalled(count = 2)
+            override fun onPageStart(session: GeckoSession, url: String) {
+            }
+        });
+
+        val dataBytes = this.getTestBytes("/assets/www/images/test.gif")
+        val uri = GeckoSession.createDataUri(dataBytes, "image/*")
+
+        sessionRule.session.loadTestPath(DATA_URI_PATH)
+        sessionRule.session.waitForPageStop()
+
+        sessionRule.session.evaluateJS("document.querySelector('#smallLink').href = \"$uri\"")
+        sessionRule.session.evaluateJS("document.querySelector('#smallLink').click()")
+        sessionRule.session.waitForPageStop()
     }
 }

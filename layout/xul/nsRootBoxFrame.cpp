@@ -61,8 +61,8 @@ class nsRootBoxFrame final : public nsBoxFrame, public nsIPopupContainer {
 
   virtual nsPopupSetFrame* GetPopupSetFrame() override;
   virtual void SetPopupSetFrame(nsPopupSetFrame* aPopupSet) override;
-  virtual Element* GetDefaultTooltip() override;
-  virtual void SetDefaultTooltip(Element* aTooltip) override;
+  virtual dom::Element* GetDefaultTooltip() override;
+  virtual void SetDefaultTooltip(dom::Element* aTooltip) override;
 
   virtual void AppendFrames(ChildListID aListID,
                             nsFrameList& aFrameList) override;
@@ -95,7 +95,7 @@ class nsRootBoxFrame final : public nsBoxFrame, public nsIPopupContainer {
   nsPopupSetFrame* mPopupSetFrame;
 
  protected:
-  Element* mDefaultTooltip;
+  dom::Element* mDefaultTooltip;
 };
 
 //----------------------------------------------------------------------
@@ -188,7 +188,7 @@ nsresult nsRootBoxFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
   if (aEvent->mMessage == eMouseUp) {
-    nsFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+    nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
   }
 
   return NS_OK;
@@ -210,9 +210,9 @@ void nsRootBoxFrame::SetPopupSetFrame(nsPopupSetFrame* aPopupSet) {
   mPopupSetFrame = aPopupSet;
 }
 
-Element* nsRootBoxFrame::GetDefaultTooltip() { return mDefaultTooltip; }
+dom::Element* nsRootBoxFrame::GetDefaultTooltip() { return mDefaultTooltip; }
 
-void nsRootBoxFrame::SetDefaultTooltip(Element* aTooltip) {
+void nsRootBoxFrame::SetDefaultTooltip(dom::Element* aTooltip) {
   mDefaultTooltip = aTooltip;
 }
 
@@ -222,6 +222,6 @@ NS_QUERYFRAME_TAIL_INHERITING(nsBoxFrame)
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsRootBoxFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("RootBox"), aResult);
+  return MakeFrameName(u"RootBox"_ns, aResult);
 }
 #endif

@@ -25,16 +25,17 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
-  "viewSource",
-  "devtools/client/shared/view-source"
-);
-loader.lazyRequireGetter(
-  this,
   "openDocLink",
   "devtools/client/shared/link",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "DevToolsUtils",
+  "devtools/shared/DevToolsUtils"
+);
 const EventEmitter = require("devtools/shared/event-emitter");
+const Telemetry = require("devtools/client/shared/telemetry");
 
 var gHudId = 0;
 const isMacOS = Services.appinfo.OS === "Darwin";
@@ -64,8 +65,9 @@ class WebConsole {
     this.iframeWindow = iframeWindow;
     this.chromeWindow = chromeWindow;
     this.hudId = "hud_" + ++gHudId;
-    this.browserWindow = this.chromeWindow.top;
+    this.browserWindow = DevToolsUtils.getTopWindow(this.chromeWindow);
     this.isBrowserConsole = isBrowserConsole;
+    this.telemetry = new Telemetry();
 
     const element = this.browserWindow.document.documentElement;
     if (element.getAttribute("windowtype") != gDevTools.chromeWindowType) {
@@ -79,8 +81,23 @@ class WebConsole {
     EventEmitter.decorate(this);
   }
 
+  recordEvent(event, extra = {}) {
+    this.telemetry.recordEvent(event, "webconsole", null, {
+      session_id: (this.toolbox && this.toolbox.sessionId) || -1,
+      ...extra,
+    });
+  }
+
   get currentTarget() {
     return this.toolbox.target;
+  }
+
+  get targetList() {
+    return this.toolbox.targetList;
+  }
+
+  get resourceWatcher() {
+    return this.toolbox.resourceWatcher;
   }
 
   /**
@@ -95,21 +112,34 @@ class WebConsole {
     if (this.browserWindow) {
       return this.browserWindow;
     }
-    return this.chromeWindow.top;
+    return DevToolsUtils.getTopWindow(this.chromeWindow);
   }
 
   get gViewSourceUtils() {
     return this.chromeUtilsWindow.gViewSourceUtils;
   }
 
+  getFrontByID(id) {
+    return this.currentTarget.client.getFrontByID(id);
+  }
+
   /**
    * Initialize the Web Console instance.
+   *
+   * @param {Boolean} emitCreatedEvent: Defaults to true. If false is passed,
+   *        We won't be sending the 'web-console-created' event.
    *
    * @return object
    *         A promise for the initialization.
    */
-  init() {
-    return this.ui.init();
+  async init(emitCreatedEvent = true) {
+    await this.ui.init();
+
+    // This event needs to be fired later in the case of the BrowserConsole
+    if (emitCreatedEvent) {
+      const id = Utils.supportsString(this.hudId);
+      Services.obs.notifyObservers(id, "web-console-created");
+    }
   }
 
   /**
@@ -133,6 +163,18 @@ class WebConsole {
     return this.jsterm._getValue();
   }
 
+  inputHasSelection() {
+    const { editor } = this.jsterm || {};
+    return editor && !!editor.getSelection();
+  }
+
+  getInputSelection() {
+    if (!this.jsterm || !this.jsterm.editor) {
+      return null;
+    }
+    return this.jsterm.editor.getSelection();
+  }
+
   /**
    * Sets the value of the input field (command line)
    *
@@ -144,6 +186,10 @@ class WebConsole {
     }
 
     this.jsterm._setValue(newValue);
+  }
+
+  focusInput() {
+    return this.jsterm && this.jsterm.focus();
   }
 
   /**
@@ -178,27 +224,6 @@ class WebConsole {
   }
 
   /**
-   * Tries to open a Stylesheet file related to the web page for the web console
-   * instance in the Style Editor. If the file is not found, it is opened in
-   * source view instead.
-   *
-   * Manually handle the case where toolbox does not exist (Browser Console).
-   *
-   * @param string sourceURL
-   *        The URL of the file.
-   * @param integer sourceLine
-   *        The line number which you want to place the caret.
-   */
-  viewSourceInStyleEditor(sourceURL, sourceLine) {
-    const toolbox = this.toolbox;
-    if (!toolbox) {
-      this.viewSource(sourceURL, sourceLine);
-      return;
-    }
-    toolbox.viewSourceInStyleEditor(sourceURL, sourceLine);
-  }
-
-  /**
    * Tries to open a JavaScript file related to the web page for the web console
    * instance in the Script Debugger. If the file is not found, it is opened in
    * source view instead.
@@ -212,28 +237,15 @@ class WebConsole {
    * @param integer sourceColumn
    *        The column number which you want to place the caret.
    */
-  viewSourceInDebugger(sourceURL, sourceLine, sourceColumn) {
-    const toolbox = this.toolbox;
+  async viewSourceInDebugger(sourceURL, sourceLine, sourceColumn) {
+    const { toolbox } = this;
     if (!toolbox) {
       this.viewSource(sourceURL, sourceLine, sourceColumn);
       return;
     }
-    toolbox
-      .viewSourceInDebugger(sourceURL, sourceLine, sourceColumn)
-      .then(() => {
-        this.ui.emit("source-in-debugger-opened");
-      });
-  }
 
-  /**
-   * Tries to open a JavaScript file related to the web page for the web console
-   * instance in the corresponding Scratchpad.
-   *
-   * @param string sourceURL
-   *        The URL of the file which corresponds to a Scratchpad id.
-   */
-  viewSourceInScratchpad(sourceURL, sourceLine) {
-    viewSource.viewSourceInScratchpad(sourceURL, sourceLine);
+    await toolbox.viewSourceInDebugger(sourceURL, sourceLine, sourceColumn);
+    this.ui.emitForTests("source-in-debugger-opened");
   }
 
   /**
@@ -250,7 +262,7 @@ class WebConsole {
    *         returned.
    */
   getDebuggerFrames() {
-    const toolbox = this.toolbox;
+    const { toolbox } = this;
     if (!toolbox) {
       return null;
     }
@@ -279,7 +291,7 @@ class WebConsole {
    *                               `originalExpression`.
    */
   getMappedExpression(expression) {
-    const toolbox = this.toolbox;
+    const { toolbox } = this;
 
     // We need to check if the debugger is open, since it may perform a variable name
     // substitution for sourcemapped script (i.e. evaluated `myVar.trim()` might need to
@@ -334,7 +346,7 @@ class WebConsole {
    *         then |null| is returned.
    */
   getInspectorSelection() {
-    const toolbox = this.toolbox;
+    const { toolbox } = this;
     if (!toolbox) {
       return null;
     }
@@ -343,6 +355,91 @@ class WebConsole {
       return null;
     }
     return panel.selection;
+  }
+
+  async onViewSourceInDebugger({ id, url, line, column }) {
+    if (this.toolbox) {
+      await this.toolbox.viewSourceInDebugger(url, line, column, id);
+
+      this.recordEvent("jump_to_source");
+      this.emitForTests("source-in-debugger-opened");
+    }
+  }
+
+  async onViewSourceInStyleEditor({ url, line, column }) {
+    if (!this.toolbox) {
+      return;
+    }
+    await this.toolbox.viewSourceInStyleEditorByURL(url, line, column);
+    this.recordEvent("jump_to_source");
+  }
+
+  async openNetworkPanel(requestId) {
+    if (!this.toolbox) {
+      return;
+    }
+    const netmonitor = await this.toolbox.selectTool("netmonitor");
+    await netmonitor.panelWin.Netmonitor.inspectRequest(requestId);
+  }
+
+  getHighlighter() {
+    if (!this.toolbox) {
+      return null;
+    }
+
+    if (this._highlighter) {
+      return this._highlighter;
+    }
+
+    this._highlighter = this.toolbox.getHighlighter();
+    return this._highlighter;
+  }
+
+  async resendNetworkRequest(requestId) {
+    if (!this.toolbox) {
+      return;
+    }
+
+    const api = await this.toolbox.getNetMonitorAPI();
+    await api.resendRequest(requestId);
+  }
+
+  async openNodeInInspector(grip) {
+    if (!this.toolbox) {
+      return;
+    }
+
+    const onSelectInspector = this.toolbox.selectTool(
+      "inspector",
+      "inspect_dom"
+    );
+
+    const onNodeFront = this.toolbox.target
+      .getFront("inspector")
+      .then(inspectorFront => inspectorFront.getNodeFrontFromNodeGrip(grip));
+
+    const [nodeFront, inspectorPanel] = await Promise.all([
+      onNodeFront,
+      onSelectInspector,
+    ]);
+
+    const onInspectorUpdated = inspectorPanel.once("inspector-updated");
+    const onNodeFrontSet = this.toolbox.selection.setNodeFront(nodeFront, {
+      reason: "console",
+    });
+
+    await Promise.all([onNodeFrontSet, onInspectorUpdated]);
+  }
+
+  /**
+   * Evaluate a JavaScript expression asynchronously.
+   *
+   * @param {String} string: The code you want to evaluate.
+   * @param {Object} options: Options for evaluation. See evaluateJSAsync method on
+   *                          devtools/client/fronts/webconsole.js
+   */
+  evaluateJSAsync(expression, options = {}) {
+    return this.ui._commands.evaluateJSAsync(expression, options);
   }
 
   /**

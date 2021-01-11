@@ -5,6 +5,9 @@
 // META: variant=?exclude=Node
 // META: timeout=long
 
+// Note: This isn't merged into idlharness.any.js because of the use of variants,
+// i.e., include=Node wouldn't make sense for workers.
+
 'use strict';
 
 idl_test(
@@ -39,6 +42,10 @@ idl_test(
       NodeList: ['document.querySelectorAll("script")'],
       HTMLCollection: ['document.body.children'],
       DOMTokenList: ['document.body.classList'],
+      XPathEvaluator: ['new XPathEvaluator()'],
+      XPathExpression: ['document.createExpression("//*")'],
+      XPathNSResolver: ['document.createNSResolver(document.body)'],
+      XPathResult: ['document.evaluate("//*", document.body)'],
     });
   }
 );

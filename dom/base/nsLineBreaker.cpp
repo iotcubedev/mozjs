@@ -41,8 +41,7 @@ static void SetupCapitalization(const char16_t* aWord, uint32_t aLength,
   for (uint32_t i = 0; i < aLength; ++i) {
     uint32_t ch = aWord[i];
     if (capitalizeNextChar) {
-      if (NS_IS_HIGH_SURROGATE(ch) && i + 1 < aLength &&
-          NS_IS_LOW_SURROGATE(aWord[i + 1])) {
+      if (i + 1 < aLength && NS_IS_SURROGATE_PAIR(ch, aWord[i + 1])) {
         ch = SURROGATE_TO_UCS4(ch, aWord[i + 1]);
       }
       if (nsContentUtils::IsAlphanumeric(ch)) {
@@ -62,9 +61,9 @@ static void SetupCapitalization(const char16_t* aWord, uint32_t aLength,
 nsresult nsLineBreaker::FlushCurrentWord() {
   uint32_t length = mCurrentWord.Length();
   AutoTArray<uint8_t, 4000> breakState;
-  if (!breakState.AppendElements(length)) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  breakState.AppendElements(length);
 
   nsTArray<bool> capitalizationState;
 
@@ -129,8 +128,9 @@ nsresult nsLineBreaker::FlushCurrentWord() {
 
       if (!mWordContinuation && (ti->mFlags & BREAK_NEED_CAPITALIZATION)) {
         if (capitalizationState.Length() == 0) {
-          if (!capitalizationState.AppendElements(length))
-            return NS_ERROR_OUT_OF_MEMORY;
+          // XXX(Bug 1631371) Check if this should use a fallible operation as
+          // it pretended earlier.
+          capitalizationState.AppendElements(length);
           memset(capitalizationState.Elements(), false, length * sizeof(bool));
           SetupCapitalization(mCurrentWord.Elements(), length,
                               capitalizationState.Elements());
@@ -193,14 +193,17 @@ nsresult nsLineBreaker::AppendText(nsAtom* aHyphenationLanguage,
 
   AutoTArray<uint8_t, 4000> breakState;
   if (aSink) {
-    if (!breakState.AppendElements(aLength)) return NS_ERROR_OUT_OF_MEMORY;
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    breakState.AppendElements(aLength);
   }
 
   bool noCapitalizationNeeded = true;
   nsTArray<bool> capitalizationState;
   if (aSink && (aFlags & BREAK_NEED_CAPITALIZATION)) {
-    if (!capitalizationState.AppendElements(aLength))
-      return NS_ERROR_OUT_OF_MEMORY;
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    capitalizationState.AppendElements(aLength);
     memset(capitalizationState.Elements(), false, aLength * sizeof(bool));
     noCapitalizationNeeded = false;
   }
@@ -371,7 +374,9 @@ nsresult nsLineBreaker::AppendText(nsAtom* aHyphenationLanguage,
 
   AutoTArray<uint8_t, 4000> breakState;
   if (aSink) {
-    if (!breakState.AppendElements(aLength)) return NS_ERROR_OUT_OF_MEMORY;
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    breakState.AppendElements(aLength);
   }
 
   uint32_t start = offset;
@@ -468,9 +473,9 @@ void nsLineBreaker::UpdateCurrentWordLanguage(nsAtom* aHyphenationLanguage) {
     if (aHyphenationLanguage && !mCurrentWordLanguage) {
       Locale loc = Locale(nsAtomCString(aHyphenationLanguage));
       if (loc.GetScript().IsEmpty()) {
-        loc.AddLikelySubtags();
+        loc.Maximize();
       }
-      const nsCString& script = loc.GetScript();
+      const nsDependentCSubstring& script = loc.GetScript();
       mScriptIsChineseOrJapanese =
           script.EqualsLiteral("Hans") || script.EqualsLiteral("Hant") ||
           script.EqualsLiteral("Jpan") || script.EqualsLiteral("Hrkt");

@@ -7,10 +7,11 @@ from argparse import ArgumentParser, SUPPRESS
 from distutils.util import strtobool
 from distutils import spawn
 from itertools import chain
-from urlparse import urlparse
+from six.moves.urllib.parse import urlparse
 import json
 import os
 import tempfile
+import sys
 
 from mozprofile import DEFAULT_PORTS
 import mozinfo
@@ -45,7 +46,7 @@ ALL_FLAVORS = {
     'chrome': {
         'suite': 'chrome',
         'aliases': ('chrome', 'mochitest-chrome'),
-        'enabled_apps': ('firefox', 'android'),
+        'enabled_apps': ('firefox'),
         'extra_args': {
             'flavor': 'chrome',
         }
@@ -393,6 +394,12 @@ class MochitestArguments(ArgumentContainer):
           "default": False,
           "help": "Start the browser JS debugger before running the test. Implies --no-autorun.",
           }],
+        [["--jsdebugger-path"],
+         {"default": None,
+          "dest": "jsdebuggerPath",
+          "help": "Path to a Firefox binary that will be used to run the toolbox. Should "
+                  "be used together with --jsdebugger."
+          }],
         [["--debug-on-failure"],
          {"action": "store_true",
           "default": False,
@@ -410,6 +417,12 @@ class MochitestArguments(ArgumentContainer):
          {"action": "store_true",
           "default": False,
           "help": "Run tests with fission (site isolation) enabled.",
+          }],
+        [["--enable-xorigin-tests"],
+         {"action": "store_true",
+          "default": False,
+          "dest": "xOriginTests",
+          "help": "Run tests in a cross origin iframe.",
           }],
         [["--store-chrome-manifest"],
          {"action": "store",
@@ -510,11 +523,6 @@ class MochitestArguments(ArgumentContainer):
           "default": None,
           "help": "Arguments to pass to the debugger.",
           }],
-        [["--save-recordings"],
-         {"dest": "recordingPath",
-          "default": None,
-          "help": "Directory to save Web Replay recordings in.",
-          }],
         [["--valgrind"],
          {"default": None,
           "help": "Valgrind binary to run tests with. Program name or path.",
@@ -543,12 +551,6 @@ class MochitestArguments(ArgumentContainer):
           "default": None,
           "help": "Filter out tests that don't have the given tag. Can be used multiple "
                   "times in which case the test must contain at least one of the given tags.",
-          }],
-        [["--enable-cpow-warnings"],
-         {"action": "store_true",
-          "dest": "enableCPOWWarnings",
-          "help": "Enable logging of unsafe CPOW usage, which is disabled by default for tests",
-          "suppress": True,
           }],
         [["--marionette"],
          {"default": None,
@@ -606,6 +608,22 @@ class MochitestArguments(ArgumentContainer):
           "default": False,
           "help": "Enable the WebRender compositor in Gecko.",
           }],
+        [["--profiler"],
+         {"action": "store_true",
+          "dest": "profiler",
+          "default": False,
+          "help": "Run the Firefox Profiler and get a performance profile of the "
+                  "mochitest. This is useful to find performance issues, and also "
+                  "to see what exactly the test is doing. To get profiler options run: "
+                  "`MOZ_PROFILER_HELP=1 ./mach run`"
+          }],
+        [["--profiler-save-only"],
+         {"action": "store_true",
+          "dest": "profilerSaveOnly",
+          "default": False,
+          "help": "Run the Firefox Profiler and save it to the path specified by the "
+                  "MOZ_UPLOAD_DIR environment variable."
+          }],
     ]
 
     defaults = {
@@ -631,7 +649,12 @@ class MochitestArguments(ArgumentContainer):
         if parser.app != 'android':
             if options.app is None:
                 if build_obj:
-                    options.app = build_obj.get_binary_path()
+                    from mozbuild.base import BinaryNotFoundException
+                    try:
+                        options.app = build_obj.get_binary_path()
+                    except BinaryNotFoundException as e:
+                        print('{}\n\n{}\n'.format(e, e.help()))
+                        sys.exit(1)
                 else:
                     parser.error(
                         "could not find the application path, --appname must be specified")
@@ -722,6 +745,10 @@ class MochitestArguments(ArgumentContainer):
             parser.error(
                 "--debug-on-failure requires --jsdebugger.")
 
+        if options.jsdebuggerPath and not options.jsdebugger:
+            parser.error(
+                "--jsdebugger-path requires --jsdebugger.")
+
         if options.debuggerArgs and not options.debugger:
             parser.error(
                 "--debugger-args requires --debugger.")
@@ -811,12 +838,13 @@ class MochitestArguments(ArgumentContainer):
                     '--use-test-media-devices is only supported on Linux currently')
 
             gst01 = spawn.find_executable("gst-launch-0.1")
+            gst010 = spawn.find_executable("gst-launch-0.10")
             gst10 = spawn.find_executable("gst-launch-1.0")
             pactl = spawn.find_executable("pactl")
 
-            if not (gst01 or gst10):
+            if not (gst01 or gst10 or gst010):
                 parser.error(
-                    'Missing gst-launch-{0.1,1.0}, required for '
+                    'Missing gst-launch-{0.1,0.10,1.0}, required for '
                     '--use-test-media-devices')
 
             if not pactl:
@@ -831,10 +859,13 @@ class MochitestArguments(ArgumentContainer):
 
         if options.enable_fission:
             options.extraPrefs.append("fission.autostart=true")
+            options.extraPrefs.append("dom.serviceWorkers.parent_intercept=true")
+            options.extraPrefs.append("browser.tabs.documentchannel=true")
 
         options.leakThresholds = {
             "default": options.defaultLeakThreshold,
             "tab": options.defaultLeakThreshold,
+            "forkserver": options.defaultLeakThreshold,
             # GMP rarely gets a log, but when it does, it leaks a little.
             "gmplugin": 20000,
             "rdd": 400,
@@ -895,23 +926,18 @@ class AndroidArguments(ArgumentContainer):
           "help": "ssl port of the remote web server.",
           "suppress": True,
           }],
-        [["--robocop-apk"],
-         {"dest": "robocopApk",
-          "default": "",
-          "help": "Name of the robocop APK to use.",
-          }],
         [["--remoteTestRoot"],
          {"dest": "remoteTestRoot",
           "default": None,
           "help": "Remote directory to use as test root "
-                  "(eg. /mnt/sdcard/tests or /data/local/tests).",
+                  "(eg. /data/local/tmp/test_root).",
           "suppress": True,
           }],
         [["--enable-coverage"],
          {"action": "store_true",
           "default": False,
           "help": "Enable collecting code coverage information when running "
-                  "robocop tests.",
+                  "junit tests.",
           }],
         [["--coverage-output-dir"],
          {"action": "store",
@@ -970,18 +996,6 @@ class AndroidArguments(ArgumentContainer):
             f.write("%s" % os.getpid())
             f.close()
 
-        if not options.robocopApk and build_obj:
-            apk = build_obj.substs.get('GRADLE_ANDROID_APP_ANDROIDTEST_APK')
-            if apk and os.path.exists(apk):
-                options.robocopApk = apk
-
-        if options.robocopApk != "":
-            if not os.path.exists(options.robocopApk):
-                parser.error(
-                    "Unable to find robocop APK '%s'" %
-                    options.robocopApk)
-            options.robocopApk = os.path.abspath(options.robocopApk)
-
         if options.coverage_output_dir and not options.enable_coverage:
             parser.error("--coverage-output-dir must be used with --enable-coverage")
         if options.enable_coverage:
@@ -998,7 +1012,7 @@ class AndroidArguments(ArgumentContainer):
                     parent_dir)
 
         # allow us to keep original application around for cleanup while
-        # running robocop via 'am'
+        # running tests
         options.remoteappname = options.app
         return options
 

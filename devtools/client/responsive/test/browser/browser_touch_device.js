@@ -22,20 +22,24 @@ const testDevice = {
 // Add the new device to the list
 addDeviceForTest(testDevice);
 
-addRDMTask(TEST_URL, async function({ ui, manager }) {
-  reloadOnTouchChange(true);
+addRDMTask(
+  TEST_URL,
+  async function({ ui }) {
+    reloadOnTouchChange(true);
 
-  await waitStartup(ui);
+    await waitStartup(ui);
 
-  await testDefaults(ui);
-  await testChangingDevice(ui);
-  await testResizingViewport(ui, true, false);
-  await testEnableTouchSimulation(ui);
-  await testResizingViewport(ui, false, true);
-  await testDisableTouchSimulation(ui);
+    await testDefaults(ui);
+    await testChangingDevice(ui);
+    await testResizingViewport(ui, true, false);
+    await testEnableTouchSimulation(ui);
+    await testResizingViewport(ui, false, true);
+    await testDisableTouchSimulation(ui);
 
-  reloadOnTouchChange(false);
-});
+    reloadOnTouchChange(false);
+  },
+  { waitForDeviceList: true }
+);
 
 async function waitStartup(ui) {
   const { store } = ui.toolWindow;
@@ -76,7 +80,6 @@ async function testResizingViewport(ui, device, touch) {
     ui,
     ".viewport-vertical-resize-handle",
     [-10, -10],
-    [testDevice.width, testDevice.height - 10],
     [0, -10],
     ui
   );

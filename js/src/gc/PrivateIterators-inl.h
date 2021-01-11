@@ -28,7 +28,7 @@ class ArenaCellIterUnderGC : public ArenaCellIter {
 class ArenaCellIterUnderFinalize : public ArenaCellIter {
  public:
   explicit ArenaCellIterUnderFinalize(Arena* arena) : ArenaCellIter(arena) {
-    MOZ_ASSERT(CurrentThreadIsGCSweeping());
+    MOZ_ASSERT(CurrentThreadIsGCFinalizing());
   }
 };
 
@@ -47,19 +47,19 @@ class GrayObjectIter : public ZoneAllCellIter<js::gc::TenuredCell> {
 };
 
 class GCZonesIter {
-  ZonesIter zone;
+  AllZonesIter zone;
 
  public:
-  explicit GCZonesIter(JSRuntime* rt, ZoneSelector selector = WithAtoms)
-      : zone(rt, selector) {
+  explicit GCZonesIter(GCRuntime* gc) : zone(gc) {
     MOZ_ASSERT(JS::RuntimeHeapIsBusy());
-    MOZ_ASSERT_IF(rt->gc.atomsZone->isCollectingFromAnyThread(),
-                  !rt->hasHelperThreadZones());
+    MOZ_ASSERT_IF(gc->atomsZone->wasGCStarted(),
+                  !gc->rt->hasHelperThreadZones());
 
     if (!done() && !zone->isCollectingFromAnyThread()) {
       next();
     }
   }
+  explicit GCZonesIter(JSRuntime* rt) : GCZonesIter(&rt->gc) {}
 
   bool done() const { return zone.done(); }
 
@@ -86,29 +86,19 @@ using GCRealmsIter = CompartmentsOrRealmsIterT<GCZonesIter, RealmsInZoneIter>;
 /* Iterates over all zones in the current sweep group. */
 class SweepGroupZonesIter {
   JS::Zone* current;
-  ZoneSelector selector;
 
  public:
-  explicit SweepGroupZonesIter(JSRuntime* rt, ZoneSelector selector = WithAtoms)
-      : selector(selector) {
+  explicit SweepGroupZonesIter(GCRuntime* gc)
+      : current(gc->getCurrentSweepGroup()) {
     MOZ_ASSERT(CurrentThreadIsPerformingGC());
-    current = rt->gc.getCurrentSweepGroup();
-    maybeSkipAtomsZone();
   }
-
-  void maybeSkipAtomsZone() {
-    if (selector == SkipAtoms && current && current->isAtomsZone()) {
-      current = current->nextNodeInGroup();
-      MOZ_ASSERT_IF(current, !current->isAtomsZone());
-    }
-  }
+  explicit SweepGroupZonesIter(JSRuntime* rt) : SweepGroupZonesIter(&rt->gc) {}
 
   bool done() const { return !current; }
 
   void next() {
     MOZ_ASSERT(!done());
     current = current->nextNodeInGroup();
-    maybeSkipAtomsZone();
   }
 
   JS::Zone* get() const {

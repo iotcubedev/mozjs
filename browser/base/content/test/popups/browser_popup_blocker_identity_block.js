@@ -24,8 +24,10 @@ const PRINCIPAL = Services.scriptSecurityManager.createContentPrincipal(
 
 function openIdentityPopup() {
   let promise = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   return promise;
@@ -64,20 +66,20 @@ add_task(async function check_blocked_popup_indicator() {
   );
   Assert.equal(icon.hasAttribute("showing"), false);
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, async () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async () => {
     let open = content.document.getElementById("pop");
     open.click();
   });
 
   // Wait for popup block.
-  await BrowserTestUtils.waitForCondition(() =>
+  await TestUtils.waitForCondition(() =>
     gBrowser.getNotificationBox().getNotificationWithValue("popup-blocked")
   );
 
   // Check if blocked popup indicator text is visible in the identity popup. It should be visible.
   document.getElementById("identity-icon").click();
   await openIdentityPopup();
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => document.getElementById("blocked-popup-indicator-item") !== null
   );
 
@@ -98,13 +100,13 @@ add_task(async function check_blocked_popup_indicator() {
 add_task(async function check_popup_showing() {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, URL);
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, async () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async () => {
     let open = content.document.getElementById("pop");
     open.click();
   });
 
   // Wait for popup block.
-  await BrowserTestUtils.waitForCondition(() =>
+  await TestUtils.waitForCondition(() =>
     gBrowser.getNotificationBox().getNotificationWithValue("popup-blocked")
   );
 
@@ -122,7 +124,7 @@ add_task(async function check_popup_showing() {
   text.click();
 
   await BrowserTestUtils.waitForEvent(gBrowser.tabContainer, "TabOpen");
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => popup.linkedBrowser.currentURI.spec != "about:blank"
   );
 
@@ -146,13 +148,13 @@ add_task(async function check_permission_state_change() {
     .state;
   Assert.equal(state, SitePermissions.BLOCK);
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, async () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async () => {
     let open = content.document.getElementById("pop");
     open.click();
   });
 
   // Wait for popup block.
-  await BrowserTestUtils.waitForCondition(() =>
+  await TestUtils.waitForCondition(() =>
     gBrowser.getNotificationBox().getNotificationWithValue("popup-blocked")
   );
 
@@ -175,13 +177,14 @@ add_task(async function check_permission_state_change() {
   gBrowser.tabContainer.addEventListener("TabOpen", onTabOpen);
 
   // Check if a popup opens.
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, async () => {
-    let open = content.document.getElementById("pop");
-    open.click();
-  });
-
-  await BrowserTestUtils.waitForEvent(gBrowser.tabContainer, "TabOpen");
-  await BrowserTestUtils.waitForCondition(
+  await Promise.all([
+    SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
+      let open = content.document.getElementById("pop");
+      open.click();
+    }),
+    BrowserTestUtils.waitForEvent(gBrowser.tabContainer, "TabOpen"),
+  ]);
+  await TestUtils.waitForCondition(
     () => popup.linkedBrowser.currentURI.spec != "about:blank"
   );
 

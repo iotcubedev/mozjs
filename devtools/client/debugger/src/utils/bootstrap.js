@@ -11,6 +11,8 @@ const { Provider } = require("react-redux");
 
 import ToolboxProvider from "devtools/client/framework/store-provider";
 import { isFirefoxPanel, isDevelopment, isTesting } from "devtools-environment";
+import { AppConstants } from "devtools-modules";
+
 import SourceMaps, {
   startSourceMapWorker,
   stopSourceMapWorker,
@@ -24,6 +26,7 @@ import reducers from "../reducers";
 import * as selectors from "../selectors";
 import App from "../components/App";
 import { asyncStore, prefs } from "./prefs";
+import { persistTabs } from "../utils/tabs";
 
 import type { Panel } from "../client/firefox/types";
 
@@ -39,6 +42,8 @@ function renderPanel(component, store, panel: Panel) {
   }
   mount.appendChild(root);
 
+  const toolboxDoc = panel.panelWin.parent.document;
+
   ReactDOM.render(
     React.createElement(
       Provider,
@@ -46,7 +51,7 @@ function renderPanel(component, store, panel: Panel) {
       React.createElement(
         ToolboxProvider,
         { store: panel.getToolboxStore() },
-        React.createElement(component)
+        React.createElement(component, { toolboxDoc })
       )
     ),
     root
@@ -63,17 +68,18 @@ export function bootstrapStore(
   workers: Workers,
   panel: Panel,
   initialState: Object
-) {
+): any {
+  const debugJsModules = AppConstants.AppConstants.DEBUG_JS_MODULES == "1";
   const createStore = configureStore({
     log: prefs.logging || isTesting(),
-    timing: isDevelopment(),
+    timing: debugJsModules || isDevelopment(),
     makeThunkArgs: (args, state) => {
       return { ...args, client, ...workers, panel };
     },
   });
 
   const store = createStore(combineReducers(reducers), initialState);
-  store.subscribe(() => updatePrefs(store.getState()));
+  registerStoreObserver(store, updatePrefs);
 
   const actions = bindActionCreators(
     require("../actions").default,
@@ -83,7 +89,7 @@ export function bootstrapStore(
   return { store, actions, selectors };
 }
 
-export function bootstrapWorkers(panelWorkers: Workers) {
+export function bootstrapWorkers(panelWorkers: Workers): Object {
   const workerPath = isDevelopment()
     ? "assets/build"
     : "resource://devtools/client/debugger/dist";
@@ -105,7 +111,7 @@ export function bootstrapWorkers(panelWorkers: Workers) {
   return { ...panelWorkers, prettyPrint, parser, search };
 }
 
-export function teardownWorkers() {
+export function teardownWorkers(): void {
   if (!isFirefoxPanel()) {
     // When used in Firefox, the toolbox manages the source map worker.
     stopSourceMapWorker();
@@ -115,7 +121,7 @@ export function teardownWorkers() {
   search.stop();
 }
 
-export function bootstrapApp(store: any, panel: Panel) {
+export function bootstrapApp(store: any, panel: Panel): void {
   if (isFirefoxPanel()) {
     renderPanel(App, store, panel);
   } else {
@@ -124,32 +130,39 @@ export function bootstrapApp(store: any, panel: Panel) {
   }
 }
 
-let currentPendingBreakpoints;
-let currentXHRBreakpoints;
-let currentEventBreakpoints;
-function updatePrefs(state: any) {
-  const previousPendingBreakpoints = currentPendingBreakpoints;
-  const previousXHRBreakpoints = currentXHRBreakpoints;
-  const previousEventBreakpoints = currentEventBreakpoints;
-  currentPendingBreakpoints = selectors.getPendingBreakpoints(state);
-  currentXHRBreakpoints = selectors.getXHRBreakpoints(state);
-  currentEventBreakpoints = state.eventListenerBreakpoints;
+function registerStoreObserver(store, subscriber) {
+  let oldState = store.getState();
+  store.subscribe(() => {
+    const state = store.getState();
+    subscriber(state, oldState);
+    oldState = state;
+  });
+}
 
-  if (
-    previousPendingBreakpoints &&
-    currentPendingBreakpoints !== previousPendingBreakpoints
-  ) {
-    asyncStore.pendingBreakpoints = currentPendingBreakpoints;
+function updatePrefs(state: any, oldState: any): void {
+  const hasChanged = selector =>
+    selector(oldState) && selector(oldState) !== selector(state);
+
+  if (hasChanged(selectors.getPendingBreakpoints)) {
+    asyncStore.pendingBreakpoints = selectors.getPendingBreakpoints(state);
   }
 
   if (
-    previousEventBreakpoints &&
-    previousEventBreakpoints !== currentEventBreakpoints
+    oldState.eventListenerBreakpoints &&
+    oldState.eventListenerBreakpoints !== state.eventListenerBreakpoints
   ) {
-    asyncStore.eventListenerBreakpoints = currentEventBreakpoints;
+    asyncStore.eventListenerBreakpoints = state.eventListenerBreakpoints;
   }
 
-  if (currentXHRBreakpoints !== previousXHRBreakpoints) {
-    asyncStore.xhrBreakpoints = currentXHRBreakpoints;
+  if (hasChanged(selectors.getTabs)) {
+    asyncStore.tabs = persistTabs(selectors.getTabs(state));
+  }
+
+  if (hasChanged(selectors.getXHRBreakpoints)) {
+    asyncStore.xhrBreakpoints = selectors.getXHRBreakpoints(state);
+  }
+
+  if (hasChanged(selectors.getBlackBoxList)) {
+    asyncStore.tabsBlackBoxed = selectors.getBlackBoxList(state);
   }
 }

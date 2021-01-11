@@ -1,3 +1,7 @@
+/* import-globals-from common.js */
+/* import-globals-from states.js */
+/* import-globals-from text.js */
+
 // XXX Bug 1425371 - enable no-redeclare and fix the issues with the tests.
 /* eslint-disable no-redeclare */
 
@@ -1464,7 +1468,7 @@ function synthFocus(aNodeOrID, aCheckerOrEventSeq) {
   this.__proto__ = new synthAction(aNodeOrID, checkerOfEventSeq);
 
   this.invoke = function synthFocus_invoke() {
-    if (this.DOMNode.editor || this.DOMNode.localName == "textbox") {
+    if (this.DOMNode.editor) {
       this.DOMNode.selectionStart = this.DOMNode.selectionEnd = this.DOMNode.value.length;
     }
     this.DOMNode.focus();
@@ -1634,10 +1638,7 @@ function synthSelectAll(aNodeOrID, aCheckerOrEventSeq) {
   this.__proto__ = new synthAction(aNodeOrID, aCheckerOrEventSeq);
 
   this.invoke = function synthSelectAll_invoke() {
-    if (
-      ChromeUtils.getClassName(this.DOMNode) === "HTMLInputElement" ||
-      this.DOMNode.localName == "textbox"
-    ) {
+    if (ChromeUtils.getClassName(this.DOMNode) === "HTMLInputElement") {
       this.DOMNode.select();
     } else {
       window.getSelection().selectAllChildren(this.DOMNode);
@@ -1658,12 +1659,12 @@ function moveToLineEnd(aID, aCaretOffset) {
       aID,
       "VK_RIGHT",
       { metaKey: true },
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   } else {
     this.__proto__ = new synthEndKey(
       aID,
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   }
 
@@ -1678,7 +1679,7 @@ function moveToLineEnd(aID, aCaretOffset) {
 function moveToPrevLineEnd(aID, aCaretOffset) {
   this.__proto__ = new synthAction(
     aID,
-    new caretMoveChecker(aCaretOffset, aID)
+    new caretMoveChecker(aCaretOffset, true, aID)
   );
 
   this.invoke = function moveToPrevLineEnd_invoke() {
@@ -1705,12 +1706,12 @@ function moveToLineStart(aID, aCaretOffset) {
       aID,
       "VK_LEFT",
       { metaKey: true },
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   } else {
     this.__proto__ = new synthHomeKey(
       aID,
-      new caretMoveChecker(aCaretOffset, aID)
+      new caretMoveChecker(aCaretOffset, true, aID)
     );
   }
 
@@ -1728,14 +1729,14 @@ function moveToTextStart(aID) {
       aID,
       "VK_UP",
       { metaKey: true },
-      new caretMoveChecker(0, aID)
+      new caretMoveChecker(0, true, aID)
     );
   } else {
     this.__proto__ = new synthKey(
       aID,
       "VK_HOME",
       { ctrlKey: true },
-      new caretMoveChecker(0, aID)
+      new caretMoveChecker(0, true, aID)
     );
   }
 
@@ -1791,7 +1792,7 @@ function moveCaretToDOMPoint(
     }
   };
 
-  this.eventSeq = [new caretMoveChecker(aExpectedOffset, this.target)];
+  this.eventSeq = [new caretMoveChecker(aExpectedOffset, true, this.target)];
 
   if (this.focus) {
     this.eventSeq.push(new asyncInvokerChecker(EVENT_FOCUS, this.focus));
@@ -1814,7 +1815,7 @@ function setCaretOffset(aID, aOffset, aFocusTargetID) {
     return "Set caretOffset on " + prettyName(aID) + " at " + this.offset;
   };
 
-  this.eventSeq = [new caretMoveChecker(this.offset, this.target)];
+  this.eventSeq = [new caretMoveChecker(this.offset, true, this.target)];
 
   if (this.focus) {
     this.eventSeq.push(new asyncInvokerChecker(EVENT_FOCUS, this.focus));
@@ -2012,6 +2013,7 @@ function textChangeChecker(
  */
 function caretMoveChecker(
   aCaretOffset,
+  aIsSelectionCollapsed,
   aTargetOrFunc,
   aTargetFuncArg,
   aIsAsync
@@ -2024,10 +2026,16 @@ function caretMoveChecker(
   );
 
   this.check = function caretMoveChecker_check(aEvent) {
+    let evt = aEvent.QueryInterface(nsIAccessibleCaretMoveEvent);
     is(
-      aEvent.QueryInterface(nsIAccessibleCaretMoveEvent).caretOffset,
+      evt.caretOffset,
       aCaretOffset,
       "Wrong caret offset for " + prettyName(aEvent.accessible)
+    );
+    is(
+      evt.isSelectionCollapsed,
+      aIsSelectionCollapsed,
+      "wrong collapsed value for  " + prettyName(aEvent.accessible)
     );
   };
 }
@@ -2035,6 +2043,7 @@ function caretMoveChecker(
 function asyncCaretMoveChecker(aCaretOffset, aTargetOrFunc, aTargetFuncArg) {
   this.__proto__ = new caretMoveChecker(
     aCaretOffset,
+    true, // Caret is collapsed
     aTargetOrFunc,
     aTargetFuncArg,
     true
@@ -2044,7 +2053,15 @@ function asyncCaretMoveChecker(aCaretOffset, aTargetOrFunc, aTargetFuncArg) {
 /**
  * Text selection change checker.
  */
-function textSelectionChecker(aID, aStartOffset, aEndOffset) {
+function textSelectionChecker(
+  aID,
+  aStartOffset,
+  aEndOffset,
+  aRangeStartContainer,
+  aRangeStartOffset,
+  aRangeEndContainer,
+  aRangeEndOffset
+) {
   this.__proto__ = new invokerChecker(EVENT_TEXT_SELECTION_CHANGED, aID);
 
   this.check = function textSelectionChecker_check(aEvent) {
@@ -2052,6 +2069,24 @@ function textSelectionChecker(aID, aStartOffset, aEndOffset) {
       ok(true, "Collapsed selection triggered text selection change event.");
     } else {
       testTextGetSelection(aID, aStartOffset, aEndOffset, 0);
+
+      // Test selection test range
+      let selectionRanges = aEvent.QueryInterface(
+        nsIAccessibleTextSelectionChangeEvent
+      ).selectionRanges;
+      let range = selectionRanges.queryElementAt(0, nsIAccessibleTextRange);
+      is(
+        range.startContainer,
+        getAccessible(aRangeStartContainer),
+        "correct range start container"
+      );
+      is(range.startOffset, aRangeStartOffset, "correct range start offset");
+      is(range.endOffset, aRangeEndOffset, "correct range end offset");
+      is(
+        range.endContainer,
+        getAccessible(aRangeEndContainer),
+        "correct range end container"
+      );
     }
   };
 }

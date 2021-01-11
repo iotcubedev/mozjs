@@ -22,12 +22,12 @@ add_task(async function test_ui_state_notification_calls_updateAllUI() {
 });
 
 add_task(async function test_ui_state_signedin() {
-  const msBadgeEnabled = Services.prefs.getBoolPref(
-    "browser.messaging-system.fxatoolbarbadge.enabled"
-  );
+  await openTabAndPanel();
+
   const relativeDateAnchor = new Date();
   let state = {
     status: UIState.STATUS_SIGNED_IN,
+    syncEnabled: true,
     email: "foo@bar.com",
     displayName: "Foo Bar",
     avatarURL: "https://foo.bar",
@@ -54,28 +54,29 @@ add_task(async function test_ui_state_signedin() {
   checkMenuBarItem("sync-syncnowitem");
   checkFxaToolbarButtonPanel({
     headerTitle: "foo@bar.com",
-    headerDescription: "Manage Account",
+    headerDescription: "Account Settings",
     enabledItems: [
       "PanelUI-fxa-menu-sendtab-button",
-      "PanelUI-fxa-menu-remotetabs-button",
       "PanelUI-fxa-menu-connect-device-button",
+      "PanelUI-fxa-menu-syncnow-button",
+      "PanelUI-fxa-menu-remotetabs-button",
       "PanelUI-fxa-menu-sync-prefs-button",
       "PanelUI-fxa-menu-logins-button",
       "PanelUI-fxa-menu-monitor-button",
       "PanelUI-fxa-menu-send-button",
-      "PanelUI-fxa-menu-syncnow-button",
     ],
     disabledItems: [],
+    hiddenItems: ["PanelUI-fxa-menu-setup-sync-button"],
   });
-  if (!msBadgeEnabled) {
-    checkFxAAvatar("signedin");
-  }
+  checkFxAAvatar("signedin");
   gSync.relativeTimeFormat = origRelativeTimeFormat;
+  await closeTabAndPanel();
 });
 
 add_task(async function test_ui_state_syncing() {
   let state = {
     status: UIState.STATUS_SIGNED_IN,
+    syncEnabled: true,
     email: "foo@bar.com",
     displayName: "Foo Bar",
     avatarURL: "https://foo.bar",
@@ -85,11 +86,12 @@ add_task(async function test_ui_state_syncing() {
 
   gSync.updateAllUI(state);
 
-  checkSyncNowButton("PanelUI-remotetabs-syncnow", true);
+  checkSyncNowButtons(true);
 
   // Be good citizens and remove the "syncing" state.
   gSync.updateAllUI({
     status: UIState.STATUS_SIGNED_IN,
+    syncEnabled: true,
     email: "foo@bar.com",
     lastSync: new Date(),
     syncing: false,
@@ -99,9 +101,8 @@ add_task(async function test_ui_state_syncing() {
 });
 
 add_task(async function test_ui_state_unconfigured() {
-  const msBadgeEnabled = Services.prefs.getBoolPref(
-    "browser.messaging-system.fxatoolbarbadge.enabled"
-  );
+  await openTabAndPanel();
+
   let state = {
     status: UIState.STATUS_NOT_CONFIGURED,
   };
@@ -119,23 +120,66 @@ add_task(async function test_ui_state_unconfigured() {
     headerDescription: "Turn on Sync",
     enabledItems: [
       "PanelUI-fxa-menu-sendtab-button",
+      "PanelUI-fxa-menu-setup-sync-button",
       "PanelUI-fxa-menu-remotetabs-button",
-      "PanelUI-fxa-menu-sync-prefs-button",
       "PanelUI-fxa-menu-logins-button",
       "PanelUI-fxa-menu-monitor-button",
       "PanelUI-fxa-menu-send-button",
     ],
-    disabledItems: [
+    disabledItems: ["PanelUI-fxa-menu-connect-device-button"],
+    hiddenItems: [
       "PanelUI-fxa-menu-syncnow-button",
-      "PanelUI-fxa-menu-connect-device-button",
+      "PanelUI-fxa-menu-sync-prefs-button",
     ],
   });
-  if (!msBadgeEnabled) {
-    checkFxAAvatar("not_configured");
-  }
+  checkFxAAvatar("not_configured");
+  await closeTabAndPanel();
+});
+
+add_task(async function test_ui_state_syncdisabled() {
+  await openTabAndPanel();
+
+  let state = {
+    status: UIState.STATUS_SIGNED_IN,
+    syncEnabled: false,
+    email: "foo@bar.com",
+    displayName: "Foo Bar",
+    avatarURL: "https://foo.bar",
+  };
+
+  gSync.updateAllUI(state);
+  checkPanelUIStatusBar({
+    label: "foo@bar.com",
+    fxastatus: "signedin",
+    syncing: false,
+  });
+  checkRemoteTabsPanel("PanelUI-remotetabs-syncdisabled", false);
+  checkMenuBarItem("sync-enable");
+  checkFxaToolbarButtonPanel({
+    headerTitle: "foo@bar.com",
+    headerDescription: "Account Settings",
+    enabledItems: [
+      "PanelUI-fxa-menu-sendtab-button",
+      "PanelUI-fxa-menu-connect-device-button",
+      "PanelUI-fxa-menu-setup-sync-button",
+      "PanelUI-fxa-menu-remotetabs-button",
+      "PanelUI-fxa-menu-logins-button",
+      "PanelUI-fxa-menu-monitor-button",
+      "PanelUI-fxa-menu-send-button",
+    ],
+    disabledItems: [],
+    hiddenItems: [
+      "PanelUI-fxa-menu-syncnow-button",
+      "PanelUI-fxa-menu-sync-prefs-button",
+    ],
+  });
+  checkFxAAvatar("signedin");
+  await closeTabAndPanel();
 });
 
 add_task(async function test_ui_state_unverified() {
+  await openTabAndPanel();
+
   let state = {
     status: UIState.STATUS_NOT_VERIFIED,
     email: "foo@bar.com",
@@ -160,21 +204,25 @@ add_task(async function test_ui_state_unverified() {
     headerDescription: state.email,
     enabledItems: [
       "PanelUI-fxa-menu-sendtab-button",
+      "PanelUI-fxa-menu-setup-sync-button",
       "PanelUI-fxa-menu-remotetabs-button",
-      "PanelUI-fxa-menu-sync-prefs-button",
       "PanelUI-fxa-menu-logins-button",
       "PanelUI-fxa-menu-monitor-button",
       "PanelUI-fxa-menu-send-button",
     ],
-    disabledItems: [
+    disabledItems: ["PanelUI-fxa-menu-connect-device-button"],
+    hiddenItems: [
       "PanelUI-fxa-menu-syncnow-button",
-      "PanelUI-fxa-menu-connect-device-button",
+      "PanelUI-fxa-menu-sync-prefs-button",
     ],
   });
   checkFxAAvatar("unverified");
+  await closeTabAndPanel();
 });
 
 add_task(async function test_ui_state_loginFailed() {
+  await openTabAndPanel();
+
   let state = {
     status: UIState.STATUS_LOGIN_FAILED,
     email: "foo@bar.com",
@@ -182,9 +230,8 @@ add_task(async function test_ui_state_loginFailed() {
 
   gSync.updateAllUI(state);
 
-  const expectedLabel = gSync.fxaStrings.formatStringFromName(
-    "account.reconnectToSync",
-    [gSync.brandStrings.GetStringFromName("syncBrandShortName")]
+  const expectedLabel = gSync.fxaStrings.GetStringFromName(
+    "account.reconnectToFxA"
   );
 
   checkPanelUIStatusBar({
@@ -199,18 +246,20 @@ add_task(async function test_ui_state_loginFailed() {
     headerDescription: state.email,
     enabledItems: [
       "PanelUI-fxa-menu-sendtab-button",
+      "PanelUI-fxa-menu-setup-sync-button",
       "PanelUI-fxa-menu-remotetabs-button",
-      "PanelUI-fxa-menu-sync-prefs-button",
       "PanelUI-fxa-menu-logins-button",
       "PanelUI-fxa-menu-monitor-button",
       "PanelUI-fxa-menu-send-button",
     ],
-    disabledItems: [
+    disabledItems: ["PanelUI-fxa-menu-connect-device-button"],
+    hiddenItems: [
       "PanelUI-fxa-menu-syncnow-button",
-      "PanelUI-fxa-menu-connect-device-button",
+      "PanelUI-fxa-menu-sync-prefs-button",
     ],
   });
-  checkFxAAvatar("unverified");
+  checkFxAAvatar("login-failed");
+  await closeTabAndPanel();
 });
 
 function checkPanelUIStatusBar({ label, fxastatus, syncing }) {
@@ -230,7 +279,7 @@ function checkRemoteTabsPanel(expectedShownItemId, syncing, syncNowTooltip) {
   );
 
   if (syncing != undefined && syncNowTooltip != undefined) {
-    checkSyncNowButton("PanelUI-remotetabs-syncnow", syncing, syncNowTooltip);
+    checkSyncNowButtons(syncing, syncNowTooltip);
   }
 }
 
@@ -238,6 +287,7 @@ function checkMenuBarItem(expectedShownItemId) {
   checkItemsVisibilities(
     [
       "sync-setup",
+      "sync-enable",
       "sync-syncnowitem",
       "sync-reauthitem",
       "sync-unverifieditem",
@@ -246,43 +296,41 @@ function checkMenuBarItem(expectedShownItemId) {
   );
 }
 
-function checkSyncNowButton(buttonId, syncing, tooltip = null) {
-  const remoteTabsButton = document.getElementById(buttonId);
+function checkSyncNowButtons(syncing, tooltip = null) {
+  const syncButtons = document.querySelectorAll(".syncNowBtn");
 
-  is(
-    remoteTabsButton.getAttribute("syncstatus"),
-    syncing ? "active" : "",
-    "button active has the right value"
-  );
-  if (tooltip) {
+  for (const syncButton of syncButtons) {
     is(
-      remoteTabsButton.getAttribute("tooltiptext"),
-      tooltip,
-      "button tooltiptext is set to the right value"
+      syncButton.getAttribute("syncstatus"),
+      syncing ? "active" : "",
+      "button active has the right value"
     );
-  }
+    if (tooltip) {
+      is(
+        syncButton.getAttribute("tooltiptext"),
+        tooltip,
+        "button tooltiptext is set to the right value"
+      );
+    }
 
-  if (buttonId.endsWith("-fxa-icon")) {
-    return;
-  }
-
-  is(
-    remoteTabsButton.hasAttribute("disabled"),
-    syncing,
-    "disabled has the right value"
-  );
-  if (syncing) {
     is(
-      remoteTabsButton.getAttribute("label"),
-      gSync.syncStrings.GetStringFromName("syncingtabs.label"),
-      "label is set to the right value"
+      syncButton.hasAttribute("disabled"),
+      syncing,
+      "disabled has the right value"
     );
-  } else {
-    is(
-      remoteTabsButton.getAttribute("label"),
-      gSync.syncStrings.GetStringFromName("syncnow.label"),
-      "label is set to the right value"
-    );
+    if (syncing) {
+      is(
+        document.l10n.getAttributes(syncButton).id,
+        syncButton.getAttribute("syncinglabel"),
+        "label is set to the right value"
+      );
+    } else {
+      is(
+        document.l10n.getAttributes(syncButton).id,
+        "fxa-toolbar-sync-now",
+        "label is set to the right value"
+      );
+    }
   }
 }
 
@@ -291,6 +339,7 @@ async function checkFxaToolbarButtonPanel({
   headerDescription,
   enabledItems,
   disabledItems,
+  hiddenItems,
 }) {
   is(
     document.getElementById("fxa-menu-header-title").value,
@@ -312,6 +361,12 @@ async function checkFxaToolbarButtonPanel({
     const el = document.getElementById(id);
     is(el.getAttribute("disabled"), "true", id + " is disabled");
   }
+
+  for (const id of hiddenItems) {
+    const el = document.getElementById(id);
+    let elShown = window.getComputedStyle(el).display == "none";
+    is(elShown, true, id + " is hidden");
+  }
 }
 
 async function checkFxABadged() {
@@ -324,8 +379,11 @@ async function checkFxABadged() {
   ok(BrowserTestUtils.is_visible(badge), "expected the badge to be visible");
 }
 
-// fxaStatus is one of 'not_configured', 'unverified', or 'signedin'.
+// fxaStatus is one of 'not_configured', 'unverified', 'login-failed', or 'signedin'.
 function checkFxAAvatar(fxaStatus) {
+  // Unhide the panel so computed styles can be read
+  document.querySelector("#appMenu-popup").hidden = false;
+
   const avatarContainers = [
     document.getElementById("fxa-menu-avatar"),
     document.getElementById("fxa-avatar-image"),
@@ -333,15 +391,74 @@ function checkFxAAvatar(fxaStatus) {
   for (const avatar of avatarContainers) {
     const avatarURL = getComputedStyle(avatar).listStyleImage;
     const expected = {
-      not_configured:
-        'url("chrome://browser/skin/fxa/avatar-empty-badged.svg")',
+      not_configured: 'url("chrome://browser/skin/fxa/avatar-empty.svg")',
       unverified: 'url("chrome://browser/skin/fxa/avatar-confirm.svg")',
       signedin: 'url("chrome://browser/skin/fxa/avatar.svg")',
+      "login-failed": 'url("chrome://browser/skin/fxa/avatar-alert.svg")',
     };
     ok(
       avatarURL == expected[fxaStatus],
       `expected avatar URL to be ${expected[fxaStatus]}, got ${avatarURL}`
     );
+  }
+}
+
+add_task(async function test_account_settings_state_signedin() {
+  await BrowserTestUtils.openNewForegroundTab(gBrowser, "https://example.com/");
+  const relativeDateAnchor = new Date();
+  let state = {
+    status: UIState.STATUS_SIGNED_IN,
+    syncEnabled: true,
+    email: "foo@bar.com",
+    displayName: "Foo Bar",
+    avatarURL: "https://foo.bar",
+    lastSync: new Date(),
+    syncing: false,
+  };
+
+  const origRelativeTimeFormat = gSync.relativeTimeFormat;
+  gSync.relativeTimeFormat = {
+    formatBestUnit(date) {
+      return origRelativeTimeFormat.formatBestUnit(date, {
+        now: relativeDateAnchor,
+      });
+    },
+  };
+
+  gSync.updateAllUI(state);
+  checkPanelUIStatusBar({
+    label: "foo@bar.com",
+    fxastatus: "signedin",
+    syncing: false,
+  });
+
+  await checkAccountPanel([
+    "PanelUI-fxa-menu-account-settings-button",
+    "PanelUI-fxa-menu-account-signout-button",
+  ]);
+  await closeTabAndPanel();
+});
+
+async function checkAccountPanel(enabledItems) {
+  let fxaButton = document.getElementById("fxa-toolbar-menu-button");
+  fxaButton.click();
+
+  let fxaView = document.getElementById("PanelUI-fxa");
+  await BrowserTestUtils.waitForEvent(fxaView, "ViewShown");
+
+  let manageAccountButton = document.getElementById(
+    "fxa-manage-account-button"
+  );
+  PanelUI.showSubView("PanelUI-fxa-menu-account-panel", manageAccountButton);
+
+  let manageAccountPanel = document.getElementById(
+    "PanelUI-fxa-menu-account-panel"
+  );
+  await BrowserTestUtils.waitForEvent(manageAccountPanel, "ViewShown");
+
+  for (const id of enabledItems) {
+    const el = document.getElementById(id);
+    is(el.hasAttribute("disabled"), false, id + " is enabled");
   }
 }
 
@@ -387,4 +504,31 @@ function promiseObserver(topic) {
     };
     Services.obs.addObserver(obs, topic);
   });
+}
+
+async function openTabAndPanel() {
+  await BrowserTestUtils.openNewForegroundTab(gBrowser, "https://example.com/");
+
+  let fxaButton = document.getElementById("fxa-toolbar-menu-button");
+  fxaButton.click();
+
+  let fxaView = document.getElementById("PanelUI-fxa");
+  await BrowserTestUtils.waitForEvent(fxaView, "ViewShown");
+
+  let remoteTabsButton = document.getElementById(
+    "PanelUI-fxa-menu-remotetabs-button"
+  );
+  remoteTabsButton.click();
+
+  let remoteTabsView = document.getElementById("PanelUI-remotetabs");
+  await BrowserTestUtils.waitForEvent(remoteTabsView, "ViewShown");
+}
+
+async function closeTabAndPanel() {
+  let fxaView = document.getElementById("PanelUI-fxa");
+  let hidden = BrowserTestUtils.waitForEvent(document, "popuphidden", true);
+  fxaView.closest("panel").hidePopup();
+  await hidden;
+
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
 }

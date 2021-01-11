@@ -61,6 +61,14 @@ class MenuItem extends PureComponent {
     };
   }
 
+  /**
+   * Use this as a fallback `icon` prop if your MenuList contains MenuItems
+   * with or without icon in order to keep all MenuItems aligned.
+   */
+  static get DUMMY_ICON() {
+    return "dummy-icon.svg";
+  }
+
   constructor(props) {
     super(props);
     this.labelRef = createRef();
@@ -95,7 +103,9 @@ class MenuItem extends PureComponent {
     }
 
     const win = this.labelRef.current.ownerDocument.defaultView;
-    win.cancelIdleCallback(this.preloadCallback);
+    if (win) {
+      win.cancelIdleCallback(this.preloadCallback);
+    }
     this.preloadCallback = null;
   }
 
@@ -156,7 +166,10 @@ class MenuItem extends PureComponent {
     }
 
     return li(
-      { className: "menuitem", role: "presentation" },
+      {
+        className: "menuitem",
+        role: "presentation",
+      },
       button(attr, children)
     );
   }

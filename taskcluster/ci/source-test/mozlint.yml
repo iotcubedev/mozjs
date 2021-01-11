@@ -10,7 +10,7 @@ job-defaults:
         kind: test
         tier: 1
     platform: lint/opt
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
@@ -22,6 +22,7 @@ job-defaults:
             RUSTFMT: /build/rust/bin/rustfmt
             RUSTUP_HOME: /build/rust
             CARGO_HOME: /build/rust
+            CLANG_FORMAT: /builds/worker/fetches/clang-tidy/bin/clang-format
     run:
         using: mach
     when:
@@ -34,8 +35,11 @@ codespell:
     description: Checks for misspellings in text files
     treeherder:
         symbol: text(spell)
+        # We don't want patches to be backed out because of a typo, a follow up bug will be
+        # good enough
+        tier: 2
     run:
-        mach: lint -l codespell -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l codespell -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.js'
@@ -52,18 +56,48 @@ codespell:
             - '**/*.properties'
             - '**/*.rst'
             - '**/*.ftl'
+            - 'tools/lint/codespell.yml'
+
+
+rejected-words:
+    description: Reject some words we don't want to use in the code base
+    treeherder:
+        symbol: text(rejected-words)
+        # We don't want patches to be backed out because of this, a follow up bug will be
+        # good enough
+        tier: 2
+    run:
+        mach: lint -v -l rejected-words -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/*.js'
+            - '**/*.jsm'
+            - '**/*.jxs'
+            - '**/*.xml'
+            - '**/*.html'
+            - '**/*.xhtml'
+            - '**/*.cpp'
+            - '**/*.c'
+            - '**/*.h'
+            - '**/*.configure'
+            - '**/*.py'
+            - '**/*.properties'
+            - '**/*.rst'
+            - '**/*.ftl'
+            - 'tools/lint/rejected-words.yml'
 
 cpp-virtual-final:
     description: lint C++ virtual function declarations
     treeherder:
         symbol: cpp(Cvf)
     run:
-        mach: lint -l cpp-virtual-final -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l cpp-virtual-final -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.cpp'
             - '**/*.h'
             - '**/*.mm'
+            - 'tools/lint/cpp-virtual-final.yml'
 
 eslint:
     description: JS lint check
@@ -76,7 +110,7 @@ eslint:
             cp -r /build/node_modules_eslint node_modules &&
             ln -s ../tools/lint/eslint/eslint-plugin-mozilla node_modules &&
             ln -s ../tools/lint/eslint/eslint-plugin-spidermonkey-js node_modules &&
-            ./mach lint -l eslint -f treeherder --quiet -f json:/builds/worker/mozlint.json
+            ./mach lint -v -l eslint -f treeherder --quiet -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             # Files that are likely audited.
@@ -86,6 +120,7 @@ eslint:
             - '**/*.html'
             - '**/*.xhtml'
             - '**/*.xml'
+            - 'tools/lint/eslint.yml'
             # Run when eslint policies change.
             - '**/.eslintignore'
             - '**/*eslintrc*'
@@ -98,7 +133,7 @@ license:
     treeherder:
         symbol: pedantic(license)
     run:
-        mach: lint -l license -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l license -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.c'
@@ -116,73 +151,130 @@ license:
             - '**/*.xhtml'
             - '**/*.xml'
             - '**/*.xul'
+            - 'tools/lint/license.yml'
+
+lintpref:
+    description: Check for duplicates between all.js and StaticPrefList.yaml.
+    treeherder:
+        symbol: misc(pref)
+    run:
+        mach: lint -v -l lintpref -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - 'modules/libpref/init/all.js'
+            - 'modules/libpref/init/StaticPrefList.yaml'
+            - 'browser/app/profile/firefox.js'
+            - 'mobile/android/app/mobile.js'
+            - 'devtools/client/preferences/debugger.js'
+            - 'mobile/android/app/geckoview-prefs.js'
+            - 'browser/branding/official/pref/firefox-branding.js'
+            - 'browser/branding/nightly/pref/firefox-branding.js'
+            - 'browser/branding/unofficial/pref/firefox-branding.js'
+            - 'browser/branding/aurora/pref/firefox-branding.js'
+            - 'browser/app/profile/channel-prefs.js'
+            - 'mobile/android/installer/mobile-l10n.js'
+            - 'mobile/android/locales/en-US/mobile-l10n.js'
+            - 'tools/lint/lintpref.yml'
 
 mingw-cap:
     description: lint for MinGW Capitalization issues
     treeherder:
         symbol: misc(mingw)
     run:
-        mach: lint -l mingw-capitalization -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l mingw-capitalization -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.cpp'
             - '**/*.cc'
             - '**/*.c'
             - '**/*.h'
+            - 'tools/lint/mingw-capitalization.yml'
 
 py-compat:
     description: lint for python 2/3 compatibility issues
     treeherder:
         symbol: py(py-compat)
     run:
-        mach: lint -l py2 -l py3 -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l py2 -l py3 -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.py'
             - '**/.flake8'
+            - 'tools/lint/py2.yml'
+            - 'tools/lint/py3.yml'
 
 py-flake8:
     description: flake8 run over the gecko codebase
     treeherder:
         symbol: py(f8)
     run:
-        mach: lint -l flake8 -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l flake8 -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.py'
             - '**/.flake8'
+            - 'tools/lint/flake8.yml'
             # moz.configure files are also Python files.
             - '**/*.configure'
+
+py-black:
+    description: black run over the gecko codebase
+    treeherder:
+        symbol: py(black)
+    run:
+        mach: lint -v -l black -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/*.py'
+            - 'pyproject.toml'
+            - 'tools/lint/flake8.yml'
+            # moz.configure files are also Python files.
+            # However, we don't currently check them with black
+
+py-pylint:
+    description: pylint run over the gecko codebase
+    treeherder:
+        symbol: py(pylint)
+    run:
+        mach: lint -v -l pylint -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/*.py'
+            - 'tools/lint/pylint.yml'
+            # moz.configure files are also Python files
+            # However, pylint has some hard time dealing with it
 
 test-manifest:
     description: lint test manifests
     treeherder:
         symbol: misc(tm)
     run:
-        mach: lint -l test-disable -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l test-disable -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.ini'
             - 'python/mozlint/**'
             - 'tools/lint/**'
+            - 'tools/lint/test-disable.yml'
 
 wptlint-gecko:
     description: web-platform-tests linter
     treeherder:
         symbol: misc(W)
     run:
-        mach: lint -l wpt -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l wpt -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - 'testing/web-platform/tests/**'
             - 'testing/web-platform/mozilla/tests/**'
+            - 'tools/lint/wpt.yml'
 
 yaml:
     description: yamllint run over the gecko codebase
     treeherder:
         symbol: pedantic(yaml)
     run:
-        mach: lint -l yaml -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l yaml -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.yml'
@@ -194,45 +286,101 @@ rst:
     treeherder:
         symbol: text(rst)
     run:
-        mach: lint -l rst -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l rst -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.rst'
+            - 'tools/lint/rst.yml'
 
 shellcheck:
     description: shellcheck run over the gecko codebase
     treeherder:
         symbol: misc(shell)
     run:
-        mach: lint -l shellcheck -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l shellcheck -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.sh'
+            - 'tools/lint/shellcheck.yml'
 
 
 localization:
-    description: l10n tests for strings with errors and conflicts with cross-channel
+    description: l10n tests for strings with errors
     treeherder:
         symbol: text(l1nt)
     run:
-        mach: lint -l l10n -f treeherder
+        mach: lint -v -l l10n -f treeherder *
+    attributes:
+        code-review: false
     when:
         files-changed:
             - '**/locales/en-US/**'
             - '**/l10n.toml'
             - 'third_party/python/compare-locales/**'
             - 'third_party/python/fluent/**'
+            - 'tools/lint/l10n.yml'
+
+
+l10n-conflicts:
+    description: l10n tests for strings with errors and conflicts with cross-channel
+    treeherder:
+        symbol: text(l1nt-conflicts)
+    always-target: false
+    run-on-projects: []
+    run:
+        mach: lint -W -l l10n -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/locales/en-US/**'
+            - '**/l10n.toml'
+            - 'third_party/python/compare-locales/**'
+            - 'third_party/python/fluent/**'
+            - 'tools/lint/l10n.yml'
+
+
+clang-format:
+    description: clang-format on the C/C++ code
+    treeherder:
+        symbol: cpp(clang-format)
+    run:
+        mach: lint -v -l clang-format -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/*.cpp'
+            - '**/*.c'
+            - '**/*.cc'
+            - '**/*.h'
+            - '**/*.m'
+            - '**/*.mm'
+            - 'tools/lint/clang-format.yml'
+    fetches:
+        toolchain:
+            - linux64-clang-tidy
 
 
 rustfmt:
     description: rustfmt on the Rust code
     treeherder:
-        symbol: misc(rustfmt)
+        symbol: rust(rustfmt)
     run:
-        mach: lint -l rustfmt -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l rustfmt -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.rs'
+            - 'tools/lint/rustfmt.yml'
+
+
+clippy:
+    description: clippy on the Rust code
+    treeherder:
+        symbol: rust(clippy)
+    run:
+        mach: lint -v -l clippy -f treeherder -f json:/builds/worker/mozlint.json *
+    when:
+        files-changed:
+            - '**/*.rs'
+            - '**/Cargo.toml'
+            - 'tools/lint/clippy.yml'
 
 
 file-whitespace:
@@ -240,16 +388,26 @@ file-whitespace:
     platform: lint/opt
     treeherder:
         symbol: pedantic(file-whitespace)
+        # We don't want patches to be backed out because of this, a follow up bug will be
+        # good enough
+        tier: 2
     run:
-        mach: lint -l file-whitespace -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l file-whitespace -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.c'
             - '**/*.cc'
             - '**/*.cpp'
+            - '**/*.css'
+            - '**/*.dtd'
+            - '**/*.ftl'
             - '**/*.h'
+            - '**/*.html'
+            - '**/*.properties'
             - '**/*.py'
             - '**/*.rs'
+            - '**/*.xhtml'
+            - 'tools/lint/file-whitespace.yml'
 
 
 file-perm:
@@ -257,8 +415,11 @@ file-perm:
     platform: lint/opt
     treeherder:
         symbol: pedantic(file-perm)
+        # We don't want patches to be backed out because of this, a follow up bug will be
+        # good enough
+        tier: 2
     run:
-        mach: lint -l file-perm -f treeherder -f json:/builds/worker/mozlint.json
+        mach: lint -v -l file-perm -f treeherder -f json:/builds/worker/mozlint.json *
     when:
         files-changed:
             - '**/*.c'
@@ -275,3 +436,21 @@ file-perm:
             - '**/*.xhtml'
             - '**/*.xml'
             - '**/*.xul'
+            - 'tools/lint/file-perm.yml'
+
+
+perfdocs-verify:
+    description: Verifies Performance Testing documentation
+    treeherder:
+        symbol: text(perfdocs)
+    run:
+        mach: lint -v -l perfdocs -f treeherder -f json:/builds/worker/mozlint.json *
+    worker:
+        env:
+            WORKSPACE: /builds/worker/checkouts/gecko/
+    when:
+        files-changed:
+            - 'testing/**/*.ini'
+            - 'testing/**/*.yml'
+            - 'testing/**/*.rst'
+            - 'tools/lint/perfdocs.yml'

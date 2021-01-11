@@ -3,70 +3,121 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const {
+  button,
+  span,
+} = require("devtools/client/shared/vendor/react-dom-factories");
 
 // Reps
 const { getGripType, isGrip, cropString, wrapRender } = require("./rep-utils");
 const { MODE } = require("./constants");
-
-const dom = require("react-dom-factories");
-const { span } = dom;
 
 const IGNORED_SOURCE_URLS = ["debugger eval code"];
 
 /**
  * This component represents a template for Function objects.
  */
+
 FunctionRep.propTypes = {
   object: PropTypes.object.isRequired,
-  parameterNames: PropTypes.array,
   onViewSourceInDebugger: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function FunctionRep(props) {
-  const { object: grip, onViewSourceInDebugger, recordTelemetryEvent } = props;
+  const {
+    object: grip,
+    onViewSourceInDebugger,
+    recordTelemetryEvent,
+    shouldRenderTooltip,
+  } = props;
 
   let jumpToDefinitionButton;
+
+  // Test to see if we should display the link back to the original function definition
   if (
     onViewSourceInDebugger &&
     grip.location &&
     grip.location.url &&
     !IGNORED_SOURCE_URLS.includes(grip.location.url)
   ) {
-    jumpToDefinitionButton = dom.button({
+    jumpToDefinitionButton = button({
       className: "jump-definition",
       draggable: false,
       title: "Jump to definition",
-      onClick: e => {
+      onClick: async e => {
         // Stop the event propagation so we don't trigger ObjectInspector
         // expand/collapse.
         e.stopPropagation();
         if (recordTelemetryEvent) {
           recordTelemetryEvent("jump_to_definition");
         }
+
         onViewSourceInDebugger(grip.location);
       },
     });
   }
 
-  return span(
-    {
-      "data-link-actor-id": grip.actor,
-      className: "objectBox objectBox-function",
-      // Set dir="ltr" to prevent function parentheses from
-      // appearing in the wrong direction
-      dir: "ltr",
-    },
-    getTitle(grip, props),
-    getFunctionName(grip, props),
+  const elProps = {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox objectBox-function",
+    // Set dir="ltr" to prevent parentheses from
+    // appearing in the wrong direction
+    dir: "ltr",
+  };
+
+  const parameterNames = (grip.parameterNames || []).filter(Boolean);
+  const fnTitle = getFunctionTitle(grip, props);
+  const fnName = getFunctionName(grip, props);
+
+  if (grip.isClassConstructor) {
+    const classTitle = getClassTitle(grip, props);
+    const classBodyTooltip = getClassBody(parameterNames, true, props);
+    const classTooltip = `${classTitle ? classTitle.props.children : ""}${
+      fnName ? fnName : ""
+    }${classBodyTooltip.join("")}`;
+
+    elProps.title = shouldRenderTooltip ? classTooltip : null;
+
+    return span(
+      elProps,
+      classTitle,
+      fnName,
+      ...getClassBody(parameterNames, false, props),
+      jumpToDefinitionButton
+    );
+  }
+
+  const fnTooltip = `${fnTitle ? fnTitle.props.children : ""}${
+    fnName ? fnName : ""
+  }(${parameterNames.join(", ")})`;
+
+  elProps.title = shouldRenderTooltip ? fnTooltip : null;
+
+  const returnSpan = span(
+    elProps,
+    fnTitle,
+    fnName,
     "(",
-    ...renderParams(props),
+    ...getParams(parameterNames),
     ")",
     jumpToDefinitionButton
   );
+
+  return returnSpan;
 }
 
-function getTitle(grip, props) {
+function getClassTitle(grip) {
+  return span(
+    {
+      className: "objectTitle",
+    },
+    "class "
+  );
+}
+
+function getFunctionTitle(grip, props) {
   const { mode } = props;
 
   if (mode === MODE.TINY && !grip.isGenerator && !grip.isAsync) {
@@ -157,18 +208,34 @@ function cleanFunctionName(name) {
   return name;
 }
 
-function renderParams(props) {
-  const { parameterNames = [] } = props;
+function getClassBody(constructorParams, textOnly = false, props) {
+  const { mode } = props;
 
-  return parameterNames
-    .filter(param => param)
-    .reduce((res, param, index, arr) => {
-      res.push(span({ className: "param" }, param));
-      if (index < arr.length - 1) {
-        res.push(span({ className: "delimiter" }, ", "));
-      }
-      return res;
-    }, []);
+  if (mode === MODE.TINY) {
+    return [];
+  }
+
+  return [" {", ...getClassConstructor(textOnly, constructorParams), "}"];
+}
+
+function getClassConstructor(textOnly = false, parameterNames) {
+  if (parameterNames.length === 0) {
+    return [];
+  }
+
+  if (textOnly) {
+    return [` constructor(${parameterNames.join(", ")}) `];
+  }
+  return [" constructor(", ...getParams(parameterNames), ") "];
+}
+
+function getParams(parameterNames) {
+  return parameterNames.flatMap((param, index, arr) => {
+    return [
+      span({ className: "param" }, param),
+      index === arr.length - 1 ? "" : span({ className: "delimiter" }, ", "),
+    ];
+  });
 }
 
 // Registration
@@ -182,7 +249,6 @@ function supportsObject(grip, noGrip = false) {
 }
 
 // Exports from this module
-
 module.exports = {
   rep: wrapRender(FunctionRep),
   supportsObject,

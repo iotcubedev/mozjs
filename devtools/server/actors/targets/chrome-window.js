@@ -48,19 +48,17 @@ const chromeWindowTargetPrototype = extend({}, browsingContextTargetPrototype);
  *
  * You can request a specific window's actor via RootActor.getWindow().
  *
- * @param connection DebuggerServerConnection
+ * @param connection DevToolsServerConnection
  *        The connection to the client.
  * @param window DOMWindow
  *        The window.
  */
 chromeWindowTargetPrototype.initialize = function(connection, window) {
-  BrowsingContextTargetActor.prototype.initialize.call(this, connection);
-
-  const docShell = window.docShell;
-  Object.defineProperty(this, "docShell", {
-    value: docShell,
-    configurable: true,
-  });
+  BrowsingContextTargetActor.prototype.initialize.call(
+    this,
+    connection,
+    window.docShell
+  );
 };
 
 // Bug 1266561: This setting is mysteriously named, we should split up the

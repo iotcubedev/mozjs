@@ -13,6 +13,12 @@ with Files("APZTestData.webidl"):
 with Files("AccessibleNode.webidl"):
     BUG_COMPONENT = ("Core", "Disability Access APIs")
 
+with Files("AccessibilityRole.webidl"):
+    BUG_COMPONENT = ("Core", "Disability Access APIs")
+
+with Files("AriaAttributes.webidl"):
+    BUG_COMPONENT = ("Core", "Disability Access APIs")
+
 with Files("Addon*"):
     BUG_COMPONENT = ("Toolkit", "Add-ons Manager")
 
@@ -37,8 +43,11 @@ with Files("BatteryManager.webidl"):
 with Files("BiquadFilterNode.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
 
-with Files("BrowserElement*"):
-    BUG_COMPONENT = ("Core", "DOM: Core & HTML")
+with Files("Blob*"):
+    BUG_COMPONENT = ("Core", "DOM: File")
+
+with Files("BroadcastChannel.webidl"):
+    BUG_COMPONENT = ("Core", "DOM: postMessage")
 
 with Files("CSP*"):
     BUG_COMPONENT = ("Core", "DOM: Security")
@@ -50,7 +59,7 @@ with Files("Canvas*"):
     BUG_COMPONENT = ("Core", "Canvas: 2D")
 
 with Files("Caret*"):
-    BUG_COMPONENT = ("Core", "Editor")
+    BUG_COMPONENT = ("Core", "DOM: Editor")
 
 with Files("Channel*"):
     BUG_COMPONENT = ("Core", "Web Audio")
@@ -59,10 +68,10 @@ with Files("Client*"):
     BUG_COMPONENT = ("Core", "DOM: Service Workers")
 
 with Files("Clipboard.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("ClipboardEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("ConstantSourceNode.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
@@ -70,7 +79,7 @@ with Files("ConstantSourceNode.webidl"):
 with Files("ConvolverNode.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
 
-with Files("Coordinates.webidl"):
+with Files("GeolocationCoordinates.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Geolocation")
 
 with Files("Crypto.webidl"):
@@ -83,10 +92,10 @@ with Files("Directory.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Device Interfaces")
 
 with Files("DataTransfer*"):
-    BUG_COMPONENT = ("Core", "Drag and Drop")
+    BUG_COMPONENT = ("Core", "DOM: Drag & Drop")
 
 with Files("DragEvent.webidl"):
-    BUG_COMPONENT = ("Core", "Drag and Drop")
+    BUG_COMPONENT = ("Core", "DOM: Drag & Drop")
 
 with Files("DecoderDoctorNotification.webidl"):
     BUG_COMPONENT = ("Core", "Audio/Video: Playback")
@@ -103,14 +112,17 @@ with Files("FakePluginTagInit.webidl"):
 with Files("FeaturePolicy.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Security")
 
+with Files("File*"):
+    BUG_COMPONENT = ("Core", "DOM: File")
+
 with Files("FocusEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("Font*"):
     BUG_COMPONENT = ("Core", "CSS Parsing and Computation")
 
 with Files("FormData.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Core & HTML")
+    BUG_COMPONENT = ("Core", "DOM: Forms")
 
 with Files("Geolocation.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Geolocation")
@@ -134,13 +146,13 @@ with Files("HTML*"):
     BUG_COMPONENT = ("Core", "DOM: Core & HTML")
 
 with Files("HashChangeEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: Navigation")
 
 with Files("HiddenPluginEvent.webidl"):
     BUG_COMPONENT = ("Core", "Plug-ins")
 
 with Files("IDB*"):
-    BUG_COMPONENT = ("Core", "DOM: IndexedDB")
+    BUG_COMPONENT = ("Core", "Storage: IndexedDB")
 
 with Files("IIRFilterNode.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
@@ -148,11 +160,14 @@ with Files("IIRFilterNode.webidl"):
 with Files("Image*"):
     BUG_COMPONENT = ("Core", "DOM: Core & HTML")
 
+with Files("ImageBitmap*"):
+    BUG_COMPONENT = ("Core", "Canvas: 2D")
+
 with Files("ImageCapture*"):
     BUG_COMPONENT = ("Core", "Audio/Video")
 
 with Files("InputEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("InstallTrigger.webidl"):
     BUG_COMPONENT = ("Toolkit", "Add-ons Manager")
@@ -161,13 +176,16 @@ with Files("KeyAlgorithm.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Security")
 
 with Files("Key*Event*"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("KeyIdsInitData.webidl"):
     BUG_COMPONENT = ("Core", "Audio/Video: Playback")
 
 with Files("Keyframe*"):
     BUG_COMPONENT = ("Core", "DOM: Animation")
+
+with Files("MathML*"):
+    BUG_COMPONENT = ("Core", "MathML")
 
 with Files("MediaDevice*"):
     BUG_COMPONENT = ("Core", "WebRTC")
@@ -193,6 +211,9 @@ with Files("MediaKey*"):
 with Files("Media*List*"):
     BUG_COMPONENT = ("Core", "CSS Parsing and Computation")
 
+with Files("Message*"):
+    BUG_COMPONENT = ("Core", "DOM: postMessage")
+
 with Files("*Record*"):
     BUG_COMPONENT = ("Core", "Audio/Video: Recording")
 
@@ -203,7 +224,7 @@ with Files("MIDI*"):
     BUG_COMPONENT = ("Core", "DOM: Device Interfaces")
 
 with Files("Mouse*"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("MutationEvent.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Events")
@@ -233,12 +254,12 @@ with Files("PeriodicWave.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
 
 with Files("PointerEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("PopStateEvent.webidl*"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: Navigation")
 
-with Files("Position*"):
+with Files("GeolocationPosition*"):
     BUG_COMPONENT = ("Core", "DOM: Geolocation")
 
 with Files("ProfileTimelineMarker.webidl"):
@@ -260,13 +281,13 @@ with Files("ScriptProcessorNode.webidl"):
     BUG_COMPONENT = ("Core", "Web Audio")
 
 with Files("Selection.webidl"):
-    BUG_COMPONENT = ("Core", "Selection")
+    BUG_COMPONENT = ("Core", "DOM: Selection")
 
 with Files("ServiceWorker*"):
     BUG_COMPONENT = ("Core", "DOM: Service Workers")
 
 with Files("SimpleGestureEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("SocketCommon.webidl"):
     BUG_COMPONENT = ("Core", "DOM: Device Interfaces")
@@ -302,13 +323,13 @@ with Files("UDP*"):
     BUG_COMPONENT = ("Core", "DOM: Device Interfaces")
 
 with Files("UIEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("URL.webidl"):
     BUG_COMPONENT = ("Core", "Audio/Video")
 
 with Files("UserProximityEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("VTT*"):
     BUG_COMPONENT = ("Core", "Audio/Video")
@@ -334,8 +355,14 @@ with Files("WebGPU*"):
 with Files("Webrtc*"):
     BUG_COMPONENT = ("Core", "WebRTC")
 
+with Files("WebXR.webidl"):
+    BUG_COMPONENT = ("Core", "WebVR")
+
+with Files("XR*"):
+    BUG_COMPONENT = ("Core", "WebVR")
+
 with Files("WheelEvent.webidl"):
-    BUG_COMPONENT = ("Core", "DOM: Events")
+    BUG_COMPONENT = ("Core", "DOM: UI Events & Focus Handling")
 
 with Files("WidevineCDMManifest.webidl"):
     BUG_COMPONENT = ("Core", "Audio/Video: Playback")
@@ -351,6 +378,7 @@ GENERATED_WEBIDL_FILES = [
 ]
 
 PREPROCESSED_WEBIDL_FILES = [
+    'Animation.webidl',
     'Node.webidl',
     'Window.webidl',
 ]
@@ -360,10 +388,10 @@ WEBIDL_FILES = [
     'AbortSignal.webidl',
     'AbstractRange.webidl',
     'AbstractWorker.webidl',
+    'AccessibilityRole.webidl',
     'AddonManager.webidl',
     'AnalyserNode.webidl',
     'Animatable.webidl',
-    'Animation.webidl',
     'AnimationEffect.webidl',
     'AnimationEvent.webidl',
     'AnimationTimeline.webidl',
@@ -371,6 +399,7 @@ WEBIDL_FILES = [
     'AppInfo.webidl',
     'AppNotificationServiceOptions.webidl',
     'APZTestData.webidl',
+    'AriaAttributes.webidl',
     'Attr.webidl',
     'AudioBuffer.webidl',
     'AudioBufferSourceNode.webidl',
@@ -399,7 +428,6 @@ WEBIDL_FILES = [
     'BiquadFilterNode.webidl',
     'Blob.webidl',
     'BroadcastChannel.webidl',
-    'BrowserElement.webidl',
     'BrowserElementDictionaries.webidl',
     'Cache.webidl',
     'CacheStorage.webidl',
@@ -425,7 +453,6 @@ WEBIDL_FILES = [
     'Console.webidl',
     'ConstantSourceNode.webidl',
     'ConvolverNode.webidl',
-    'Coordinates.webidl',
     'CreateOfferRequest.webidl',
     'CredentialManagement.webidl',
     'Crypto.webidl',
@@ -482,6 +509,7 @@ WEBIDL_FILES = [
     'DragEvent.webidl',
     'DynamicsCompressorNode.webidl',
     'Element.webidl',
+    'ElementInternals.webidl',
     'Event.webidl',
     'EventHandler.webidl',
     'EventListener.webidl',
@@ -505,12 +533,12 @@ WEBIDL_FILES = [
     'FileSystemDirectoryReader.webidl',
     'FileSystemEntry.webidl',
     'FileSystemFileEntry.webidl',
+    'FinalizationRegistry.webidl',
     'FocusEvent.webidl',
     'FontFace.webidl',
     'FontFaceSet.webidl',
     'FontFaceSource.webidl',
     'FormData.webidl',
-    'FrameLoader.webidl',
     'Function.webidl',
     'GainNode.webidl',
     'Gamepad.webidl',
@@ -520,6 +548,9 @@ WEBIDL_FILES = [
     'GamepadServiceTest.webidl',
     'GamepadTouch.webidl',
     'Geolocation.webidl',
+    'GeolocationCoordinates.webidl',
+    'GeolocationPosition.webidl',
+    'GeolocationPositionError.webidl',
     'GeometryUtils.webidl',
     'GetUserMediaRequest.webidl',
     'Grid.webidl',
@@ -632,10 +663,10 @@ WEBIDL_FILES = [
     'KeyframeAnimationOptions.webidl',
     'KeyframeEffect.webidl',
     'KeyIdsInitData.webidl',
-    'LegacyQueryInterface.webidl',
     'LinkStyle.webidl',
     'LoadURIOptions.webidl',
     'Location.webidl',
+    'MathMLElement.webidl',
     'MediaCapabilities.webidl',
     'MediaDebugInfo.webidl',
     'MediaDeviceInfo.webidl',
@@ -653,6 +684,7 @@ WEBIDL_FILES = [
     'MediaList.webidl',
     'MediaQueryList.webidl',
     'MediaRecorder.webidl',
+    'MediaSession.webidl',
     'MediaSource.webidl',
     'MediaStream.webidl',
     'MediaStreamAudioDestinationNode.webidl',
@@ -660,7 +692,6 @@ WEBIDL_FILES = [
     'MediaStreamError.webidl',
     'MediaStreamTrack.webidl',
     'MediaStreamTrackAudioSourceNode.webidl',
-    'MediaTrackConstraintSet.webidl',
     'MediaTrackSettings.webidl',
     'MediaTrackSupportedConstraints.webidl',
     'MerchantValidationEvent.webidl',
@@ -686,6 +717,7 @@ WEBIDL_FILES = [
     'NativeOSFileInternals.webidl',
     'Navigator.webidl',
     'NetDashboard.webidl',
+    'NetErrorInfo.webidl',
     'NetworkInformation.webidl',
     'NetworkOptions.webidl',
     'NodeFilter.webidl',
@@ -703,7 +735,6 @@ WEBIDL_FILES = [
     'PaintWorkletGlobalScope.webidl',
     'PannerNode.webidl',
     'ParentNode.webidl',
-    'ParentSHistory.webidl',
     'PaymentAddress.webidl',
     'PaymentMethodChangeEvent.webidl',
     'PaymentRequest.webidl',
@@ -726,8 +757,6 @@ WEBIDL_FILES = [
     'Plugin.webidl',
     'PluginArray.webidl',
     'PointerEvent.webidl',
-    'Position.webidl',
-    'PositionError.webidl',
     'Presentation.webidl',
     'PresentationAvailability.webidl',
     'PresentationConnection.webidl',
@@ -750,7 +779,6 @@ WEBIDL_FILES = [
     'Request.webidl',
     'ResizeObserver.webidl',
     'Response.webidl',
-    'RTCStatsReport.webidl',
     'Screen.webidl',
     'ScreenOrientation.webidl',
     'ScriptProcessorNode.webidl',
@@ -885,7 +913,6 @@ WEBIDL_FILES = [
     'SVGUseElement.webidl',
     'SVGViewElement.webidl',
     'SVGZoomAndPan.webidl',
-    'SVGZoomAndPanValues.webidl',
     'TCPServerSocket.webidl',
     'TCPServerSocketEvent.webidl',
     'TCPSocket.webidl',
@@ -932,8 +959,8 @@ WEBIDL_FILES = [
     'WebGL2RenderingContext.webidl',
     'WebGLRenderingContext.webidl',
     'WebGPU.webidl',
-    'WebGPUExtras.webidl',
     'WebSocket.webidl',
+    'WebXR.webidl',
     'WheelEvent.webidl',
     'WidevineCDMManifest.webidl',
     'WindowOrWorkerGlobalScope.webidl',
@@ -979,6 +1006,7 @@ if CONFIG['MOZ_WEBRTC']:
         'RTCRtpSources.webidl',
         'RTCRtpTransceiver.webidl',
         'RTCSessionDescription.webidl',
+        'RTCStatsReport.webidl',
         'TransceiverImpl.webidl',
         'WebrtcDeprecated.webidl',
         'WebrtcGlobalInformation.webidl',
@@ -1010,9 +1038,7 @@ WEBIDL_FILES += [
     'PopStateEvent.webidl',
     'PopupBlockedEvent.webidl',
     'ProgressEvent.webidl',
-    'StyleRuleChangeEvent.webidl',
     'StyleSheetApplicableStateChangeEvent.webidl',
-    'StyleSheetChangeEvent.webidl',
 ]
 
 # We only expose our prefable test interfaces in debug builds, just to be on
@@ -1043,10 +1069,12 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'DeviceProximityEvent.webidl',
     'ErrorEvent.webidl',
     'FontFaceSetLoadEvent.webidl',
+    'FormDataEvent.webidl',
     'FrameCrashedEvent.webidl',
     'GamepadAxisMoveEvent.webidl',
     'GamepadButtonEvent.webidl',
     'GamepadEvent.webidl',
+    'GPUUncapturedErrorEvent.webidl',
     'HashChangeEvent.webidl',
     'HiddenPluginEvent.webidl',
     'ImageCaptureErrorEvent.webidl',
@@ -1061,15 +1089,15 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'PluginCrashedEvent.webidl',
     'PopStateEvent.webidl',
     'PopupBlockedEvent.webidl',
+    'PositionStateEvent.webidl',
     'PresentationConnectionAvailableEvent.webidl',
     'PresentationConnectionCloseEvent.webidl',
     'ProgressEvent.webidl',
     'PromiseRejectionEvent.webidl',
     'ScrollViewChangeEvent.webidl',
     'SecurityPolicyViolationEvent.webidl',
-    'StyleRuleChangeEvent.webidl',
     'StyleSheetApplicableStateChangeEvent.webidl',
-    'StyleSheetChangeEvent.webidl',
+    'SubmitEvent.webidl',
     'TCPServerSocketEvent.webidl',
     'TCPSocketErrorEvent.webidl',
     'TCPSocketEvent.webidl',
@@ -1077,6 +1105,10 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'UDPMessageEvent.webidl',
     'UserProximityEvent.webidl',
     'WebGLContextEvent.webidl',
+    'XRInputSourceEvent.webidl',
+    'XRInputSourcesChangeEvent.webidl',
+    'XRReferenceSpaceEvent.webidl',
+    'XRSessionEvent.webidl',
 ]
 
 if CONFIG['MOZ_WEBRTC']:
@@ -1094,7 +1126,7 @@ if CONFIG['MOZ_WEBSPEECH']:
         'SpeechSynthesisEvent.webidl',
     ]
 
-if CONFIG['MOZ_BUILD_APP'] in ['browser', 'mobile/android', 'xulrunner']:
+if CONFIG['MOZ_BUILD_APP'] in ['browser', 'comm/mail', 'mobile/android', 'xulrunner']:
     WEBIDL_FILES += [
         'External.webidl',
     ]

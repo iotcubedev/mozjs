@@ -6,19 +6,18 @@
 //! A large part of this module is auto-generated from the instruction descriptions in the meta
 //! directory.
 
+use alloc::vec::Vec;
+use core::convert::{TryFrom, TryInto};
 use core::fmt::{self, Display, Formatter};
+use core::num::NonZeroU32;
 use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
-use std::vec::Vec;
 
-use crate::ir;
-use crate::ir::types;
-use crate::ir::{Ebb, FuncRef, JumpTable, SigRef, Type, Value};
+use crate::ir::{self, trapcode::TrapCode, types, Block, FuncRef, JumpTable, SigRef, Type, Value};
 use crate::isa;
 
 use crate::bitset::BitSet;
 use crate::entity;
-use crate::ref_slice::{ref_slice, ref_slice_mut};
 
 /// Some instructions use an external list of argument values because there is not enough space in
 /// the 16-byte `InstructionData` struct. These value lists are stored in a memory pool in
@@ -62,6 +61,32 @@ impl Opcode {
     pub fn constraints(self) -> OpcodeConstraints {
         OPCODE_CONSTRAINTS[self as usize - 1]
     }
+
+    /// Returns true if the instruction is a resumable trap.
+    pub fn is_resumable_trap(&self) -> bool {
+        match self {
+            Opcode::ResumableTrap | Opcode::ResumableTrapnz => true,
+            _ => false,
+        }
+    }
+}
+
+impl TryFrom<NonZeroU32> for Opcode {
+    type Error = ();
+
+    #[inline]
+    fn try_from(x: NonZeroU32) -> Result<Self, ()> {
+        let x: u16 = x.get().try_into().map_err(|_| ())?;
+        Self::try_from(x)
+    }
+}
+
+impl From<Opcode> for NonZeroU32 {
+    #[inline]
+    fn from(op: Opcode) -> NonZeroU32 {
+        let x = op as u8;
+        NonZeroU32::new(x as u32).unwrap()
+    }
 }
 
 // This trait really belongs in cranelift-reader where it is used by the `.clif` file parser, but since
@@ -102,7 +127,7 @@ pub struct VariableArgs(Vec<Value>);
 impl VariableArgs {
     /// Create an empty argument list.
     pub fn new() -> Self {
-        VariableArgs(Vec::new())
+        Self(Vec::new())
     }
 
     /// Add an argument to the end.
@@ -165,39 +190,39 @@ impl Default for VariableArgs {
 impl InstructionData {
     /// Return information about the destination of a branch or jump instruction.
     ///
-    /// Any instruction that can transfer control to another EBB reveals its possible destinations
+    /// Any instruction that can transfer control to another block reveals its possible destinations
     /// here.
     pub fn analyze_branch<'a>(&'a self, pool: &'a ValueListPool) -> BranchInfo<'a> {
         match *self {
-            InstructionData::Jump {
+            Self::Jump {
                 destination,
                 ref args,
                 ..
             } => BranchInfo::SingleDest(destination, args.as_slice(pool)),
-            InstructionData::BranchInt {
+            Self::BranchInt {
                 destination,
                 ref args,
                 ..
             }
-            | InstructionData::BranchFloat {
+            | Self::BranchFloat {
                 destination,
                 ref args,
                 ..
             }
-            | InstructionData::Branch {
+            | Self::Branch {
                 destination,
                 ref args,
                 ..
             } => BranchInfo::SingleDest(destination, &args.as_slice(pool)[1..]),
-            InstructionData::BranchIcmp {
+            Self::BranchIcmp {
                 destination,
                 ref args,
                 ..
             } => BranchInfo::SingleDest(destination, &args.as_slice(pool)[2..]),
-            InstructionData::BranchTable {
+            Self::BranchTable {
                 table, destination, ..
             } => BranchInfo::Table(table, Some(destination)),
-            InstructionData::IndirectJump { table, .. } => BranchInfo::Table(table, None),
+            Self::IndirectJump { table, .. } => BranchInfo::Table(table, None),
             _ => {
                 debug_assert!(!self.opcode().is_branch());
                 BranchInfo::NotABranch
@@ -209,14 +234,14 @@ impl InstructionData {
     /// branch or jump.
     ///
     /// Multi-destination branches like `br_table` return `None`.
-    pub fn branch_destination(&self) -> Option<Ebb> {
+    pub fn branch_destination(&self) -> Option<Block> {
         match *self {
-            InstructionData::Jump { destination, .. }
-            | InstructionData::Branch { destination, .. }
-            | InstructionData::BranchInt { destination, .. }
-            | InstructionData::BranchFloat { destination, .. }
-            | InstructionData::BranchIcmp { destination, .. } => Some(destination),
-            InstructionData::BranchTable { .. } | InstructionData::IndirectJump { .. } => None,
+            Self::Jump { destination, .. }
+            | Self::Branch { destination, .. }
+            | Self::BranchInt { destination, .. }
+            | Self::BranchFloat { destination, .. }
+            | Self::BranchIcmp { destination, .. } => Some(destination),
+            Self::BranchTable { .. } | Self::IndirectJump { .. } => None,
             _ => {
                 debug_assert!(!self.opcode().is_branch());
                 None
@@ -228,33 +253,57 @@ impl InstructionData {
     /// single destination branch or jump.
     ///
     /// Multi-destination branches like `br_table` return `None`.
-    pub fn branch_destination_mut(&mut self) -> Option<&mut Ebb> {
+    pub fn branch_destination_mut(&mut self) -> Option<&mut Block> {
         match *self {
-            InstructionData::Jump {
+            Self::Jump {
                 ref mut destination,
                 ..
             }
-            | InstructionData::Branch {
+            | Self::Branch {
                 ref mut destination,
                 ..
             }
-            | InstructionData::BranchInt {
+            | Self::BranchInt {
                 ref mut destination,
                 ..
             }
-            | InstructionData::BranchFloat {
+            | Self::BranchFloat {
                 ref mut destination,
                 ..
             }
-            | InstructionData::BranchIcmp {
+            | Self::BranchIcmp {
                 ref mut destination,
                 ..
             } => Some(destination),
-            InstructionData::BranchTable { .. } => None,
+            Self::BranchTable { .. } => None,
             _ => {
                 debug_assert!(!self.opcode().is_branch());
                 None
             }
+        }
+    }
+
+    /// If this is a trapping instruction, get its trap code. Otherwise, return
+    /// `None`.
+    pub fn trap_code(&self) -> Option<TrapCode> {
+        match *self {
+            Self::CondTrap { code, .. }
+            | Self::FloatCondTrap { code, .. }
+            | Self::IntCondTrap { code, .. }
+            | Self::Trap { code, .. } => Some(code),
+            _ => None,
+        }
+    }
+
+    /// If this is a trapping instruction, get an exclusive reference to its
+    /// trap code. Otherwise, return `None`.
+    pub fn trap_code_mut(&mut self) -> Option<&mut TrapCode> {
+        match self {
+            Self::CondTrap { code, .. }
+            | Self::FloatCondTrap { code, .. }
+            | Self::IntCondTrap { code, .. }
+            | Self::Trap { code, .. } => Some(code),
+            _ => None,
         }
     }
 
@@ -263,10 +312,10 @@ impl InstructionData {
     /// Any instruction that can call another function reveals its call signature here.
     pub fn analyze_call<'a>(&'a self, pool: &'a ValueListPool) -> CallInfo<'a> {
         match *self {
-            InstructionData::Call {
+            Self::Call {
                 func_ref, ref args, ..
             } => CallInfo::Direct(func_ref, args.as_slice(pool)),
-            InstructionData::CallIndirect {
+            Self::CallIndirect {
                 sig_ref, ref args, ..
             } => CallInfo::Indirect(sig_ref, &args.as_slice(pool)[1..]),
             _ => {
@@ -275,20 +324,53 @@ impl InstructionData {
             }
         }
     }
+
+    #[inline]
+    pub(crate) fn sign_extend_immediates(&mut self, ctrl_typevar: Type) {
+        if ctrl_typevar.is_invalid() {
+            return;
+        }
+
+        let bit_width = ctrl_typevar.bits();
+
+        match self {
+            Self::BinaryImm64 {
+                opcode,
+                arg: _,
+                imm,
+            } => {
+                if *opcode == Opcode::SdivImm || *opcode == Opcode::SremImm {
+                    imm.sign_extend_from_width(bit_width);
+                }
+            }
+            Self::IntCompareImm {
+                opcode,
+                arg: _,
+                cond,
+                imm,
+            } => {
+                debug_assert_eq!(*opcode, Opcode::IcmpImm);
+                if cond.unsigned() != *cond {
+                    imm.sign_extend_from_width(bit_width);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Information about branch and jump instructions.
 pub enum BranchInfo<'a> {
     /// This is not a branch or jump instruction.
-    /// This instruction will not transfer control to another EBB in the function, but it may still
+    /// This instruction will not transfer control to another block in the function, but it may still
     /// affect control flow by returning or trapping.
     NotABranch,
 
-    /// This is a branch or jump to a single destination EBB, possibly taking value arguments.
-    SingleDest(Ebb, &'a [Value]),
+    /// This is a branch or jump to a single destination block, possibly taking value arguments.
+    SingleDest(Block, &'a [Value]),
 
-    /// This is a jump table branch which can have many destination EBBs and maybe one default EBB.
-    Table(JumpTable, Option<Ebb>),
+    /// This is a jump table branch which can have many destination blocks and maybe one default block.
+    Table(JumpTable, Option<Block>),
 }
 
 /// Information about call instructions.
@@ -519,6 +601,12 @@ enum OperandConstraint {
 
     /// This operand is `ctrlType.double_vector()`.
     DoubleVector,
+
+    /// This operand is `ctrlType.split_lanes()`.
+    SplitLanes,
+
+    /// This operand is `ctrlType.merge_lanes()`.
+    MergeLanes,
 }
 
 impl OperandConstraint {
@@ -545,6 +633,16 @@ impl OperandConstraint {
                     .expect("invalid type for half_vector"),
             ),
             DoubleVector => Bound(ctrl_type.by(2).expect("invalid type for double_vector")),
+            SplitLanes => Bound(
+                ctrl_type
+                    .split_lanes()
+                    .expect("invalid type for split_lanes"),
+            ),
+            MergeLanes => Bound(
+                ctrl_type
+                    .merge_lanes()
+                    .expect("invalid type for merge_lanes"),
+            ),
         }
     }
 }
@@ -561,7 +659,7 @@ pub enum ResolvedConstraint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use alloc::string::ToString;
 
     #[test]
     fn opcodes() {

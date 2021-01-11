@@ -11,6 +11,7 @@
 #include "SelectionChangeEventDispatcher.h"
 
 #include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
@@ -76,7 +77,7 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
                                                        Selection* aSel,
                                                        int16_t aReason) {
   Document* doc = aSel->GetParentObject();
-  if (!(doc && nsContentUtils::IsSystemPrincipal(doc->NodePrincipal())) &&
+  if (!(doc && doc->NodePrincipal()->IsSystemPrincipal()) &&
       !StaticPrefs::dom_select_events_enabled()) {
     return;
   }
@@ -123,7 +124,7 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
   // controls, so for now we only support doing that under a pref, disabled by
   // default.
   // See https://github.com/w3c/selection-api/issues/53.
-  if (nsFrameSelection::sSelectionEventsOnTextControlsEnabled) {
+  if (StaticPrefs::dom_select_events_textcontrols_enabled()) {
     nsCOMPtr<nsINode> target;
 
     // Check if we should be firing this event to a different node than the
@@ -137,7 +138,7 @@ void SelectionChangeEventDispatcher::OnSelectionChange(Document* aDoc,
           root = root->GetParent();
         }
 
-        target = root.forget();
+        target = std::move(root);
       }
     }
 

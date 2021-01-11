@@ -1,8 +1,11 @@
 from __future__ import absolute_import, print_function
+import codecs
+from difflib import unified_diff
 import logging
 import os
 import re
 import shutil
+import sys
 
 import hglib
 from mozboot.util import get_state_dir
@@ -12,6 +15,7 @@ from compare_locales.merge import merge_channels
 from compare_locales.paths.files import ProjectFiles
 from compare_locales.paths.configparser import TOMLParser
 from fluent.migrate import validator
+from fluent.syntax import FluentParser, FluentSerializer
 
 
 def inspect_migration(path):
@@ -42,6 +46,19 @@ def prepare_object_dir(cmd):
     return obj_dir
 
 
+def diff_resources(left_path, right_path):
+    parser = FluentParser(with_spans=False)
+    serializer = FluentSerializer(with_junk=True)
+    lines = []
+    for p in (left_path, right_path):
+        with codecs.open(p, encoding='utf-8') as fh:
+            res = parser.parse(fh.read())
+            lines.append(serializer.serialize(res).splitlines(True))
+    sys.stdout.writelines(
+        chunk for chunk in unified_diff(lines[0], lines[1], left_path, right_path)
+    )
+
+
 def test_migration(cmd, obj_dir, to_test, references):
     '''Test the given recipe.
 
@@ -57,10 +74,15 @@ def test_migration(cmd, obj_dir, to_test, references):
     rv = 0
     migration_name = os.path.splitext(os.path.split(to_test)[1])[0]
     work_dir = mozpath.join(obj_dir, migration_name)
+
+    paths = os.path.normpath(to_test).split(os.sep)
+    # Migration modules should be in a sub-folder of l10n.
+    migration_module = '.'.join(paths[paths.index('l10n')+1:-1]) + '.' + migration_name
+
     if os.path.exists(work_dir):
         shutil.rmtree(work_dir)
     os.makedirs(mozpath.join(work_dir, 'reference'))
-    l10n_toml = mozpath.join(cmd.topsrcdir, 'browser', 'locales', 'l10n.toml')
+    l10n_toml = mozpath.join(cmd.topsrcdir, cmd.substs['MOZ_BUILD_APP'], 'locales', 'l10n.toml')
     pc = TOMLParser().parse(l10n_toml, env={
         'l10n_base': work_dir
     })
@@ -102,7 +124,7 @@ def test_migration(cmd, obj_dir, to_test, references):
         '--reference-dir', mozpath.join(work_dir, 'reference'),
         '--localization-dir', mozpath.join(work_dir, 'en-US'),
         '--dry-run',
-        'fluent_migrations.' + migration_name
+        migration_module
     ]
     cmd.run_process(
         run_migration,
@@ -123,12 +145,11 @@ def test_migration(cmd, obj_dir, to_test, references):
         }, 'No migration applied for {file}')
         return rv
     for ref in references:
-        cmd.run_process([
-            'diff', '-u', '-B',
+        diff_resources(
             mozpath.join(work_dir, 'reference', ref),
             mozpath.join(work_dir, 'en-US', ref),
-        ], ensure_exit_code=False, line_handler=print)
-    messages = [l.desc for l in client.log('::{} - ::{}'.format(tip, old_tip))]
+        )
+    messages = [l.desc.decode('utf-8') for l in client.log(b'::%s - ::%s' % (tip, old_tip))]
     bug = re.search('[0-9]{5,}', migration_name).group()
     # Just check first message for bug number, they're all following the same pattern
     if bug not in messages[0]:

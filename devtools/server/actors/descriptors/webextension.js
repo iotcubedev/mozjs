@@ -45,7 +45,7 @@ loader.lazyImporter(
  * WebExtensionDescriptorActor is a child of RootActor, it can be retrieved via
  * RootActor.listAddons request.
  *
- * @param {DebuggerServerConnection} conn
+ * @param {DevToolsServerConnection} conn
  *        The connection to the client.
  * @param {AddonWrapper} addon
  *        The target addon.
@@ -77,13 +77,12 @@ const WebExtensionDescriptorActor = protocol.ActorClassWithSpec(
         iconDataURL: this._iconDataURL,
         iconURL: this.addon.iconURL,
         id: this.addonId,
-        isAPIExtension: this.addon.isAPIExtension,
         isSystem: this.addon.isSystem,
         isWebExtension: this.addon.isWebExtension,
         manifestURL: policy && policy.getURL("manifest.json"),
         name: this.addon.name,
         temporarilyInstalled: this.addon.temporarilyInstalled,
-        type: this.addon.type,
+        traits: {},
         url: this.addon.sourceURI ? this.addon.sourceURI.spec : undefined,
         warnings: ExtensionParent.DebugUtils.getExtensionManifestWarnings(
           this.addonId
@@ -91,29 +90,21 @@ const WebExtensionDescriptorActor = protocol.ActorClassWithSpec(
       };
     },
 
-    connect() {
-      return this.getTarget();
+    async getTarget() {
+      const form = await this._extensionFrameConnect();
+      // Merge into the child actor form, some addon metadata
+      // (e.g. the addon name shown in the addon debugger window title).
+      return Object.assign(form, {
+        iconURL: this.addon.iconURL,
+        id: this.addon.id,
+        // Set the isOOP attribute on the connected child actor form.
+        isOOP: this.isOOP,
+        name: this.addon.name,
+      });
     },
 
-    getTarget() {
-      if (this._childTargetPromise) {
-        return this._childTargetPromise;
-      }
-
-      this._childTargetPromise = (async () => {
-        const form = await this._extensionFrameConnect();
-        // Merge into the child actor form, some addon metadata
-        // (e.g. the addon name shown in the addon debugger window title).
-        return Object.assign(form, {
-          iconURL: this.addon.iconURL,
-          id: this.addon.id,
-          // Set the isOOP attribute on the connected child actor form.
-          isOOP: this.isOOP,
-          name: this.addon.name,
-        });
-      })();
-
-      return this._childTargetPromise;
+    getChildren() {
+      return [];
     },
 
     async _extensionFrameConnect() {
@@ -148,7 +139,7 @@ const WebExtensionDescriptorActor = protocol.ActorClassWithSpec(
       return {};
     },
 
-    // This function will be called from RootActor in case that the debugger client
+    // This function will be called from RootActor in case that the devtools client
     // retrieves list of addons with `iconDataURL` option.
     async loadIconDataURL() {
       this._iconDataURL = await this.getIconDataURL();
@@ -202,12 +193,9 @@ const WebExtensionDescriptorActor = protocol.ActorClassWithSpec(
     },
 
     _extensionFrameDisconnect() {
-      this._childTargetPromise = null;
       AddonManager.removeAddonListener(this);
 
       this.addon = null;
-      this._childTargetPromise = null;
-
       if (this._mm) {
         this._mm.removeMessageListener(
           "debug:webext_child_exit",

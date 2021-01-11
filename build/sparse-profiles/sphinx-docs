@@ -2,7 +2,11 @@
 
 [include]
 # Code for generating docs.
-glob:tools/docs/**
+glob:docs/**
+glob:tools/moztreedocs/**
+
+# For icons
+glob:browser/branding/nightly/**
 
 # Potential docs sources
 glob:**/*.rst

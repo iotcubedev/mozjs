@@ -95,7 +95,8 @@ this.LoginFormFactory = {
   createFromField(aField) {
     if (
       ChromeUtils.getClassName(aField) !== "HTMLInputElement" ||
-      (aField.type != "password" && !LoginHelper.isUsernameFieldType(aField)) ||
+      (!aField.hasBeenTypePassword &&
+        !LoginHelper.isUsernameFieldType(aField)) ||
       !aField.ownerDocument
     ) {
       throw new Error(
@@ -105,6 +106,11 @@ this.LoginFormFactory = {
 
     if (aField.form) {
       return this.createFromForm(aField.form);
+    } else if (aField.hasAttribute("form")) {
+      log.debug(
+        "createFromField: field has form attribute but no form: ",
+        aField.getAttribute("form")
+      );
     }
 
     let formLike = FormLikeFactory.createFromField(aField);

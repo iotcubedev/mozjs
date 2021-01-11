@@ -13,6 +13,7 @@
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/TypedArray.h"
@@ -26,7 +27,7 @@ namespace dom {
 class GlobalObject;
 class DOMMatrix;
 class DOMPoint;
-class StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly;
+class UTF8StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly;
 struct DOMPointInit;
 struct DOMMatrixInit;
 struct DOMMatrix2DInit;
@@ -39,20 +40,20 @@ class DOMMatrixReadOnly : public nsWrapperCache {
   DOMMatrixReadOnly(nsISupports* aParent, const DOMMatrixReadOnly& other)
       : mParent(aParent) {
     if (other.mMatrix2D) {
-      mMatrix2D = new gfx::MatrixDouble(*other.mMatrix2D);
+      mMatrix2D = MakeUnique<gfx::MatrixDouble>(*other.mMatrix2D);
     } else {
-      mMatrix3D = new gfx::Matrix4x4Double(*other.mMatrix3D);
+      mMatrix3D = MakeUnique<gfx::Matrix4x4Double>(*other.mMatrix3D);
     }
   }
 
   DOMMatrixReadOnly(nsISupports* aParent, const gfx::Matrix4x4& aMatrix)
       : mParent(aParent) {
-    mMatrix3D = new gfx::Matrix4x4Double(aMatrix);
+    mMatrix3D = MakeUnique<gfx::Matrix4x4Double>(aMatrix);
   }
 
   DOMMatrixReadOnly(nsISupports* aParent, const gfx::Matrix& aMatrix)
       : mParent(aParent) {
-    mMatrix2D = new gfx::MatrixDouble(aMatrix);
+    mMatrix2D = MakeUnique<gfx::MatrixDouble>(aMatrix);
   }
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMMatrixReadOnly)
@@ -83,7 +84,7 @@ class DOMMatrixReadOnly : public nsWrapperCache {
 
   static already_AddRefed<DOMMatrixReadOnly> Constructor(
       const GlobalObject& aGlobal,
-      const Optional<StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly>&
+      const Optional<UTF8StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly>&
           aArg,
       ErrorResult& aRv);
 
@@ -220,17 +221,17 @@ class DOMMatrixReadOnly : public nsWrapperCache {
                             JSStructuredCloneWriter* aWriter) const;
   const gfx::MatrixDouble* GetInternal2D() const {
     if (Is2D()) {
-      return mMatrix2D;
+      return mMatrix2D.get();
     }
     return nullptr;
   }
 
  protected:
   nsCOMPtr<nsISupports> mParent;
-  nsAutoPtr<gfx::MatrixDouble> mMatrix2D;
-  nsAutoPtr<gfx::Matrix4x4Double> mMatrix3D;
+  UniquePtr<gfx::MatrixDouble> mMatrix2D;
+  UniquePtr<gfx::Matrix4x4Double> mMatrix3D;
 
-  virtual ~DOMMatrixReadOnly() {}
+  virtual ~DOMMatrixReadOnly() = default;
 
   /**
    * Sets data from a fully validated and fixed-up matrix init,
@@ -240,15 +241,14 @@ class DOMMatrixReadOnly : public nsWrapperCache {
   void SetDataFromMatrix2DInit(const DOMMatrix2DInit& aMatrixInit);
   void SetDataFromMatrixInit(const DOMMatrixInit& aMatrixInit);
 
-  DOMMatrixReadOnly* SetMatrixValue(const nsAString& aTransformList,
-                                    ErrorResult& aRv);
+  DOMMatrixReadOnly* SetMatrixValue(const nsACString&, ErrorResult&);
   void Ensure3DMatrix();
 
   DOMMatrixReadOnly(nsISupports* aParent, bool is2D) : mParent(aParent) {
     if (is2D) {
-      mMatrix2D = new gfx::MatrixDouble();
+      mMatrix2D = MakeUnique<gfx::MatrixDouble>();
     } else {
-      mMatrix3D = new gfx::Matrix4x4Double();
+      mMatrix3D = MakeUnique<gfx::Matrix4x4Double>();
     }
   }
 
@@ -291,7 +291,7 @@ class DOMMatrix : public DOMMatrixReadOnly {
 
   static already_AddRefed<DOMMatrix> Constructor(
       const GlobalObject& aGlobal,
-      const Optional<StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly>&
+      const Optional<UTF8StringOrUnrestrictedDoubleSequenceOrDOMMatrixReadOnly>&
           aArg,
       ErrorResult& aRv);
 
@@ -318,9 +318,9 @@ class DOMMatrix : public DOMMatrixReadOnly {
   DOMMatrix* SkewXSelf(double aSx);
   DOMMatrix* SkewYSelf(double aSy);
   DOMMatrix* InvertSelf();
-  DOMMatrix* SetMatrixValue(const nsAString& aTransformList, ErrorResult& aRv);
+  DOMMatrix* SetMatrixValue(const nsACString&, ErrorResult&);
 
-  virtual ~DOMMatrix() {}
+  virtual ~DOMMatrix() = default;
 
  private:
   DOMMatrix(nsISupports* aParent, bool is2D)

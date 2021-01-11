@@ -14,6 +14,7 @@
 
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/Buffer.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/MozPromise.h"
@@ -98,6 +99,7 @@ class GeckoChildProcessHost : public ChildProcessHost,
   // we return.  But we don't know if dynamic linking succeeded on
   // either platform.
   bool LaunchAndWaitForProcessHandle(StringVector aExtraOpts = StringVector());
+  bool WaitForProcessHandle();
 
   // Block until the child process has been created and it connects to
   // the IPC channel, meaning it's fully initialized.  (Or until an
@@ -118,8 +120,9 @@ class GeckoChildProcessHost : public ChildProcessHost,
 
   virtual bool CanShutdown() override { return true; }
 
+  using ChildProcessHost::TakeChannel;
   IPC::Channel* GetChannel() { return channelp(); }
-  std::wstring GetChannelId() { return channel_id(); }
+  ChannelId GetChannelId() { return channel_id(); }
 
   // Returns a "borrowed" handle to the child process - the handle returned
   // by this function must not be closed by the caller.
@@ -132,6 +135,8 @@ class GeckoChildProcessHost : public ChildProcessHost,
 #endif
 
 #ifdef XP_WIN
+  static void CacheNtDllThunk();
+
   void AddHandleToShare(HANDLE aHandle) {
     mLaunchOptions->handles_to_inherit.push_back(aHandle);
   }
@@ -151,11 +156,6 @@ class GeckoChildProcessHost : public ChildProcessHost,
   void SetAlreadyDead();
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
-  // To allow filling a MacSandboxInfo from the child
-  // process without an instance of RDDProcessHost.
-  // Only needed for late-start sandbox enabling.
-  static bool StaticFillMacSandboxInfo(MacSandboxInfo& aInfo);
-
   // Start the sandbox from the child process.
   static bool StartMacSandbox(int aArgc, char** aArgv,
                               std::string& aErrorMessage);
@@ -166,15 +166,27 @@ class GeckoChildProcessHost : public ChildProcessHost,
   static MacSandboxType GetDefaultMacSandboxType() {
     return MacSandboxType_Utility;
   };
+
+  // Must be called before the process is launched. Determines if
+  // child processes will be launched with OS_ACTIVITY_MODE set to
+  // "disabled" or not. When |mDisableOSActivityMode| is set to true,
+  // child processes will be launched with OS_ACTIVITY_MODE
+  // disabled to avoid connection attempts to diagnosticd(8) which are
+  // blocked in child processes due to sandboxing.
+  void DisableOSActivityMode();
 #endif
   typedef std::function<void(GeckoChildProcessHost*)> GeckoProcessCallback;
 
   // Iterates over all instances and calls aCallback with each one of them.
   // This method will lock any addition/removal of new processes
   // so you need to make sure the callback is as fast as possible.
+  //
+  // To reiterate: the callbacks are executed synchronously.
   static void GetAll(const GeckoProcessCallback& aCallback);
 
   friend class BaseProcessLauncher;
+  friend class PosixProcessLauncher;
+  friend class WindowsProcessLauncher;
 
  protected:
   ~GeckoChildProcessHost();
@@ -225,6 +237,10 @@ class GeckoChildProcessHost : public ChildProcessHost,
 #endif
   RefPtr<ProcessHandlePromise> mHandlePromise;
 
+#if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
+  bool mDisableOSActivityMode;
+#endif
+
   bool OpenPrivilegedHandle(base::ProcessId aPid);
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
@@ -259,14 +275,21 @@ class GeckoChildProcessHost : public ChildProcessHost,
 
   // Linux-Only. Set this up before we're called from a different thread.
   nsCString mTmpDirName;
+  // Mac and Windows. Set this up before we're called from a different thread.
+  nsCOMPtr<nsIFile> mProfileDir;
 
   mozilla::Atomic<bool> mDestroying;
 
   static uint32_t sNextUniqueID;
   static StaticAutoPtr<LinkedList<GeckoChildProcessHost>>
       sGeckoChildProcessHosts;
+#ifdef XP_WIN
+  static StaticAutoPtr<Buffer<IMAGE_THUNK_DATA>> sCachedNtDllThunk;
+#endif
   static StaticMutex sMutex;
 };
+
+nsCOMPtr<nsIEventTarget> GetIPCLauncher();
 
 } /* namespace ipc */
 } /* namespace mozilla */

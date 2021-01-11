@@ -28,8 +28,8 @@ const ContentBlockingAllowList = {
     if (!this._observingLastPBContext) {
       this._observer = {
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIObserver,
-          Ci.nsISupportsWeakReference,
+          "nsIObserver",
+          "nsISupportsWeakReference",
         ]),
 
         observe(subject, topic, data) {
@@ -98,6 +98,14 @@ const ContentBlockingAllowList = {
     let prin = this._basePrincipalForAntiTrackingCommon(browser);
     let type = this._permissionTypeFor(browser);
     Services.perms.removeFromPrincipal(prin, type);
+  },
+
+  /**
+   * Remove the given principal from the Content Blocking allow list if present.
+   */
+  removeByPrincipal(principal) {
+    Services.perms.removeFromPrincipal(principal, "trackingprotection");
+    Services.perms.removeFromPrincipal(principal, "trackingprotection-pb");
   },
 
   /**

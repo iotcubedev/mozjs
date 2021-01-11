@@ -11,6 +11,7 @@
 
 namespace mozilla {
 
+class ProfileChunkedBuffer;
 class TimeStamp;
 
 namespace baseprofiler {
@@ -24,7 +25,8 @@ class UniqueStacks;
 class ProfilerBacktrace {
  public:
   ProfilerBacktrace(const char* aName, int aThreadId,
-                    UniquePtr<ProfileBuffer> aBuffer);
+                    UniquePtr<ProfileChunkedBuffer> aProfileChunkedBuffer,
+                    UniquePtr<ProfileBuffer> aProfileBuffer);
   ~ProfilerBacktrace();
 
   // ProfilerBacktraces' stacks are deduplicated in the context of the
@@ -38,15 +40,90 @@ class ProfilerBacktrace {
                   UniqueStacks& aUniqueStacks);
 
  private:
-  ProfilerBacktrace(const ProfilerBacktrace&);
-  ProfilerBacktrace& operator=(const ProfilerBacktrace&);
+  // Used to de/serialize a ProfilerBacktrace.
+  friend struct ProfileBufferEntryWriter::Serializer<ProfilerBacktrace>;
+  friend struct ProfileBufferEntryReader::Deserializer<ProfilerBacktrace>;
 
   UniqueFreePtr<char> mName;
   int mThreadId;
-  UniquePtr<ProfileBuffer> mBuffer;
+  // `ProfileChunkedBuffer` in which `mProfileBuffer` stores its data; must be
+  // located before `mProfileBuffer` so that it's destroyed after.
+  UniquePtr<ProfileChunkedBuffer> mProfileChunkedBuffer;
+  UniquePtr<ProfileBuffer> mProfileBuffer;
 };
 
 }  // namespace baseprofiler
+
+// Format: [ UniquePtr<BlockRingsBuffer> | threadId | name ]
+// Initial len==0 marks a nullptr or empty backtrace.
+template <>
+struct ProfileBufferEntryWriter::Serializer<baseprofiler::ProfilerBacktrace> {
+  static Length Bytes(const baseprofiler::ProfilerBacktrace& aBacktrace) {
+    if (!aBacktrace.mProfileBuffer) {
+      // No backtrace buffer.
+      return ULEB128Size<Length>(0);
+    }
+    auto bufferBytes = SumBytes(*aBacktrace.mProfileChunkedBuffer);
+    if (bufferBytes == 0) {
+      // Empty backtrace buffer.
+      return ULEB128Size<Length>(0);
+    }
+    return bufferBytes +
+           SumBytes(aBacktrace.mThreadId,
+                    WrapProfileBufferUnownedCString(aBacktrace.mName.get()));
+  }
+
+  static void Write(ProfileBufferEntryWriter& aEW,
+                    const baseprofiler::ProfilerBacktrace& aBacktrace) {
+    if (!aBacktrace.mProfileBuffer ||
+        SumBytes(aBacktrace.mProfileChunkedBuffer) == 0) {
+      // No backtrace buffer, or it is empty.
+      aEW.WriteULEB128<Length>(0);
+      return;
+    }
+    aEW.WriteObject(aBacktrace.mProfileChunkedBuffer);
+    aEW.WriteObject(aBacktrace.mThreadId);
+    aEW.WriteObject(WrapProfileBufferUnownedCString(aBacktrace.mName.get()));
+  }
+};
+
+template <typename Destructor>
+struct ProfileBufferEntryWriter::Serializer<
+    UniquePtr<baseprofiler::ProfilerBacktrace, Destructor>> {
+  static Length Bytes(const UniquePtr<baseprofiler::ProfilerBacktrace,
+                                      Destructor>& aBacktrace) {
+    if (!aBacktrace) {
+      // Null backtrace pointer (treated like an empty backtrace).
+      return ULEB128Size<Length>(0);
+    }
+    return SumBytes(*aBacktrace);
+  }
+
+  static void Write(ProfileBufferEntryWriter& aEW,
+                    const UniquePtr<baseprofiler::ProfilerBacktrace,
+                                    Destructor>& aBacktrace) {
+    if (!aBacktrace) {
+      // Null backtrace pointer (treated like an empty backtrace).
+      aEW.WriteULEB128<Length>(0);
+      return;
+    }
+    aEW.WriteObject(*aBacktrace);
+  }
+};
+
+template <typename Destructor>
+struct ProfileBufferEntryReader::Deserializer<
+    UniquePtr<baseprofiler::ProfilerBacktrace, Destructor>> {
+  static void ReadInto(
+      ProfileBufferEntryReader& aER,
+      UniquePtr<baseprofiler::ProfilerBacktrace, Destructor>& aBacktrace) {
+    aBacktrace = Read(aER);
+  }
+
+  static UniquePtr<baseprofiler::ProfilerBacktrace, Destructor> Read(
+      ProfileBufferEntryReader& aER);
+};
+
 }  // namespace mozilla
 
 #endif  // __PROFILER_BACKTRACE_H

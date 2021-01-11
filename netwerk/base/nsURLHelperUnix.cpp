@@ -9,6 +9,9 @@
 #include "nsEscape.h"
 #include "nsIFile.h"
 #include "nsNativeCharsetUtils.h"
+#include "mozilla/Utf8.h"
+
+using mozilla::IsUtf8;
 
 nsresult net_GetURLSpecFromActualFile(nsIFile* aFile, nsACString& result) {
   nsresult rv;
@@ -29,7 +32,7 @@ nsresult net_GetURLSpecFromActualFile(nsIFile* aFile, nsACString& result) {
     ePath = nativePath;
 
   nsAutoCString escPath;
-  NS_NAMED_LITERAL_CSTRING(prefix, "file://");
+  constexpr auto prefix = "file://"_ns;
 
   // Escape the path with the directory mask
   if (NS_EscapeURL(ePath.get(), -1, esc_Directory + esc_Forced, escPath))
@@ -80,7 +83,7 @@ nsresult net_GetFileFromURLSpec(const nsACString& aURL, nsIFile** result) {
   NS_UnescapeURL(path);
   if (path.Length() != strlen(path.get())) return NS_ERROR_FILE_INVALID_PATH;
 
-  if (IsUTF8(path)) {
+  if (IsUtf8(path)) {
     // speed up the start-up where UTF-8 is the native charset
     // (e.g. on recent Linux distributions)
     if (NS_IsNativeUTF8())

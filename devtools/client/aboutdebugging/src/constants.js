@@ -28,6 +28,7 @@ const actionTypes = {
   DISCONNECT_RUNTIME_START: "DISCONNECT_RUNTIME_START",
   DISCONNECT_RUNTIME_SUCCESS: "DISCONNECT_RUNTIME_SUCCESS",
   HIDE_PROFILER_DIALOG: "HIDE_PROFILER_DIALOG",
+  SWITCH_PROFILER_CONTEXT: "SWITCH_PROFILER_CONTEXT",
   NETWORK_LOCATIONS_UPDATE_FAILURE: "NETWORK_LOCATIONS_UPDATE_FAILURE",
   NETWORK_LOCATIONS_UPDATE_START: "NETWORK_LOCATIONS_UPDATE_START",
   NETWORK_LOCATIONS_UPDATE_SUCCESS: "NETWORK_LOCATIONS_UPDATE_SUCCESS",
@@ -66,9 +67,6 @@ const actionTypes = {
     "UPDATE_CONNECTION_PROMPT_SETTING_START",
   UPDATE_CONNECTION_PROMPT_SETTING_SUCCESS:
     "UPDATE_CONNECTION_PROMPT_SETTING_SUCCESS",
-  UPDATE_RUNTIME_CANDEBUGSW_FAILURE: "UPDATE_RUNTIME_CANDEBUGSW_FAILURE",
-  UPDATE_RUNTIME_CANDEBUGSW_START: "UPDATE_RUNTIME_CANDEBUGSW_START",
-  UPDATE_RUNTIME_CANDEBUGSW_SUCCESS: "UPDATE_RUNTIME_CANDEBUGSW_SUCCESS",
   USB_RUNTIMES_SCAN_START: "USB_RUNTIMES_SCAN_START",
   USB_RUNTIMES_SCAN_SUCCESS: "USB_RUNTIMES_SCAN_SUCCESS",
   WATCH_RUNTIME_FAILURE: "WATCH_RUNTIME_FAILURE",
@@ -105,6 +103,10 @@ const PAGE_TYPES = {
 };
 
 const PREFERENCES = {
+  // Preference that enables the Multiprocess Browser Toolbox. This will also
+  // enable inspecting Content processes when opening a "Main Process" toolbox
+  // on a remote target.
+  FISSION_BROWSER_TOOLBOX: "devtools.browsertoolbox.fission",
   // Preference that drives the display of the "Tabs" category on This Firefox.
   LOCAL_TAB_DEBUGGING_ENABLED: "devtools.aboutdebugging.local-tab-debugging",
   // Preference that drives the display of the "Processes" debug target category.
@@ -146,6 +148,16 @@ const USB_STATES = {
   UPDATING_USB: "UPDATING_USB",
 };
 
+/**
+ * These constants reference the performance-new's concept of a PageContext.
+ * These are defined in devtools/client/performance-new/@types/perf.d.ts
+ * about:debugging only uses the remote variants of the PageContexts.
+ */
+const PROFILER_PAGE_CONTEXT = {
+  DEVTOOLS_REMOTE: "devtools-remote",
+  ABOUTPROFILING_REMOTE: "aboutprofiling-remote",
+};
+
 // flatten constants
 module.exports = Object.assign(
   {},
@@ -161,6 +173,7 @@ module.exports = Object.assign(
     SERVICE_WORKER_FETCH_STATES,
     SERVICE_WORKER_STATUSES,
     USB_STATES,
+    PROFILER_PAGE_CONTEXT,
   },
   actionTypes
 );

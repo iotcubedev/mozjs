@@ -58,13 +58,13 @@ class AutoTextRun {
     }
     if (aMetrics->GetVertical()) {
       switch (aMetrics->GetTextOrientation()) {
-        case NS_STYLE_TEXT_ORIENTATION_MIXED:
+        case StyleTextOrientation::Mixed:
           flags |= gfx::ShapedTextFlags::TEXT_ORIENT_VERTICAL_MIXED;
           break;
-        case NS_STYLE_TEXT_ORIENTATION_UPRIGHT:
+        case StyleTextOrientation::Upright:
           flags |= gfx::ShapedTextFlags::TEXT_ORIENT_VERTICAL_UPRIGHT;
           break;
-        case NS_STYLE_TEXT_ORIENTATION_SIDEWAYS:
+        case StyleTextOrientation::Sideways:
           flags |= gfx::ShapedTextFlags::TEXT_ORIENT_VERTICAL_SIDEWAYS_RIGHT;
           break;
       }
@@ -116,13 +116,14 @@ nsFontMetrics::nsFontMetrics(const nsFont& aFont, const Params& aParams,
       mOrientation(aParams.orientation),
       mTextRunRTL(false),
       mVertical(false),
-      mTextOrientation(0) {
-  gfxFontStyle style(
-      aFont.style, aFont.weight, aFont.stretch, gfxFloat(aFont.size) / mP2A,
-      aParams.language, aParams.explicitLanguage, aFont.sizeAdjust,
-      aFont.systemFont, mDeviceContext->IsPrinterContext(),
-      aFont.synthesis & NS_FONT_SYNTHESIS_WEIGHT,
-      aFont.synthesis & NS_FONT_SYNTHESIS_STYLE, aFont.languageOverride);
+      mTextOrientation(mozilla::StyleTextOrientation::Mixed) {
+  gfxFontStyle style(aFont.style, aFont.weight, aFont.stretch,
+                     gfxFloat(aFont.size.ToAppUnits()) / mP2A, aParams.language,
+                     aParams.explicitLanguage, aFont.sizeAdjust,
+                     aFont.systemFont, mDeviceContext->IsPrinterContext(),
+                     aFont.synthesis & NS_FONT_SYNTHESIS_WEIGHT,
+                     aFont.synthesis & NS_FONT_SYNTHESIS_STYLE,
+                     aFont.languageOverride);
 
   aFont.AddFontFeaturesToStyle(&style, mOrientation == eVertical);
   style.featureValueLookup = aParams.featureValueLookup;
@@ -131,8 +132,8 @@ nsFontMetrics::nsFontMetrics(const nsFont& aFont, const Params& aParams,
 
   gfxFloat devToCssSize = gfxFloat(mP2A) / gfxFloat(AppUnitsPerCSSPixel());
   mFontGroup = gfxPlatform::GetPlatform()->CreateFontGroup(
-      aFont.fontlist, &style, aParams.textPerf, aParams.userFontSet,
-      devToCssSize);
+      aFont.fontlist, &style, aParams.textPerf, aParams.fontStats,
+      aParams.userFontSet, devToCssSize);
 }
 
 nsFontMetrics::~nsFontMetrics() {
@@ -251,10 +252,10 @@ nscoord nsFontMetrics::SpaceWidth() {
   // width of a horizontal space (even if we're using vertical line-spacing
   // metrics, as with "writing-mode:vertical-*;text-orientation:mixed").
   return CEIL_TO_TWIPS(
-      GetMetrics(this, mVertical && mTextOrientation ==
-                                        NS_STYLE_TEXT_ORIENTATION_UPRIGHT
-                           ? eVertical
-                           : eHorizontal)
+      GetMetrics(this,
+                 mVertical && mTextOrientation == StyleTextOrientation::Upright
+                     ? eVertical
+                     : eHorizontal)
           .spaceWidth);
 }
 
@@ -371,7 +372,7 @@ nsBoundingMetrics nsFontMetrics::GetBoundingMetrics(const char16_t* aString,
                                 gfxFont::TIGHT_HINTED_OUTLINE_EXTENTS);
 }
 
-nsBoundingMetrics nsFontMetrics::GetInkBoundsForVisualOverflow(
+nsBoundingMetrics nsFontMetrics::GetInkBoundsForInkOverflow(
     const char16_t* aString, uint32_t aLength, DrawTarget* aDrawTarget) {
   return GetTextBoundingMetrics(this, aString, aLength, aDrawTarget,
                                 gfxFont::LOOSE_INK_EXTENTS);

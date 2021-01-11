@@ -7,8 +7,7 @@
       var uniqueMessageId =
         TRESIZE_PREFIX +
         content.document.documentURI +
-        // eslint-disable-next-line mozilla/avoid-Date-timing
-        Date.now() +
+        content.window.performance.now() +
         Math.random();
 
       addMessageListener(TRESIZE_PREFIX + "chrome-run-reply", function done(
@@ -16,7 +15,7 @@
       ) {
         if (reply.data.id == uniqueMessageId) {
           removeMessageListener(TRESIZE_PREFIX + "chrome-run-reply", done);
-          content.wrappedJSObject.logResults(reply.data.result);
+          content.wrappedJSObject.tpRecordTime(reply.data.result.average);
         }
       });
 
@@ -25,6 +24,7 @@
         locationSearch: e.detail.locationSearch,
       });
     },
-    false
+    false,
+    true
   );
 })();

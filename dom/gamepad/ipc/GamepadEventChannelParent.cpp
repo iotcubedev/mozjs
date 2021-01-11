@@ -17,7 +17,7 @@ namespace {
 
 class SendGamepadUpdateRunnable final : public Runnable {
  private:
-  ~SendGamepadUpdateRunnable() {}
+  ~SendGamepadUpdateRunnable() = default;
   RefPtr<GamepadEventChannelParent> mParent;
   GamepadChangeEvent mEvent;
 
@@ -45,7 +45,7 @@ GamepadEventChannelParent::GamepadEventChannelParent()
       GamepadPlatformService::GetParentService();
   MOZ_ASSERT(service);
 
-  mBackgroundEventTarget = GetCurrentThreadEventTarget();
+  mBackgroundEventTarget = GetCurrentEventTarget();
   service->AddChannelParent(this);
 }
 

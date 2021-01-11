@@ -11,22 +11,25 @@
 
 #include "mozilla/Attributes.h"  // MOZ_MUST_USE
 
-#include "js/CallArgs.h"    // JS::CallArgs
-#include "js/RootingAPI.h"  // JS::{,Mutable}Handle
-#include "js/Value.h"       // JS::Value
-#include "vm/JSObject.h"    // JSObject
+#include "jstypes.h"           // JS_PUBLIC_API
+#include "js/CallArgs.h"       // JS::CallArgs
+#include "js/RootingAPI.h"     // JS::{,Mutable}Handle
+#include "js/Value.h"          // JS::Value
+#include "vm/JSObject.h"       // JSObject
+#include "vm/PromiseObject.h"  // js::PromiseObject
 
-struct JSContext;
+struct JS_PUBLIC_API JSContext;
 
 namespace js {
 
 class PropertyName;
 
-extern MOZ_MUST_USE JSObject* PromiseRejectedWithPendingError(JSContext* cx);
+extern MOZ_MUST_USE PromiseObject* PromiseRejectedWithPendingError(
+    JSContext* cx);
 
 inline MOZ_MUST_USE bool ReturnPromiseRejectedWithPendingError(
     JSContext* cx, const JS::CallArgs& args) {
-  JSObject* promise = PromiseRejectedWithPendingError(cx);
+  PromiseObject* promise = PromiseRejectedWithPendingError(cx);
   if (!promise) {
     return false;
   }
@@ -61,15 +64,6 @@ extern MOZ_MUST_USE bool InvokeOrNoop(JSContext* cx, JS::Handle<JS::Value> O,
                                       JS::MutableHandle<JS::Value> rval);
 
 /**
- * Streams spec, 6.3.5. PromiseCall ( F, V, args )
- * As it happens, all callers pass exactly one argument.
- */
-extern MOZ_MUST_USE JSObject* PromiseCall(JSContext* cx,
-                                          JS::Handle<JS::Value> F,
-                                          JS::Handle<JS::Value> V,
-                                          JS::Handle<JS::Value> arg);
-
-/**
  * Streams spec, 6.3.7. ValidateAndNormalizeHighWaterMark ( highWaterMark )
  */
 extern MOZ_MUST_USE bool ValidateAndNormalizeHighWaterMark(
@@ -78,13 +72,6 @@ extern MOZ_MUST_USE bool ValidateAndNormalizeHighWaterMark(
 
 /**
  * Streams spec, 6.3.8. MakeSizeAlgorithmFromSizeFunction ( size )
- *
- * The standard makes a big deal of turning JavaScript functions (grubby,
- * touched by users, covered with germs) into algorithms (pristine,
- * respectable, purposeful). We don't bother. Here we only check for errors and
- * leave `size` unchanged. Then, in ReadableStreamDefaultControllerEnqueue,
- * where this value is used, we have to check for undefined and behave as if we
- * had "made" an "algorithm" as described below.
  */
 extern MOZ_MUST_USE bool MakeSizeAlgorithmFromSizeFunction(
     JSContext* cx, JS::Handle<JS::Value> size);

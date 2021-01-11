@@ -32,7 +32,7 @@ FPSCounter::FPSCounter(const char* aName)
   Init();
 }
 
-FPSCounter::~FPSCounter() {}
+FPSCounter::~FPSCounter() = default;
 
 void FPSCounter::Init() {
   for (int i = 0; i < kMaxFrames; i++) {
@@ -276,7 +276,7 @@ void FPSCounter::PrintFPS() {
 }
 
 void FPSCounter::PrintHistogram(std::map<int, int>& aHistogram) {
-  if (aHistogram.size() == 0) {
+  if (aHistogram.empty()) {
     return;
   }
 
@@ -320,9 +320,9 @@ nsresult FPSCounter::WriteFrameTimeStamps() {
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (!strncmp(mFPSName, "Compositor", strlen(mFPSName))) {
-    resultFile->Append(NS_LITERAL_STRING("fps.txt"));
+    resultFile->Append(u"fps.txt"_ns);
   } else {
-    resultFile->Append(NS_LITERAL_STRING("txn.txt"));
+    resultFile->Append(u"txn.txt"_ns);
   }
 
   PRFileDesc* fd = nullptr;

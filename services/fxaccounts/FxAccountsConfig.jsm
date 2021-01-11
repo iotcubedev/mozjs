@@ -34,23 +34,12 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
-  "TERMS_URL",
-  "services.sync.fxa.termsURL"
-);
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "PRIVACY_URL",
-  "services.sync.fxa.privacyURL"
-);
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
   "CONTEXT_PARAM",
   "identity.fxaccounts.contextParam"
 );
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "REQUIRES_HTTPS",
-  // Also used in FxAccountsOAuthGrantClient.jsm.
   "identity.fxaccounts.allowHttp",
   false,
   null,
@@ -65,35 +54,29 @@ const CONFIG_PREFS = [
   "identity.fxaccounts.remote.pairing.uri",
   "identity.sync.tokenserver.uri",
 ];
+const SYNC_PARAM = "sync";
 
 var FxAccountsConfig = {
-  async promiseSignUpURI(entrypoint, extraParams = {}) {
-    return this._buildURL("signup", {
-      extraParams: { entrypoint, ...extraParams },
-    });
-  },
-
-  async promiseSignInURI(entrypoint, extraParams = {}) {
-    return this._buildURL("signin", {
-      extraParams: { entrypoint, ...extraParams },
-    });
-  },
-
   async promiseEmailURI(email, entrypoint, extraParams = {}) {
     return this._buildURL("", {
-      extraParams: { entrypoint, email, ...extraParams },
+      extraParams: { entrypoint, email, service: SYNC_PARAM, ...extraParams },
     });
   },
 
-  async promiseEmailFirstURI(entrypoint, extraParams = {}) {
+  async promiseConnectAccountURI(entrypoint, extraParams = {}) {
     return this._buildURL("", {
-      extraParams: { entrypoint, action: "email", ...extraParams },
+      extraParams: {
+        entrypoint,
+        action: "email",
+        service: SYNC_PARAM,
+        ...extraParams,
+      },
     });
   },
 
   async promiseForceSigninURI(entrypoint, extraParams = {}) {
     return this._buildURL("force_auth", {
-      extraParams: { entrypoint, ...extraParams },
+      extraParams: { entrypoint, service: SYNC_PARAM, ...extraParams },
       addAccountIdentifiers: true,
     });
   },
@@ -121,7 +104,7 @@ var FxAccountsConfig = {
 
   async promiseConnectDeviceURI(entrypoint, extraParams = {}) {
     return this._buildURL("connect_another_device", {
-      extraParams: { entrypoint, ...extraParams },
+      extraParams: { entrypoint, service: SYNC_PARAM, ...extraParams },
       addAccountIdentifiers: true,
     });
   },
@@ -147,19 +130,8 @@ var FxAccountsConfig = {
     });
   },
 
-  // Terms and Privacy URLs are special:
-  // For Reasons, we want them to always point
-  // to our servers even if a custom server is used.
-  async promiseLegalTermsURI(extraParams = {}) {
-    return this._buildURLFromString(TERMS_URL, extraParams);
-  },
-
-  async promiseLegalPrivacyURI(extraParams = {}) {
-    return this._buildURLFromString(PRIVACY_URL, extraParams);
-  },
-
   get defaultParams() {
-    return { service: "sync", context: CONTEXT_PARAM };
+    return { context: CONTEXT_PARAM };
   },
 
   /**
@@ -265,9 +237,7 @@ var FxAccountsConfig = {
     });
     if (!resp.success) {
       log.error(
-        `Received HTTP response code ${
-          resp.status
-        } from configuration object request`
+        `Received HTTP response code ${resp.status} from configuration object request`
       );
       if (resp.body) {
         log.debug("Got error response", resp.body);

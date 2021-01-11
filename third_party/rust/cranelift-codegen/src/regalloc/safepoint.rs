@@ -1,10 +1,11 @@
 use crate::cursor::{Cursor, FuncCursor};
 use crate::dominator_tree::DominatorTree;
-use crate::ir::{Function, InstBuilder, InstructionData, Opcode, TrapCode};
+use crate::inst_predicates::is_safepoint;
+use crate::ir::{Function, InstBuilder};
 use crate::isa::TargetIsa;
 use crate::regalloc::live_value_tracker::LiveValueTracker;
 use crate::regalloc::liveness::Liveness;
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 fn insert_and_encode_safepoint<'f>(
     pos: &mut FuncCursor<'f>,
@@ -32,7 +33,7 @@ fn insert_and_encode_safepoint<'f>(
 }
 
 // The emit_stackmaps() function analyzes each instruction to retrieve the liveness of
-// the defs and operands by traversing a function's ebbs in layout order.
+// the defs and operands by traversing a function's blocks in layout order.
 pub fn emit_stackmaps(
     func: &mut Function,
     domtree: &DominatorTree,
@@ -42,31 +43,23 @@ pub fn emit_stackmaps(
 ) {
     let mut curr = func.layout.entry_block();
 
-    while let Some(ebb) = curr {
-        tracker.ebb_top(ebb, &func.dfg, liveness, &func.layout, domtree);
+    while let Some(block) = curr {
+        tracker.block_top(block, &func.dfg, liveness, &func.layout, domtree);
         tracker.drop_dead_params();
         let mut pos = FuncCursor::new(func);
 
-        // From the top of the ebb, step through the instructions.
-        pos.goto_top(ebb);
+        // From the top of the block, step through the instructions.
+        pos.goto_top(block);
 
         while let Some(inst) = pos.next_inst() {
-            if let InstructionData::Trap {
-                code: TrapCode::Interrupt,
-                ..
-            } = &pos.func.dfg[inst]
-            {
+            if is_safepoint(&pos.func, inst) {
                 insert_and_encode_safepoint(&mut pos, tracker, isa);
-            } else if pos.func.dfg[inst].opcode().is_call() {
-                insert_and_encode_safepoint(&mut pos, tracker, isa);
-            } else if pos.func.dfg[inst].opcode() == Opcode::Safepoint {
-                panic!("safepoint instruction can only be used by the compiler!");
             }
 
             // Process the instruction and get rid of dead values.
             tracker.process_inst(inst, &pos.func.dfg, liveness);
             tracker.drop_dead(inst);
         }
-        curr = func.layout.next_ebb(ebb);
+        curr = func.layout.next_block(block);
     }
 }

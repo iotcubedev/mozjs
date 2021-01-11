@@ -3,6 +3,7 @@
 use crate::ir::immediates::{Imm64, Offset32};
 use crate::ir::{ExternalName, GlobalValue, Type};
 use crate::isa::TargetIsa;
+use crate::machinst::RelocDistance;
 use core::fmt;
 
 /// Information about a global value declaration.
@@ -62,7 +63,14 @@ pub enum GlobalValueData {
         /// Will this symbol be defined nearby, such that it will always be a certain distance
         /// away, after linking? If so, references to it can avoid going through a GOT. Note that
         /// symbols meant to be preemptible cannot be colocated.
+        ///
+        /// If `true`, some backends may use relocation forms that have limited range: for example,
+        /// a +/- 2^27-byte range on AArch64. See the documentation for
+        /// [`RelocDistance`](crate::machinst::RelocDistance) for more details.
         colocated: bool,
+
+        /// Does this symbol refer to a thread local storage value?
+        tls: bool,
     },
 }
 
@@ -70,7 +78,7 @@ impl GlobalValueData {
     /// Assume that `self` is an `GlobalValueData::Symbol` and return its name.
     pub fn symbol_name(&self) -> &ExternalName {
         match *self {
-            GlobalValueData::Symbol { ref name, .. } => name,
+            Self::Symbol { ref name, .. } => name,
             _ => panic!("only symbols have names"),
         }
     }
@@ -78,11 +86,22 @@ impl GlobalValueData {
     /// Return the type of this global.
     pub fn global_type(&self, isa: &dyn TargetIsa) -> Type {
         match *self {
-            GlobalValueData::VMContext { .. } | GlobalValueData::Symbol { .. } => {
-                isa.pointer_type()
-            }
-            GlobalValueData::IAddImm { global_type, .. }
-            | GlobalValueData::Load { global_type, .. } => global_type,
+            Self::VMContext { .. } | Self::Symbol { .. } => isa.pointer_type(),
+            Self::IAddImm { global_type, .. } | Self::Load { global_type, .. } => global_type,
+        }
+    }
+
+    /// If this global references a symbol, return an estimate of the relocation distance,
+    /// based on the `colocated` flag.
+    pub fn maybe_reloc_distance(&self) -> Option<RelocDistance> {
+        match self {
+            &GlobalValueData::Symbol {
+                colocated: true, ..
+            } => Some(RelocDistance::Near),
+            &GlobalValueData::Symbol {
+                colocated: false, ..
+            } => Some(RelocDistance::Far),
+            _ => None,
         }
     }
 }
@@ -90,8 +109,8 @@ impl GlobalValueData {
 impl fmt::Display for GlobalValueData {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            GlobalValueData::VMContext => write!(f, "vmctx"),
-            GlobalValueData::Load {
+            Self::VMContext => write!(f, "vmctx"),
+            Self::Load {
                 base,
                 offset,
                 global_type,
@@ -104,20 +123,22 @@ impl fmt::Display for GlobalValueData {
                 base,
                 offset
             ),
-            GlobalValueData::IAddImm {
+            Self::IAddImm {
                 global_type,
                 base,
                 offset,
             } => write!(f, "iadd_imm.{} {}, {}", global_type, base, offset),
-            GlobalValueData::Symbol {
+            Self::Symbol {
                 ref name,
                 offset,
                 colocated,
+                tls,
             } => {
                 write!(
                     f,
-                    "symbol {}{}",
+                    "symbol {}{}{}",
                     if colocated { "colocated " } else { "" },
+                    if tls { "tls " } else { "" },
                     name
                 )?;
                 let offset_val: i64 = offset.into();

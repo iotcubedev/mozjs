@@ -8,42 +8,40 @@
 
 #include "nsBulletFrame.h"
 
+#include <algorithm>
+#include <utility>
+
+#include "CounterStyleManager.h"
+#include "ImageLayers.h"
+#include "TextDrawTarget.h"
+#include "UnitTransforms.h"
 #include "gfx2DGlue.h"
 #include "gfxContext.h"
-
 #include "gfxUtils.h"
+#include "imgIContainer.h"
+#include "imgRequestProxy.h"
+#include "mozilla/MathAlgorithms.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/PathHelpers.h"
 #include "mozilla/layers/LayersMessages.h"
-#include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/layers/RenderRootStateManager.h"
+#include "mozilla/layers/StackingContextHelper.h"
+#include "mozilla/layers/WebRenderBridgeChild.h"
 #include "mozilla/layers/WebRenderMessages.h"
-#include "mozilla/MathAlgorithms.h"
-#include "mozilla/Move.h"
-#include "mozilla/PresShell.h"
+#include "nsAttrValueInlines.h"
+#include "nsBidiUtils.h"
 #include "nsCOMPtr.h"
 #include "nsCSSFrameConstructor.h"
-#include "nsFontMetrics.h"
-#include "nsGkAtoms.h"
-#include "nsGenericHTMLElement.h"
-#include "nsAttrValueInlines.h"
-#include "nsPresContext.h"
-#include "mozilla/dom/Document.h"
-#include "nsDisplayList.h"
 #include "nsCounterManager.h"
-#include "nsBidiUtils.h"
-#include "CounterStyleManager.h"
-#include "UnitTransforms.h"
-
-#include "imgIContainer.h"
-#include "ImageLayers.h"
-#include "imgRequestProxy.h"
+#include "nsDisplayList.h"
+#include "nsFontMetrics.h"
+#include "nsGenericHTMLElement.h"
+#include "nsGkAtoms.h"
 #include "nsIURI.h"
-#include "SVGImageContext.h"
-#include "TextDrawTarget.h"
-#include "mozilla/layers/WebRenderBridgeChild.h"
-
-#include <algorithm>
+#include "nsPresContext.h"
 
 #ifdef ACCESSIBILITY
 #  include "nsAccessibilityService.h"
@@ -66,10 +64,10 @@ NS_IMPL_FRAMEARENA_HELPERS(nsBulletFrame)
 #ifdef DEBUG
 NS_QUERYFRAME_HEAD(nsBulletFrame)
   NS_QUERYFRAME_ENTRY(nsBulletFrame)
-NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
+NS_QUERYFRAME_TAIL_INHERITING(nsIFrame)
 #endif
 
-nsBulletFrame::~nsBulletFrame() {}
+nsBulletFrame::~nsBulletFrame() = default;
 
 CounterStyle* nsBulletFrame::ResolveCounterStyle() {
   return PresContext()->CounterStyleManager()->ResolveCounterStyle(
@@ -86,12 +84,12 @@ void nsBulletFrame::DestroyFrom(nsIFrame* aDestructRoot,
   }
 
   // Let base class do the rest
-  nsFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+  nsIFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsBulletFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Bullet"), aResult);
+  return MakeFrameName(u"Bullet"_ns, aResult);
 }
 #endif
 
@@ -103,7 +101,7 @@ bool nsBulletFrame::IsSelfEmpty() {
 
 /* virtual */
 void nsBulletFrame::DidSetComputedStyle(ComputedStyle* aOldComputedStyle) {
-  nsFrame::DidSetComputedStyle(aOldComputedStyle);
+  nsIFrame::DidSetComputedStyle(aOldComputedStyle);
 
   imgRequestProxy* newRequest = StyleList()->GetListStyleImage();
 
@@ -311,13 +309,11 @@ class BulletRenderer final {
   // disclosure closed.
   RefPtr<Path> mPath;
 
-  // mText, mFontMertrics, mPoint, mFont and mGlyphs are for other
-  // list-style-type which can be drawed by text.
+  // mText, mFontMetrics, mPoint are for other list-style-type which can be
+  // drawed by text.
   nsString mText;
   RefPtr<nsFontMetrics> mFontMetrics;
   nsPoint mPoint;
-  RefPtr<ScaledFont> mFont;
-  nsTArray<layers::GlyphArray> mGlyphs;
 
   // Store the type of list-style-type.
   int32_t mListStyleType;
@@ -408,7 +404,7 @@ void BulletRenderer::PaintTextToContext(nsIFrame* aFrame, gfxContext* aCtx,
   DrawTargetAutoDisableSubpixelAntialiasing disable(drawTarget,
                                                     aDisableSubpixelAA);
 
-  aCtx->SetColor(Color::FromABGR(mColor));
+  aCtx->SetColor(sRGBColor::FromABGR(mColor));
 
   nsPresContext* presContext = aFrame->PresContext();
   if (!presContext->BidiEnabled() && HasRTLChars(mText)) {
@@ -435,7 +431,7 @@ ImgDrawResult BulletRenderer::CreateWebRenderCommandsForImage(
   MOZ_RELEASE_ASSERT(mImage);
 
   uint32_t flags = imgIContainer::FLAG_ASYNC_NOTIFY;
-  if (aDisplayListBuilder->IsPaintingToWindow()) {
+  if (aDisplayListBuilder->UseHighQualityScaling()) {
     flags |= imgIContainer::FLAG_HIGH_QUALITY_SCALING;
   }
   if (aDisplayListBuilder->ShouldSyncDecodeImages()) {
@@ -446,7 +442,6 @@ ImgDrawResult BulletRenderer::CreateWebRenderCommandsForImage(
       aItem->Frame()->PresContext()->AppUnitsPerDevPixel();
   LayoutDeviceRect destRect =
       LayoutDeviceRect::FromAppUnits(mDest, appUnitsPerDevPixel);
-  destRect.Round();
 
   Maybe<SVGImageContext> svgContext;
   gfx::IntSize decodeSize =
@@ -485,7 +480,7 @@ bool BulletRenderer::CreateWebRenderCommandsForPath(
     mozilla::layers::RenderRootStateManager* aManager,
     nsDisplayListBuilder* aDisplayListBuilder) {
   MOZ_ASSERT(IsPathType());
-  wr::LayoutRect dest = wr::ToRoundedLayoutRect(mPathRect);
+  wr::LayoutRect dest = wr::ToLayoutRect(mPathRect);
   auto color = wr::ToColorF(ToDeviceColor(mColor));
   bool isBackfaceVisible = !aItem->BackfaceIsHidden();
   switch (mListStyleType) {
@@ -549,14 +544,12 @@ class nsDisplayBullet final : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayBullet);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayBullet() { MOZ_COUNT_DTOR(nsDisplayBullet); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayBullet)
 
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {
     *aSnap = false;
-    return mFrame->GetVisualOverflowRectRelativeToSelf() + ToReferenceFrame();
+    return mFrame->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
   }
 
   virtual bool CreateWebRenderCommands(
@@ -674,6 +667,8 @@ Maybe<BulletRenderer> nsBulletFrame::CreateBulletRenderer(
         nsCOMPtr<imgIContainer> imageCon;
         mImageRequest->GetImage(getter_AddRefs(imageCon));
         if (imageCon) {
+          imageCon = nsLayoutUtils::OrientImage(
+              imageCon, StyleVisibility()->mImageOrientation);
           nsRect dest(padding.left, padding.top,
                       mRect.width - (padding.left + padding.right),
                       mRect.height - (padding.top + padding.bottom));
@@ -757,8 +752,7 @@ Maybe<BulletRenderer> nsBulletFrame::CreateBulletRenderer(
         builder->LineTo(NSPointToPoint(
             (rect.BottomLeft() + rect.BottomRight()) / 2, appUnitsPerDevPixel));
       } else {
-        bool isLR = isVertical ? wm.IsVerticalLR() : wm.IsBidiLTR();
-        if (isLR) {
+        if (wm.IsPhysicalLTR()) {
           // to right
           builder->MoveTo(NSPointToPoint(rect.TopLeft(), appUnitsPerDevPixel));
           builder->LineTo(NSPointToPoint(
@@ -844,7 +838,7 @@ void nsBulletFrame::GetListItemText(CounterStyle* aStyle,
 
   aResult.Truncate();
   aResult.Append(prefix);
-  if (aWritingMode.IsBidiLTR() != isRTL) {
+  if (aWritingMode.IsBidiRTL() == isRTL) {
     aResult.Append(counter);
   } else {
     // RLM = 0x200f, LRM = 0x200e
@@ -1049,9 +1043,8 @@ void nsBulletFrame::AddInlinePrefISize(gfxContext* aRenderingContext,
   }
 }
 
-NS_IMETHODIMP
-nsBulletFrame::Notify(imgIRequest* aRequest, int32_t aType,
-                      const nsIntRect* aData) {
+void nsBulletFrame::Notify(imgIRequest* aRequest, int32_t aType,
+                           const nsIntRect* aData) {
   if (aType == imgINotificationObserver::SIZE_AVAILABLE) {
     nsCOMPtr<imgIContainer> image;
     aRequest->GetImage(getter_AddRefs(image));
@@ -1105,8 +1098,6 @@ nsBulletFrame::Notify(imgIRequest* aRequest, int32_t aType,
       }
     }
   }
-
-  return NS_OK;
 }
 
 Document* nsBulletFrame::GetOurCurrentDoc() const {
@@ -1114,15 +1105,15 @@ Document* nsBulletFrame::GetOurCurrentDoc() const {
   return parentContent ? parentContent->GetComposedDoc() : nullptr;
 }
 
-nsresult nsBulletFrame::OnSizeAvailable(imgIRequest* aRequest,
-                                        imgIContainer* aImage) {
-  if (!aImage) return NS_ERROR_INVALID_ARG;
-  if (!aRequest) return NS_ERROR_INVALID_ARG;
+void nsBulletFrame::OnSizeAvailable(imgIRequest* aRequest,
+                                    imgIContainer* aImage) {
+  if (!aImage) return;
+  if (!aRequest) return;
 
   uint32_t status;
   aRequest->GetImageStatus(&status);
   if (status & imgIRequest::STATUS_ERROR) {
-    return NS_OK;
+    return;
   }
 
   nscoord w, h;
@@ -1153,8 +1144,6 @@ nsresult nsBulletFrame::OnSizeAvailable(imgIRequest* aRequest,
   // corresponding call to Decrement for this. This Increment will be
   // 'cleaned up' by the Request when it is destroyed, but only then.
   aRequest->IncrementAnimationConsumers();
-
-  return NS_OK;
 }
 
 void nsBulletFrame::GetLoadGroup(nsPresContext* aPresContext,
@@ -1185,7 +1174,7 @@ void nsBulletFrame::SetFontSizeInflation(float aInflation) {
   if (aInflation == 1.0f) {
     if (HasFontSizeInflation()) {
       RemoveStateBits(BULLET_FRAME_HAS_FONT_INFLATION);
-      DeleteProperty(FontSizeInflationProperty());
+      RemoveProperty(FontSizeInflationProperty());
     }
     return;
   }
@@ -1240,7 +1229,7 @@ nscoord nsBulletFrame::GetListStyleAscent() const {
 
 nscoord nsBulletFrame::GetLogicalBaseline(WritingMode aWritingMode) const {
   nscoord ascent = 0;
-  if (GetStateBits() & BULLET_FRAME_IMAGE_LOADING) {
+  if (HasAnyStateBits(BULLET_FRAME_IMAGE_LOADING)) {
     ascent = BSize(aWritingMode);
   } else {
     ascent = GetListStyleAscent();
@@ -1252,7 +1241,7 @@ bool nsBulletFrame::GetNaturalBaselineBOffset(WritingMode aWM,
                                               BaselineSharingGroup,
                                               nscoord* aBaseline) const {
   nscoord ascent = 0;
-  if (GetStateBits() & BULLET_FRAME_IMAGE_LOADING) {
+  if (HasAnyStateBits(BULLET_FRAME_IMAGE_LOADING)) {
     ascent = BSize(aWM);
   } else {
     ascent = GetListStyleAscent();
@@ -1332,13 +1321,12 @@ NS_IMPL_ISUPPORTS(nsBulletListener, imgINotificationObserver)
 
 nsBulletListener::nsBulletListener() : mFrame(nullptr) {}
 
-nsBulletListener::~nsBulletListener() {}
+nsBulletListener::~nsBulletListener() = default;
 
-NS_IMETHODIMP
-nsBulletListener::Notify(imgIRequest* aRequest, int32_t aType,
-                         const nsIntRect* aData) {
+void nsBulletListener::Notify(imgIRequest* aRequest, int32_t aType,
+                              const nsIntRect* aData) {
   if (!mFrame) {
-    return NS_ERROR_FAILURE;
+    return;
   }
   return mFrame->Notify(aRequest, aType, aData);
 }

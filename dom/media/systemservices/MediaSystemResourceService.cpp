@@ -45,7 +45,7 @@ MediaSystemResourceService::MediaSystemResourceService() : mDestroyed(false) {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
 }
 
-MediaSystemResourceService::~MediaSystemResourceService() {}
+MediaSystemResourceService::~MediaSystemResourceService() = default;
 
 void MediaSystemResourceService::Destroy() { mDestroyed = true; }
 
@@ -77,7 +77,9 @@ void MediaSystemResourceService::Acquire(
     // Send success response
     mozilla::Unused << aParent->SendResponse(aId, true /* success */);
     return;
-  } else if (!aWillWait) {
+  }
+
+  if (!aWillWait) {
     // Resource is not available and do not wait.
     // Send fail response
     mozilla::Unused << aParent->SendResponse(aId, false /* fail */);

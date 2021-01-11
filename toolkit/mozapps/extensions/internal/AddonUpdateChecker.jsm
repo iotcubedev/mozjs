@@ -14,8 +14,6 @@ var EXPORTED_SYMBOLS = ["AddonUpdateChecker"];
 const TIMEOUT = 60 * 1000;
 const TOOLKIT_ID = "toolkit@mozilla.org";
 
-const PREF_UPDATE_REQUIREBUILTINCERTS = "extensions.update.requireBuiltInCerts";
-
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
@@ -27,11 +25,6 @@ ChromeUtils.defineModuleGetter(
   this,
   "AddonManagerPrivate",
   "resource://gre/modules/AddonManager.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "AddonRepository",
-  "resource://gre/modules/addons/AddonRepository.jsm"
 );
 ChromeUtils.defineModuleGetter(
   this,
@@ -47,6 +40,11 @@ ChromeUtils.defineModuleGetter(
   this,
   "ServiceRequest",
   "resource://gre/modules/ServiceRequest.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "AddonSettings",
+  "resource://gre/modules/addons/AddonSettings.jsm"
 );
 
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
@@ -273,17 +271,12 @@ function UpdateParser(aId, aUrl, aObserver) {
   this.observer = aObserver;
   this.url = aUrl;
 
-  let requireBuiltIn = Services.prefs.getBoolPref(
-    PREF_UPDATE_REQUIREBUILTINCERTS,
-    true
-  );
-
   logger.debug("Requesting " + aUrl);
   try {
     this.request = new ServiceRequest({ mozAnon: true });
     this.request.open("GET", this.url, true);
     this.request.channel.notificationCallbacks = new CertUtils.BadCertHandler(
-      !requireBuiltIn
+      !AddonSettings.UPDATE_REQUIREBUILTINCERTS
     );
     this.request.channel.loadFlags |= Ci.nsIRequest.LOAD_BYPASS_CACHE;
     // Prevent the request from writing to cache.
@@ -313,13 +306,11 @@ UpdateParser.prototype = {
     this.request = null;
     this._doneAt = new Error("place holder");
 
-    let requireBuiltIn = Services.prefs.getBoolPref(
-      PREF_UPDATE_REQUIREBUILTINCERTS,
-      true
-    );
-
     try {
-      CertUtils.checkCert(request.channel, !requireBuiltIn);
+      CertUtils.checkCert(
+        request.channel,
+        !AddonSettings.UPDATE_REQUIREBUILTINCERTS
+      );
     } catch (e) {
       logger.warn("Request failed: " + this.url + " - " + e);
       this.notifyError(AddonManager.ERROR_DOWNLOAD_ERROR);
@@ -453,8 +444,6 @@ UpdateParser.prototype = {
  *         Ignore maxVersion when testing if an update matches. Optional.
  * @param  aIgnoreStrictCompat
  *         Ignore strictCompatibility when testing if an update matches. Optional.
- * @param  aCompatOverrides
- *         AddonCompatibilityOverride objects to match against. Optional.
  * @return true if the update is compatible with the application/platform
  */
 function matchesVersions(
@@ -462,21 +451,8 @@ function matchesVersions(
   aAppVersion,
   aPlatformVersion,
   aIgnoreMaxVersion,
-  aIgnoreStrictCompat,
-  aCompatOverrides
+  aIgnoreStrictCompat
 ) {
-  if (aCompatOverrides) {
-    let override = AddonRepository.findMatchingCompatOverride(
-      aUpdate.version,
-      aCompatOverrides,
-      aAppVersion,
-      aPlatformVersion
-    );
-    if (override && override.type == "incompatible") {
-      return false;
-    }
-  }
-
   if (aUpdate.strictCompatibility && !aIgnoreStrictCompat) {
     aIgnoreMaxVersion = false;
   }
@@ -576,8 +552,6 @@ var AddonUpdateChecker = {
    *         When determining compatible updates, ignore maxVersion. Optional.
    * @param  aIgnoreStrictCompat
    *         When determining compatible updates, ignore strictCompatibility. Optional.
-   * @param  aCompatOverrides
-   *         Array of AddonCompatibilityOverride to take into account. Optional.
    * @return an update object if one matches or null if not
    */
   async getNewestCompatibleUpdate(
@@ -585,8 +559,7 @@ var AddonUpdateChecker = {
     aAppVersion,
     aPlatformVersion,
     aIgnoreMaxVersion,
-    aIgnoreStrictCompat,
-    aCompatOverrides
+    aIgnoreStrictCompat
   ) {
     if (!aAppVersion) {
       aAppVersion = Services.appinfo.version;
@@ -616,8 +589,7 @@ var AddonUpdateChecker = {
           aAppVersion,
           aPlatformVersion,
           aIgnoreMaxVersion,
-          aIgnoreStrictCompat,
-          aCompatOverrides
+          aIgnoreStrictCompat
         )
       ) {
         newest = update;

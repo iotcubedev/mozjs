@@ -8,7 +8,9 @@ const {
   checkVersionCompatibility,
 } = require("devtools/client/shared/remote-debugging/version-checker");
 
-const { RUNTIME_PREFERENCE } = require("../constants");
+const {
+  RUNTIME_PREFERENCE,
+} = require("devtools/client/aboutdebugging/src/constants");
 const { WorkersListener } = require("devtools/client/shared/workers-listener");
 
 const PREF_TYPES = {
@@ -67,10 +69,6 @@ class ClientWrapper {
 
   async getFront(typeName) {
     return this.client.mainRoot.getFront(typeName);
-  }
-
-  onFront(typeName, listener) {
-    this.client.mainRoot.onFront(typeName, listener);
   }
 
   async getDeviceDescription() {
@@ -176,11 +174,22 @@ class ClientWrapper {
     return "chrome://devtools/content/performance-new/index.xhtml";
   }
 
-  async loadPerformanceProfiler(win) {
-    const preferenceFront = await this.getFront("preference");
+  /**
+   * @param {Window} win - The window of the dialog window.
+   * @param {Function} openAboutProfiling
+   */
+  async loadPerformanceProfiler(win, openAboutProfiling) {
     const perfFront = await this.getFront("perf");
-    const perfActorVersion = this.client.mainRoot.traits.perfActorVersion;
-    win.gInit(perfFront, preferenceFront, perfActorVersion);
+    win.gInit(perfFront, "devtools-remote", openAboutProfiling);
+  }
+
+  /**
+   * @param {Window} win - The window of the dialog window.
+   * @param {Function} openRemoteDevTools
+   */
+  async loadAboutProfiling(win, openRemoteDevTools) {
+    const perfFront = await this.getFront("perf");
+    win.gInit(perfFront, "aboutprofiling-remote", openRemoteDevTools);
   }
 }
 

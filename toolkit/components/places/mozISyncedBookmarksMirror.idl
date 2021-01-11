@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozIServicesLogSink.idl"
 #include "nsISupports.idl"
 
 interface mozIPlacesPendingOperation;
@@ -15,11 +16,11 @@ interface mozISyncedBookmarksMirrorProgressListener : nsISupports {
   // taken to build the tree, number of items in the tree, and a map of
   // structure problem counts for validation telemetry.
   void onFetchLocalTree(in long long took, in long long itemCount,
-                        in nsIPropertyBag problems);
+                        in long long deletedCount, in nsIPropertyBag problems);
 
   // Called after the merger builds the remote tree from the mirror database.
   void onFetchRemoteTree(in long long took, in long long itemCount,
-                         in nsIPropertyBag problems);
+                         in long long deletedCount, in nsIPropertyBag problems);
 
   // Called after the merger builds the merged tree, including structure change
   // counts for event telemetry.
@@ -78,7 +79,7 @@ interface mozISyncedBookmarksMerger : nsISupports {
   attribute mozIStorageConnection db;
 
   // Optional; used for logging.
-  attribute mozISyncedBookmarksMirrorLogger logger;
+  attribute mozIServicesLogSink logger;
 
   // Merges the local and remote bookmark trees, applies the merged tree to
   // Places, and stages locally changed and reconciled items for upload. When

@@ -3,11 +3,10 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const dom = require("react-dom-factories");
-const PropTypes = require("prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { wrapRender } = require("./rep-utils");
 const { MODE } = require("./constants");
-const { span } = dom;
 
 const ModePropType = PropTypes.oneOf(
   // @TODO Change this to Object.values when supported in Node's version of V8
@@ -18,16 +17,18 @@ const ModePropType = PropTypes.oneOf(
  * Renders an array. The array is enclosed by left and right bracket
  * and the max number of rendered items depends on the current mode.
  */
+
 ArrayRep.propTypes = {
   mode: ModePropType,
   object: PropTypes.array.isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function ArrayRep(props) {
-  const { object, mode = MODE.SHORT } = props;
+  const { object, mode = MODE.SHORT, shouldRenderTooltip = true } = props;
 
-  let items;
   let brackets;
+  let items;
   const needSpace = function(space) {
     return space ? { left: "[ ", right: " ]" } : { left: "[", right: "]" };
   };
@@ -41,7 +42,6 @@ function ArrayRep(props) {
         span(
           {
             className: "more-ellipsis",
-            title: "more…",
           },
           "…"
         ),
@@ -56,6 +56,7 @@ function ArrayRep(props) {
   return span(
     {
       className: "objectBox objectBox-array",
+      title: shouldRenderTooltip ? "Array" : null,
     },
     span(
       {
@@ -104,7 +105,6 @@ function arrayIterator(props, array, max) {
       span(
         {
           className: "more-ellipsis",
-          title: "more…",
         },
         "…"
       )
@@ -117,6 +117,7 @@ function arrayIterator(props, array, max) {
 /**
  * Renders array item. Individual values are separated by a comma.
  */
+
 ItemRep.propTypes = {
   object: PropTypes.any.isRequired,
   delim: PropTypes.string.isRequired,

@@ -11,6 +11,18 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/AppConstants.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "DEFAULT_SITES",
+  "resource://activity-stream/lib/DefaultSites.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  this,
+  "Region",
+  "resource://gre/modules/Region.jsm"
+);
+
 // NB: Eagerly load modules that will be loaded/constructed/initialized in the
 // common case to avoid the overhead of wrapping and detecting lazy loading.
 const { actionCreators: ac, actionTypes: at } = ChromeUtils.import(
@@ -35,6 +47,11 @@ ChromeUtils.defineModuleGetter(
   this,
   "SectionsFeed",
   "resource://activity-stream/lib/SectionsManager.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "RecommendationProviderSwitcher",
+  "resource://activity-stream/lib/RecommendationProviderSwitcher.jsm"
 );
 ChromeUtils.defineModuleGetter(
   this,
@@ -92,47 +109,19 @@ ChromeUtils.defineModuleGetter(
   "resource://activity-stream/lib/DiscoveryStreamFeed.jsm"
 );
 
-const DEFAULT_SITES = new Map([
-  // This first item is the global list fallback for any unexpected geos
-  [
-    "",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.wikipedia.org/,https://www.reddit.com/,https://www.amazon.com/,https://twitter.com/",
-  ],
-  [
-    "US",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.amazon.com/,https://www.reddit.com/,https://www.wikipedia.org/,https://twitter.com/",
-  ],
-  [
-    "CA",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.reddit.com/,https://www.wikipedia.org/,https://www.amazon.ca/,https://twitter.com/",
-  ],
-  [
-    "DE",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.amazon.de/,https://www.ebay.de/,https://www.wikipedia.org/,https://www.reddit.com/",
-  ],
-  [
-    "PL",
-    "https://www.youtube.com/,https://www.facebook.com/,https://allegro.pl/,https://www.wikipedia.org/,https://www.olx.pl/,https://www.wykop.pl/",
-  ],
-  [
-    "RU",
-    "https://vk.com/,https://www.youtube.com/,https://ok.ru/,https://www.avito.ru/,https://www.aliexpress.com/,https://www.wikipedia.org/",
-  ],
-  [
-    "GB",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.reddit.com/,https://www.amazon.co.uk/,https://www.bbc.co.uk/,https://www.ebay.co.uk/",
-  ],
-  [
-    "FR",
-    "https://www.youtube.com/,https://www.facebook.com/,https://www.wikipedia.org/,https://www.amazon.fr/,https://www.leboncoin.fr/,https://twitter.com/",
-  ],
-]);
-const GEO_PREF = "browser.search.region";
-const SPOCS_GEOS = ["US"];
+const REGION_STORIES_CONFIG =
+  "browser.newtabpage.activity-stream.discoverystream.region-stories-config";
+const REGION_SPOCS_CONFIG =
+  "browser.newtabpage.activity-stream.discoverystream.region-spocs-config";
+const REGION_LAYOUT_CONFIG =
+  "browser.newtabpage.activity-stream.discoverystream.region-layout-config";
 
 // Determine if spocs should be shown for a geo/locale
 function showSpocs({ geo }) {
-  return SPOCS_GEOS.includes(geo);
+  const spocsGeoString =
+    Services.prefs.getStringPref(REGION_SPOCS_CONFIG) || "";
+  const spocsGeo = spocsGeoString.split(",").map(s => s.trim());
+  return spocsGeo.includes(geo);
 }
 
 // Configure default Activity Stream prefs with a plain `value` or a `getValue`
@@ -156,7 +145,7 @@ const PREFS_CONFIG = new Map([
         JSON.stringify({
           api_key_pref: "extensions.pocket.oAuthConsumerKey",
           // Use the opposite value as what default value the feed would have used
-          hidden: !PREFS_CONFIG.get("feeds.section.topstories").getValue(args),
+          hidden: !PREFS_CONFIG.get("feeds.system.topstories").getValue(args),
           provider_icon: "pocket",
           provider_name: "Pocket",
           read_more_endpoint:
@@ -167,9 +156,7 @@ const PREFS_CONFIG = new Map([
             showSpocs(args) ? "default_spocs_on" : "default_spocs_off"
           }`,
           stories_referrer: "https://getpocket.com/recommendations",
-          topics_endpoint: `https://getpocket.cdn.mozilla.net/v3/firefox/trending-topics?version=2&consumer_key=$apiKey&locale_lang=${
-            args.locale
-          }`,
+          topics_endpoint: `https://getpocket.cdn.mozilla.net/v3/firefox/trending-topics?version=2&consumer_key=$apiKey&locale_lang=${args.locale}`,
           model_keys: [
             "nmf_model_animals",
             "nmf_model_business",
@@ -232,6 +219,13 @@ const PREFS_CONFIG = new Map([
           personalized: true,
           version: 1,
         }),
+    },
+  ],
+  [
+    "feeds.topsites",
+    {
+      title: "Displays Top Sites on the New Tab Page",
+      value: true,
     },
   ],
   [
@@ -299,25 +293,10 @@ const PREFS_CONFIG = new Map([
     },
   ],
   [
-    "telemetry.structuredIngestion",
-    {
-      title: "Enable Structured Ingestion Telemetry data collection",
-      value: true,
-      value_local_dev: false,
-    },
-  ],
-  [
     "telemetry.structuredIngestion.endpoint",
     {
       title: "Structured Ingestion telemetry server endpoint",
-      value: "https://incoming.telemetry.mozilla.org/submit/activity-stream",
-    },
-  ],
-  [
-    "telemetry.ping.endpoint",
-    {
-      title: "Telemetry server endpoint",
-      value: "https://tiles.services.mozilla.com/v4/links/activity-stream",
+      value: "https://incoming.telemetry.mozilla.org/submit",
     },
   ],
   [
@@ -458,33 +437,31 @@ const PREFS_CONFIG = new Map([
         type: "remote-settings",
         bucket: "cfr-fxa",
         frequency: { custom: [{ period: "daily", cap: 1 }] },
+        updateCycleInMs: 3600000,
       }),
     },
   ],
   // See browser/app/profile/firefox.js for other ASR preferences. They must be defined there to enable roll-outs.
   [
+    "discoverystream.flight.blocks",
+    {
+      title: "Track flight blocks",
+      skipBroadcast: true,
+      value: "{}",
+    },
+  ],
+  [
     "discoverystream.config",
     {
       title: "Configuration for the new pocket new tab",
       getValue: ({ geo, locale }) => {
-        // PLEASE NOTE:
-        // hardcoded_layout in `lib/DiscoveryStreamFeed.jsm` only works for en-* and requires refactoring for non english locales
-        const dsEnablementMatrix = {
-          US: ["en-CA", "en-GB", "en-US"],
-          CA: ["en-CA", "en-GB", "en-US"],
-        };
-
-        // Verify that the current geo & locale combination is enabled
-        const isEnabled =
-          !!dsEnablementMatrix[geo] && dsEnablementMatrix[geo].includes(locale);
-
         return JSON.stringify({
           api_key_pref: "extensions.pocket.oAuthConsumerKey",
           collapsible: true,
-          enabled: isEnabled,
+          enabled: true,
           show_spocs: showSpocs({ geo }),
           hardcoded_layout: true,
-          personalized: false,
+          personalized: true,
           // This is currently an exmple layout used for dev purposes.
           layout_endpoint:
             "https://getpocket.cdn.mozilla.net/v3/newtab/layout?version=1&consumer_key=$apiKey&layout_variant=basic",
@@ -506,6 +483,28 @@ const PREFS_CONFIG = new Map([
       title:
         "Allow the display of engagement labels for discovery stream components (eg: Trending, Popular, etc)",
       value: false,
+    },
+  ],
+  [
+    "discoverystream.isCollectionDismissible",
+    {
+      title: "Allows Pocket story collections to be dismissed",
+      value: false,
+    },
+  ],
+  [
+    "discoverystream.region-basic-layout",
+    {
+      title: "Decision to use basic layout based on region.",
+      getValue: ({ geo }) => {
+        const preffedRegionsString =
+          Services.prefs.getStringPref(REGION_LAYOUT_CONFIG) || "";
+        const preffedRegions = preffedRegionsString
+          .split(",")
+          .map(s => s.trim());
+
+        return !preffedRegions.includes(geo);
+      },
     },
   ],
   [
@@ -573,19 +572,38 @@ const FEEDS_DATA = [
     value: true,
   },
   {
-    name: "section.topstories",
+    name: "system.topstories",
     factory: () =>
       new TopStoriesFeed(PREFS_CONFIG.get("discoverystream.config")),
     title:
-      "Fetches content recommendations from a configurable content provider",
+      "System pref that fetches content recommendations from a configurable content provider",
     // Dynamically determine if Pocket should be shown for a geo / locale
     getValue: ({ geo, locale }) => {
+      const preffedRegionsString =
+        Services.prefs.getStringPref(REGION_STORIES_CONFIG) || "";
+      const preffedRegions = preffedRegionsString.split(",").map(s => s.trim());
       const locales = {
-        US: ["en-CA", "en-GB", "en-US", "en-ZA"],
-        CA: ["en-CA", "en-GB", "en-US", "en-ZA"],
-        DE: ["de", "de-DE", "de-AT", "de-CH"],
+        US: ["en-CA", "en-GB", "en-US"],
+        CA: ["en-CA", "en-GB", "en-US"],
+        GB: ["en-CA", "en-GB", "en-US"],
+        AU: ["en-CA", "en-GB", "en-US"],
+        NZ: ["en-CA", "en-GB", "en-US"],
+        IN: ["en-CA", "en-GB", "en-US"],
+        IE: ["en-CA", "en-GB", "en-US"],
+        ZA: ["en-CA", "en-GB", "en-US"],
+        CH: ["de", "fr", "it"],
+        BE: ["fr", "de"],
+        DE: ["de"],
+        AT: ["de"],
+        IT: ["it"],
+        FR: ["fr"],
+        ES: ["es"],
+        PL: ["pl"],
+        JP: ["ja", "ja-JP-mac"],
       }[geo];
-      return !!locales && locales.includes(locale);
+      return (
+        preffedRegions.includes(geo) && !!locales && locales.includes(locale)
+      );
     },
   },
   {
@@ -607,7 +625,7 @@ const FEEDS_DATA = [
     value: true,
   },
   {
-    name: "topsites",
+    name: "system.topsites",
     factory: () => new TopSitesFeed(),
     title: "Queries places and gets metadata for Top Sites section",
     value: true,
@@ -616,6 +634,12 @@ const FEEDS_DATA = [
     name: "asrouterfeed",
     factory: () => new ASRouterFeed(),
     title: "Handles AS Router messages, such as snippets and onboaridng",
+    value: true,
+  },
+  {
+    name: "recommendationproviderswitcher",
+    factory: () => new RecommendationProviderSwitcher(),
+    title: "Handles switching between two types of personality providers",
     value: true,
   },
   {
@@ -649,12 +673,36 @@ this.ActivityStream = class ActivityStream {
       this._updateDynamicPrefs();
       this._defaultPrefs.init();
 
+      // Look for outdated user pref values that might have been accidentally
+      // persisted when restoring the original pref value at the end of an
+      // experiment across versions with a different default value.
+      const DS_CONFIG =
+        "browser.newtabpage.activity-stream.discoverystream.config";
+      if (
+        Services.prefs.prefHasUserValue(DS_CONFIG) &&
+        [
+          // Firefox 66
+          `{"api_key_pref":"extensions.pocket.oAuthConsumerKey","enabled":false,"show_spocs":true,"layout_endpoint":"https://getpocket.com/v3/newtab/layout?version=1&consumer_key=$apiKey&layout_variant=basic"}`,
+          // Firefox 67
+          `{"api_key_pref":"extensions.pocket.oAuthConsumerKey","enabled":false,"show_spocs":true,"layout_endpoint":"https://getpocket.cdn.mozilla.net/v3/newtab/layout?version=1&consumer_key=$apiKey&layout_variant=basic"}`,
+          // Firefox 68
+          `{"api_key_pref":"extensions.pocket.oAuthConsumerKey","collapsible":true,"enabled":false,"show_spocs":true,"hardcoded_layout":true,"personalized":false,"layout_endpoint":"https://getpocket.cdn.mozilla.net/v3/newtab/layout?version=1&consumer_key=$apiKey&layout_variant=basic"}`,
+        ].includes(Services.prefs.getStringPref(DS_CONFIG))
+      ) {
+        Services.prefs.clearUserPref(DS_CONFIG);
+      }
+
       // Hook up the store and let all feeds and pages initialize
       this.store.init(
         this.feeds,
         ac.BroadcastToContent({
           type: at.INIT,
-          data: {},
+          data: {
+            locale: this.locale,
+          },
+          meta: {
+            isStartup: true,
+          },
         }),
         { type: at.UNINIT }
       );
@@ -707,7 +755,7 @@ this.ActivityStream = class ActivityStream {
 
   uninit() {
     if (this.geo === "") {
-      Services.prefs.removeObserver(GEO_PREF, this);
+      Services.obs.removeObserver(this, Region.REGION_TOPIC);
     }
 
     this.store.uninit();
@@ -716,15 +764,15 @@ this.ActivityStream = class ActivityStream {
 
   _updateDynamicPrefs() {
     // Save the geo pref if we have it
-    if (Services.prefs.prefHasUserValue(GEO_PREF)) {
-      this.geo = Services.prefs.getStringPref(GEO_PREF);
+    if (Region.home) {
+      this.geo = Region.home;
     } else if (this.geo !== "") {
       // Watch for geo changes and use a dummy value for now
-      Services.prefs.addObserver(GEO_PREF, this);
+      Services.obs.addObserver(this, Region.REGION_TOPIC);
       this.geo = "";
     }
 
-    this.locale = Services.locale.appLocaleAsLangTag;
+    this.locale = Services.locale.appLocaleAsBCP47;
 
     // Update the pref config of those with dynamic values
     for (const pref of PREFS_CONFIG.keys()) {
@@ -764,11 +812,9 @@ this.ActivityStream = class ActivityStream {
 
   observe(subject, topic, data) {
     switch (topic) {
-      case "nsPref:changed":
-        // We should only expect one geo change, so update and stop observing
-        if (data === GEO_PREF) {
+      case Region.REGION_TOPIC:
+        if (data === Region.REGION_UPDATED) {
           this._updateDynamicPrefs();
-          Services.prefs.removeObserver(GEO_PREF, this);
         }
         break;
     }

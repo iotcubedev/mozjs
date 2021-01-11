@@ -3,9 +3,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#ifndef nsUrlClassifierGTestCommon_h__
+#define nsUrlClassifierGTestCommon_h__
+
 #include "Entries.h"
 #include "nsIFile.h"
 #include "nsTArray.h"
+
 #include "gtest/gtest.h"
 
 using namespace mozilla::safebrowsing;
@@ -18,8 +22,8 @@ class TableUpdate;
 }  // namespace safebrowsing
 }  // namespace mozilla
 
-#define GTEST_TABLE_V4 NS_LITERAL_CSTRING("gtest-malware-proto")
-#define GTEST_TABLE_V2 NS_LITERAL_CSTRING("gtest-malware-simple")
+#define GTEST_TABLE_V4 "gtest-malware-proto"_ns
+#define GTEST_TABLE_V2 "gtest-malware-simple"_ns
 
 template <typename Function>
 void RunTestInNewThread(Function&& aFunction);
@@ -59,7 +63,7 @@ _Prefix CreatePrefixFromURL(const char* aURL, uint8_t aPrefixSize);
 _Prefix CreatePrefixFromURL(const nsCString& aURL, uint8_t aPrefixSize);
 
 // To test if the content is equal
-void CheckContent(LookupCacheV4* aCache, PrefixStringMap& aExpected);
+void CheckContent(LookupCacheV4* cache, const _PrefixArray& aPrefixArray);
 
 /**
  * Utility function to generate safebrowsing internal structure
@@ -69,6 +73,10 @@ void CheckContent(LookupCacheV4* aCache, PrefixStringMap& aExpected);
 template <typename T>
 RefPtr<T> SetupLookupCache(const _PrefixArray& aPrefixArray);
 
+template <typename T>
+RefPtr<T> SetupLookupCache(const _PrefixArray& aPrefixArray,
+                           nsCOMPtr<nsIFile>& aFile);
+
 /**
  * Retrieve Classifer class
  */
@@ -76,3 +84,5 @@ RefPtr<Classifier> GetClassifier();
 
 nsresult BuildLookupCache(const RefPtr<Classifier>& aClassifier,
                           const nsACString& aTable, _PrefixArray& aPrefixArray);
+
+#endif  // nsUrlClassifierGTestCommon_h__

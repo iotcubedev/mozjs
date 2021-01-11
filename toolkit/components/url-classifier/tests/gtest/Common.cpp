@@ -19,7 +19,7 @@
 using namespace mozilla;
 using namespace mozilla::safebrowsing;
 
-#define GTEST_SAFEBROWSING_DIR NS_LITERAL_CSTRING("safebrowsing")
+#define GTEST_SAFEBROWSING_DIR "safebrowsing"_ns
 
 template <typename Function>
 void RunTestInNewThread(Function&& aFunction) {
@@ -32,8 +32,7 @@ void RunTestInNewThread(Function&& aFunction) {
   testingThread->Shutdown();
 }
 
-nsresult SyncApplyUpdates(RefPtr<Classifier> aClassifier,
-                          TableUpdateArray& aUpdates) {
+nsresult SyncApplyUpdates(TableUpdateArray& aUpdates) {
   // We need to spin a new thread specifically because the callback
   // will be on the caller thread. If we call Classifier::AsyncApplyUpdates
   // and wait on the same thread, this function will never return.
@@ -51,8 +50,14 @@ nsresult SyncApplyUpdates(RefPtr<Classifier> aClassifier,
     NS_DispatchToMainThread(r);
   };
 
+  nsCOMPtr<nsIFile> file;
+  NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(file));
+
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction("SyncApplyUpdates", [&]() {
-    nsresult rv = aClassifier->AsyncApplyUpdates(aUpdates, onUpdateComplete);
+    RefPtr<Classifier> classifier = new Classifier();
+    classifier->Open(*file);
+
+    nsresult rv = classifier->AsyncApplyUpdates(aUpdates, onUpdateComplete);
     if (NS_FAILED(rv)) {
       onUpdateComplete(rv);
     }
@@ -91,18 +96,12 @@ already_AddRefed<nsIFile> GetFile(const nsTArray<nsString>& path) {
 }
 
 void ApplyUpdate(TableUpdateArray& updates) {
-  nsCOMPtr<nsIFile> file;
-  NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(file));
-
-  RefPtr<Classifier> classifier = new Classifier();
-  classifier->Open(*file);
-
   // Force nsUrlClassifierUtils loading on main thread
   // because nsIUrlClassifierDBService will not run in advance
   // in gtest.
   nsUrlClassifierUtils::GetInstance();
 
-  SyncApplyUpdates(classifier, updates);
+  SyncApplyUpdates(updates);
 }
 
 void ApplyUpdate(TableUpdate* update) {
@@ -178,16 +177,16 @@ _Prefix CreatePrefixFromURL(const nsCString& aURL, uint8_t aPrefixSize) {
   return prefix;
 }
 
-void CheckContent(LookupCacheV4* cache, const _PrefixArray& array) {
+void CheckContent(LookupCacheV4* aCache, const _PrefixArray& aPrefixArray) {
   PrefixStringMap vlPSetMap;
-  cache->GetPrefixes(vlPSetMap);
+  aCache->GetPrefixes(vlPSetMap);
 
   PrefixStringMap expected;
-  PrefixArrayToPrefixStringMap(array, expected);
+  PrefixArrayToPrefixStringMap(aPrefixArray, expected);
 
   for (auto iter = vlPSetMap.Iter(); !iter.Done(); iter.Next()) {
     nsCString* expectedPrefix = expected.Get(iter.Key());
-    nsCString* resultPrefix = iter.Data();
+    nsCString* resultPrefix = iter.UserData();
 
     ASSERT_TRUE(resultPrefix->Equals(*expectedPrefix));
   }
@@ -210,6 +209,20 @@ static nsresult BuildCache(LookupCacheV4* cache,
   PrefixStringMap map;
   PrefixArrayToPrefixStringMap(aPrefixArray, map);
   return cache->Build(map);
+}
+
+template <typename T>
+RefPtr<T> SetupLookupCache(const _PrefixArray& aPrefixArray,
+                           nsCOMPtr<nsIFile>& aFile) {
+  RefPtr<T> cache = new T(GTEST_TABLE_V4, EmptyCString(), aFile);
+
+  nsresult rv = cache->Init();
+  EXPECT_EQ(rv, NS_OK);
+
+  rv = BuildCache(cache, aPrefixArray);
+  EXPECT_EQ(rv, NS_OK);
+
+  return cache;
 }
 
 template <typename T>

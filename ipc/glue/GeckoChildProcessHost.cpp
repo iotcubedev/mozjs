@@ -30,6 +30,7 @@
 
 #include "nsExceptionHandler.h"
 
+#include "nsDirectoryService.h"
 #include "nsDirectoryServiceDefs.h"
 #include "nsIFile.h"
 #include "nsPrintfCString.h"
@@ -37,11 +38,11 @@
 
 #include "mozilla/ipc/BrowserProcessSubThread.h"
 #include "mozilla/ipc/EnvironmentMap.h"
+#include "mozilla/net/SocketProcessHost.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/Omnijar.h"
-#include "mozilla/RecordReplay.h"
 #include "mozilla/RDDProcessHost.h"
 #include "mozilla/Scoped.h"
 #include "mozilla/Services.h"
@@ -65,6 +66,8 @@
 #      include "mozilla/remoteSandboxBroker.h"
 #    endif
 #  endif
+
+#  include "mozilla/NativeNt.h"
 #endif
 
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
@@ -96,9 +99,15 @@ using mozilla::ScopedPRFileDesc;
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "AndroidBridge.h"
-#  include "GeneratedJNIWrappers.h"
+#  include "mozilla/java/GeckoProcessManagerWrappers.h"
+#  include "mozilla/java/GeckoProcessTypeWrappers.h"
+#  include "mozilla/java/GeckoResultWrappers.h"
 #  include "mozilla/jni/Refs.h"
 #  include "mozilla/jni/Utils.h"
+#endif
+
+#ifdef MOZ_ENABLE_FORKSERVER
+#  include "mozilla/ipc/ForkServiceChild.h"
 #endif
 
 static bool ShouldHaveDirectoryService() {
@@ -130,18 +139,23 @@ class BaseProcessLauncher {
         mIsFileContent(aHost->mIsFileContent),
         mEnableSandboxLogging(aHost->mEnableSandboxLogging),
 #endif
+#if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
+        mDisableOSActivityMode(aHost->mDisableOSActivityMode),
+#endif
         mTmpDirName(aHost->mTmpDirName),
         mChildId(++gChildCounter) {
     SprintfLiteral(mPidString, "%d", base::GetCurrentProcId());
 
     // Compute the serial event target we'll use for launching.
-    if (mozilla::recordreplay::IsMiddleman()) {
-      // During Web Replay, the middleman process launches the actual content
-      // processes, and doesn't initialize enough of XPCOM to use thread pools.
-      mLaunchThread = IOThread();
-    } else {
-      nsCOMPtr<nsIEventTarget> threadOrPool = GetIPCLauncher();
-      mLaunchThread = new TaskQueue(threadOrPool.forget());
+    nsCOMPtr<nsIEventTarget> threadOrPool = GetIPCLauncher();
+    mLaunchThread = new TaskQueue(threadOrPool.forget());
+
+    if (ShouldHaveDirectoryService()) {
+      // "Current process directory" means the app dir, not the current
+      // working dir or similar.
+      mozilla::Unused
+          << nsDirectoryService::gService->GetCurrentProcessDirectory(
+                 getter_AddRefs(mAppDir));
     }
   }
 
@@ -168,10 +182,8 @@ class BaseProcessLauncher {
   void GetChildLogName(const char* origLogName, nsACString& buffer);
 
   const char* ChildProcessType() {
-    return XRE_ChildProcessTypeToString(mProcessType);
+    return XRE_GeckoProcessTypeToString(mProcessType);
   }
-
-  nsCOMPtr<nsIEventTarget> GetIPCLauncher();
 
   nsCOMPtr<nsISerialEventTarget> mLaunchThread;
   GeckoProcessType mProcessType;
@@ -186,6 +198,11 @@ class BaseProcessLauncher {
   bool mIsFileContent;
   bool mEnableSandboxLogging;
 #endif
+#if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
+  // Controls whether or not the process will be launched with
+  // environment variable OS_ACTIVITY_MODE set to "disabled".
+  bool mDisableOSActivityMode;
+#endif
   nsCString mTmpDirName;
   LaunchResults mResults = LaunchResults();
   int32_t mChildId;
@@ -194,9 +211,10 @@ class BaseProcessLauncher {
 
   // Set during launch.
   IPC::Channel* mChannel = nullptr;
-  std::wstring mChannelId;
+  IPC::Channel::ChannelId mChannelId;
   ScopedPRFileDesc mCrashAnnotationReadPipe;
   ScopedPRFileDesc mCrashAnnotationWritePipe;
+  nsCOMPtr<nsIFile> mAppDir;
 };
 
 #ifdef XP_WIN
@@ -204,7 +222,9 @@ class WindowsProcessLauncher : public BaseProcessLauncher {
  public:
   WindowsProcessLauncher(GeckoChildProcessHost* aHost,
                          std::vector<std::string>&& aExtraOpts)
-      : BaseProcessLauncher(aHost, std::move(aExtraOpts)) {}
+      : BaseProcessLauncher(aHost, std::move(aExtraOpts)),
+        mProfileDir(aHost->mProfileDir),
+        mCachedNtdllThunk(aHost->sCachedNtDllThunk) {}
 
  protected:
   virtual bool DoSetup() override;
@@ -213,6 +233,10 @@ class WindowsProcessLauncher : public BaseProcessLauncher {
 
   mozilla::Maybe<CommandLine> mCmdLine;
   bool mUseSandbox = false;
+
+  nsCOMPtr<nsIFile> mProfileDir;
+
+  const StaticAutoPtr<Buffer<IMAGE_THUNK_DATA>>& mCachedNtdllThunk;
 };
 typedef WindowsProcessLauncher ProcessLauncher;
 #endif  // XP_WIN
@@ -222,12 +246,15 @@ class PosixProcessLauncher : public BaseProcessLauncher {
  public:
   PosixProcessLauncher(GeckoChildProcessHost* aHost,
                        std::vector<std::string>&& aExtraOpts)
-      : BaseProcessLauncher(aHost, std::move(aExtraOpts)) {}
+      : BaseProcessLauncher(aHost, std::move(aExtraOpts)),
+        mProfileDir(aHost->mProfileDir) {}
 
  protected:
   virtual bool DoSetup() override;
   virtual RefPtr<ProcessHandlePromise> DoLaunch() override;
   virtual bool DoFinishLaunch() override;
+
+  nsCOMPtr<nsIFile> mProfileDir;
 
   std::vector<std::string> mChildArgv;
 };
@@ -267,7 +294,7 @@ class AndroidProcessLauncher : public PosixProcessLauncher {
  protected:
   virtual RefPtr<ProcessHandlePromise> DoLaunch() override;
   RefPtr<ProcessHandlePromise> LaunchAndroidService(
-      const char* type, const std::vector<std::string>& argv,
+      const GeckoProcessType aType, const std::vector<std::string>& argv,
       const base::file_handle_mapping_vector& fds_to_remap);
 };
 typedef AndroidProcessLauncher ProcessLauncher;
@@ -300,6 +327,51 @@ mozilla::StaticAutoPtr<mozilla::LinkedList<GeckoChildProcessHost>>
 
 mozilla::StaticMutex GeckoChildProcessHost::sMutex;
 
+#ifdef XP_WIN
+mozilla::StaticAutoPtr<Buffer<IMAGE_THUNK_DATA>>
+    GeckoChildProcessHost::sCachedNtDllThunk;
+
+// This static method initializes sCachedNtDllThunk.  Because it's called in
+// XREMain::XRE_main, which happens long before WindowsProcessLauncher's ctor
+// accesses sCachedNtDllThunk, there is no race on sCachedNtDllThunk, thus
+// no mutex is needed.
+/* static */
+void GeckoChildProcessHost::CacheNtDllThunk() {
+  if (sCachedNtDllThunk) {
+    return;
+  }
+
+  do {
+    nt::PEHeaders ourExeImage(::GetModuleHandleW(nullptr));
+    if (!ourExeImage) {
+      break;
+    }
+
+    nt::PEHeaders ntdllImage(::GetModuleHandleW(L"ntdll.dll"));
+    if (!ntdllImage) {
+      break;
+    }
+
+    Maybe<Range<const uint8_t>> ntdllBoundaries = ntdllImage.GetBounds();
+    if (!ntdllBoundaries) {
+      break;
+    }
+
+    Maybe<Span<IMAGE_THUNK_DATA>> maybeNtDllThunks =
+        ourExeImage.GetIATThunksForModule("ntdll.dll", ntdllBoundaries.ptr());
+    if (maybeNtDllThunks.isNothing()) {
+      break;
+    }
+
+    sCachedNtDllThunk = new Buffer<IMAGE_THUNK_DATA>(maybeNtDllThunks.value());
+    return;
+  } while (false);
+
+  // Failed to cache IAT.  Initializing the variable with nullptr.
+  sCachedNtDllThunk = new Buffer<IMAGE_THUNK_DATA>();
+}
+#endif
+
 GeckoChildProcessHost::GeckoChildProcessHost(GeckoProcessType aProcessType,
                                              bool aIsFileContent)
     : mProcessType(aProcessType),
@@ -318,6 +390,9 @@ GeckoChildProcessHost::GeckoChildProcessHost(GeckoProcessType aProcessType,
 #if defined(MOZ_WIDGET_COCOA)
       mChildTask(MACH_PORT_NULL),
 #endif
+#if defined(MOZ_SANDBOX) && defined(XP_MACOSX)
+      mDisableOSActivityMode(false),
+#endif
       mDestroying(false) {
   MOZ_COUNT_CTOR(GeckoChildProcessHost);
   StaticMutexAutoLock lock(sMutex);
@@ -325,6 +400,22 @@ GeckoChildProcessHost::GeckoChildProcessHost(GeckoProcessType aProcessType,
     sGeckoChildProcessHosts = new mozilla::LinkedList<GeckoChildProcessHost>();
   }
   sGeckoChildProcessHosts->insertBack(this);
+#if defined(MOZ_SANDBOX) && defined(XP_LINUX)
+  // The content process needs the content temp dir:
+  if (aProcessType == GeckoProcessType_Content) {
+    nsCOMPtr<nsIFile> contentTempDir;
+    nsresult rv = NS_GetSpecialDirectory(NS_APP_CONTENT_PROCESS_TEMP_DIR,
+                                         getter_AddRefs(contentTempDir));
+    if (NS_SUCCEEDED(rv)) {
+      contentTempDir->GetNativePath(mTmpDirName);
+    }
+  }
+#endif
+#if defined(MOZ_ENABLE_FORKSERVER)
+  if (aProcessType == GeckoProcessType_Content && ForkServiceChild::Get()) {
+    mLaunchOptions->use_forkserver = true;
+  }
+#endif
 }
 
 GeckoChildProcessHost::~GeckoChildProcessHost()
@@ -337,7 +428,7 @@ GeckoChildProcessHost::~GeckoChildProcessHost()
 
   if (mChildProcessHandle != 0) {
 #if defined(MOZ_WIDGET_COCOA)
-    SharedMemoryBasic::CleanupForPid(mChildProcessHandle);
+    SharedMemoryBasic::CleanupForPidWithLock(mChildProcessHandle);
 #endif
     ProcessWatcher::EnsureProcessTerminated(
         mChildProcessHandle
@@ -439,9 +530,9 @@ mozilla::BinPathType BaseProcessLauncher::GetPathToBinary(
 
     // We need to use an App Bundle on OS X so that we can hide
     // the dock icon. See Bug 557225.
-    childProcPath->AppendNative(NS_LITERAL_CSTRING("plugin-container.app"));
-    childProcPath->AppendNative(NS_LITERAL_CSTRING("Contents"));
-    childProcPath->AppendNative(NS_LITERAL_CSTRING("MacOS"));
+    childProcPath->AppendNative("plugin-container.app"_ns);
+    childProcPath->AppendNative("Contents"_ns);
+    childProcPath->AppendNative("MacOS"_ns);
     nsCString tempCPath;
     childProcPath->GetNativePath(tempCPath);
     exePath = FilePath(tempCPath.get());
@@ -539,17 +630,18 @@ void GeckoChildProcessHost::PrepareLaunch() {
   // them to turn on logging via an environment variable.
   mEnableSandboxLogging =
       mEnableSandboxLogging || !!PR_GetEnv("MOZ_SANDBOX_LOGGING");
+
+  if (ShouldHaveDirectoryService() && mProcessType == GeckoProcessType_GPU) {
+    mozilla::Unused << NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
+                                              getter_AddRefs(mProfileDir));
+  }
 #  endif
-#elif defined(XP_LINUX)
+#elif defined(XP_MACOSX)
 #  if defined(MOZ_SANDBOX)
-  // Get and remember the path to the per-content-process tmpdir
-  if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIFile> contentTempDir;
-    nsresult rv = NS_GetSpecialDirectory(NS_APP_CONTENT_PROCESS_TEMP_DIR,
-                                         getter_AddRefs(contentTempDir));
-    if (NS_SUCCEEDED(rv)) {
-      contentTempDir->GetNativePath(mTmpDirName);
-    }
+  if (ShouldHaveDirectoryService() &&
+      mProcessType != GeckoProcessType_GMPlugin) {
+    mozilla::Unused << NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
+                                              getter_AddRefs(mProfileDir));
   }
 #  endif
 #endif
@@ -581,6 +673,13 @@ bool GeckoChildProcessHost::SyncLaunch(std::vector<std::string> aExtraOpts,
   return WaitUntilConnected(aTimeoutMs);
 }
 
+// Note: for most process types, we currently call AsyncLaunch, and therefore
+// the *ProcessLauncher constructor, on the main thread, while the
+// ProcessLauncher methods to actually execute the launch are called on the IO
+// or IPC launcher thread. GMP processes are an exception - the GMP code
+// invokes GeckoChildProcessHost from non-main-threads, and therefore we cannot
+// rely on having access to mainthread-only services (like the directory
+// service) from this code if we're launching that type of process.
 bool GeckoChildProcessHost::AsyncLaunch(std::vector<std::string> aExtraOpts) {
   PrepareLaunch();
 
@@ -645,10 +744,10 @@ bool GeckoChildProcessHost::AsyncLaunch(std::vector<std::string> aExtraOpts) {
             // If something failed let's set the error state and notify.
             CHROMIUM_LOG(ERROR)
                 << "Failed to launch "
-                << XRE_ChildProcessTypeToString(mProcessType) << " subprocess";
+                << XRE_GeckoProcessTypeToString(mProcessType) << " subprocess";
             Telemetry::Accumulate(
                 Telemetry::SUBPROCESS_LAUNCH_FAILURE,
-                nsDependentCString(XRE_ChildProcessTypeToString(mProcessType)));
+                nsDependentCString(XRE_GeckoProcessTypeToString(mProcessType)));
             {
               MonitorAutoLock lock(mMonitor);
               mProcessState = PROCESS_ERROR;
@@ -695,12 +794,7 @@ bool GeckoChildProcessHost::WaitUntilConnected(int32_t aTimeoutMs) {
   return mProcessState == PROCESS_CONNECTED;
 }
 
-bool GeckoChildProcessHost::LaunchAndWaitForProcessHandle(
-    StringVector aExtraOpts) {
-  if (!AsyncLaunch(std::move(aExtraOpts))) {
-    return false;
-  }
-
+bool GeckoChildProcessHost::WaitForProcessHandle() {
   MonitorAutoLock lock(mMonitor);
   while (mProcessState < PROCESS_CREATED) {
     lock.Wait();
@@ -708,6 +802,14 @@ bool GeckoChildProcessHost::LaunchAndWaitForProcessHandle(
   MOZ_ASSERT(mProcessState == PROCESS_ERROR || mChildProcessHandle);
 
   return mProcessState < PROCESS_ERROR;
+}
+
+bool GeckoChildProcessHost::LaunchAndWaitForProcessHandle(
+    StringVector aExtraOpts) {
+  if (!AsyncLaunch(std::move(aExtraOpts))) {
+    return false;
+  }
+  return WaitForProcessHandle();
 }
 
 void GeckoChildProcessHost::InitializeChannel() {
@@ -768,7 +870,7 @@ void BaseProcessLauncher::GetChildLogName(const char* origLogName,
 
   // Remove .moz_log extension to avoid its duplication, it will be added
   // automatically by the logging backend
-  static NS_NAMED_LITERAL_CSTRING(kMozLogExt, MOZ_LOG_FILE_EXTENSION);
+  static constexpr auto kMozLogExt = nsLiteralCString{MOZ_LOG_FILE_EXTENSION};
   if (StringEndsWith(buffer, kMozLogExt)) {
     buffer.Truncate(buffer.Length() - kMozLogExt.Length());
   }
@@ -784,7 +886,11 @@ void BaseProcessLauncher::GetChildLogName(const char* origLogName,
 //
 // Android also needs a single dedicated thread to simplify thread
 // safety in java.
-#if defined(XP_WIN) || defined(MOZ_WIDGET_ANDROID)
+//
+// Fork server needs a dedicated thread for accessing
+// |ForkServiceChild|.
+#if defined(XP_WIN) || defined(MOZ_WIDGET_ANDROID) || \
+    defined(MOZ_ENABLE_FORKSERVER)
 
 static mozilla::StaticMutex gIPCLaunchThreadMutex;
 static mozilla::StaticRefPtr<nsIThread> gIPCLaunchThread;
@@ -814,12 +920,11 @@ IPCLaunchThreadObserver::Observe(nsISupports* aSubject, const char* aTopic,
   return rv;
 }
 
-nsCOMPtr<nsIEventTarget> BaseProcessLauncher::GetIPCLauncher() {
+nsCOMPtr<nsIEventTarget> GetIPCLauncher() {
   StaticMutexAutoLock lock(gIPCLaunchThreadMutex);
   if (!gIPCLaunchThread) {
     nsCOMPtr<nsIThread> thread;
-    nsresult rv = NS_NewNamedThread(NS_LITERAL_CSTRING("IPC Launch"),
-                                    getter_AddRefs(thread));
+    nsresult rv = NS_NewNamedThread("IPC Launch"_ns, getter_AddRefs(thread));
     if (!NS_WARN_IF(NS_FAILED(rv))) {
       NS_DispatchToMainThread(
           NS_NewRunnableFunction("GeckoChildProcessHost::GetIPCLauncher", [] {
@@ -837,74 +942,59 @@ nsCOMPtr<nsIEventTarget> BaseProcessLauncher::GetIPCLauncher() {
   return thread;
 }
 
-#else  // defined(XP_WIN) || defined(MOZ_WIDGET_ANDROID)
+#else  // defined(XP_WIN) || defined(MOZ_WIDGET_ANDROID) ||
+       // defined(MOZ_ENABLE_FORKSERVER)
 
 // Other platforms use an on-demand thread pool.
 
-nsCOMPtr<nsIEventTarget> BaseProcessLauncher::GetIPCLauncher() {
+nsCOMPtr<nsIEventTarget> GetIPCLauncher() {
   nsCOMPtr<nsIEventTarget> pool =
-      mozilla::SharedThreadPool::Get(NS_LITERAL_CSTRING("IPC Launch"));
+      mozilla::SharedThreadPool::Get("IPC Launch"_ns);
   MOZ_DIAGNOSTIC_ASSERT(pool);
   return pool;
 }
 
-#endif  // XP_WIN
+#endif  // XP_WIN || MOZ_WIDGET_ANDROID || MOZ_ENABLE_FORKSERVER
 
 void
 #if defined(XP_WIN)
-AddAppDirToCommandLine(CommandLine& aCmdLine)
+AddAppDirToCommandLine(CommandLine& aCmdLine, nsIFile* aAppDir)
 #else
-AddAppDirToCommandLine(std::vector<std::string>& aCmdLine)
+AddAppDirToCommandLine(std::vector<std::string>& aCmdLine, nsIFile* aAppDir,
+    nsIFile* aProfileDir)
 #endif
 {
   // Content processes need access to application resources, so pass
   // the full application directory path to the child process.
-  if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIProperties> directoryService(
-        do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
-    NS_ASSERTION(directoryService, "Expected XPCOM to be available");
-    if (directoryService) {
-      nsCOMPtr<nsIFile> appDir;
-      // NS_XPCOM_CURRENT_PROCESS_DIR really means the app dir, not the
-      // current process dir.
-      nsresult rv =
-          directoryService->Get(NS_XPCOM_CURRENT_PROCESS_DIR,
-                                NS_GET_IID(nsIFile), getter_AddRefs(appDir));
-      if (NS_SUCCEEDED(rv)) {
+  if (aAppDir) {
 #if defined(XP_WIN)
-        nsString path;
-        MOZ_ALWAYS_SUCCEEDS(appDir->GetPath(path));
-        aCmdLine.AppendLooseValue(UTF8ToWide("-appdir"));
-        std::wstring wpath(path.get());
-        aCmdLine.AppendLooseValue(wpath);
+    nsString path;
+    MOZ_ALWAYS_SUCCEEDS(aAppDir->GetPath(path));
+    aCmdLine.AppendLooseValue(UTF8ToWide("-appdir"));
+    std::wstring wpath(path.get());
+    aCmdLine.AppendLooseValue(wpath);
 #else
-        nsAutoCString path;
-        MOZ_ALWAYS_SUCCEEDS(appDir->GetNativePath(path));
-        aCmdLine.push_back("-appdir");
-        aCmdLine.push_back(path.get());
+    nsAutoCString path;
+    MOZ_ALWAYS_SUCCEEDS(aAppDir->GetNativePath(path));
+    aCmdLine.push_back("-appdir");
+    aCmdLine.push_back(path.get());
 #endif
-      }
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
-      // Full path to the profile dir
-      nsCOMPtr<nsIFile> profileDir;
-      rv =
-          directoryService->Get(NS_APP_USER_PROFILE_50_DIR, NS_GET_IID(nsIFile),
-                                getter_AddRefs(profileDir));
-      if (NS_SUCCEEDED(rv)) {
-        // If the profile doesn't exist, normalization will
-        // fail. But we don't return an error here because some
-        // tests require startup with a missing profile dir.
-        // For users, almost universally, the profile will be in
-        // the home directory and normalization isn't required.
-        mozilla::Unused << profileDir->Normalize();
-        nsAutoCString path;
-        MOZ_ALWAYS_SUCCEEDS(profileDir->GetNativePath(path));
-        aCmdLine.push_back("-profile");
-        aCmdLine.push_back(path.get());
-      }
-#endif
+    // Full path to the profile dir
+    if (aProfileDir) {
+      // If the profile doesn't exist, normalization will
+      // fail. But we don't return an error here because some
+      // tests require startup with a missing profile dir.
+      // For users, almost universally, the profile will be in
+      // the home directory and normalization isn't required.
+      mozilla::Unused << aProfileDir->Normalize();
+      nsAutoCString path;
+      MOZ_ALWAYS_SUCCEEDS(aProfileDir->GetNativePath(path));
+      aCmdLine.push_back("-profile");
+      aCmdLine.push_back(path.get());
     }
+#endif
   }
 }
 
@@ -935,12 +1025,23 @@ RefPtr<ProcessLaunchPromise> BaseProcessLauncher::PerformAsyncLaunch() {
 }
 
 bool BaseProcessLauncher::DoSetup() {
-#ifdef MOZ_GECKO_PROFILER
+#if defined(MOZ_GECKO_PROFILER) || defined(MOZ_MEMORY)
   RefPtr<BaseProcessLauncher> self = this;
+#  ifdef MOZ_GECKO_PROFILER
   GetProfilerEnvVarsForChildProcess([self](const char* key, const char* value) {
     self->mLaunchOptions->env_map[ENVIRONMENT_STRING(key)] =
         ENVIRONMENT_STRING(value);
   });
+#  endif
+#  ifdef MOZ_MEMORY
+  if (mProcessType == GeckoProcessType_Content) {
+    nsAutoCString mallocOpts(PR_GetEnv("MALLOC_OPTIONS"));
+    // Disable randomization of small arenas in content.
+    mallocOpts.Append("r");
+    self->mLaunchOptions->env_map[ENVIRONMENT_LITERAL("MALLOC_OPTIONS")] =
+        ENVIRONMENT_STRING(mallocOpts.get());
+  }
+#  endif
 #endif
 
   MapChildLogging();
@@ -1057,7 +1158,16 @@ bool PosixProcessLauncher::DoSetup() {
     interpose.Append(path.get());
     interpose.AppendLiteral("/libplugin_child_interpose.dylib");
     mLaunchOptions->env_map["DYLD_INSERT_LIBRARIES"] = interpose.get();
-#  endif           // defined(OS_LINUX) || defined(OS_BSD)
+
+    // Prevent connection attempts to diagnosticd(8) to save cycles. Log
+    // messages can trigger these connection attempts, but access to
+    // diagnosticd is blocked in sandboxed child processes.
+#    ifdef MOZ_SANDBOX
+    if (mDisableOSActivityMode) {
+      mLaunchOptions->env_map["OS_ACTIVITY_MODE"] = "disable";
+    }
+#    endif  // defined(MOZ_SANDBOX)
+#  endif    // defined(OS_LINUX) || defined(OS_BSD)
   }
 
   FilePath exePath;
@@ -1082,6 +1192,7 @@ bool PosixProcessLauncher::DoSetup() {
   mChildArgv.insert(mChildArgv.end(), mExtraOpts.begin(), mExtraOpts.end());
 
   if (mProcessType != GeckoProcessType_GMPlugin) {
+#  if defined(MOZ_WIDGET_ANDROID)
     if (Omnijar::IsInitialized()) {
       // Make sure that child processes can find the omnijar
       // See XRE_InitCommandLine in nsAppRunner.cpp
@@ -1091,14 +1202,14 @@ bool PosixProcessLauncher::DoSetup() {
         mChildArgv.push_back("-greomni");
         mChildArgv.push_back(path.get());
       }
-      file = Omnijar::GetPath(Omnijar::APP);
-      if (file && NS_SUCCEEDED(file->GetNativePath(path))) {
-        mChildArgv.push_back("-appomni");
-        mChildArgv.push_back(path.get());
-      }
     }
+#  endif
     // Add the application directory path (-appdir path)
-    AddAppDirToCommandLine(mChildArgv);
+#  ifdef XP_MACOSX
+    AddAppDirToCommandLine(mChildArgv, mAppDir, mProfileDir);
+#  else
+    AddAppDirToCommandLine(mChildArgv, mAppDir, nullptr);
+#  endif
   }
 
   mChildArgv.push_back(mPidString);
@@ -1136,14 +1247,13 @@ bool PosixProcessLauncher::DoSetup() {
 #  endif  // MOZ_WIDGET_COCOA
 
   mChildArgv.push_back(ChildProcessType());
-
   return true;
 }
 #endif  // OS_POSIX
 
 #if defined(MOZ_WIDGET_ANDROID)
 RefPtr<ProcessHandlePromise> AndroidProcessLauncher::DoLaunch() {
-  return LaunchAndroidService(ChildProcessType(), mChildArgv,
+  return LaunchAndroidService(mProcessType, mChildArgv,
                               mLaunchOptions->fds_to_remap);
 }
 #endif  // MOZ_WIDGET_ANDROID
@@ -1173,6 +1283,10 @@ bool PosixProcessLauncher::DoFinishLaunch() {
 
 #ifdef XP_MACOSX
 bool MacProcessLauncher::DoFinishLaunch() {
+  if (!PosixProcessLauncher::DoFinishLaunch()) {
+    return false;
+  }
+
   // Wait for the child process to send us its 'task_t' data.
   const int kTimeoutMs = 10000;
 
@@ -1294,22 +1408,6 @@ bool WindowsProcessLauncher::DoSetup() {
     mCmdLine->AppendLooseValue(UTF8ToWide(*it));
   }
 
-  if (Omnijar::IsInitialized()) {
-    // Make sure the child process can find the omnijar
-    // See XRE_InitCommandLine in nsAppRunner.cpp
-    nsAutoString path;
-    nsCOMPtr<nsIFile> file = Omnijar::GetPath(Omnijar::GRE);
-    if (file && NS_SUCCEEDED(file->GetPath(path))) {
-      mCmdLine->AppendLooseValue(UTF8ToWide("-greomni"));
-      mCmdLine->AppendLooseValue(path.get());
-    }
-    file = Omnijar::GetPath(Omnijar::APP);
-    if (file && NS_SUCCEEDED(file->GetPath(path))) {
-      mCmdLine->AppendLooseValue(UTF8ToWide("-appomni"));
-      mCmdLine->AppendLooseValue(path.get());
-    }
-  }
-
 #  if defined(MOZ_SANDBOX)
 #    if defined(_ARM64_)
   if (isClearKey || isWidevine)
@@ -1364,7 +1462,8 @@ bool WindowsProcessLauncher::DoSetup() {
         // For now we treat every failure as fatal in
         // SetSecurityLevelForGPUProcess and just crash there right away. Should
         // this change in the future then we should also handle the error here.
-        mResults.mSandboxBroker->SetSecurityLevelForGPUProcess(mSandboxLevel);
+        mResults.mSandboxBroker->SetSecurityLevelForGPUProcess(mSandboxLevel,
+                                                               mProfileDir);
         mUseSandbox = true;
       }
       break;
@@ -1382,7 +1481,12 @@ bool WindowsProcessLauncher::DoSetup() {
       }
       break;
     case GeckoProcessType_Socket:
-      // TODO - setup sandboxing for the socket process.
+      if (!PR_GetEnv("MOZ_DISABLE_SOCKET_PROCESS_SANDBOX")) {
+        if (!mResults.mSandboxBroker->SetSecurityLevelForSocketProcess()) {
+          return false;
+        }
+        mUseSandbox = true;
+      }
       break;
     case GeckoProcessType_RemoteSandboxBroker:
       // We don't sandbox the sandbox launcher...
@@ -1402,7 +1506,7 @@ bool WindowsProcessLauncher::DoSetup() {
 #  endif  // defined(MOZ_SANDBOX)
 
   // Add the application directory path (-appdir path)
-  AddAppDirToCommandLine(mCmdLine.ref());
+  AddAppDirToCommandLine(mCmdLine.ref(), mAppDir);
 
   // XXX Command line params past this point are expected to be at
   // the end of the command line string, and in a specific order.
@@ -1443,10 +1547,12 @@ RefPtr<ProcessHandlePromise> WindowsProcessLauncher::DoLaunch() {
   ProcessHandle handle = 0;
 #  ifdef MOZ_SANDBOX
   if (mUseSandbox) {
+    const IMAGE_THUNK_DATA* cachedNtdllThunk =
+        mCachedNtdllThunk ? mCachedNtdllThunk->begin() : nullptr;
     if (mResults.mSandboxBroker->LaunchApp(
             mCmdLine->program().c_str(),
             mCmdLine->command_line_string().c_str(), mLaunchOptions->env_map,
-            mProcessType, mEnableSandboxLogging, &handle)) {
+            mProcessType, mEnableSandboxLogging, cachedNtdllThunk, &handle)) {
       EnvironmentLog("MOZ_PROCESS_LOG")
           .print("==> process %d launched child process %d (%S)\n",
                  base::GetCurrentProcId(), base::GetProcId(handle),
@@ -1469,20 +1575,22 @@ bool WindowsProcessLauncher::DoFinishLaunch() {
   }
 
 #  ifdef MOZ_SANDBOX
-  // We need to be able to duplicate handles to some types of non-sandboxed
-  // child processes.
-  switch (mProcessType) {
-    case GeckoProcessType_Default:
-      MOZ_CRASH("shouldn't be launching a parent process");
-    case GeckoProcessType_Plugin:
-    case GeckoProcessType_IPDLUnitTest:
-      // No handle duplication necessary.
-      break;
-    default:
-      if (!SandboxBroker::AddTargetPeer(mResults.mHandle)) {
-        NS_WARNING("Failed to add child process as target peer.");
-      }
-      break;
+  if (!mUseSandbox) {
+    // We need to be able to duplicate handles to some types of non-sandboxed
+    // child processes.
+    switch (mProcessType) {
+      case GeckoProcessType_Default:
+        MOZ_CRASH("shouldn't be launching a parent process");
+      case GeckoProcessType_Plugin:
+      case GeckoProcessType_IPDLUnitTest:
+        // No handle duplication necessary.
+        break;
+      default:
+        if (!SandboxBroker::AddTargetPeer(mResults.mHandle)) {
+          NS_WARNING("Failed to add child process as target peer.");
+        }
+        break;
+    }
   }
 #  endif  // MOZ_SANDBOX
 
@@ -1557,7 +1665,7 @@ void GeckoChildProcessHost::GetQueuedMessages(std::queue<IPC::Message>& queue) {
 
 #ifdef MOZ_WIDGET_ANDROID
 RefPtr<ProcessHandlePromise> AndroidProcessLauncher::LaunchAndroidService(
-    const char* type, const std::vector<std::string>& argv,
+    const GeckoProcessType aType, const std::vector<std::string>& argv,
     const base::file_handle_mapping_vector& fds_to_remap) {
   MOZ_RELEASE_ASSERT((2 <= fds_to_remap.size()) && (fds_to_remap.size() <= 5));
   JNIEnv* const env = mozilla::jni::GetEnvForThread();
@@ -1588,6 +1696,7 @@ RefPtr<ProcessHandlePromise> AndroidProcessLauncher::LaunchAndroidService(
     crashAnnotationFd = fds_to_remap[4].first;
   }
 
+  auto type = java::GeckoProcessType::FromInt(aType);
   auto genericResult = java::GeckoProcessManager::Start(
       type, jargs, prefsFd, prefMapFd, ipcFd, crashFd, crashAnnotationFd);
   auto typedResult = java::GeckoResult::LocalRef(std::move(genericResult));
@@ -1606,8 +1715,7 @@ bool GeckoChildProcessHost::AppendMacSandboxParams(StringVector& aArgs) {
 }
 
 // Fill |aInfo| with the flags needed to launch the utility sandbox
-/* static */
-bool GeckoChildProcessHost::StaticFillMacSandboxInfo(MacSandboxInfo& aInfo) {
+bool GeckoChildProcessHost::FillMacSandboxInfo(MacSandboxInfo& aInfo) {
   aInfo.type = GetDefaultMacSandboxType();
   aInfo.shouldLog = Preferences::GetBool("security.sandbox.logging.enabled") ||
                     PR_GetEnv("MOZ_SANDBOX_LOGGING");
@@ -1620,8 +1728,8 @@ bool GeckoChildProcessHost::StaticFillMacSandboxInfo(MacSandboxInfo& aInfo) {
   return true;
 }
 
-bool GeckoChildProcessHost::FillMacSandboxInfo(MacSandboxInfo& aInfo) {
-  return GeckoChildProcessHost::StaticFillMacSandboxInfo(aInfo);
+void GeckoChildProcessHost::DisableOSActivityMode() {
+  mDisableOSActivityMode = true;
 }
 
 //
@@ -1645,6 +1753,9 @@ bool GeckoChildProcessHost::StartMacSandbox(int aArgc, char** aArgv,
       break;
     case GeckoProcessType_RDD:
       sandboxType = RDDProcessHost::GetMacSandboxType();
+      break;
+    case GeckoProcessType_Socket:
+      sandboxType = net::SocketProcessHost::GetMacSandboxType();
       break;
     case GeckoProcessType_GMPlugin:
       sandboxType = gmp::GMPProcessParent::GetMacSandboxType();

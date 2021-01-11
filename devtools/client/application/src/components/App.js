@@ -14,7 +14,12 @@ const { main } = require("devtools/client/shared/vendor/react-dom-factories");
 const FluentReact = require("devtools/client/shared/vendor/fluent-react");
 const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
 
-const PageSwitcher = createFactory(require("./routing/PageSwitcher"));
+const PageSwitcher = createFactory(
+  require("devtools/client/application/src/components/routing/PageSwitcher")
+);
+const Sidebar = createFactory(
+  require("devtools/client/application/src/components/routing/Sidebar")
+);
 
 /**
  * This is the main component for the application panel.
@@ -31,7 +36,7 @@ class App extends PureComponent {
 
     return LocalizationProvider(
       { bundles: fluentBundles },
-      main({ className: `application` }, PageSwitcher({}))
+      main({ className: `app` }, Sidebar({}), PageSwitcher({}))
     );
   }
 }

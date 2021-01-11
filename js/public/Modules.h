@@ -19,10 +19,10 @@
 #include "js/RootingAPI.h"      // JS::{Mutable,}Handle
 #include "js/Value.h"           // JS::Value
 
-struct JSContext;
-class JSObject;
-struct JSRuntime;
-class JSString;
+struct JS_PUBLIC_API JSContext;
+class JS_PUBLIC_API JSObject;
+struct JS_PUBLIC_API JSRuntime;
+class JS_PUBLIC_API JSString;
 
 namespace JS {
 template <typename UnitT>
@@ -95,18 +95,10 @@ extern JS_PUBLIC_API JSObject* CompileModule(
 
 /**
  * Parse the given source buffer as a module in the scope of the current global
- * of cx and return a source text module record.
- *
- * The "DontInflate" suffix and (semantically unobservable) don't-inflate
- * characteristic are temporary while bugs in UTF-8 compilation are ironed out.
- * In the long term this function will be renamed |JS::CompileModule| and will
- * just never inflate.
- *
- * NOTE: UTF-8 compilation is currently experimental, and it's possible it has
- *       as-yet-undiscovered bugs that the UTF-16 compilation functions do not
- *       have.  Use only if you're willing to take a risk!
+ * of cx and return a source text module record.  An error is reported if a
+ * UTF-8 encoding error is encountered.
  */
-extern JS_PUBLIC_API JSObject* CompileModuleDontInflate(
+extern JS_PUBLIC_API JSObject* CompileModule(
     JSContext* cx, const ReadOnlyCompileOptions& options,
     SourceText<mozilla::Utf8Unit>& srcBuf);
 
@@ -149,7 +141,7 @@ extern JS_PUBLIC_API bool ModuleEvaluate(JSContext* cx,
  * record to request importation of modules.
  *
  * The result is a JavaScript array of object values.  To extract the individual
- * values use only JS_GetArrayLength and JS_GetElement with indices 0 to length
+ * values use only JS::GetArrayLength and JS_GetElement with indices 0 to length
  * - 1.
  *
  * The element values are objects with the following properties:

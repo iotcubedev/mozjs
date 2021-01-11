@@ -16,26 +16,36 @@ const {
   connect,
 } = require("devtools/client/shared/redux/visibility-handler-connect");
 const { findDOMNode } = require("devtools/client/shared/vendor/react-dom");
-const Actions = require("../actions/index");
-const { updateFormDataSections } = require("../utils/request-utils");
+const Actions = require("devtools/client/netmonitor/src/actions/index");
+const {
+  updateFormDataSections,
+} = require("devtools/client/netmonitor/src/utils/request-utils");
 const {
   getSelectedRequest,
   isSelectedRequestVisible,
-} = require("../selectors/index");
+} = require("devtools/client/netmonitor/src/selectors/index");
 
 // Components
 const SplitBox = createFactory(
   require("devtools/client/shared/components/splitter/SplitBox")
 );
-const RequestList = createFactory(require("./RequestList"));
-const Toolbar = createFactory(require("./Toolbar"));
+const RequestList = createFactory(
+  require("devtools/client/netmonitor/src/components/request-list/RequestList")
+);
+const Toolbar = createFactory(
+  require("devtools/client/netmonitor/src/components/Toolbar")
+);
 
-loader.lazyGetter(this, "NetworkDetailsPanel", function() {
-  return createFactory(require("./NetworkDetailsPanel"));
+loader.lazyGetter(this, "NetworkDetailsBar", function() {
+  return createFactory(
+    require("devtools/client/netmonitor/src/components/request-details/NetworkDetailsBar")
+  );
 });
 
-loader.lazyGetter(this, "SearchPanel", function() {
-  return createFactory(require("./search/SearchPanel"));
+loader.lazyGetter(this, "NetworkActionBar", function() {
+  return createFactory(
+    require("devtools/client/netmonitor/src/components/NetworkActionBar")
+  );
 });
 
 // MediaQueryList object responsible for switching sidebar splitter
@@ -58,15 +68,16 @@ class MonitorPanel extends Component {
       isEmpty: PropTypes.bool.isRequired,
       networkDetailsOpen: PropTypes.bool.isRequired,
       openNetworkDetails: PropTypes.func.isRequired,
+      toolboxDoc: PropTypes.object.isRequired,
       // Callback for opening split console.
       openSplitConsole: PropTypes.func,
       onNetworkDetailsResized: PropTypes.func.isRequired,
       request: PropTypes.object,
       selectedRequestVisible: PropTypes.bool.isRequired,
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       openLink: PropTypes.func,
       updateRequest: PropTypes.func.isRequired,
-      panelOpen: PropTypes.bool.isRequired,
+      networkActionOpen: PropTypes.bool.isRequired,
     };
   }
 
@@ -86,7 +97,7 @@ class MonitorPanel extends Component {
     MediaQuerySingleRow.addListener(this.onLayoutChange);
     MediaQueryVert.addListener(this.onLayoutChange);
     this.persistDetailsPanelSize();
-    this.persistSearchPanelSize();
+    this.persistActionBarSize();
   }
 
   componentWillReceiveProps(nextProps) {
@@ -104,7 +115,7 @@ class MonitorPanel extends Component {
     MediaQuerySingleRow.removeListener(this.onLayoutChange);
     MediaQueryVert.removeListener(this.onLayoutChange);
     this.persistDetailsPanelSize();
-    this.persistSearchPanelSize();
+    this.persistActionBarSize();
   }
 
   persistDetailsPanelSize() {
@@ -124,9 +135,9 @@ class MonitorPanel extends Component {
     }
   }
 
-  persistSearchPanelSize() {
+  persistActionBarSize() {
     const { clientWidth, clientHeight } =
-      findDOMNode(this.refs.searchPanel) || {};
+      findDOMNode(this.refs.actionBar) || {};
     if (clientWidth) {
       Services.prefs.setIntPref(
         "devtools.netmonitor.panes-search-width",
@@ -158,8 +169,8 @@ class MonitorPanel extends Component {
     );
   }
 
-  renderSearchPanel() {
-    const { connector, isEmpty, panelOpen } = this.props;
+  renderActionBar() {
+    const { connector, isEmpty, networkActionOpen } = this.props;
 
     const initialWidth = Services.prefs.getIntPref(
       "devtools.netmonitor.panes-search-width"
@@ -172,13 +183,13 @@ class MonitorPanel extends Component {
       className: "devtools-responsive-container",
       initialWidth,
       initialHeight,
-      minSize: "50px",
+      minSize: "250px",
       maxSize: "80%",
-      splitterSize: panelOpen ? 1 : 0,
+      splitterSize: networkActionOpen ? 1 : 0,
       startPanel:
-        panelOpen &&
-        SearchPanel({
-          ref: "searchPanel",
+        networkActionOpen &&
+        NetworkActionBar({
+          ref: "actionBar",
           connector,
         }),
       endPanel: RequestList({ isEmpty, connector }),
@@ -194,7 +205,8 @@ class MonitorPanel extends Component {
       networkDetailsOpen,
       openLink,
       openSplitConsole,
-      sourceMapService,
+      sourceMapURLService,
+      toolboxDoc,
     } = this.props;
 
     const initialWidth = Services.prefs.getIntPref(
@@ -212,6 +224,7 @@ class MonitorPanel extends Component {
         connector,
         openSplitConsole,
         singleRow: this.state.isSingleRow,
+        toolboxDoc,
       }),
       SplitBox({
         className: "devtools-responsive-container",
@@ -220,14 +233,14 @@ class MonitorPanel extends Component {
         minSize: "50px",
         maxSize: "80%",
         splitterSize: networkDetailsOpen ? 1 : 0,
-        startPanel: this.renderSearchPanel(),
+        startPanel: this.renderActionBar(),
         endPanel:
           networkDetailsOpen &&
-          NetworkDetailsPanel({
+          NetworkDetailsBar({
             ref: "endPanel",
             connector,
             openLink,
-            sourceMapService,
+            sourceMapURLService,
           }),
         endPanelCollapsed: !networkDetailsOpen,
         endPanelControl: true,
@@ -240,9 +253,9 @@ class MonitorPanel extends Component {
 
 module.exports = connect(
   state => ({
-    isEmpty: state.requests.requests.size == 0,
+    isEmpty: state.requests.requests.length == 0,
     networkDetailsOpen: state.ui.networkDetailsOpen,
-    panelOpen: state.search.panelOpen,
+    networkActionOpen: state.ui.networkActionOpen,
     request: getSelectedRequest(state),
     selectedRequestVisible: isSelectedRequestVisible(state),
   }),

@@ -27,14 +27,14 @@ namespace gmp {
 
 class GMPCapability {
  public:
-  explicit GMPCapability() {}
+  explicit GMPCapability() = default;
   GMPCapability(GMPCapability&& aOther)
       : mAPIName(std::move(aOther.mAPIName)),
         mAPITags(std::move(aOther.mAPITags)) {}
   explicit GMPCapability(const nsCString& aAPIName) : mAPIName(aAPIName) {}
   explicit GMPCapability(const GMPCapability& aOther) = default;
   nsCString mAPIName;
-  nsTArray<nsCString> mAPITags;
+  CopyableTArray<nsCString> mAPITags;
 
   static bool Supports(const nsTArray<GMPCapability>& aCapabilities,
                        const nsCString& aAPI, const nsTArray<nsCString>& aTags);
@@ -60,11 +60,11 @@ class GMPParent final
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(GMPParent)
 
-  explicit GMPParent(AbstractThread* aMainThread);
+  explicit GMPParent(nsISerialEventTarget* aThread);
 
   RefPtr<GenericPromise> Init(GeckoMediaPluginServiceParent* aService,
                               nsIFile* aPluginDir);
-  nsresult CloneFrom(const GMPParent* aOther);
+  void CloneFrom(const GMPParent* aOther);
 
   void Crash();
 
@@ -150,11 +150,11 @@ class GMPParent final
   RefPtr<GenericPromise> ReadGMPMetaData();
   RefPtr<GenericPromise> ReadGMPInfoFile(nsIFile* aFile);
   RefPtr<GenericPromise> ParseChromiumManifest(
-      const nsAString& aJSON);  // Main thread.
+      const nsAString& aJSON);  // Worker thread.
   RefPtr<GenericPromise> ReadChromiumManifestFile(
       nsIFile* aFile);  // GMP thread.
   void AddCrashAnnotations();
-  bool GetCrashID(nsString& aResult);
+  void GetCrashID(nsString& aResult);
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   mozilla::ipc::IPCResult RecvPGMPStorageConstructor(
@@ -181,7 +181,7 @@ class GMPParent final
   nsCString mDisplayName;  // name of plugin displayed to users
   nsCString mDescription;  // description of plugin for display to users
   nsCString mVersion;
-#ifdef XP_WIN
+#if defined(XP_WIN) || defined(XP_LINUX)
   nsCString mLibs;
 #endif
   nsString mAdapter;
@@ -214,7 +214,7 @@ class GMPParent final
   // to terminate gracefully.
   bool mHoldingSelfRef;
 
-  const RefPtr<AbstractThread> mMainThread;
+  const nsCOMPtr<nsISerialEventTarget> mWorkerThread;
 };
 
 }  // namespace gmp

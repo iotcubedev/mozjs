@@ -1,6 +1,7 @@
 import { CFRPageActions, PageAction } from "lib/CFRPageActions.jsm";
 import { FAKE_RECOMMENDATION } from "./constants";
 import { GlobalOverrider } from "test/unit/utils";
+import { CFRMessageProvider } from "lib/CFRMessageProvider.jsm";
 
 describe("CFRPageActions", () => {
   let sandbox;
@@ -12,9 +13,12 @@ describe("CFRPageActions", () => {
   let globals;
   let containerElem;
   let elements;
+  let announceStub;
+  let fakeRemoteL10n;
 
   const elementIDs = [
     "urlbar",
+    "urlbar-input",
     "contextual-feature-recommendation",
     "cfr-button",
     "cfr-label",
@@ -40,6 +44,8 @@ describe("CFRPageActions", () => {
     sandbox = sinon.createSandbox();
     clock = sandbox.useFakeTimers();
 
+    announceStub = sandbox.stub();
+    const A11yUtils = { announce: announceStub };
     fakeRecommendation = { ...FAKE_RECOMMENDATION };
     fakeHost = "mozilla.org";
     fakeBrowser = {
@@ -51,9 +57,18 @@ describe("CFRPageActions", () => {
     };
     dispatchStub = sandbox.stub();
 
+    fakeRemoteL10n = {
+      l10n: {},
+      reloadL10n: sandbox.stub(),
+      createElement: sandbox.stub().returns(document.createElement("div")),
+    };
+
+    const gURLBar = document.createElement("div");
+    gURLBar.textbox = document.createElement("div");
+
     globals = new GlobalOverrider();
     globals.set({
-      DOMLocalization: class {},
+      RemoteL10n: fakeRemoteL10n,
       promiseDocumentFlushed: sandbox
         .stub()
         .callsFake(fn => Promise.resolve(fn())),
@@ -63,6 +78,8 @@ describe("CFRPageActions", () => {
       },
       PrivateBrowsingUtils: { isWindowPrivate: sandbox.stub().returns(false) },
       gBrowser: { selectedBrowser: fakeBrowser },
+      A11yUtils,
+      gURLBar,
     });
     document.createXULElement = document.createElement;
 
@@ -93,22 +110,56 @@ describe("CFRPageActions", () => {
 
   describe("PageAction", () => {
     let pageAction;
-    let getStringsStub;
 
     beforeEach(() => {
       pageAction = new PageAction(window, dispatchStub);
-      getStringsStub = sandbox.stub(pageAction, "getStrings").resolves("");
+    });
+
+    describe("#addImpression", () => {
+      it("should call _sendTelemetry with the impression payload", () => {
+        const recommendation = {
+          id: "foo",
+          content: { bucket_id: "bar" },
+        };
+        sandbox.spy(pageAction, "_sendTelemetry");
+
+        pageAction.addImpression(recommendation);
+
+        assert.calledWith(pageAction._sendTelemetry, {
+          message_id: "foo",
+          bucket_id: "bar",
+          event: "IMPRESSION",
+        });
+      });
+      it("should include modelVersion if presented in the message", () => {
+        const recommendation = {
+          id: "foo",
+          content: { bucket_id: "bar" },
+          personalizedModelVersion: "model_version_1",
+        };
+        sandbox.spy(pageAction, "_sendTelemetry");
+
+        pageAction.addImpression(recommendation);
+
+        assert.calledWith(pageAction._sendTelemetry, {
+          message_id: "foo",
+          bucket_id: "bar",
+          event: "IMPRESSION",
+          event_context: {
+            modelVersion: "model_version_1",
+          },
+        });
+      });
     });
 
     describe("#showAddressBarNotifier", () => {
       it("should un-hideAddressBarNotifier the element and set the right label value", async () => {
-        const FAKE_NOTIFICATION_TEXT = "FAKE_NOTIFICATION_TEXT";
-        getStringsStub
-          .withArgs(fakeRecommendation.content.notification_text)
-          .resolves(FAKE_NOTIFICATION_TEXT);
         await pageAction.showAddressBarNotifier(fakeRecommendation);
         assert.isFalse(pageAction.container.hidden);
-        assert.equal(pageAction.label.value, FAKE_NOTIFICATION_TEXT);
+        assert.equal(
+          pageAction.label.value,
+          fakeRecommendation.content.notification_text
+        );
       });
       it("should wait for the document layout to flush", async () => {
         sandbox.spy(pageAction.label, "getClientRects");
@@ -123,11 +174,11 @@ describe("CFRPageActions", () => {
         await pageAction.showAddressBarNotifier(fakeRecommendation);
         const expectedWidth = pageAction.label.getClientRects()[0].width;
         assert.equal(
-          pageAction.urlbar.style.getPropertyValue("--cfr-label-width"),
+          pageAction.urlbarinput.style.getPropertyValue("--cfr-label-width"),
           `${expectedWidth}px`
         );
       });
-      it("should cause an expansion, and dispatch an impression iff `expand` is true", async () => {
+      it("should cause an expansion, and dispatch an impression if `expand` is true", async () => {
         sandbox.spy(pageAction, "_clearScheduledStateChanges");
         sandbox.spy(pageAction, "_expand");
         sandbox.spy(pageAction, "_dispatchImpression");
@@ -136,7 +187,7 @@ describe("CFRPageActions", () => {
         assert.notCalled(pageAction._dispatchImpression);
         clock.tick(1001);
         assert.notEqual(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "expanded"
         );
 
@@ -144,7 +195,7 @@ describe("CFRPageActions", () => {
         assert.calledOnce(pageAction._clearScheduledStateChanges);
         clock.tick(1001);
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "expanded"
         );
         assert.calledOnce(pageAction._dispatchImpression);
@@ -193,7 +244,7 @@ describe("CFRPageActions", () => {
         pageAction._expand();
         assert.calledOnce(pageAction._clearScheduledStateChanges);
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "expanded"
         );
       });
@@ -204,7 +255,7 @@ describe("CFRPageActions", () => {
         assert.lengthOf(pageAction.stateTransitionTimeoutIDs, 1);
         clock.tick(delay + 1);
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "expanded"
         );
       });
@@ -220,12 +271,15 @@ describe("CFRPageActions", () => {
         pageAction._collapse();
         assert.calledOnce(pageAction._clearScheduledStateChanges);
         assert.isNull(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state")
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state")
         );
-        pageAction.urlbar.setAttribute("cfr-recommendation-state", "expanded");
+        pageAction.urlbarinput.setAttribute(
+          "cfr-recommendation-state",
+          "expanded"
+        );
         pageAction._collapse();
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "collapsed"
         );
       });
@@ -245,7 +299,7 @@ describe("CFRPageActions", () => {
         clock.tick(delay + 1);
         // This time it was "expanded" so should now (after the delay) be "collapsed"
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "collapsed"
         );
       });
@@ -264,29 +318,21 @@ describe("CFRPageActions", () => {
     });
 
     describe("#_popupStateChange", () => {
-      it("should collapse and remove the notification on 'dismissed'", () => {
+      it("should collapse the notification on 'dismissed'", () => {
         pageAction._expand();
-        const fakeNotification = {};
 
-        pageAction.currentNotification = fakeNotification;
         pageAction._popupStateChange("dismissed");
         assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
+          pageAction.urlbarinput.getAttribute("cfr-recommendation-state"),
           "collapsed"
         );
-        assert.calledOnce(global.PopupNotifications.remove);
-        assert.calledWith(global.PopupNotifications.remove, fakeNotification);
       });
-      it("should collapse and remove the notification on 'removed'", () => {
+      it("should remove the notification on 'removed'", () => {
         pageAction._expand();
         const fakeNotification = {};
 
         pageAction.currentNotification = fakeNotification;
         pageAction._popupStateChange("removed");
-        assert.equal(
-          pageAction.urlbar.getAttribute("cfr-recommendation-state"),
-          "collapsed"
-        );
         assert.calledOnce(global.PopupNotifications.remove);
         assert.calledWith(global.PopupNotifications.remove, fakeNotification);
       });
@@ -355,12 +401,11 @@ describe("CFRPageActions", () => {
       ];
 
       beforeEach(() => {
-        getStringsStub.restore();
         formatMessagesStub = sandbox
           .stub()
           .withArgs({ id: "hello_world" })
           .resolves(localeStrings);
-        global.DOMLocalization.prototype.formatMessages = formatMessagesStub;
+        global.RemoteL10n.l10n.formatMessages = formatMessagesStub;
       });
 
       it("should return the argument if a string_id is not defined", async () => {
@@ -429,9 +474,10 @@ describe("CFRPageActions", () => {
       });
     });
 
-    describe("#_showPopupOnClick", () => {
+    describe("#_cfrUrlbarButtonClick", () => {
       let translateElementsStub;
       let setAttributesStub;
+      let getStringsStub;
       beforeEach(async () => {
         CFRPageActions.PageActionMap.set(fakeBrowser.ownerGlobal, pageAction);
         await CFRPageActions.addRecommendation(
@@ -440,6 +486,7 @@ describe("CFRPageActions", () => {
           fakeRecommendation,
           dispatchStub
         );
+        getStringsStub = sandbox.stub(pageAction, "getStrings").resolves("");
         getStringsStub
           .callsFake(async a => a) // eslint-disable-line max-nested-callbacks
           .withArgs({ string_id: "primary_button_id" })
@@ -472,29 +519,28 @@ describe("CFRPageActions", () => {
 
         translateElementsStub = sandbox.stub().resolves();
         setAttributesStub = sandbox.stub();
-        global.DOMLocalization.prototype.setAttributes = setAttributesStub;
-        global.DOMLocalization.prototype.translateElements = translateElementsStub;
+        global.RemoteL10n.l10n.setAttributes = setAttributesStub;
+        global.RemoteL10n.l10n.translateElements = translateElementsStub;
       });
 
       it("should call `.hideAddressBarNotifier` and do nothing if there is no recommendation for the selected browser", async () => {
         sandbox.spy(pageAction, "hideAddressBarNotifier");
         CFRPageActions.RecommendationMap.delete(fakeBrowser);
-        await pageAction._showPopupOnClick({});
+        await pageAction._cfrUrlbarButtonClick({});
         assert.calledOnce(pageAction.hideAddressBarNotifier);
         assert.notCalled(global.PopupNotifications.show);
       });
       it("should cancel any planned state changes", async () => {
         sandbox.spy(pageAction, "_clearScheduledStateChanges");
         assert.notCalled(pageAction._clearScheduledStateChanges);
-        await pageAction._showPopupOnClick({});
+        await pageAction._cfrUrlbarButtonClick({});
         assert.calledOnce(pageAction._clearScheduledStateChanges);
       });
       it("should set the right text values", async () => {
-        await pageAction._showPopupOnClick({});
+        await pageAction._cfrUrlbarButtonClick({});
         const headerLabel = elements["cfr-notification-header-label"];
         const headerLink = elements["cfr-notification-header-link"];
         const headerImage = elements["cfr-notification-header-image"];
-        const footerText = elements["cfr-notification-footer-text"];
         const footerLink = elements["cfr-notification-footer-learn-more-link"];
         assert.equal(
           headerLabel.value,
@@ -509,7 +555,12 @@ describe("CFRPageActions", () => {
           headerImage.getAttribute("tooltiptext"),
           fakeRecommendation.content.info_icon.label
         );
-        assert.equal(footerText.textContent, fakeRecommendation.content.text);
+        const htmlFooterEl = fakeRemoteL10n.createElement.args.find(
+          /* eslint-disable-next-line max-nested-callbacks */
+          ([doc, el, args]) =>
+            args && args.content === fakeRecommendation.content.text
+        );
+        assert.ok(htmlFooterEl);
         assert.equal(footerLink.value, "Learn more");
         assert.equal(
           footerLink.getAttribute("href"),
@@ -517,7 +568,7 @@ describe("CFRPageActions", () => {
         );
       });
       it("should add the rating correctly", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         const footerFilledStars =
           elements["cfr-notification-footer-filled-stars"];
         const footerEmptyStars =
@@ -533,7 +584,7 @@ describe("CFRPageActions", () => {
         );
       });
       it("should add the number of users correctly", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         const footerUsers = elements["cfr-notification-footer-users"];
         assert.isNull(footerUsers.getAttribute("hidden"));
         assert.equal(
@@ -542,7 +593,7 @@ describe("CFRPageActions", () => {
         );
       });
       it("should send the right telemetry", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         assert.calledWith(dispatchStub, {
           type: "DOORHANGER_TELEMETRY",
           data: {
@@ -554,11 +605,37 @@ describe("CFRPageActions", () => {
           },
         });
       });
+      it("should send modelVersion if presented in the message", async () => {
+        const recommendationWithModelVersion = {
+          ...fakeRecommendation,
+          personalizedModelVersion: "model_version_1",
+        };
+        CFRPageActions.clearRecommendations();
+        await CFRPageActions.addRecommendation(
+          fakeBrowser,
+          fakeHost,
+          recommendationWithModelVersion,
+          dispatchStub
+        );
+        await pageAction._cfrUrlbarButtonClick();
+
+        assert.calledWith(dispatchStub, {
+          type: "DOORHANGER_TELEMETRY",
+          data: {
+            action: "cfr_user_event",
+            source: "CFR",
+            message_id: fakeRecommendation.id,
+            bucket_id: fakeRecommendation.content.bucket_id,
+            event: "CLICK_DOORHANGER",
+            event_context: { modelVersion: "model_version_1" },
+          },
+        });
+      });
       it("should set the main action correctly", async () => {
         sinon
           .stub(CFRPageActions, "_fetchLatestAddonVersion")
           .resolves("latest-addon.xpi");
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         const mainAction = global.PopupNotifications.show.firstCall.args[4]; // eslint-disable-line prefer-destructuring
         assert.deepEqual(mainAction.label, {
           value: "Primary Button",
@@ -596,7 +673,7 @@ describe("CFRPageActions", () => {
         assert.isFalse(CFRPageActions.RecommendationMap.has(fakeBrowser));
       });
       it("should set the secondary action correctly", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         // eslint-disable-next-line prefer-destructuring
         const [
           secondaryAction,
@@ -625,7 +702,7 @@ describe("CFRPageActions", () => {
         assert.notCalled(pageAction.hideAddressBarNotifier);
       });
       it("should send right telemetry for BLOCK secondary action", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         // eslint-disable-next-line prefer-destructuring
         const blockAction = global.PopupNotifications.show.firstCall.args[5][1];
 
@@ -654,7 +731,7 @@ describe("CFRPageActions", () => {
         assert.isFalse(CFRPageActions.RecommendationMap.has(fakeBrowser));
       });
       it("should send right telemetry for MANAGE secondary action", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         // eslint-disable-next-line prefer-destructuring
         const manageAction =
           global.PopupNotifications.show.firstCall.args[5][2];
@@ -682,7 +759,7 @@ describe("CFRPageActions", () => {
         assert.notCalled(pageAction.hideAddressBarNotifier);
       });
       it("should call PopupNotifications.show with the right arguments", async () => {
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
         assert.calledWith(
           global.PopupNotifications.show,
           fakeBrowser,
@@ -695,29 +772,35 @@ describe("CFRPageActions", () => {
             popupIconURL: fakeRecommendation.content.addon.icon,
             hideClose: true,
             eventCallback: pageAction._popupStateChange,
+            persistent: false,
           }
         );
       });
       it("should show the bullet list details", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
 
-        assert.calledOnce(translateElementsStub);
+        assert.ok(
+          fakeRemoteL10n.createElement.args.find(
+            /* eslint-disable-next-line max-nested-callbacks */
+            ([doc, el, args]) => el === "span" && args && args.content
+          )
+        );
       });
       it("should set the data-l10n-id on the list element", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
 
-        assert.calledOnce(setAttributesStub);
-        assert.calledWith(
-          setAttributesStub,
-          sinon.match.any,
-          fakeRecommendation.content.descriptionDetails.steps[0].string_id
-        );
+        for (let step of fakeRecommendation.content.descriptionDetails.steps) {
+          fakeRemoteL10n.createElement.args.find(
+            /* eslint-disable-next-line max-nested-callbacks */
+            ([doc, el, args]) => el === "span" && args && args.content === step
+          );
+        }
       });
       it("should set the correct data-notification-category", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
 
         assert.equal(
           elements["contextual-feature-recommendation-notification"].dataset
@@ -728,7 +811,7 @@ describe("CFRPageActions", () => {
       it("should send PIN event on primary action click", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
         sandbox.stub(pageAction, "_sendTelemetry");
-        await pageAction._showPopupOnClick();
+        await pageAction._cfrUrlbarButtonClick();
 
         const [
           ,
@@ -739,12 +822,70 @@ describe("CFRPageActions", () => {
         ] = global.PopupNotifications.show.firstCall.args;
         callback();
 
-        // First call is triggered by `_showPopupOnClick`
+        // First call is triggered by `_cfrUrlbarButtonClick`
         assert.propertyVal(
           pageAction._sendTelemetry.secondCall.args[0],
           "event",
           "PIN"
         );
+      });
+    });
+    describe("#_cfrUrlbarButtonClick/cfr_urlbar_chiclet", () => {
+      const heartbeatRecommendation = CFRMessageProvider.getMessages().find(
+        m => m.template === "cfr_urlbar_chiclet"
+      );
+      beforeEach(async () => {
+        CFRPageActions.PageActionMap.set(fakeBrowser.ownerGlobal, pageAction);
+        await CFRPageActions.addRecommendation(
+          fakeBrowser,
+          fakeHost,
+          heartbeatRecommendation,
+          dispatchStub
+        );
+      });
+      it("should dispatch a click event", async () => {
+        await pageAction._cfrUrlbarButtonClick({});
+
+        assert.calledWith(dispatchStub, {
+          type: "DOORHANGER_TELEMETRY",
+          data: {
+            action: "cfr_user_event",
+            source: "CFR",
+            message_id: heartbeatRecommendation.id,
+            bucket_id: heartbeatRecommendation.content.bucket_id,
+            event: "CLICK_DOORHANGER",
+          },
+        });
+      });
+      it("should dispatch a USER_ACTION for chiclet_open_url layout", async () => {
+        await pageAction._cfrUrlbarButtonClick({});
+
+        assert.calledWith(dispatchStub, {
+          type: "USER_ACTION",
+          data: {
+            data: {
+              args: heartbeatRecommendation.content.action.url,
+              where: heartbeatRecommendation.content.action.where,
+            },
+            type: "OPEN_URL",
+          },
+        });
+      });
+      it("should block the message after the click", async () => {
+        await pageAction._cfrUrlbarButtonClick({});
+
+        assert.calledWith(dispatchStub, {
+          type: "BLOCK_MESSAGE_BY_ID",
+          data: { id: heartbeatRecommendation.id },
+        });
+      });
+      it("should remove the button and browser entry", async () => {
+        sandbox.spy(pageAction, "hideAddressBarNotifier");
+
+        await pageAction._cfrUrlbarButtonClick({});
+
+        assert.calledOnce(pageAction.hideAddressBarNotifier);
+        assert.isFalse(CFRPageActions.RecommendationMap.has(fakeBrowser));
       });
     });
   });
@@ -1065,6 +1206,32 @@ describe("CFRPageActions", () => {
         for (const browser of browsers) {
           assert.isFalse(CFRPageActions.RecommendationMap.has(browser));
         }
+      });
+    });
+
+    describe("reloadL10n", () => {
+      const createFakePageAction = () => ({
+        hideAddressBarNotifier() {},
+        reloadL10n: sandbox.stub(),
+      });
+      const windows = [{}, {}, { closed: true }];
+
+      beforeEach(() => {
+        CFRPageActions.PageActionMap.set(windows[0], createFakePageAction());
+        CFRPageActions.PageActionMap.set(windows[2], createFakePageAction());
+        globals.set({ Services: { wm: { getEnumerator: () => windows } } });
+      });
+
+      it("should call reloadL10n for all the PageActions of any existing, non-closed windows", () => {
+        const pageActions = windows.map(win =>
+          CFRPageActions.PageActionMap.get(win)
+        );
+        CFRPageActions.reloadL10n();
+
+        // Only the first window had a PageAction and wasn't closed
+        assert.calledOnce(pageActions[0].reloadL10n);
+        assert.isUndefined(pageActions[1]);
+        assert.notCalled(pageActions[2].reloadL10n);
       });
     });
   });

@@ -358,7 +358,6 @@ class RestyleManager {
   void NextRestyleIsForCSSRuleChanges() { mRestyleForCSSRuleChanges = true; }
 
   void RebuildAllStyleData(nsChangeHint aExtraHint, RestyleHint);
-  void PostRebuildAllStyleDataEvent(nsChangeHint aExtraHint, RestyleHint);
 
   void ProcessPendingRestyles();
   void ProcessAllPendingAttributeAndStateInvalidations();
@@ -464,8 +463,7 @@ class RestyleManager {
    * attribute changes that happens not to have any effect on the style of that
    * element or any descendant or sibling.
    */
-  bool ProcessPostTraversal(Element* aElement, ComputedStyle* aParentContext,
-                            ServoRestyleState& aRestyleState,
+  bool ProcessPostTraversal(Element* aElement, ServoRestyleState& aRestyleState,
                             ServoPostTraversalFlags aFlags);
 
   struct TextPostTraversalState;

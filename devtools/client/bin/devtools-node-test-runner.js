@@ -26,19 +26,23 @@ const TEST_TYPES = {
 
 const SUITES = {
   aboutdebugging: {
-    path: "../aboutdebugging/test/jest",
+    path: "../aboutdebugging/test/node",
     type: TEST_TYPES.JEST,
   },
   accessibility: {
-    path: "../accessibility/test/jest",
+    path: "../accessibility/test/node",
     type: TEST_TYPES.JEST,
   },
   application: {
-    path: "../application/test/components",
+    path: "../application/test/node",
+    type: TEST_TYPES.JEST,
+  },
+  compatibility: {
+    path: "../inspector/compatibility/test/node",
     type: TEST_TYPES.JEST,
   },
   framework: {
-    path: "../framework/test/jest",
+    path: "../framework/test/node",
     type: TEST_TYPES.JEST,
   },
   netmonitor: {
@@ -160,7 +164,7 @@ function runTests() {
     console.log(`[devtools-node-test-runner] Test suite [${suite}] failed`);
     console.log(
       "[devtools-node-test-runner] You can find documentation about the " +
-        "devtools node tests at https://docs.firefox-dev.tools/tests/node-tests.html"
+        "devtools node tests at https://firefox-source-docs.mozilla.org/devtools/tests/node-tests.html"
     );
   }
   return success;

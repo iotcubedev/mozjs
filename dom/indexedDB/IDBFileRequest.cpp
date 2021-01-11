@@ -37,15 +37,12 @@ IDBFileRequest::IDBFileRequest(IDBFileHandle* aFileHandle,
 IDBFileRequest::~IDBFileRequest() { AssertIsOnOwningThread(); }
 
 // static
-already_AddRefed<IDBFileRequest> IDBFileRequest::Create(
-    IDBFileHandle* aFileHandle, bool aWrapAsDOMRequest) {
+RefPtr<IDBFileRequest> IDBFileRequest::Create(IDBFileHandle* aFileHandle,
+                                              bool aWrapAsDOMRequest) {
   MOZ_ASSERT(aFileHandle);
   aFileHandle->AssertIsOnOwningThread();
 
-  RefPtr<IDBFileRequest> request =
-      new IDBFileRequest(aFileHandle, aWrapAsDOMRequest);
-
-  return request.forget();
+  return new IDBFileRequest(aFileHandle, aWrapAsDOMRequest);
 }
 
 void IDBFileRequest::FireProgressEvent(uint64_t aLoaded, uint64_t aTotal) {
@@ -63,29 +60,8 @@ void IDBFileRequest::FireProgressEvent(uint64_t aLoaded, uint64_t aTotal) {
   init.mTotal = aTotal;
 
   RefPtr<ProgressEvent> event =
-      ProgressEvent::Constructor(this, NS_LITERAL_STRING("progress"), init);
+      ProgressEvent::Constructor(this, u"progress"_ns, init);
   DispatchTrustedEvent(event);
-}
-
-void IDBFileRequest::SetResultCallback(ResultCallback* aCallback) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(aCallback);
-
-  AutoJSAPI autoJS;
-  if (NS_WARN_IF(!autoJS.Init(GetOwnerGlobal()))) {
-    FireError(NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR);
-    return;
-  }
-
-  JSContext* cx = autoJS.cx();
-
-  JS::Rooted<JS::Value> result(cx);
-  nsresult rv = aCallback->GetResult(cx, &result);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    FireError(rv);
-  } else {
-    FireSuccess(result);
-  }
 }
 
 NS_IMPL_ADDREF_INHERITED(IDBFileRequest, DOMRequest)

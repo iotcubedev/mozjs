@@ -21,6 +21,8 @@
 // 3. done
 
 // -1 then initialized with an actual port from the serversocket
+"use strict";
+
 var socketserver_port = -1;
 
 const CC = Components.Constructor;
@@ -66,6 +68,7 @@ var accepted = false;
 var acceptedSocket;
 var state = STATE_NONE;
 var transportAvailable = false;
+var proxiedChannel;
 var listener = {
   expectedCode: -1, // uninitialized
 
@@ -79,7 +82,7 @@ var listener = {
     if (state === STATE_COMPLETED) {
       Assert.equal(transportAvailable, false, "transport available not called");
       Assert.equal(status, 0x80004005, "error code matches");
-
+      Assert.equal(proxiedChannel.httpProxyConnectResponseCode, 200);
       nextTest();
       return;
     }
@@ -125,7 +128,7 @@ var connectHandler = {
   onOutputStreamReady: output => {
     writeData(output);
   },
-  QueryInterface: () => {
+  QueryInterface: iid => {
     if (
       iid.equals(Ci.nsISupports) ||
       iid.equals(Ci.nsIInputStreamCallback) ||
@@ -133,7 +136,7 @@ var connectHandler = {
     ) {
       return this;
     }
-    throw Cr.NS_ERROR_NO_INTERFACE;
+    throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
   },
 };
 
@@ -213,7 +216,7 @@ function makeChan(url) {
   }
 
   var flags =
-    Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL |
+    Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL |
     Ci.nsILoadInfo.SEC_DONT_FOLLOW_REDIRECTS |
     Ci.nsILoadInfo.SEC_COOKIES_OMIT;
 
@@ -262,7 +265,7 @@ function socketAccepted(socket, transport) {
 }
 
 function stopListening(socket, status) {
-  if (do_throw) {
+  if (tests && tests.length !== 0 && do_throw) {
     do_throw("should never stop");
   }
 }
@@ -290,6 +293,7 @@ function test_connectonly() {
   Services.prefs.setIntPref("network.proxy.type", 1);
 
   var chan = makeChan();
+  proxiedChannel = chan.QueryInterface(Ci.nsIProxiedChannel);
   chan.asyncOpen(listener);
 
   do_test_pending();

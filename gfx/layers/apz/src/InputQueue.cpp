@@ -16,8 +16,8 @@
 #include "mozilla/StaticPrefs_apz.h"
 #include "mozilla/StaticPrefs_layout.h"
 
-#define INPQ_LOG(...)
-// #define INPQ_LOG(...) printf_stderr("INPQ: " __VA_ARGS__)
+static mozilla::LazyLogModule sApzInpLog("apz.inputqueue");
+#define INPQ_LOG(...) MOZ_LOG(sApzInpLog, LogLevel::Debug, (__VA_ARGS__))
 
 namespace mozilla {
 namespace layers {
@@ -50,6 +50,11 @@ nsEventStatus InputQueue::ReceiveInputEvent(
     case PANGESTURE_INPUT: {
       const PanGestureInput& event = aEvent.AsPanGestureInput();
       return ReceivePanGestureInput(aTarget, aFlags, event, aOutInputBlockId);
+    }
+
+    case PINCHGESTURE_INPUT: {
+      const PinchGestureInput& event = aEvent.AsPinchGestureInput();
+      return ReceivePinchGestureInput(aTarget, aFlags, event, aOutInputBlockId);
     }
 
     case MOUSE_INPUT: {
@@ -142,7 +147,8 @@ nsEventStatus InputQueue::ReceiveTouchInput(
       return nsEventStatus_eIgnore;
     }
 
-    INPQ_LOG("received new event in block %p\n", block);
+    INPQ_LOG("received new touch event (type=%d) in block %p\n", aEvent.mType,
+             block);
   }
 
   if (aOutInputBlockId) {
@@ -267,7 +273,7 @@ nsEventStatus InputQueue::ReceiveScrollWheelInput(
     CancelAnimationsForNewBlock(block, ExcludeWheel);
     MaybeRequestContentResponse(aTarget, block);
   } else {
-    INPQ_LOG("received new event in block %p\n", block);
+    INPQ_LOG("received new wheel event in block %p\n", block);
   }
 
   if (aOutInputBlockId) {
@@ -309,7 +315,7 @@ nsEventStatus InputQueue::ReceiveKeyboardInput(
 
     mActiveKeyboardBlock = block;
   } else {
-    INPQ_LOG("received new event in block %p\n", block);
+    INPQ_LOG("received new keyboard event in block %p\n", block);
   }
 
   if (aOutInputBlockId) {
@@ -392,7 +398,8 @@ nsEventStatus InputQueue::ReceivePanGestureInput(
     CancelAnimationsForNewBlock(block);
     MaybeRequestContentResponse(aTarget, block);
   } else {
-    INPQ_LOG("received new event in block %p\n", block);
+    INPQ_LOG("received new pan event (type=%d) in block %p\n", aEvent.mType,
+             block);
   }
 
   if (aOutInputBlockId) {
@@ -405,6 +412,55 @@ nsEventStatus InputQueue::ReceivePanGestureInput(
   // target (confirmed or not) from the block, which is what
   // ProcessQueue() does.
   mQueuedInputs.AppendElement(MakeUnique<QueuedInput>(event, *block));
+  ProcessQueue();
+
+  return result;
+}
+
+nsEventStatus InputQueue::ReceivePinchGestureInput(
+    const RefPtr<AsyncPanZoomController>& aTarget,
+    TargetConfirmationFlags aFlags, const PinchGestureInput& aEvent,
+    uint64_t* aOutInputBlockId) {
+  PinchGestureBlockState* block = nullptr;
+  if (aEvent.mType != PinchGestureInput::PINCHGESTURE_START) {
+    block = mActivePinchGestureBlock.get();
+  }
+
+  nsEventStatus result = nsEventStatus_eConsumeDoDefault;
+
+  if (!block || block->WasInterrupted()) {
+    if (aEvent.mType != PinchGestureInput::PINCHGESTURE_START) {
+      // Only PINCHGESTURE_START events are allowed to start a new pinch gesture
+      // block.
+      INPQ_LOG("pinchgesture block %p was interrupted %d\n", block,
+               block ? block->WasInterrupted() : 0);
+      return nsEventStatus_eConsumeDoDefault;
+    }
+    block = new PinchGestureBlockState(aTarget, aFlags);
+    INPQ_LOG("started new pinch gesture block %p id %" PRIu64
+             " for target %p\n",
+             block, block->GetBlockId(), aTarget.get());
+
+    mActivePinchGestureBlock = block;
+    block->SetNeedsToWaitForContentResponse(true);
+
+    CancelAnimationsForNewBlock(block);
+    MaybeRequestContentResponse(aTarget, block);
+  } else {
+    INPQ_LOG("received new pinch event (type=%d) in block %p\n", aEvent.mType,
+             block);
+  }
+
+  if (aOutInputBlockId) {
+    *aOutInputBlockId = block->GetBlockId();
+  }
+
+  // Note that the |aTarget| the APZCTM sent us may contradict the confirmed
+  // target set on the block. In this case the confirmed target (which may be
+  // null) should take priority. This is equivalent to just always using the
+  // target (confirmed or not) from the block, which is what
+  // ProcessQueue() does.
+  mQueuedInputs.AppendElement(MakeUnique<QueuedInput>(aEvent, *block));
   ProcessQueue();
 
   return result;
@@ -504,6 +560,11 @@ PanGestureBlockState* InputQueue::GetCurrentPanGestureBlock() const {
   return block ? block->AsPanGestureBlock() : mActivePanGestureBlock.get();
 }
 
+PinchGestureBlockState* InputQueue::GetCurrentPinchGestureBlock() const {
+  InputBlockState* block = GetCurrentBlock();
+  return block ? block->AsPinchGestureBlock() : mActivePinchGestureBlock.get();
+}
+
 KeyboardBlockState* InputQueue::GetCurrentKeyboardBlock() const {
   InputBlockState* block = GetCurrentBlock();
   return block ? block->AsKeyboardBlock() : mActiveKeyboardBlock.get();
@@ -567,10 +628,14 @@ void InputQueue::ScheduleMainThreadTimeout(
     // the input block has at least one input event in mQueuedInputs, and
     // the event that triggered this call may not have been added to
     // mQueuedInputs yet.
-    mImmediateTimeout = timeoutTask.forget();
+    mImmediateTimeout = std::move(timeoutTask);
   } else {
     aTarget->PostDelayedTask(timeoutTask.forget(), timeout);
   }
+}
+
+InputBlockState* InputQueue::GetBlockForId(uint64_t aInputBlockId) {
+  return FindBlockForId(aInputBlockId, nullptr);
 }
 
 InputBlockState* InputQueue::FindBlockForId(uint64_t aInputBlockId,
@@ -596,6 +661,9 @@ InputBlockState* InputQueue::FindBlockForId(uint64_t aInputBlockId,
   } else if (mActivePanGestureBlock &&
              mActivePanGestureBlock->GetBlockId() == aInputBlockId) {
     block = mActivePanGestureBlock.get();
+  } else if (mActivePinchGestureBlock &&
+             mActivePinchGestureBlock->GetBlockId() == aInputBlockId) {
+    block = mActivePinchGestureBlock.get();
   } else if (mActiveKeyboardBlock &&
              mActiveKeyboardBlock->GetBlockId() == aInputBlockId) {
     block = mActiveKeyboardBlock.get();
@@ -749,6 +817,13 @@ void InputQueue::ProcessQueue() {
     // target may be null here if the initial target was unconfirmed and then
     // we later got a confirmed null target. in that case drop the events.
     if (target) {
+      // If the event is targeting a different APZC than the previous one,
+      // we want to clear the previous APZC's gesture state regardless of
+      // whether we're actually dispatching the event or not.
+      if (mLastActiveApzc && mLastActiveApzc != target &&
+          mTouchCounter.GetActiveTouchCount() > 0) {
+        mLastActiveApzc->ResetTouchInputState();
+      }
       if (curBlock->ShouldDropEvents()) {
         if (curBlock->AsTouchBlock()) {
           target->ResetTouchInputState();
@@ -772,6 +847,9 @@ void InputQueue::ProcessQueue() {
   }
   if (CanDiscardBlock(mActivePanGestureBlock)) {
     mActivePanGestureBlock = nullptr;
+  }
+  if (CanDiscardBlock(mActivePinchGestureBlock)) {
+    mActivePinchGestureBlock = nullptr;
   }
   if (CanDiscardBlock(mActiveKeyboardBlock)) {
     mActiveKeyboardBlock = nullptr;
@@ -797,10 +875,6 @@ bool InputQueue::CanDiscardBlock(InputBlockState* aBlock) {
 
 void InputQueue::UpdateActiveApzc(
     const RefPtr<AsyncPanZoomController>& aNewActive) {
-  if (mLastActiveApzc && mLastActiveApzc != aNewActive &&
-      mTouchCounter.GetActiveTouchCount() > 0) {
-    mLastActiveApzc->ResetTouchInputState();
-  }
   mLastActiveApzc = aNewActive;
 }
 
@@ -812,6 +886,7 @@ void InputQueue::Clear() {
   mActiveWheelBlock = nullptr;
   mActiveDragBlock = nullptr;
   mActivePanGestureBlock = nullptr;
+  mActivePinchGestureBlock = nullptr;
   mActiveKeyboardBlock = nullptr;
   mLastActiveApzc = nullptr;
 }

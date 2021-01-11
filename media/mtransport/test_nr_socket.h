@@ -193,7 +193,7 @@ class TestNat {
  private:
   std::set<TestNrSocket*> sockets_;
 
-  ~TestNat() {}
+  ~TestNat() = default;
 };
 
 /**
@@ -225,7 +225,6 @@ class TestNrSocket : public NrSocketBase {
 
   int listen(int backlog) override;
   int accept(nr_transport_addr* addrp, nr_socket** sockp) override;
-  bool IsProxied() const override;
   int async_wait(int how, NR_async_cb cb, void* cb_arg, char* function,
                  int line) override;
   int cancel(int how) override;
@@ -252,7 +251,7 @@ class TestNrSocket : public NrSocketBase {
     NS_INLINE_DECL_THREADSAFE_REFCOUNTING(UdpPacket);
 
    private:
-    ~UdpPacket() {}
+    ~UdpPacket() = default;
   };
 
   class PortMapping {

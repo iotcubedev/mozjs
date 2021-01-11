@@ -11,6 +11,7 @@
 
 #include "jsfriendapi.h"
 
+#include "js/Array.h"  // JS::IsArrayAnswer
 #include "js/CallNonGenericMethod.h"
 #include "js/Class.h"
 
@@ -56,9 +57,6 @@ class JS_FRIEND_API Wrapper;
  *
  * -   DOM objects with special property behavior, like named getters
  *     (dom/bindings/Codegen.py generates these proxies from WebIDL)
- *
- * -   semi-transparent use of objects that live in other processes
- *     (CPOWs, implemented in js/ipc)
  *
  * ### Proxies and internal methods
  *
@@ -319,6 +317,22 @@ class JS_FRIEND_API BaseProxyHandler {
                    HandleValue v, HandleValue receiver,
                    ObjectOpResult& result) const;
 
+  // Private fields don't use [[Has]], [[Get]] and [[Set]] semantics, as they
+  // technically use a weak-map semantics, however we end up on these paths with
+  // our implementation.
+  virtual bool hasPrivate(JSContext* cx, HandleObject proxy, HandleId id,
+                          bool* bp) const;
+  virtual bool getPrivate(JSContext* cx, HandleObject proxy,
+                          HandleValue receiver, HandleId id,
+                          MutableHandleValue vp) const;
+  virtual bool setPrivate(JSContext* cx, HandleObject proxy, HandleId id,
+                          HandleValue v, HandleValue receiver,
+                          ObjectOpResult& result) const;
+
+  virtual bool definePrivateField(JSContext* cx, HandleObject proxy,
+                                  HandleId id, Handle<PropertyDescriptor> desc,
+                                  ObjectOpResult& result) const;
+
   /*
    * [[Call]] and [[Construct]] are standard internal methods but according
    * to the spec, they are not present on every object.
@@ -388,6 +402,8 @@ namespace detail {
 //
 // Every proxy has a ProxyValueArray that contains the following Values:
 //
+// - The expando slot. This is used to hold private fields should they be
+//   stamped into a non-forwarding proxy type.
 // - The private slot.
 // - The reserved slots. The number of slots is determined by the proxy's Class.
 //
@@ -421,10 +437,12 @@ struct ProxyReservedSlots {
 };
 
 struct ProxyValueArray {
+  Value expandoSlot;
   Value privateSlot;
   ProxyReservedSlots reservedSlots;
 
   void init(size_t nreserved) {
+    expandoSlot = JS::ObjectOrNullValue(nullptr);
     privateSlot = JS::UndefinedValue();
     reservedSlots.init(nreserved);
   }
@@ -507,6 +525,10 @@ inline const Value& GetProxyPrivate(const JSObject* obj) {
   return detail::GetProxyDataLayout(obj)->values()->privateSlot;
 }
 
+inline const Value& GetProxyExpando(const JSObject* obj) {
+  return detail::GetProxyDataLayout(obj)->values()->expandoSlot;
+}
+
 inline JSObject* GetProxyTargetObject(JSObject* obj) {
   return GetProxyPrivate(obj).toObjectOrNull();
 }
@@ -554,19 +576,11 @@ inline bool IsScriptedProxy(const JSObject* obj) {
 class MOZ_STACK_CLASS ProxyOptions {
  protected:
   /* protected constructor for subclass */
-  explicit ProxyOptions(bool singletonArg, bool lazyProtoArg = false)
-      : singleton_(singletonArg),
-        lazyProto_(lazyProtoArg),
-        clasp_(&ProxyClass) {}
+  explicit ProxyOptions(bool lazyProtoArg)
+      : lazyProto_(lazyProtoArg), clasp_(&ProxyClass) {}
 
  public:
-  ProxyOptions() : singleton_(false), lazyProto_(false), clasp_(&ProxyClass) {}
-
-  bool singleton() const { return singleton_; }
-  ProxyOptions& setSingleton(bool flag) {
-    singleton_ = flag;
-    return *this;
-  }
+  ProxyOptions() : ProxyOptions(false) {}
 
   bool lazyProto() const { return lazyProto_; }
   ProxyOptions& setLazyProto(bool flag) {
@@ -581,12 +595,15 @@ class MOZ_STACK_CLASS ProxyOptions {
   }
 
  private:
-  bool singleton_;
   bool lazyProto_;
   const JSClass* clasp_;
 };
 
 JS_FRIEND_API JSObject* NewProxyObject(
+    JSContext* cx, const BaseProxyHandler* handler, HandleValue priv,
+    JSObject* proto, const ProxyOptions& options = ProxyOptions());
+
+JS_FRIEND_API JSObject* NewSingletonProxyObject(
     JSContext* cx, const BaseProxyHandler* handler, HandleValue priv,
     JSObject* proto, const ProxyOptions& options = ProxyOptions());
 
@@ -725,14 +742,17 @@ constexpr unsigned CheckProxyFlags() {
   return Flags;
 }
 
-#define PROXY_CLASS_DEF(name, flags)                                       \
+#define PROXY_CLASS_DEF_WITH_CLASS_SPEC(name, flags, classSpec)            \
   {                                                                        \
     name,                                                                  \
         JSClass::NON_NATIVE | JSCLASS_IS_PROXY |                           \
             JSCLASS_DELAY_METADATA_BUILDER | js::CheckProxyFlags<flags>(), \
-        &js::ProxyClassOps, JS_NULL_CLASS_SPEC, &js::ProxyClassExtension,  \
+        &js::ProxyClassOps, classSpec, &js::ProxyClassExtension,           \
         &js::ProxyObjectOps                                                \
   }
+
+#define PROXY_CLASS_DEF(name, flags) \
+  PROXY_CLASS_DEF_WITH_CLASS_SPEC(name, flags, JS_NULL_CLASS_SPEC)
 
 // Converts a proxy into a DeadObjectProxy that will throw exceptions on all
 // access. This will run the proxy's finalizer to perform clean-up before the

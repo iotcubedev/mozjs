@@ -14,16 +14,6 @@ const TEST_URL =
   "</body>";
 
 addRDMTask(TEST_URL, async function({ ui, manager }) {
-  // Turn on the pref that allows meta viewport support.
-  await SpecialPowers.pushPrefEnv({
-    set: [["devtools.responsive.metaViewport.enabled", true]],
-  });
-
-  const store = ui.toolWindow.store;
-
-  // Wait until the viewport has been added.
-  await waitUntilState(store, state => state.viewports.length == 1);
-
   info("--- Starting viewport test output ---");
 
   // We're going to take a 300,600 viewport (before), reload it,
@@ -38,7 +28,7 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
     },
     {
       metaSupport: true,
-      before: [0.5, 600, 1200],
+      before: [0.5, 300, 600],
       after: [1.0, 600, 300],
     },
   ];
@@ -54,7 +44,7 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
     await setTouchAndMetaViewportSupport(ui, e.metaSupport);
 
     // Get to the initial size and check values.
-    await setViewportSize(ui, manager, 300, 600);
+    await setViewportSizeAndAwaitReflow(ui, manager, 300, 600);
     await testViewportZoomWidthAndHeight(
       message + " before resize",
       ui,
@@ -79,7 +69,7 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
     );
 
     // Move to the smaller size.
-    await setViewportSize(ui, manager, 600, 300);
+    await setViewportSizeAndAwaitReflow(ui, manager, 600, 300);
     await testViewportZoomWidthAndHeight(
       message + " after resize",
       ui,
@@ -89,7 +79,7 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
     );
 
     // Go back to the initial size and check again.
-    await setViewportSize(ui, manager, 300, 600);
+    await setViewportSizeAndAwaitReflow(ui, manager, 300, 600);
     await testViewportZoomWidthAndHeight(
       message + " return to initial size",
       ui,

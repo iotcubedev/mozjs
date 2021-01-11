@@ -19,7 +19,6 @@ import {
   getActiveSearch,
   getQuickOpenEnabled,
   getOrientation,
-  getCanRewind,
 } from "../selectors";
 
 import type { OrientationType } from "../reducers/types";
@@ -57,16 +56,18 @@ import WelcomeBox from "./WelcomeBox";
 import EditorTabs from "./Editor/Tabs";
 import EditorFooter from "./Editor/Footer";
 import QuickOpenModal from "./QuickOpenModal";
-import WhyPaused from "./SecondaryPanes/WhyPaused";
 
+type OwnProps = {|
+  toolboxDoc: Object,
+|};
 type Props = {
-  selectedSource: Source,
+  selectedSource: ?Source,
   orientation: OrientationType,
   startPanelCollapsed: boolean,
   endPanelCollapsed: boolean,
-  activeSearch: ActiveSearchType,
+  activeSearch: ?ActiveSearchType,
   quickOpenEnabled: boolean,
-  canRewind: boolean,
+  toolboxDoc: Object,
   setActiveSearch: typeof actions.setActiveSearch,
   closeActiveSearch: typeof actions.closeActiveSearch,
   closeProjectSearch: typeof actions.closeProjectSearch,
@@ -90,7 +91,7 @@ class App extends Component<Props, State> {
   onEscape: Function;
   onCommandSlash: Function;
 
-  constructor(props) {
+  constructor(props: Props) {
     super(props);
     this.state = {
       shortcutsModalEnabled: false,
@@ -99,9 +100,13 @@ class App extends Component<Props, State> {
     };
   }
 
-  getChildContext = () => {
-    return { shortcuts, l10n: L10N };
-  };
+  getChildContext() {
+    return {
+      toolboxDoc: this.props.toolboxDoc,
+      shortcuts,
+      l10n: L10N,
+    };
+  }
 
   componentDidMount() {
     horizontalLayoutBreakpoint.addListener(this.onLayoutChange);
@@ -145,7 +150,7 @@ class App extends Component<Props, State> {
     shortcuts.off("Escape", this.onEscape);
   }
 
-  onEscape = (_, e) => {
+  onEscape = (_: mixed, e: KeyboardEvent) => {
     const {
       activeSearch,
       closeActiveSearch,
@@ -179,7 +184,7 @@ class App extends Component<Props, State> {
   }
 
   toggleQuickOpenModal = (
-    _,
+    _: mixed,
     e: SyntheticEvent<HTMLElement>,
     query?: string
   ) => {
@@ -227,17 +232,8 @@ class App extends Component<Props, State> {
             startPanelCollapsed={startPanelCollapsed}
             endPanelCollapsed={endPanelCollapsed}
             horizontal={horizontal}
-            startPanelSize={startPanelSize}
-            endPanelSize={endPanelSize}
           />
-          <Editor
-            horizontal={horizontal}
-            startPanelSize={startPanelSize}
-            endPanelSize={endPanelSize}
-          />
-          {this.props.endPanelCollapsed ? (
-            <WhyPaused horizontal={horizontal} />
-          ) : null}
+          <Editor startPanelSize={startPanelSize} endPanelSize={endPanelSize} />
           {!this.props.selectedSource ? (
             <WelcomeBox
               horizontal={horizontal}
@@ -298,12 +294,7 @@ class App extends Component<Props, State> {
           />
         }
         endPanelControl={true}
-        endPanel={
-          <SecondaryPanes
-            horizontal={horizontal}
-            toggleShortcutsModal={() => this.toggleShortcutsModal()}
-          />
-        }
+        endPanel={<SecondaryPanes horizontal={horizontal} />}
         endPanelCollapsed={endPanelCollapsed}
       />
     );
@@ -326,9 +317,9 @@ class App extends Component<Props, State> {
   }
 
   render() {
-    const { quickOpenEnabled, canRewind } = this.props;
+    const { quickOpenEnabled } = this.props;
     return (
-      <div className={classnames("debugger", { "can-rewind": canRewind })}>
+      <div className={classnames("debugger")}>
         <A11yIntention>
           {this.renderLayout()}
           {quickOpenEnabled === true && (
@@ -345,12 +336,12 @@ class App extends Component<Props, State> {
 }
 
 App.childContextTypes = {
+  toolboxDoc: PropTypes.object,
   shortcuts: PropTypes.object,
   l10n: PropTypes.object,
 };
 
 const mapStateToProps = state => ({
-  canRewind: getCanRewind(state),
   selectedSource: getSelectedSource(state),
   startPanelCollapsed: getPaneCollapse(state, "start"),
   endPanelCollapsed: getPaneCollapse(state, "end"),
@@ -359,14 +350,11 @@ const mapStateToProps = state => ({
   orientation: getOrientation(state),
 });
 
-export default connect(
-  mapStateToProps,
-  {
-    setActiveSearch: actions.setActiveSearch,
-    closeActiveSearch: actions.closeActiveSearch,
-    closeProjectSearch: actions.closeProjectSearch,
-    openQuickOpen: actions.openQuickOpen,
-    closeQuickOpen: actions.closeQuickOpen,
-    setOrientation: actions.setOrientation,
-  }
-)(App);
+export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+  setActiveSearch: actions.setActiveSearch,
+  closeActiveSearch: actions.closeActiveSearch,
+  closeProjectSearch: actions.closeProjectSearch,
+  openQuickOpen: actions.openQuickOpen,
+  closeQuickOpen: actions.closeQuickOpen,
+  setOrientation: actions.setOrientation,
+})(App);

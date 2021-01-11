@@ -594,7 +594,7 @@ add_task(async function test_memory_clone_fails() {
 add_task(async function test_clone_copies_functions() {
   const FUNC_NAME = "test_func";
   let calls = ["openDatabase", "openUnsharedDatabase"];
-  let functionMethods = ["createFunction", "createAggregateFunction"];
+  let functionMethods = ["createFunction"];
   calls.forEach(function(methodName) {
     [true, false].forEach(function(readOnly) {
       functionMethods.forEach(function(functionMethod) {
@@ -636,7 +636,7 @@ add_task(async function test_clone_copies_overridden_functions() {
   };
 
   let calls = ["openDatabase", "openUnsharedDatabase"];
-  let functionMethods = ["createFunction", "createAggregateFunction"];
+  let functionMethods = ["createFunction"];
   calls.forEach(function(methodName) {
     [true, false].forEach(function(readOnly) {
       functionMethods.forEach(function(functionMethod) {
@@ -1006,6 +1006,13 @@ add_task(async function test_defaultTransactionType() {
     stmt.finalize();
   }
   await asyncClose(clone);
+  await asyncClose(db);
+});
+
+add_task(async function test_variableLimit() {
+  info("Open connection");
+  let db = Services.storage.openDatabase(getTestDB());
+  Assert.equal(db.variableLimit, 32766, "Should return default limit");
   await asyncClose(db);
 });
 

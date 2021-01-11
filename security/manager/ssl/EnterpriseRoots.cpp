@@ -10,6 +10,11 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Unused.h"
 #include "mozpkix/Result.h"
+#include "nsThreadUtils.h"
+
+#ifdef MOZ_WIDGET_ANDROID
+#  include "mozilla/java/EnterpriseRootsWrappers.h"
+#endif  // MOZ_WIDGET_ANDROID
 
 #ifdef XP_MACOSX
 #  include <Security/Security.h>
@@ -18,7 +23,12 @@
 #  include "nsCocoaFeatures.h"
 #endif  // XP_MACOSX
 
-extern LazyLogModule gPIPNSSLog;
+#ifdef XP_WIN
+#  include <windows.h>
+#  include <wincrypt.h>
+#endif  // XP_WIN
+
+extern mozilla::LazyLogModule gPIPNSSLog;
 
 using namespace mozilla;
 
@@ -38,9 +48,9 @@ nsresult EnterpriseCert::Init(const EnterpriseCert& orig) {
 
 nsresult EnterpriseCert::CopyBytes(nsTArray<uint8_t>& dest) const {
   dest.Clear();
-  if (!dest.AppendElements(mDER.begin(), mDER.length())) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier, or change the return type to void.
+  dest.AppendElements(mDER.begin(), mDER.length());
   return NS_OK;
 }
 
@@ -86,9 +96,13 @@ static void CertIsTrustAnchorForTLSServerAuth(PCCERT_CONTEXT certificate,
   memset(&chainPara, 0, sizeof(CERT_CHAIN_PARA));
   chainPara.cbSize = sizeof(CERT_CHAIN_PARA);
   chainPara.RequestedUsage = certUsage;
-
+  // Disable anything that could result in network I/O.
+  DWORD flags = CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY |
+                CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL |
+                CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE |
+                CERT_CHAIN_DISABLE_AIA;
   if (!CertGetCertificateChain(nullptr, certificate, nullptr, nullptr,
-                               &chainPara, 0, nullptr, &pChainContext)) {
+                               &chainPara, flags, nullptr, &pChainContext)) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("CertGetCertificateChain failed"));
     return;
   }
@@ -254,6 +268,13 @@ OSStatus GatherEnterpriseCertsMacOS(Vector<EnterpriseCert>& certs) {
       continue;
     }
     ScopedCFType<SecTrustRef> trustHandle(trust);
+    // Disable AIA chasing to avoid network I/O.
+    rv = SecTrustSetNetworkFetchAllowed(trustHandle.get(), false);
+    if (rv != errSecSuccess) {
+      MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
+              ("SecTrustSetNetworkFetchAllowed failed"));
+      continue;
+    }
     bool isTrusted = false;
     bool fallBackToDeprecatedAPI = true;
 #  if defined MAC_OS_X_VERSION_10_14
@@ -309,6 +330,28 @@ OSStatus GatherEnterpriseCertsMacOS(Vector<EnterpriseCert>& certs) {
 }
 #endif  // XP_MACOSX
 
+#ifdef MOZ_WIDGET_ANDROID
+void GatherEnterpriseCertsAndroid(Vector<EnterpriseCert>& certs) {
+  if (!jni::IsAvailable()) {
+    MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("JNI not available"));
+    return;
+  }
+  jni::ObjectArray::LocalRef roots =
+      java::EnterpriseRoots::GatherEnterpriseRoots();
+  for (size_t i = 0; i < roots->Length(); i++) {
+    jni::ByteArray::LocalRef root = roots->GetElement(i);
+    EnterpriseCert cert;
+    // Currently we treat all certificates gleaned from the Android
+    // CA store as roots.
+    if (NS_SUCCEEDED(cert.Init(
+            reinterpret_cast<uint8_t*>(root->GetElements().Elements()),
+            root->Length(), true))) {
+      Unused << certs.append(std::move(cert));
+    }
+  }
+}
+#endif  // MOZ_WIDGET_ANDROID
+
 nsresult GatherEnterpriseCerts(Vector<EnterpriseCert>& certs) {
   MOZ_ASSERT(!NS_IsMainThread());
   if (NS_IsMainThread()) {
@@ -325,5 +368,8 @@ nsresult GatherEnterpriseCerts(Vector<EnterpriseCert>& certs) {
     return NS_ERROR_FAILURE;
   }
 #endif  // XP_MACOSX
+#ifdef MOZ_WIDGET_ANDROID
+  GatherEnterpriseCertsAndroid(certs);
+#endif  // MOZ_WIDGET_ANDROID
   return NS_OK;
 }

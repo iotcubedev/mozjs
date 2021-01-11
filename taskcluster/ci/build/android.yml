@@ -11,16 +11,16 @@ job-defaults:
         docker-image: {in-tree: android-build}
         max-run-time: 7200
         env:
-            GRADLE_USER_HOME: "/builds/worker/workspace/build/src/mobile/android/gradle/dotgradle-offline"
+            GRADLE_USER_HOME: "/builds/worker/checkouts/gecko/mobile/android/gradle/dotgradle-offline"
         artifacts:
             - name: public/build/maven
-              path: /builds/worker/workspace/build/src/obj-firefox/gradle/build/mobile/android/geckoview/maven/
+              path: /builds/worker/workspace/obj-build/gradle/build/mobile/android/geckoview/maven/
               type: directory
             - name: public/build/geckoview-androidTest.apk
-              path: /builds/worker/workspace/build/src/obj-firefox/gradle/build/mobile/android/geckoview/outputs/apk/androidTest/withGeckoBinaries/debug/geckoview-withGeckoBinaries-debug-androidTest.apk
+              path: /builds/worker/workspace/obj-build/gradle/build/mobile/android/geckoview/outputs/apk/androidTest/withGeckoBinaries/debug/geckoview-withGeckoBinaries-debug-androidTest.apk
               type: file
             - name: public/build/geckoview_example.apk
-              path: /builds/worker/workspace/build/src/obj-firefox/gradle/build/mobile/android/geckoview_example/outputs/apk/withGeckoBinaries/debug/geckoview_example-withGeckoBinaries-debug.apk
+              path: /builds/worker/workspace/obj-build/gradle/build/mobile/android/geckoview_example/outputs/apk/withGeckoBinaries/debug/geckoview_example-withGeckoBinaries-debug.apk
               type: file
             - name: public/build
               path: /builds/worker/artifacts/
@@ -36,10 +36,10 @@ job-defaults:
             - android-gradle-dependencies
             - android-ndk-linux
             - android-sdk-linux
-            - linux64-clang
             - linux64-rust-android
             - linux64-rust-size
             - linux64-cbindgen
+            - linux64-dump-syms
             - linux64-nasm
             - linux64-node
 
@@ -56,12 +56,15 @@ android-api-16/debug:
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: api-16-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
 android-x86/opt:
@@ -73,6 +76,7 @@ android-x86/opt:
     treeherder:
         platform: android-4-2-x86/opt
         symbol: B
+    run-on-projects: ['mozilla-central']
     worker-type: b-linux
     worker:
         env:
@@ -81,8 +85,10 @@ android-x86/opt:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
 android-x86-fuzzing/debug:
@@ -100,33 +106,41 @@ android-x86-fuzzing/debug:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86-fuzzing-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        build-fuzzing: null
 
-android-x86-nightly/opt:
-    description: "Android 4.2 x86 Nightly"
+android-x86-shippable/opt:
+    description: "Android 4.2 x86 Shippable"
     attributes:
         enable-full-crashsymbols: true
-        nightly: true
+        shippable: true
     shipping-phase: build
     shipping-product: fennec
     index:
         job-name: android-x86-opt
-        type: android-nightly
+        type: android-shippable
     treeherder:
-        platform: android-4-2-x86/opt
-        symbol: N
+        platform: android-4-2-x86-shippable/opt
+        symbol: B
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build, multi-l10n]
         config:
             - builds/releng_base_android_64_builds.py
             - taskcluster_nightly.py
         custom-build-variant-cfg: x86
+    fetches:
+        toolchain:
+            - linux64-clang
 
 android-api-16/opt:
     description: "Android 4.0 api-16+ Opt"
@@ -137,82 +151,50 @@ android-api-16/opt:
     treeherder:
         platform: android-4-0-armv7-api16/opt
         symbol: B
+    run-on-projects: ['mozilla-central']
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: api-16
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
-android-api-16/pgo:
-    description: "Android 4.0 api-16+ PGO"
+android-api-16-shippable/opt:
+    description: "Android 4.0 api-16+ Shippable"
     use-pgo: true
-    index:
-        job-name: android-api-16-pgo
     attributes:
         enable-full-crashsymbols: true
+        shippable: true
+    shipping-phase: build
+    shipping-product: fennec
+    index:
+        job-name: android-api-16-opt
+        type: android-shippable-with-multi-l10n
     treeherder:
-        platform: android-4-0-armv7-api16/pgo
+        platform: android-4-0-armv7-api16-shippable/opt
         symbol: Bpgo(B)
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
-    run:
-        actions: [get-secrets, build]
-        config: ["builds/releng_base_android_64_builds.py"]
-        custom-build-variant-cfg: api-16
-
-android-api-16-without-google-play-services/opt:
-    description: "Android 4.0 api-16+ (without Google Play Services) Opt"
-    index:
-        job-name: android-api-16-without-google-play-services-opt
-    treeherder:
-        platform: android-4-0-armv7-api16/opt
-        symbol: BnoGPS
-    worker-type: b-linux
-    worker:
-        env:
-            PERFHERDER_EXTRA_OPTIONS: android-api-16-without-google-play-services
-            TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
-    run:
-        actions: [get-secrets, build]
-        config: ["builds/releng_base_android_64_builds.py"]
-        custom-build-variant-cfg: api-16-without-google-play-services
-    run-on-projects: ['mozilla-central']
-    fetches:
-        toolchain:
-            - linux64-sccache
-
-android-api-16-nightly/opt:
-    description: "Android 4.0 api-16+ Nightly"
-    use-pgo: android-api-16/pgo
-    attributes:
-        enable-full-crashsymbols: true
-        nightly: true
-    shipping-phase: build
-    shipping-product: fennec
-    index:
-        job-name: android-api-16-opt
-        type: android-nightly-with-multi-l10n
-    treeherder:
-        platform: android-4-0-armv7-api16/opt
-        symbol: N
-    worker-type: b-linux
-    worker:
-        env:
-            TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build, multi-l10n]
         config:
             - builds/releng_base_android_64_builds.py
             - taskcluster_nightly.py
         custom-build-variant-cfg: api-16
+    fetches:
+        toolchain:
+            - linux64-clang
 
 android-aarch64/opt:
     description: "Android 5.0 AArch64 Opt"
@@ -223,36 +205,21 @@ android-aarch64/opt:
     treeherder:
         platform: android-5-0-aarch64/opt
         symbol: B
+    run-on-projects: ['mozilla-central']
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: aarch64
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
-
-android-aarch64/pgo:
-    description: "Android 5.0 AArch64 PGO"
-    use-pgo: android-api-16/pgo
-    index:
-        job-name: android-aarch64-pgo
-    attributes:
-        enable-full-crashsymbols: true
-    treeherder:
-        platform: android-5-0-aarch64/pgo
-        symbol: Bpgo(B)
-    worker-type: b-linux
-    worker:
-        env:
-            TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
-    run:
-        actions: [get-secrets, build]
-        config: ["builds/releng_base_android_64_builds.py"]
-        custom-build-variant-cfg: aarch64
 
 android-aarch64/debug:
     description: "Android 5.0 AArch64 Debug"
@@ -267,38 +234,45 @@ android-aarch64/debug:
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: aarch64-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
-android-aarch64-nightly/opt:
-    description: "Android 5.0 AArch64 Nightly"
-    use-pgo: android-api-16/pgo
+android-aarch64-shippable/opt:
+    description: "Android 5.0 AArch64 Shippable"
+    use-pgo: android-api-16-shippable/opt
     attributes:
         enable-full-crashsymbols: true
-        nightly: true
+        shippable: true
     shipping-phase: build
     shipping-product: fennec
     index:
         job-name: android-aarch64-opt
-        type: android-nightly
+        type: android-shippable
     treeherder:
-        platform: android-5-0-aarch64/opt
-        symbol: N
+        platform: android-5-0-aarch64-shippable/opt
+        symbol: Bpgo(B)
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build, multi-l10n]
         config:
             - builds/releng_base_android_64_builds.py
             - taskcluster_nightly.py
         custom-build-variant-cfg: aarch64
+    fetches:
+        toolchain:
+            - linux64-clang
 
 android-x86_64/opt:
     description: "Android 5.0 x86-64 Opt"
@@ -309,41 +283,49 @@ android-x86_64/opt:
     treeherder:
         platform: android-5-0-x86_64/opt
         symbol: B
+    run-on-projects: ['mozilla-central']
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86_64
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
-android-x86_64-nightly/opt:
-    description: "Android 5.0 x86-64 Nightly"
+android-x86_64-shippable/opt:
+    description: "Android 5.0 x86-64 Shippable"
     attributes:
         enable-full-crashsymbols: true
-        nightly: true
+        shippable: true
     shipping-phase: build
     shipping-product: fennec
     index:
         job-name: android-x86_64-opt
-        type: android-nightly
+        type: android-shippable
     treeherder:
-        platform: android-5-0-x86_64/opt
-        symbol: N
+        platform: android-5-0-x86_64-shippable/opt
+        symbol: B
     worker-type: b-linux
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build, multi-l10n]
         config:
             - builds/releng_base_android_64_builds.py
             - taskcluster_nightly.py
         custom-build-variant-cfg: x86_64
+    fetches:
+        toolchain:
+            - linux64-clang
 
 android-x86_64/debug:
     description: "Android 5.0 x86-64 Debug"
@@ -358,12 +340,15 @@ android-x86_64/debug:
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
+            MOZ_AUTOMATION_PACKAGE_TESTS: "1"
     run:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86_64-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
 
 
@@ -377,7 +362,7 @@ android-api-16-gcp/debug:
         platform: android-4-0-armv7-api16/debug
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
@@ -386,9 +371,13 @@ android-api-16-gcp/debug:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: api-16-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 
 android-x86-gcp/opt:
@@ -401,7 +390,7 @@ android-x86-gcp/opt:
         platform: android-4-2-x86/opt
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
@@ -410,9 +399,13 @@ android-x86-gcp/opt:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 android-api-16-gcp/opt:
     description: "Android 4.0 api-16+ Opt - built on GCP"
@@ -424,7 +417,7 @@ android-api-16-gcp/opt:
         platform: android-4-0-armv7-api16/opt
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
@@ -433,9 +426,13 @@ android-api-16-gcp/opt:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: api-16
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 android-aarch64-gcp/opt:
     description: "Android 5.0 AArch64 Opt - built on GCP"
@@ -447,7 +444,7 @@ android-aarch64-gcp/opt:
         platform: android-5-0-aarch64/opt
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
@@ -456,9 +453,13 @@ android-aarch64-gcp/opt:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: aarch64
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 android-aarch64-gcp/debug:
     description: "Android 5.0 AArch64 Debug - built on GCP"
@@ -470,7 +471,7 @@ android-aarch64-gcp/debug:
         platform: android-5-0-aarch64/debug
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android/releng.manifest"
@@ -479,9 +480,13 @@ android-aarch64-gcp/debug:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: aarch64-debug
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 android-x86_64-gcp/opt:
     description: "Android 5.0 x86-64 Opt - built on GCP"
@@ -493,7 +498,7 @@ android-x86_64-gcp/opt:
         platform: android-5-0-x86_64/opt
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
@@ -502,9 +507,13 @@ android-x86_64-gcp/opt:
         actions: [get-secrets, build]
         config: ["builds/releng_base_android_64_builds.py"]
         custom-build-variant-cfg: x86_64
+    use-sccache: true
     fetches:
         toolchain:
+            - linux64-clang
             - linux64-sccache
+    optimization:
+        push-interval-25: null
 
 android-x86_64-gcp/debug:
     description: "Android 5.0 x86-64 Debug - built on GCP"
@@ -516,7 +525,7 @@ android-x86_64-gcp/debug:
         platform: android-5-0-x86_64/debug
         symbol: Bg
         tier: 3
-    worker-type: gce/gecko-{level}-b-linux
+    worker-type: b-linux-gcp
     worker:
         env:
             TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
@@ -527,4 +536,29 @@ android-x86_64-gcp/debug:
         custom-build-variant-cfg: x86_64-debug
     fetches:
         toolchain:
+            - linux64-clang
+    optimization:
+        push-interval-25: null
+
+android-x86_64-asan-fuzzing/opt:
+    description: "Android 5.0 x86-64 Fuzzing Opt ASAN"
+    index:
+        job-name: android-x86_64-fuzzing-asan
+    treeherder:
+        platform: android-5-0-x86_64/asan
+        symbol: Bof
+    worker-type: b-linux
+    worker:
+        env:
+            TOOLTOOL_MANIFEST: "mobile/android/config/tooltool-manifests/android-x86/releng.manifest"
+    run:
+        actions: [get-secrets, build]
+        config: ["builds/releng_base_android_64_builds.py"]
+        custom-build-variant-cfg: x86_64-fuzzing-asan
+    use-sccache: true
+    fetches:
+        toolchain:
+            - linux64-clang-android-cross
             - linux64-sccache
+    optimization:
+        build-fuzzing: null

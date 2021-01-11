@@ -17,13 +17,6 @@ types.addDictType("root.listWorkers", {
 types.addDictType("root.listServiceWorkerRegistrations", {
   registrations: "array:serviceWorkerRegistration",
 });
-types.addDictType("root.listProcesses", {
-  processes: "array:json",
-});
-types.addDictType("root.listTabs", {
-  tabs: "array:browsingContextTarget",
-  selected: "number",
-});
 
 const rootSpecPrototype = {
   typeName: "root",
@@ -36,9 +29,13 @@ const rootSpecPrototype = {
 
     listTabs: {
       request: {
+        // Backward compatibility: this is only used for FF75 or older.
+        // The argument can be dropped when FF76 hits the release channel.
         favicons: Option(0, "boolean"),
       },
-      response: RetVal("root.listTabs"),
+      response: {
+        tabs: RetVal("array:tabDescriptor"),
+      },
     },
 
     getTab: {
@@ -47,7 +44,7 @@ const rootSpecPrototype = {
         tabId: Option(0, "number"),
       },
       response: {
-        tab: RetVal("json"),
+        tab: RetVal("tabDescriptor"),
       },
     },
 
@@ -81,14 +78,18 @@ const rootSpecPrototype = {
 
     listProcesses: {
       request: {},
-      response: RetVal("root.listProcesses"),
+      response: {
+        processes: RetVal("array:processDescriptor"),
+      },
     },
 
     getProcess: {
       request: {
         id: Arg(0, "number"),
       },
-      response: RetVal("json"),
+      response: {
+        processDescriptor: RetVal("processDescriptor"),
+      },
     },
 
     protocolDescription: {

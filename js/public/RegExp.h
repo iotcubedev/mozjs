@@ -17,8 +17,8 @@
 #include "js/RootingAPI.h"   // JS::{,Mutable}Handle
 #include "js/Value.h"        // JS::Value
 
-struct JSContext;
-class JSString;
+struct JS_PUBLIC_API JSContext;
+class JS_PUBLIC_API JSString;
 
 namespace JS {
 
@@ -79,6 +79,16 @@ extern JS_PUBLIC_API RegExpFlags GetRegExpFlags(JSContext* cx,
  */
 extern JS_PUBLIC_API JSString* GetRegExpSource(JSContext* cx,
                                                Handle<JSObject*> obj);
+/**
+ * Check whether the given source is a valid regexp. If the regexp parses
+ * successfully, returns true and sets |error| to undefined. If the regexp
+ * has a syntax error, returns true, sets |error| to that error object, and
+ * clears the exception. Returns false on OOM or over-recursion.
+ */
+extern JS_PUBLIC_API bool CheckRegExpSyntax(JSContext* cx,
+                                            const char16_t* chars,
+                                            size_t length, RegExpFlags flags,
+                                            MutableHandle<Value> error);
 
 }  // namespace JS
 

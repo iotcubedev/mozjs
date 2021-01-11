@@ -6,7 +6,6 @@
 
 #include "nsFTPChannel.h"
 #include "nsFtpConnectionThread.h"  // defines nsFtpState
-#include "nsMimeTypes.h"
 
 #include "nsThreadUtils.h"
 #include "mozilla/Attributes.h"
@@ -81,13 +80,17 @@ nsFtpChannel::GetProxyInfo(nsIProxyInfo** aProxyInfo) {
   return NS_OK;
 }
 
+NS_IMETHODIMP nsFtpChannel::GetHttpProxyConnectResponseCode(
+    int32_t* aResponseCode) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 //-----------------------------------------------------------------------------
 
 nsresult nsFtpChannel::OpenContentStream(bool async, nsIInputStream** result,
                                          nsIChannel** channel) {
   if (!async) return NS_ERROR_NOT_IMPLEMENTED;
 
-  SetContentType(NS_LITERAL_CSTRING(APPLICATION_OCTET_STREAM));
   RefPtr<nsFtpState> state = new nsFtpState();
 
   nsresult rv = state->Init(this);
@@ -117,7 +120,7 @@ class FTPEventSinkProxy final : public nsIFTPEventSink {
 
  public:
   explicit FTPEventSinkProxy(nsIFTPEventSink* aTarget)
-      : mTarget(aTarget), mEventTarget(GetCurrentThreadEventTarget()) {}
+      : mTarget(aTarget), mEventTarget(GetCurrentEventTarget()) {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIFTPEVENTSINK
@@ -249,6 +252,8 @@ nsFtpChannel::MessageDiversionStop() {
 NS_IMETHODIMP
 nsFtpChannel::SuspendInternal() {
   LOG(("nsFtpChannel::SuspendInternal [this=%p]\n", this));
+  NS_ENSURE_TRUE(Pending(), NS_ERROR_NOT_AVAILABLE);
+
   ++mSuspendCount;
   return nsBaseChannel::Suspend();
 }

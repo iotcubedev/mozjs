@@ -8,12 +8,18 @@
 
 #include "mozilla/BinarySearch.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/Move.h"
 #include "mozilla/ScopeExit.h"
+
+#include <utility>
 
 #include "jit/BaselineIC.h"
 #include "jit/BytecodeAnalysis.h"
+#include "jit/IonScript.h"
+#include "util/Memory.h"
+#include "vm/BytecodeIterator.h"
+#include "vm/BytecodeLocation.h"
 #include "vm/BytecodeUtil.h"
+#include "vm/FrameIter.h"  // js::OnlyJSJitFrameIter
 #include "vm/JSScript.h"
 #include "vm/Stack.h"
 #include "vm/TypeInference.h"
@@ -21,6 +27,8 @@
 
 #include "gc/FreeOp-inl.h"
 #include "jit/JSJitFrameIter-inl.h"
+#include "vm/BytecodeIterator-inl.h"
+#include "vm/BytecodeLocation-inl.h"
 #include "vm/JSScript-inl.h"
 #include "vm/TypeInference-inl.h"
 
@@ -35,25 +43,32 @@ size_t JitScript::NumTypeSets(JSScript* script) {
   static_assert(JSFunction::NArgsBits == 16,
                 "JSFunction nargs should have safe range to avoid overflow");
 
+  if (!IsTypeInferenceEnabled()) {
+    return 0;
+  }
+
   size_t num = script->numBytecodeTypeSets() + 1 /* this */;
-  if (JSFunction* fun = script->functionNonDelazifying()) {
+  if (JSFunction* fun = script->function()) {
     num += fun->nargs();
   }
 
   return num;
 }
 
-JitScript::JitScript(JSScript* script, uint32_t typeSetOffset,
-                     uint32_t bytecodeTypeMapOffset, uint32_t allocBytes,
+JitScript::JitScript(JSScript* script, Offset typeSetOffset,
+                     Offset bytecodeTypeMapOffset, Offset endOffset,
                      const char* profileString)
     : profileString_(profileString),
       typeSetOffset_(typeSetOffset),
       bytecodeTypeMapOffset_(bytecodeTypeMapOffset),
-      allocBytes_(allocBytes) {
+      endOffset_(endOffset),
+      icScript_(this, script->getWarmUpCount(),
+                typeSetOffset - offsetOfICScript()) {
   setTypesGeneration(script->zone()->types.generation);
 
-  uint8_t* base = reinterpret_cast<uint8_t*>(this);
-  DefaultInitializeElements<StackTypeSet>(base + typeSetOffset, numTypeSets());
+  if (IsTypeInferenceEnabled()) {
+    initElements<StackTypeSet>(typeSetOffset, numTypeSets());
+  }
 
   // Ensure the baselineScript_ and ionScript_ fields match the BaselineDisabled
   // and IonDisabled script flags.
@@ -105,11 +120,17 @@ bool JSScript::createJitScript(JSContext* cx) {
   static_assert(sizeof(StackTypeSet) % sizeof(uintptr_t) == 0,
                 "Trailing arrays must be aligned properly");
 
+  static_assert(
+      sizeof(JitScript) == offsetof(JitScript, icScript_) + sizeof(ICScript),
+      "icScript_ must be the last field");
+
   // Calculate allocation size.
   CheckedInt<uint32_t> allocSize = sizeof(JitScript);
   allocSize += CheckedInt<uint32_t>(numICEntries()) * sizeof(ICEntry);
-  allocSize += CheckedInt<uint32_t>(numTypeSets) * sizeof(StackTypeSet);
-  allocSize += CheckedInt<uint32_t>(numBytecodeTypeSets()) * sizeof(uint32_t);
+  if (IsTypeInferenceEnabled()) {
+    allocSize += CheckedInt<uint32_t>(numTypeSets) * sizeof(StackTypeSet);
+    allocSize += CheckedInt<uint32_t>(numBytecodeTypeSets()) * sizeof(uint32_t);
+  }
   if (!allocSize.isValid()) {
     ReportAllocationOverflow(cx);
     return false;
@@ -130,42 +151,47 @@ bool JSScript::createJitScript(JSContext* cx) {
 
   // Sanity check the length computations.
   MOZ_ASSERT(jitScript->numICEntries() == numICEntries());
-  MOZ_ASSERT(jitScript->numTypeSets() == numTypeSets);
+  MOZ_ASSERT_IF(IsTypeInferenceEnabled(),
+                jitScript->numTypeSets() == numTypeSets);
 
   // We need to call prepareForDestruction on JitScript before we |delete| it.
   auto prepareForDestruction = mozilla::MakeScopeExit(
       [&] { jitScript->prepareForDestruction(cx->zone()); });
 
-  if (!jitScript->initICEntriesAndBytecodeTypeMap(cx, this)) {
+  if (!jitScript->icScript()->initICEntries(cx, this)) {
     return false;
   }
 
-  MOZ_ASSERT(!hasJitScript());
+  if (IsTypeInferenceEnabled()) {
+    jitScript->initBytecodeTypeMap(this);
+  }
+
   prepareForDestruction.release();
-  jitScript_ = jitScript.release();
+  warmUpData_.initJitScript(jitScript.release());
   AddCellMemory(this, allocSize.value(), MemoryUse::JitScript);
 
-  // We have a JitScript so we can set the script's jitCodeRaw_ pointer to the
+  // We have a JitScript so we can set the script's jitCodeRaw pointer to the
   // Baseline Interpreter code.
   updateJitCodeRaw(cx->runtime());
 
 #ifdef DEBUG
-  AutoSweepJitScript sweep(this);
-  StackTypeSet* typeArray = this->jitScript()->typeArrayDontCheckGeneration();
-  for (unsigned i = 0; i < numBytecodeTypeSets(); i++) {
-    InferSpew(ISpewOps, "typeSet: %sT%p%s bytecode%u %p",
-              InferSpewColor(&typeArray[i]), &typeArray[i],
-              InferSpewColorReset(), i, this);
-  }
-  StackTypeSet* thisTypes = this->jitScript()->thisTypes(sweep, this);
-  InferSpew(ISpewOps, "typeSet: %sT%p%s this %p", InferSpewColor(thisTypes),
-            thisTypes, InferSpewColorReset(), this);
-  unsigned nargs =
-      functionNonDelazifying() ? functionNonDelazifying()->nargs() : 0;
-  for (unsigned i = 0; i < nargs; i++) {
-    StackTypeSet* types = this->jitScript()->argTypes(sweep, this, i);
-    InferSpew(ISpewOps, "typeSet: %sT%p%s arg%u %p", InferSpewColor(types),
-              types, InferSpewColorReset(), i, this);
+  if (IsTypeInferenceEnabled()) {
+    AutoSweepJitScript sweep(this);
+    StackTypeSet* typeArray = this->jitScript()->typeArrayDontCheckGeneration();
+    for (unsigned i = 0; i < numBytecodeTypeSets(); i++) {
+      InferSpew(ISpewOps, "typeSet: %sT%p%s bytecode%u %p",
+                InferSpewColor(&typeArray[i]), &typeArray[i],
+                InferSpewColorReset(), i, this);
+    }
+    StackTypeSet* thisTypes = this->jitScript()->thisTypes(sweep, this);
+    InferSpew(ISpewOps, "typeSet: %sT%p%s this %p", InferSpewColor(thisTypes),
+              thisTypes, InferSpewColorReset(), this);
+    unsigned nargs = function() ? function()->nargs() : 0;
+    for (unsigned i = 0; i < nargs; i++) {
+      StackTypeSet* types = this->jitScript()->argTypes(sweep, this, i);
+      InferSpew(ISpewOps, "typeSet: %sT%p%s arg%u %p", InferSpewColor(types),
+                types, InferSpewColorReset(), i, this);
+    }
   }
 #endif
 
@@ -191,7 +217,7 @@ void JSScript::releaseJitScript(JSFreeOp* fop) {
   fop->removeCellMemory(this, jitScript()->allocBytes(), MemoryUse::JitScript);
 
   JitScript::Destroy(zone(), jitScript());
-  jitScript_ = nullptr;
+  warmUpData_.clearJitScript();
   updateJitCodeRaw(fop->runtime());
 }
 
@@ -216,6 +242,8 @@ void JitScript::CachedIonData::trace(JSTracer* trc) {
 }
 
 void JitScript::trace(JSTracer* trc) {
+  icScript_.trace(trc);
+
   if (hasBaselineScript()) {
     baselineScript()->trace(trc);
   }
@@ -228,11 +256,42 @@ void JitScript::trace(JSTracer* trc) {
     cachedIonData().trace(trc);
   }
 
+  if (hasInliningRoot()) {
+    inliningRoot()->trace(trc);
+  }
+}
+
+void ICScript::trace(JSTracer* trc) {
   // Mark all IC stub codes hanging off the IC stub entries.
   for (size_t i = 0; i < numICEntries(); i++) {
     ICEntry& ent = icEntry(i);
     ent.trace(trc);
   }
+}
+
+bool ICScript::isInlined() const { return jitScript()->icScript() != this; }
+
+bool ICScript::addInlinedChild(JSContext* cx, UniquePtr<ICScript> child,
+                               uint32_t pcOffset) {
+  if (!inlinedChildren_) {
+    inlinedChildren_ = js::MakeUnique<Vector<CallSite>>(cx);
+    if (!inlinedChildren_) {
+      return false;
+    }
+  }
+  if (!inlinedChildren_->emplaceBack(child.get(), pcOffset)) {
+    return false;
+  }
+  return inliningRoot()->addInlinedScript(std::move(child));
+}
+
+ICScript* ICScript::findInlinedChild(uint32_t pcOffset) {
+  for (auto& callsite : *inlinedChildren_) {
+    if (callsite.pcOffset_ == pcOffset) {
+      return callsite.callee_;
+    }
+  }
+  MOZ_CRASH("Inlined child expected at pcOffset");
 }
 
 void JitScript::ensureProfileString(JSContext* cx, JSScript* script) {
@@ -257,7 +316,7 @@ void JitScript::printTypes(JSContext* cx, HandleScript script) {
   AutoEnterAnalysis enter(nullptr, script->zone());
   Fprinter out(stderr);
 
-  if (script->functionNonDelazifying()) {
+  if (script->function()) {
     fprintf(stderr, "Function");
   } else if (script->isForEval()) {
     fprintf(stderr, "Eval");
@@ -267,8 +326,8 @@ void JitScript::printTypes(JSContext* cx, HandleScript script) {
   fprintf(stderr, " %#" PRIxPTR " %s:%u ", uintptr_t(script.get()),
           script->filename(), script->lineno());
 
-  if (script->functionNonDelazifying()) {
-    if (JSAtom* name = script->functionNonDelazifying()->explicitName()) {
+  if (script->function()) {
+    if (JSAtom* name = script->function()->explicitName()) {
       name->dumpCharsNoNewline(out);
     }
   }
@@ -276,29 +335,28 @@ void JitScript::printTypes(JSContext* cx, HandleScript script) {
   fprintf(stderr, "\n    this:");
   thisTypes(sweep, script)->print();
 
-  for (unsigned i = 0; script->functionNonDelazifying() &&
-                       i < script->functionNonDelazifying()->nargs();
+  for (uint32_t i = 0; script->function() && i < script->function()->nargs();
        i++) {
     fprintf(stderr, "\n    arg%u:", i);
     argTypes(sweep, script, i)->print();
   }
   fprintf(stderr, "\n");
 
-  for (jsbytecode* pc = script->code(); pc < script->codeEnd();
-       pc += GetBytecodeLength(pc)) {
+  for (BytecodeLocation it : AllBytecodesIterable(script)) {
     {
       fprintf(stderr, "%p:", script.get());
       Sprinter sprinter(cx);
       if (!sprinter.init()) {
         return;
       }
-      Disassemble1(cx, script, pc, script->pcToOffset(pc), true, &sprinter);
+      Disassemble1(cx, script, it.toRawBytecode(), it.bytecodeToOffset(script),
+                   true, &sprinter);
       fprintf(stderr, "%s", sprinter.string());
     }
 
-    if (BytecodeOpHasTypeSet(JSOp(*pc))) {
-      StackTypeSet* types = bytecodeTypes(sweep, script, pc);
-      fprintf(stderr, "  typeset %u:", unsigned(types - typeArray(sweep)));
+    if (it.opHasTypeSet()) {
+      StackTypeSet* types = bytecodeTypes(sweep, script, it.toRawBytecode());
+      fprintf(stderr, "  typeset %u:", uint32_t(types - typeArray(sweep)));
       types->print();
       fprintf(stderr, "\n");
     }
@@ -317,12 +375,12 @@ void JitScript::Destroy(Zone* zone, JitScript* script) {
 }
 
 struct ICEntries {
-  JitScript* const jitScript_;
+  ICScript* const icScript_;
 
-  explicit ICEntries(JitScript* jitScript) : jitScript_(jitScript) {}
+  explicit ICEntries(ICScript* icScript) : icScript_(icScript) {}
 
-  size_t numEntries() const { return jitScript_->numICEntries(); }
-  ICEntry& operator[](size_t index) const { return jitScript_->icEntry(index); }
+  size_t numEntries() const { return icScript_->numICEntries(); }
+  ICEntry& operator[](size_t index) const { return icScript_->icEntry(index); }
 };
 
 static bool ComputeBinarySearchMid(ICEntries entries, uint32_t pcOffset,
@@ -349,7 +407,7 @@ static bool ComputeBinarySearchMid(ICEntries entries, uint32_t pcOffset,
       loc);
 }
 
-ICEntry* JitScript::maybeICEntryFromPCOffset(uint32_t pcOffset) {
+ICEntry* ICScript::maybeICEntryFromPCOffset(uint32_t pcOffset) {
   // This method ignores prologue IC entries. There can be at most one
   // non-prologue IC per bytecode op.
 
@@ -366,14 +424,14 @@ ICEntry* JitScript::maybeICEntryFromPCOffset(uint32_t pcOffset) {
   return &entry;
 }
 
-ICEntry& JitScript::icEntryFromPCOffset(uint32_t pcOffset) {
+ICEntry& ICScript::icEntryFromPCOffset(uint32_t pcOffset) {
   ICEntry* entry = maybeICEntryFromPCOffset(pcOffset);
   MOZ_RELEASE_ASSERT(entry);
   return *entry;
 }
 
-ICEntry* JitScript::maybeICEntryFromPCOffset(uint32_t pcOffset,
-                                             ICEntry* prevLookedUpEntry) {
+ICEntry* ICScript::maybeICEntryFromPCOffset(uint32_t pcOffset,
+                                            ICEntry* prevLookedUpEntry) {
   // Do a linear forward search from the last queried PC offset, or fallback to
   // a binary search if the last offset is too far away.
   if (prevLookedUpEntry && pcOffset >= prevLookedUpEntry->pcOffset() &&
@@ -393,14 +451,14 @@ ICEntry* JitScript::maybeICEntryFromPCOffset(uint32_t pcOffset,
   return maybeICEntryFromPCOffset(pcOffset);
 }
 
-ICEntry& JitScript::icEntryFromPCOffset(uint32_t pcOffset,
-                                        ICEntry* prevLookedUpEntry) {
+ICEntry& ICScript::icEntryFromPCOffset(uint32_t pcOffset,
+                                       ICEntry* prevLookedUpEntry) {
   ICEntry* entry = maybeICEntryFromPCOffset(pcOffset, prevLookedUpEntry);
   MOZ_RELEASE_ASSERT(entry);
   return *entry;
 }
 
-ICEntry* JitScript::interpreterICEntryFromPCOffset(uint32_t pcOffset) {
+ICEntry* ICScript::interpreterICEntryFromPCOffset(uint32_t pcOffset) {
   // We have to return the entry to store in BaselineFrame::interpreterICEntry
   // when resuming in the Baseline Interpreter at pcOffset. The bytecode op at
   // pcOffset does not necessarily have an ICEntry, so we want to return the
@@ -429,7 +487,7 @@ void JitScript::purgeOptimizedStubs(JSScript* script) {
   MOZ_ASSERT(script->jitScript() == this);
 
   Zone* zone = script->zone();
-  if (zone->isGCSweeping() && IsAboutToBeFinalizedDuringSweep(*script)) {
+  if (IsAboutToBeFinalizedUnbarriered(&script)) {
     // We're sweeping and the script is dead. Don't purge optimized stubs
     // because (1) accessing CacheIRStubInfo pointers in ICStubs is invalid
     // because we may have swept them already when we started (incremental)
@@ -440,6 +498,13 @@ void JitScript::purgeOptimizedStubs(JSScript* script) {
 
   JitSpew(JitSpew_BaselineIC, "Purging optimized stubs");
 
+  icScript()->purgeOptimizedStubs(zone);
+  if (hasInliningRoot()) {
+    inliningRoot()->purgeOptimizedStubs(zone);
+  }
+}
+
+void ICScript::purgeOptimizedStubs(Zone* zone) {
   for (size_t i = 0; i < numICEntries(); i++) {
     ICEntry& entry = icEntry(i);
     ICStub* lastStub = entry.firstStub();
@@ -454,7 +519,11 @@ void JitScript::purgeOptimizedStubs(JSScript* script) {
 
       while (stub->next()) {
         if (!stub->allocatedInFallbackSpace()) {
-          lastStub->toFallbackStub()->unlinkStub(zone, prev, stub);
+          // Note: this is called when discarding JIT code, after invalidating
+          // all Warp code, so we don't need to check for that here.
+          lastStub->toFallbackStub()->clearUsedByTranspiler();
+          lastStub->toFallbackStub()->unlinkStubDontInvalidateWarp(zone, prev,
+                                                                   stub);
           stub = stub->next();
           continue;
         }
@@ -558,8 +627,8 @@ bool JitScript::ensureHasCachedIonData(JSContext* cx, HandleScript script) {
   }
 
   Rooted<EnvironmentObject*> templateEnv(cx);
-  if (script->functionNonDelazifying()) {
-    RootedFunction fun(cx, script->functionNonDelazifying());
+  if (script->function()) {
+    RootedFunction fun(cx, script->function());
 
     if (fun->needsNamedLambdaEnvironment()) {
       templateEnv =
@@ -625,7 +694,7 @@ void JitScript::setIonScriptImpl(JSScript* script, IonScript* ionScript) {
 void JitScript::setIonScriptImpl(JSFreeOp* fop, JSScript* script,
                                  IonScript* ionScript) {
   MOZ_ASSERT_IF(ionScript != IonDisabledScriptPtr,
-                !baselineScript()->hasPendingIonBuilder());
+                !baselineScript()->hasPendingIonCompileTask());
 
   if (hasIonScript()) {
     IonScript::writeBarrierPre(script->zone(), ionScript_);
@@ -643,23 +712,17 @@ void JitScript::setIonScriptImpl(JSFreeOp* fop, JSScript* script,
   script->updateJitCodeRaw(fop->runtime());
 }
 
-#ifdef JS_STRUCTURED_SPEW
-static bool GetStubEnteredCount(ICStub* stub, uint32_t* count) {
-  switch (stub->kind()) {
-    case ICStub::CacheIR_Regular:
-      *count = stub->toCacheIR_Regular()->enteredCount();
-      return true;
-    case ICStub::CacheIR_Updated:
-      *count = stub->toCacheIR_Updated()->enteredCount();
-      return true;
-    case ICStub::CacheIR_Monitored:
-      *count = stub->toCacheIR_Monitored()->enteredCount();
-      return true;
-    default:
-      return false;
+#if defined(JS_STRUCTURED_SPEW) || defined(JS_CACHEIR_SPEW)
+bool jit::GetStubEnteredCount(ICStub* stub, uint32_t* count) {
+  if (ICStub::IsCacheIRKind(stub->kind())) {
+    *count = stub->getEnteredCount();
+    return true;
   }
+  return false;
 }
+#endif  // JS_STRUCTURED_SPEW || JS_CACHEIR_SPEW
 
+#ifdef JS_STRUCTURED_SPEW
 static bool HasEnteredCounters(ICEntry& entry) {
   ICStub* stub = entry.firstStub();
   while (stub && !stub->isFallback()) {
@@ -696,7 +759,7 @@ void jit::JitSpewBaselineICStats(JSScript* script, const char* dumpReason) {
     unsigned int line = PCToLineNumber(script, pc, &column);
 
     spew->beginObject();
-    spew->property("op", CodeName[*pc]);
+    spew->property("op", CodeName(JSOp(*pc)));
     spew->property("pc", pcOffset);
     spew->property("line", line);
     spew->property("column", column);
@@ -763,4 +826,47 @@ void jit::MarkActiveJitScripts(Zone* zone) {
       MarkActiveJitScripts(cx, iter);
     }
   }
+}
+
+void JitScript::initBytecodeTypeMap(JSScript* script) {
+  MOZ_ASSERT(IsTypeInferenceEnabled());
+  MOZ_ASSERT(jit::IsBaselineInterpreterEnabled());
+  MOZ_ASSERT(numICEntries() == script->numICEntries());
+
+  // Index of the next bytecode type map entry to initialize.
+  uint32_t typeMapIndex = 0;
+  uint32_t* const typeMap = bytecodeTypeMap();
+
+  // For JOF_TYPESET ops: initialize bytecode type map entries.
+  for (BytecodeLocation loc : js::AllBytecodesIterable(script)) {
+    JSOp op = loc.getOp();
+    // Note: if the script is very large there will be more JOF_TYPESET ops
+    // than bytecode type sets. See JSScript::MaxBytecodeTypeSets.
+    if (BytecodeOpHasTypeSet(op) &&
+        typeMapIndex < JSScript::MaxBytecodeTypeSets) {
+      typeMap[typeMapIndex] = loc.bytecodeToOffset(script);
+      typeMapIndex++;
+    }
+  }
+  MOZ_ASSERT(typeMapIndex == script->numBytecodeTypeSets());
+}
+
+InliningRoot* JitScript::getOrCreateInliningRoot(JSContext* cx,
+                                                 JSScript* script) {
+  if (!inliningRoot_) {
+    inliningRoot_ = js::MakeUnique<InliningRoot>(cx, script);
+    if (!inliningRoot_) {
+      ReportOutOfMemory(cx);
+      return nullptr;
+    }
+    icScript_.inliningRoot_ = inliningRoot_.get();
+  }
+  return inliningRoot_.get();
+}
+
+FallbackICStubSpace* ICScript::fallbackStubSpace() {
+  if (inliningRoot_) {
+    return inliningRoot_->fallbackStubSpace();
+  }
+  return jitScript_->fallbackStubSpace();
 }

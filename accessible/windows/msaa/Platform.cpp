@@ -9,9 +9,7 @@
 #include "AccEvent.h"
 #include "Compatibility.h"
 #include "HyperTextAccessibleWrap.h"
-#include "ia2AccessibleText.h"
 #include "nsIWindowsRegKey.h"
-#include "nsIXULRuntime.h"
 #include "nsWinUtils.h"
 #include "mozilla/a11y/ProxyAccessible.h"
 #include "mozilla/mscom/ActivationContext.h"
@@ -220,7 +218,7 @@ bool a11y::IsHandlerRegistered() {
     return false;
   }
 
-  rv = expectedHandler->Append(NS_LITERAL_STRING("AccessibleHandler.dll"));
+  rv = expectedHandler->Append(u"AccessibleHandler.dll"_ns);
   if (NS_FAILED(rv)) {
     return false;
   }
@@ -276,7 +274,7 @@ static bool GetInstantiatorExecutable(const DWORD aPid,
 static void AppendVersionInfo(nsIFile* aClientExe, nsAString& aStrToAppend) {
   MOZ_ASSERT(!NS_IsMainThread());
 
-  WindowsErrorResult<ModuleVersion> version = GetModuleVersion(aClientExe);
+  LauncherResult<ModuleVersion> version = GetModuleVersion(aClientExe);
   if (version.isErr()) {
     return;
   }
@@ -286,7 +284,7 @@ static void AppendVersionInfo(nsIFile* aClientExe, nsAString& aStrToAppend) {
 
   aStrToAppend.AppendLiteral(u"|");
 
-  NS_NAMED_LITERAL_STRING(dot, ".");
+  constexpr auto dot = u"."_ns;
 
   aStrToAppend.AppendInt(major);
   aStrToAppend.Append(dot);
@@ -321,13 +319,15 @@ static void GatherInstantiatorTelemetry(nsIFile* aClientExe) {
     AppendVersionInfo(aClientExe, value);
   }
 
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "a11y::AccumulateInstantiatorTelemetry",
-      [value]() -> void { AccumulateInstantiatorTelemetry(value); }));
+  nsCOMPtr<nsIRunnable> runnable(
+      NS_NewRunnableFunction("a11y::AccumulateInstantiatorTelemetry",
+                             [value = std::move(value)]() -> void {
+                               AccumulateInstantiatorTelemetry(value);
+                             }));
 
   // Now that we've (possibly) obtained version info, send the resulting
   // string back to the main thread to accumulate in telemetry.
-  NS_DispatchToMainThread(runnable);
+  NS_DispatchToMainThread(runnable.forget());
 }
 
 #endif  // defined(MOZ_TELEMETRY_REPORTING) || defined(MOZ_CRASHREPORTER)
@@ -337,7 +337,7 @@ void a11y::SetInstantiator(const uint32_t aPid) {
   if (!GetInstantiatorExecutable(aPid, getter_AddRefs(clientExe))) {
 #if defined(MOZ_TELEMETRY_REPORTING) || defined(MOZ_CRASHREPORTER)
     AccumulateInstantiatorTelemetry(
-        NS_LITERAL_STRING("(Failed to retrieve client image name)"));
+        u"(Failed to retrieve client image name)"_ns);
 #endif  // defined(MOZ_TELEMETRY_REPORTING) || defined(MOZ_CRASHREPORTER)
     return;
   }
@@ -357,13 +357,15 @@ void a11y::SetInstantiator(const uint32_t aPid) {
   gInstantiator = clientExe;
 
 #if defined(MOZ_TELEMETRY_REPORTING) || defined(MOZ_CRASHREPORTER)
-  nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "a11y::GatherInstantiatorTelemetry",
-      [clientExe]() -> void { GatherInstantiatorTelemetry(clientExe); }));
+  nsCOMPtr<nsIRunnable> runnable(
+      NS_NewRunnableFunction("a11y::GatherInstantiatorTelemetry",
+                             [clientExe = std::move(clientExe)]() -> void {
+                               GatherInstantiatorTelemetry(clientExe);
+                             }));
 
-  nsCOMPtr<nsIThread> telemetryThread;
-  NS_NewNamedThread("a11y telemetry", getter_AddRefs(telemetryThread),
-                    runnable);
+  DebugOnly<nsresult> rv =
+      NS_DispatchBackgroundTask(runnable.forget(), NS_DISPATCH_EVENT_MAY_BLOCK);
+  MOZ_ASSERT(NS_SUCCEEDED(rv));
 #endif  // defined(MOZ_TELEMETRY_REPORTING) || defined(MOZ_CRASHREPORTER)
 }
 

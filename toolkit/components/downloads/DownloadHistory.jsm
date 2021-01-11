@@ -319,8 +319,8 @@ var DownloadCache = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsINavHistoryObserver,
-    Ci.nsISupportsWeakReference,
+    "nsINavHistoryObserver",
+    "nsISupportsWeakReference",
   ]),
 
   // nsINavHistoryObserver
@@ -561,7 +561,7 @@ var DownloadHistoryList = function(publicList, place) {
   }, "quit-application-granted");
 };
 
-this.DownloadHistoryList.prototype = {
+DownloadHistoryList.prototype = {
   __proto__: DownloadList.prototype,
 
   /**

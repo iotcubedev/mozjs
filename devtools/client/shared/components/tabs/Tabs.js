@@ -47,6 +47,7 @@ define(function(require, exports, module) {
         children: PropTypes.oneOfType([PropTypes.array, PropTypes.element])
           .isRequired,
         showAllTabsMenu: PropTypes.bool,
+        allTabsMenuButtonTooltip: PropTypes.string,
         onAllTabsMenuClick: PropTypes.func,
 
         // To render a sidebar toggle button before the tab menu provide a function that
@@ -198,12 +199,24 @@ define(function(require, exports, module) {
       let activeTab = this.state.activeTab;
       const tabCount = this.props.children.length;
 
+      const ltr = event.target.ownerDocument.dir == "ltr";
+      const nextOrLastTab = Math.min(tabCount - 1, activeTab + 1);
+      const previousOrFirstTab = Math.max(0, activeTab - 1);
+
       switch (event.code) {
         case "ArrowRight":
-          activeTab = Math.min(tabCount - 1, activeTab + 1);
+          if (ltr) {
+            activeTab = nextOrLastTab;
+          } else {
+            activeTab = previousOrFirstTab;
+          }
           break;
         case "ArrowLeft":
-          activeTab = Math.max(0, activeTab - 1);
+          if (ltr) {
+            activeTab = previousOrFirstTab;
+          } else {
+            activeTab = nextOrLastTab;
+          }
           break;
       }
 
@@ -215,6 +228,13 @@ define(function(require, exports, module) {
     onClickTab(index, event) {
       this.setActive(index);
 
+      if (event) {
+        event.preventDefault();
+      }
+    }
+
+    onMouseDown(event) {
+      // Prevents click-dragging the tab headers
       if (event) {
         event.preventDefault();
       }
@@ -310,6 +330,7 @@ define(function(require, exports, module) {
                 "aria-selected": isTabSelected,
                 role: "tab",
                 onClick: this.onClickTab.bind(this, index),
+                onMouseDown: this.onMouseDown.bind(this),
               },
               title,
               badge && !isTabSelected && showBadge()
@@ -324,6 +345,7 @@ define(function(require, exports, module) {
       const allTabsMenu = this.state.overflow
         ? dom.button({
             className: "all-tabs-menu",
+            title: this.props.allTabsMenuButtonTooltip,
             onClick: this.props.onAllTabsMenuClick,
           })
         : null;

@@ -48,17 +48,6 @@
     get handleCtrlTab() {
       return this.getAttribute("handleCtrlTab") != "false";
     }
-    /**
-     * _tabs and _tabpanels are deprecated, they exist only for
-     * backwards compatibility.
-     */
-    get _tabs() {
-      return this.tabs;
-    }
-
-    get _tabpanels() {
-      return this.tabpanels;
-    }
 
     get tabs() {
       if (this.hasAttribute("tabcontainer")) {
@@ -283,6 +272,15 @@
   customElements.define("tabpanels", MozTabpanels);
 
   MozElements.MozTab = class MozTab extends MozElements.BaseText {
+    static get markup() {
+      return `
+        <hbox class="tab-middle box-inherit" flex="1">
+          <image class="tab-icon" role="presentation"></image>
+          <label class="tab-text" flex="1" role="presentation"></label>
+        </hbox>
+      `;
+    }
+
     constructor() {
       super();
 
@@ -300,36 +298,12 @@
       };
     }
 
-    get fragment() {
-      if (!this._fragment) {
-        this._fragment = MozXULElement.parseXULToFragment(`
-        <hbox class="tab-middle box-inherit" flex="1">
-          <image class="tab-icon" role="presentation"></image>
-          <label class="tab-text" flex="1" role="presentation"></label>
-        </hbox>
-    `);
-      }
-      return this.ownerDocument.importNode(this._fragment, true);
-    }
-
     connectedCallback() {
       if (!this._initialized) {
         this.textContent = "";
-        this.appendChild(this.fragment);
+        this.appendChild(this.constructor.fragment);
         this.initializeAttributeInheritance();
         this._initialized = true;
-      }
-    }
-
-    /**
-     * Passes DOM events to the on_<event type> methods.
-     */
-    handleEvent(event) {
-      let methodName = "on_" + event.type;
-      if (methodName in this) {
-        this[methodName](event);
-      } else {
-        throw new Error("Unrecognized event: " + event.type);
       }
     }
 

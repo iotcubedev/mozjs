@@ -14,6 +14,11 @@
 
 #include <string.h>
 
+#if defined(ANDROID) && defined(MOZ_LINKER)
+#  include "Linker.h"
+#  include <android/log.h>
+#endif
+
 using namespace mozilla;
 
 // for _Unwind_Backtrace from libcxxrt or libunwind
@@ -375,8 +380,6 @@ MFBT_API void MozStackWalkThread(MozWalkStackCallback aCallback,
                                  uint32_t aSkipFrames, uint32_t aMaxFrames,
                                  void* aClosure, HANDLE aThread,
                                  CONTEXT* aContext) {
-  static HANDLE myProcess = nullptr;
-  HANDLE myThread;
   struct WalkStackData data;
 
   InitializeDbgHelpCriticalSection();
@@ -391,29 +394,9 @@ MFBT_API void MozStackWalkThread(MozWalkStackCallback aCallback,
     data.walkCallingThread = (threadId == currentThreadId);
   }
 
-  // Have to duplicate handle to get a real handle.
-  if (!myProcess) {
-    if (!::DuplicateHandle(::GetCurrentProcess(), ::GetCurrentProcess(),
-                           ::GetCurrentProcess(), &myProcess,
-                           PROCESS_ALL_ACCESS, FALSE, 0)) {
-      if (data.walkCallingThread) {
-        PrintError("DuplicateHandle (process)");
-      }
-      return;
-    }
-  }
-  if (!::DuplicateHandle(::GetCurrentProcess(), targetThread,
-                         ::GetCurrentProcess(), &myThread, THREAD_ALL_ACCESS,
-                         FALSE, 0)) {
-    if (data.walkCallingThread) {
-      PrintError("DuplicateHandle (thread)");
-    }
-    return;
-  }
-
   data.skipFrames = aSkipFrames;
-  data.thread = myThread;
-  data.process = myProcess;
+  data.thread = targetThread;
+  data.process = ::GetCurrentProcess();
   void* local_pcs[1024];
   data.pcs = local_pcs;
   data.pc_count = 0;
@@ -436,8 +419,6 @@ MFBT_API void MozStackWalkThread(MozWalkStackCallback aCallback,
     data.sp_count = 0;
     WalkStackMain64(&data);
   }
-
-  ::CloseHandle(myThread);
 
   for (uint32_t i = 0; i < data.pc_count; ++i) {
     (*aCallback)(i + 1, data.pcs[i], data.sps[i], aClosure);
@@ -799,7 +780,13 @@ bool MFBT_API MozDescribeCodeAddress(void* aPC,
   aDetails->foffset = 0;
 
   Dl_info info;
+
+#  if defined(ANDROID) && defined(MOZ_LINKER)
+  int ok = __wrap_dladdr(aPC, &info);
+#  else
   int ok = dladdr(aPC, &info);
+#  endif
+
   if (!ok) {
     return true;
   }
@@ -807,6 +794,11 @@ bool MFBT_API MozDescribeCodeAddress(void* aPC,
   strncpy(aDetails->library, info.dli_fname, sizeof(aDetails->library));
   aDetails->library[mozilla::ArrayLength(aDetails->library) - 1] = '\0';
   aDetails->loffset = (char*)aPC - (char*)info.dli_fbase;
+
+#  if !defined(XP_FREEBSD)
+  // On FreeBSD, dli_sname is unusably bad, it often returns things like
+  // 'gtk_xtbin_new' or 'XRE_GetBootstrap' instead of long C++ symbols. Just let
+  // GetFunction do the lookup directly in the ELF image.
 
   const char* symbol = info.dli_sname;
   if (!symbol || symbol[0] == '\0') {
@@ -822,6 +814,8 @@ bool MFBT_API MozDescribeCodeAddress(void* aPC,
   }
 
   aDetails->foffset = (char*)aPC - (char*)info.dli_saddr;
+#  endif
+
   return true;
 }
 
@@ -919,8 +913,8 @@ MFBT_API void MozFormatCodeAddress(char* aBuffer, uint32_t aBufferSize,
              aFileName, aLineNo);
   } else if (aLibrary && aLibrary[0]) {
     // We have no filename, but we do have a library name. Use it and the
-    // library offset, and print them in a way that scripts like
-    // fix_{linux,macosx}_stacks.py can easily post-process.
+    // library offset, and print them in a way that `fix_stacks.py` can
+    // post-process.
     snprintf(aBuffer, aBufferSize, "#%02u: %s[%s +0x%" PRIxPTR "]",
              aFrameNumber, function, aLibrary,
              static_cast<uintptr_t>(aLOffset));

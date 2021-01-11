@@ -8,17 +8,14 @@
 #include "nsCOMPtr.h"
 #include "nsGNOMEShellService.h"
 #include "nsShellService.h"
-#include "nsIServiceManager.h"
 #include "nsIFile.h"
 #include "nsIProperties.h"
 #include "nsDirectoryServiceDefs.h"
-#include "nsIPrefService.h"
 #include "prenv.h"
 #include "nsString.h"
 #include "nsIGIOService.h"
 #include "nsIGSettingsService.h"
 #include "nsIStringBundle.h"
-#include "nsIOutputStream.h"
 #include "nsServiceManagerUtils.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIImageLoadingContent.h"
@@ -74,7 +71,19 @@ static const MimeTypeAssociation appTypes[] = {
 #define kDesktopDrawBGGSKey "draw-background"
 #define kDesktopColorGSKey "primary-color"
 
-static bool IsRunningAsASnap() { return (PR_GetEnv("SNAP") != nullptr); }
+static bool IsRunningAsASnap() {
+  // SNAP holds the path to the snap, use SNAP_NAME
+  // which is easier to parse.
+  const char* snap_name = PR_GetEnv("SNAP_NAME");
+
+  // return early if not set.
+  if (snap_name == nullptr) {
+    return false;
+  }
+
+  // snap_name as defined on https://snapcraft.io/firefox
+  return (strcmp(snap_name, "firefox") == 0);
+}
 
 nsresult nsGNOMEShellService::Init() {
   nsresult rv;
@@ -91,6 +100,14 @@ nsresult nsGNOMEShellService::Init() {
       do_GetService(NS_GSETTINGSSERVICE_CONTRACTID);
 
   if (!giovfs && !gsettings) return NS_ERROR_NOT_AVAILABLE;
+
+#ifdef MOZ_ENABLE_DBUS
+  const char* currentDesktop = getenv("XDG_CURRENT_DESKTOP");
+  if (currentDesktop && strstr(currentDesktop, "GNOME") != nullptr &&
+      Preferences::GetBool("browser.gnome-search-provider.enabled", false)) {
+    mSearchProvider.Startup();
+  }
+#endif
 
   // Check G_BROKEN_FILENAMES.  If it's set, then filenames in glib use
   // the locale encoding.  If it's not set, they use UTF-8.
@@ -411,19 +428,19 @@ nsGNOMEShellService::SetDesktopBackground(dom::Element* aElement,
       do_GetService(NS_GSETTINGSSERVICE_CONTRACTID);
   if (gsettings) {
     nsCOMPtr<nsIGSettingsCollection> background_settings;
-    gsettings->GetCollectionForSchema(NS_LITERAL_CSTRING(kDesktopBGSchema),
+    gsettings->GetCollectionForSchema(nsLiteralCString(kDesktopBGSchema),
                                       getter_AddRefs(background_settings));
     if (background_settings) {
       gchar* file_uri = g_filename_to_uri(filePath.get(), nullptr, nullptr);
       if (!file_uri) return NS_ERROR_FAILURE;
 
-      background_settings->SetString(NS_LITERAL_CSTRING(kDesktopOptionGSKey),
+      background_settings->SetString(nsLiteralCString(kDesktopOptionGSKey),
                                      options);
 
-      background_settings->SetString(NS_LITERAL_CSTRING(kDesktopImageGSKey),
+      background_settings->SetString(nsLiteralCString(kDesktopImageGSKey),
                                      nsDependentCString(file_uri));
       g_free(file_uri);
-      background_settings->SetBoolean(NS_LITERAL_CSTRING(kDesktopDrawBGGSKey),
+      background_settings->SetBoolean(nsLiteralCString(kDesktopDrawBGGSKey),
                                       true);
       return rv;
     }
@@ -443,10 +460,10 @@ nsGNOMEShellService::GetDesktopBackgroundColor(uint32_t* aColor) {
   nsAutoCString background;
 
   if (gsettings) {
-    gsettings->GetCollectionForSchema(NS_LITERAL_CSTRING(kDesktopBGSchema),
+    gsettings->GetCollectionForSchema(nsLiteralCString(kDesktopBGSchema),
                                       getter_AddRefs(background_settings));
     if (background_settings) {
-      background_settings->GetString(NS_LITERAL_CSTRING(kDesktopColorGSKey),
+      background_settings->GetString(nsLiteralCString(kDesktopColorGSKey),
                                      background);
     }
   }
@@ -489,10 +506,10 @@ nsGNOMEShellService::SetDesktopBackgroundColor(uint32_t aColor) {
       do_GetService(NS_GSETTINGSSERVICE_CONTRACTID);
   if (gsettings) {
     nsCOMPtr<nsIGSettingsCollection> background_settings;
-    gsettings->GetCollectionForSchema(NS_LITERAL_CSTRING(kDesktopBGSchema),
+    gsettings->GetCollectionForSchema(nsLiteralCString(kDesktopBGSchema),
                                       getter_AddRefs(background_settings));
     if (background_settings) {
-      background_settings->SetString(NS_LITERAL_CSTRING(kDesktopColorGSKey),
+      background_settings->SetString(nsLiteralCString(kDesktopColorGSKey),
                                      colorString);
       return NS_OK;
     }

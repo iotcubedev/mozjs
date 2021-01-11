@@ -61,14 +61,12 @@
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsIObserverService.h"
-#include "nsISimpleEnumerator.h"
 #include "nsIDirectoryEnumerator.h"
 #include "nsIFile.h"
 #include "nsUnicharUtils.h"
 #include "nsCRT.h"
 #include "mozInlineSpellChecker.h"
 #include <stdlib.h>
-#include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsNetUtil.h"
 #include "mozilla/dom/ContentParent.h"
@@ -89,7 +87,7 @@ NS_INTERFACE_MAP_BEGIN(mozHunspell)
   NS_INTERFACE_MAP_ENTRIES_CYCLE_COLLECTION(mozHunspell)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION(mozHunspell, mPersonalDictionary)
+NS_IMPL_CYCLE_COLLECTION_WEAK(mozHunspell, mPersonalDictionary)
 
 NS_IMPL_COMPONENT_FACTORY(mozHunspell) {
   auto hunspell = MakeRefPtr<mozHunspell>();
@@ -324,7 +322,7 @@ mozHunspell::LoadDictionariesFromDir(nsIFile* aDir) {
   while (NS_SUCCEEDED(files->GetNextFile(getter_AddRefs(file))) && file) {
     nsAutoString leafName;
     file->GetLeafName(leafName);
-    if (!StringEndsWith(leafName, NS_LITERAL_STRING(".dic"))) continue;
+    if (!StringEndsWith(leafName, u".dic"_ns)) continue;
 
     nsAutoString dict(leafName);
     dict.SetLength(dict.Length() - 4);  // magic length of ".dic"

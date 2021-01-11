@@ -23,6 +23,7 @@
 #include "nsIContent.h"                // for nsIContent, etc
 #include "nsID.h"                      // for NS_GET_IID
 #include "nsIEditor.h"                 // for nsIEditor, etc
+#include "nsIEditorSpellCheck.h"       // for nsIEditorSpellCheck, etc
 #include "nsINode.h"                   // for nsINode
 #include "nsISelectionController.h"    // for nsISelectionController, etc
 #include "nsISupportsBase.h"           // for nsISupports
@@ -400,7 +401,7 @@ nsresult TextServicesDocument::LastSelectedBlock(
     return NS_ERROR_FAILURE;
   }
 
-  RefPtr<nsRange> range;
+  RefPtr<const nsRange> range;
   nsCOMPtr<nsINode> parent;
 
   if (selection->IsCollapsed()) {
@@ -1135,9 +1136,9 @@ nsresult TextServicesDocument::InsertText(const nsAString& aText) {
       itEntry = new OffsetEntry(entry->mNode, entry->mStrOffset, strLength);
       itEntry->mIsInsertedText = true;
       itEntry->mNodeOffset = entry->mNodeOffset;
-      if (!mOffsetTable.InsertElementAt(mSelStartIndex, itEntry)) {
-        return NS_ERROR_FAILURE;
-      }
+      // XXX(Bug 1631371) Check if this should use a fallible operation as it
+      // pretended earlier.
+      mOffsetTable.InsertElementAt(mSelStartIndex, itEntry);
     }
   } else if (entry->mStrOffset + entry->mLength == mSelStartOffset) {
     // We are inserting text at the end of the current offset entry.
@@ -1168,10 +1169,9 @@ nsresult TextServicesDocument::InsertText(const nsAString& aText) {
       itEntry = new OffsetEntry(entry->mNode, mSelStartOffset, 0);
       itEntry->mNodeOffset = entry->mNodeOffset + entry->mLength;
       itEntry->mIsInsertedText = true;
-      if (!mOffsetTable.InsertElementAt(i, itEntry)) {
-        delete itEntry;
-        return NS_ERROR_FAILURE;
-      }
+      // XXX(Bug 1631371) Check if this should use a fallible operation as it
+      // pretended earlier.
+      mOffsetTable.InsertElementAt(i, itEntry);
     }
 
     // We have a valid inserted text offset entry. Update its
@@ -1210,9 +1210,9 @@ nsresult TextServicesDocument::InsertText(const nsAString& aText) {
     itEntry = new OffsetEntry(entry->mNode, mSelStartOffset, strLength);
     itEntry->mIsInsertedText = true;
     itEntry->mNodeOffset = entry->mNodeOffset + entry->mLength;
-    if (!mOffsetTable.InsertElementAt(mSelStartIndex + 1, itEntry)) {
-      return NS_ERROR_FAILURE;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    mOffsetTable.InsertElementAt(mSelStartIndex + 1, itEntry);
 
     mSelEndIndex = ++mSelStartIndex;
   }
@@ -1445,14 +1445,10 @@ already_AddRefed<nsRange> TextServicesDocument::CreateDocumentContentRange() {
     return nullptr;
   }
 
-  RefPtr<nsRange> range = new nsRange(node);
-  ErrorResult errorResult;
-  range->SelectNodeContents(*node, errorResult);
-  if (NS_WARN_IF(errorResult.Failed())) {
-    errorResult.SuppressException();
-    return nullptr;
-  }
-
+  RefPtr<nsRange> range = nsRange::Create(node);
+  IgnoredErrorResult ignoredError;
+  range->SelectNodeContents(*node, ignoredError);
+  NS_WARNING_ASSERTION(!ignoredError.Failed(), "SelectNodeContents() failed");
   return range.forget();
 }
 
@@ -1880,7 +1876,7 @@ nsresult TextServicesDocument::GetCollapsedSelection(
   int32_t eStartOffset = eStart->mNodeOffset;
   int32_t eEndOffset = eEnd->mNodeOffset + eEnd->mLength;
 
-  RefPtr<nsRange> range = selection->GetRangeAt(0);
+  RefPtr<const nsRange> range = selection->GetRangeAt(0);
   NS_ENSURE_STATE(range);
 
   nsCOMPtr<nsINode> parent = range->GetStartContainer();
@@ -1888,12 +1884,16 @@ nsresult TextServicesDocument::GetCollapsedSelection(
 
   uint32_t offset = range->StartOffset();
 
-  int32_t e1s1 = nsContentUtils::ComparePoints(
+  const Maybe<int32_t> e1s1 = nsContentUtils::ComparePoints(
       eStart->mNode, eStartOffset, parent, static_cast<int32_t>(offset));
-  int32_t e2s1 = nsContentUtils::ComparePoints(eEnd->mNode, eEndOffset, parent,
-                                               static_cast<int32_t>(offset));
+  const Maybe<int32_t> e2s1 = nsContentUtils::ComparePoints(
+      eEnd->mNode, eEndOffset, parent, static_cast<int32_t>(offset));
 
-  if (e1s1 > 0 || e2s1 < 0) {
+  if (NS_WARN_IF(!e1s1) || NS_WARN_IF(!e2s1)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  if (*e1s1 > 0 || *e2s1 < 0) {
     // We're done if the caret is outside the current text block.
     return NS_OK;
   }
@@ -2044,7 +2044,7 @@ nsresult TextServicesDocument::GetCollapsedSelection(
 nsresult TextServicesDocument::GetUncollapsedSelection(
     BlockSelectionStatus* aSelStatus, int32_t* aSelOffset,
     int32_t* aSelLength) {
-  RefPtr<nsRange> range;
+  RefPtr<const nsRange> range;
   OffsetEntry* entry;
 
   RefPtr<Selection> selection =
@@ -2058,7 +2058,6 @@ nsresult TextServicesDocument::GetUncollapsedSelection(
   nsCOMPtr<nsINode> startContainer, endContainer;
   int32_t startOffset, endOffset;
   int32_t tableCount;
-  int32_t e1s1 = 0, e1s2 = 0, e2s1 = 0, e2s2 = 0;
 
   OffsetEntry *eStart, *eEnd;
   int32_t eStartOffset, eEndOffset;
@@ -2079,11 +2078,12 @@ nsresult TextServicesDocument::GetUncollapsedSelection(
   eStartOffset = eStart->mNodeOffset;
   eEndOffset = eEnd->mNodeOffset + eEnd->mLength;
 
-  uint32_t rangeCount = selection->RangeCount();
+  const uint32_t rangeCount = selection->RangeCount();
 
   // Find the first range in the selection that intersects
   // the current text block.
-
+  Maybe<int32_t> e1s2;
+  Maybe<int32_t> e2s1;
   for (uint32_t i = 0; i < rangeCount; i++) {
     range = selection->GetRangeAt(i);
     NS_ENSURE_STATE(range);
@@ -2096,41 +2096,54 @@ nsresult TextServicesDocument::GetUncollapsedSelection(
 
     e1s2 = nsContentUtils::ComparePoints(eStart->mNode, eStartOffset,
                                          endContainer, endOffset);
+    if (NS_WARN_IF(!e1s2)) {
+      return NS_ERROR_FAILURE;
+    }
+
     e2s1 = nsContentUtils::ComparePoints(eEnd->mNode, eEndOffset,
                                          startContainer, startOffset);
+    if (NS_WARN_IF(!e2s1)) {
+      return NS_ERROR_FAILURE;
+    }
 
     // Break out of the loop if the text block intersects the current range.
 
-    if (e1s2 <= 0 && e2s1 >= 0) {
+    if (*e1s2 <= 0 && *e2s1 >= 0) {
       break;
     }
   }
 
   // We're done if we didn't find an intersecting range.
 
-  if (rangeCount < 1 || e1s2 > 0 || e2s1 < 0) {
+  if (rangeCount < 1 || *e1s2 > 0 || *e2s1 < 0) {
     *aSelStatus = BlockSelectionStatus::eBlockOutside;
     *aSelOffset = *aSelLength = -1;
     return NS_OK;
   }
 
   // Now that we have an intersecting range, find out more info:
+  const Maybe<int32_t> e1s1 = nsContentUtils::ComparePoints(
+      eStart->mNode, eStartOffset, startContainer, startOffset);
+  if (NS_WARN_IF(!e1s1)) {
+    return NS_ERROR_FAILURE;
+  }
 
-  e1s1 = nsContentUtils::ComparePoints(eStart->mNode, eStartOffset,
-                                       startContainer, startOffset);
-  e2s2 = nsContentUtils::ComparePoints(eEnd->mNode, eEndOffset, endContainer,
-                                       endOffset);
+  const Maybe<int32_t> e2s2 = nsContentUtils::ComparePoints(
+      eEnd->mNode, eEndOffset, endContainer, endOffset);
+  if (NS_WARN_IF(!e2s2)) {
+    return NS_ERROR_FAILURE;
+  }
 
   if (rangeCount > 1) {
     // There are multiple selection ranges, we only deal
     // with the first one that intersects the current,
     // text block, so mark this a as a partial.
     *aSelStatus = BlockSelectionStatus::eBlockPartial;
-  } else if (e1s1 > 0 && e2s2 < 0) {
+  } else if (*e1s1 > 0 && *e2s2 < 0) {
     // The range extends beyond the start and
     // end of the current text block.
     *aSelStatus = BlockSelectionStatus::eBlockInside;
-  } else if (e1s1 <= 0 && e2s2 >= 0) {
+  } else if (*e1s1 <= 0 && *e2s2 >= 0) {
     // The current text block contains the entire
     // range.
     *aSelStatus = BlockSelectionStatus::eBlockContains;
@@ -2148,7 +2161,7 @@ nsresult TextServicesDocument::GetUncollapsedSelection(
   // The start of the range will be the rightmost
   // start node.
 
-  if (e1s1 >= 0) {
+  if (*e1s1 >= 0) {
     p1 = eStart->mNode;
     o1 = eStartOffset;
   } else {
@@ -2159,7 +2172,7 @@ nsresult TextServicesDocument::GetUncollapsedSelection(
   // The end of the range will be the leftmost
   // end node.
 
-  if (e2s2 <= 0) {
+  if (*e2s2 <= 0) {
     p2 = eEnd->mNode;
     o2 = eEndOffset;
   } else {
@@ -2690,10 +2703,9 @@ nsresult TextServicesDocument::SplitOffsetEntry(int32_t aTableIndex,
   OffsetEntry* newEntry = new OffsetEntry(
       entry->mNode, entry->mStrOffset + oldLength, aNewEntryLength);
 
-  if (!mOffsetTable.InsertElementAt(aTableIndex + 1, newEntry)) {
-    delete newEntry;
-    return NS_ERROR_FAILURE;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  mOffsetTable.InsertElementAt(aTableIndex + 1, newEntry);
 
   // Adjust entry fields:
 
@@ -2910,12 +2922,6 @@ TextServicesDocument::DidInsertText(CharacterData* aTextNode, int32_t aOffset,
 NS_IMETHODIMP
 TextServicesDocument::WillDeleteText(CharacterData* aTextNode, int32_t aOffset,
                                      int32_t aLength) {
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextServicesDocument::DidDeleteText(CharacterData* aTextNode, int32_t aOffset,
-                                    int32_t aLength, nsresult aResult) {
   return NS_OK;
 }
 

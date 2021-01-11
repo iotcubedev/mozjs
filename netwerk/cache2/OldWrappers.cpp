@@ -156,7 +156,7 @@ NS_IMETHODIMP _OldVisitCallbackWrapper::VisitDevice(
     nsCacheService::GetAppCacheDirectory(getter_AddRefs(dir));
   }
 
-  if (mLoadInfo->IsAnonymous()) {
+  if (mLoadInfo && mLoadInfo->IsAnonymous()) {
     // Anonymous visiting reports 0, 0 since we cannot count that
     // early the number of anon entries.
     mCB->OnCacheStorageInfo(0, 0, capacity, dir);
@@ -195,7 +195,7 @@ NS_IMETHODIMP _OldVisitCallbackWrapper::VisitEntry(const char* deviceID,
   if (NS_FAILED(rv)) return NS_OK;
 
   if (mLoadInfo->IsPrivate() !=
-      StringBeginsWith(clientId, NS_LITERAL_CSTRING("HTTP-memory-only-PB"))) {
+      StringBeginsWith(clientId, "HTTP-memory-only-PB"_ns)) {
     return NS_OK;
   }
 
@@ -203,7 +203,7 @@ NS_IMETHODIMP _OldVisitCallbackWrapper::VisitEntry(const char* deviceID,
   rv = entryInfo->GetKey(cacheKey);
   if (NS_FAILED(rv)) return NS_OK;
 
-  if (StringBeginsWith(cacheKey, NS_LITERAL_CSTRING("anon&"))) {
+  if (StringBeginsWith(cacheKey, "anon&"_ns)) {
     if (!mLoadInfo->IsAnonymous()) return NS_OK;
 
     cacheKey = Substring(cacheKey, 5, cacheKey.Length());
@@ -211,7 +211,7 @@ NS_IMETHODIMP _OldVisitCallbackWrapper::VisitEntry(const char* deviceID,
     return NS_OK;
   }
 
-  if (StringBeginsWith(cacheKey, NS_LITERAL_CSTRING("id="))) {
+  if (StringBeginsWith(cacheKey, "id="_ns)) {
     int32_t uriSpecEnd = cacheKey.Find("&uri=");
     if (uriSpecEnd == kNotFound)  // Corrupted, ignore
       return NS_OK;
@@ -220,7 +220,7 @@ NS_IMETHODIMP _OldVisitCallbackWrapper::VisitEntry(const char* deviceID,
     cacheKey = Substring(cacheKey, uriSpecEnd + 1, cacheKey.Length());
   }
 
-  if (StringBeginsWith(cacheKey, NS_LITERAL_CSTRING("uri="))) {
+  if (StringBeginsWith(cacheKey, "uri="_ns)) {
     cacheKey = Substring(cacheKey, 4, cacheKey.Length());
   }
 
@@ -477,10 +477,11 @@ NS_IMETHODIMP _OldCacheEntryWrapper::VisitMetaData(
 
 namespace {
 
-nsresult GetCacheSessionNameForStoragePolicy(
-    const nsACString& scheme, nsCacheStoragePolicy storagePolicy,
-    bool isPrivate, OriginAttributes const* originAttribs,
-    nsACString& sessionName) {
+void GetCacheSessionNameForStoragePolicy(const nsACString& scheme,
+                                         nsCacheStoragePolicy storagePolicy,
+                                         bool isPrivate,
+                                         OriginAttributes const* originAttribs,
+                                         nsACString& sessionName) {
   MOZ_ASSERT(!isPrivate || storagePolicy == nsICache::STORE_IN_MEMORY);
 
   // HTTP
@@ -525,8 +526,6 @@ nsresult GetCacheSessionNameForStoragePolicy(
   nsAutoCString suffix;
   originAttribs->CreateSuffix(suffix);
   sessionName.Append(suffix);
-
-  return NS_OK;
 }
 
 nsresult GetCacheSession(const nsACString& aScheme, bool aWriteToDisk,
@@ -547,10 +546,9 @@ nsresult GetCacheSession(const nsACString& aScheme, bool aWriteToDisk,
   if (aAppCache) {
     aAppCache->GetClientID(clientId);
   } else {
-    rv = GetCacheSessionNameForStoragePolicy(
+    GetCacheSessionNameForStoragePolicy(
         aScheme, storagePolicy, aLoadInfo->IsPrivate(),
         aLoadInfo->OriginAttributesPtr(), clientId);
-    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   LOG(("  GetCacheSession for client=%s, policy=%d", clientId.get(),
@@ -730,9 +728,9 @@ _OldCacheLoad::Run() {
     if (!(mFlags & CHECK_MULTITHREADED)) Check();
 
     // break cycles
-    nsCOMPtr<nsICacheEntryOpenCallback> cb = mCallback.forget();
+    nsCOMPtr<nsICacheEntryOpenCallback> cb = std::move(mCallback);
     mCacheThread = nullptr;
-    nsCOMPtr<nsICacheEntry> entry = mCacheEntry.forget();
+    nsCOMPtr<nsICacheEntry> entry = std::move(mCacheEntry);
 
     rv = cb->OnCacheEntryAvailable(entry, mNew, mAppCache, mStatus);
 
@@ -915,8 +913,8 @@ NS_IMETHODIMP _OldStorage::AsyncEvictStorage(
   } else {
     // Oh, I'll be so happy when session names are gone...
     nsCOMPtr<nsICacheSession> session;
-    rv = GetCacheSession(NS_LITERAL_CSTRING("http"), mWriteToDisk, mLoadInfo,
-                         mAppCache, getter_AddRefs(session));
+    rv = GetCacheSession("http"_ns, mWriteToDisk, mLoadInfo, mAppCache,
+                         getter_AddRefs(session));
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = session->EvictEntries();

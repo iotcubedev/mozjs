@@ -10,28 +10,49 @@ const {
   createStore,
 } = require("devtools/client/shared/vendor/redux");
 
-const { MIN_COLUMN_WIDTH, DEFAULT_COLUMN_WIDTH } = require("./constants");
+const {
+  waitUntilService,
+} = require("devtools/client/shared/redux/middleware/wait-service.js");
+
+const {
+  MIN_COLUMN_WIDTH,
+  DEFAULT_COLUMN_WIDTH,
+} = require("devtools/client/netmonitor/src/constants");
 
 // Middleware
-const batching = require("./middleware/batching");
-const prefs = require("./middleware/prefs");
-const thunk = require("./middleware/thunk");
-const recording = require("./middleware/recording");
-const throttling = require("./middleware/throttling");
-const eventTelemetry = require("./middleware/event-telemetry");
+const batching = require("devtools/client/netmonitor/src/middleware/batching");
+const prefs = require("devtools/client/netmonitor/src/middleware/prefs");
+const {
+  thunkWithOptions,
+} = require("devtools/client/shared/redux/middleware/thunk-with-options");
+const recording = require("devtools/client/netmonitor/src/middleware/recording");
+const throttling = require("devtools/client/netmonitor/src/middleware/throttling");
+const eventTelemetry = require("devtools/client/netmonitor/src/middleware/event-telemetry");
+const requestBlocking = require("devtools/client/netmonitor/src/middleware/request-blocking");
 
 // Reducers
-const rootReducer = require("./reducers/index");
-const { FilterTypes, Filters } = require("./reducers/filters");
-const { Requests } = require("./reducers/requests");
-const { Sort } = require("./reducers/sort");
-const { TimingMarkers } = require("./reducers/timing-markers");
-const { UI, Columns, ColumnsData } = require("./reducers/ui");
+const rootReducer = require("devtools/client/netmonitor/src/reducers/index");
 const {
-  WebSockets,
-  getWebSocketsDefaultColumnsState,
-} = require("./reducers/web-sockets");
-const { Search } = require("./reducers/search");
+  FilterTypes,
+  Filters,
+} = require("devtools/client/netmonitor/src/reducers/filters");
+const {
+  Requests,
+} = require("devtools/client/netmonitor/src/reducers/requests");
+const { Sort } = require("devtools/client/netmonitor/src/reducers/sort");
+const {
+  TimingMarkers,
+} = require("devtools/client/netmonitor/src/reducers/timing-markers");
+const {
+  UI,
+  Columns,
+  ColumnsData,
+} = require("devtools/client/netmonitor/src/reducers/ui");
+const {
+  Messages,
+  getMessageDefaultColumnsState,
+} = require("devtools/client/netmonitor/src/reducers/messages");
+const { Search } = require("devtools/client/netmonitor/src/reducers/search");
 
 /**
  * Configure state and middleware for the Network monitor tool.
@@ -49,20 +70,22 @@ function configureStore(connector, telemetry) {
       columns: getColumnState(),
       columnsData: getColumnsData(),
     }),
-    webSockets: WebSockets({
-      columns: getWebSocketsColumnState(),
+    messages: Messages({
+      columns: getMessageColumnState(),
     }),
     search: new Search(),
   };
 
   // Prepare middleware.
   const middleware = applyMiddleware(
-    thunk,
+    requestBlocking(connector),
+    thunkWithOptions.bind(null, { connector }),
     prefs,
     batching,
     recording(connector),
     throttling(connector),
-    eventTelemetry(connector, telemetry)
+    eventTelemetry(connector, telemetry),
+    waitUntilService
   );
 
   return createStore(rootReducer, initialState, middleware);
@@ -86,11 +109,11 @@ function getColumnState() {
 }
 
 /**
- * Get column state of WebSockets from preferences.
+ * Get column state of Messages from preferences.
  */
-function getWebSocketsColumnState() {
-  const columns = getWebSocketsDefaultColumnsState();
-  const visibleColumns = getPref("devtools.netmonitor.ws.visibleColumns");
+function getMessageColumnState() {
+  const columns = getMessageDefaultColumnsState();
+  const visibleColumns = getPref("devtools.netmonitor.msg.visibleColumns");
 
   const state = {};
   for (const col in columns) {
@@ -132,6 +155,10 @@ function getFilterState() {
   });
   return new FilterTypes(activeFilters);
 }
+
+/**
+ * Get json data from preferences
+ */
 
 function getPref(pref) {
   try {

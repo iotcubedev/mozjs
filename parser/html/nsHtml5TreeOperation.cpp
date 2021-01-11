@@ -10,12 +10,13 @@
 #include "mozilla/dom/Comment.h"
 #include "mozilla/dom/DocumentType.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/LinkStyle.h"
 #include "mozilla/dom/HTMLFormElement.h"
 #include "mozilla/dom/HTMLImageElement.h"
 #include "mozilla/dom/HTMLTemplateElement.h"
+#include "mozilla/dom/MutationObservers.h"
 #include "mozilla/dom/Text.h"
 #include "nsAttrName.h"
-#include "nsBindingManager.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
 #include "nsDocElementCreatedNotificationRunner.h"
@@ -29,19 +30,15 @@
 #include "nsIFormControl.h"
 #include "nsIMutationObserver.h"
 #include "nsINode.h"
-#include "nsIObserverService.h"
 #include "nsIProtocolHandler.h"
 #include "nsIScriptElement.h"
-#include "nsIServiceManager.h"
-#include "nsIStyleSheetLinkingElement.h"
 #include "nsISupportsImpl.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
-#include "nsNodeUtils.h"
 #include "nsTextNode.h"
-#include "nsXBLBinding.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 using mozilla::dom::Document;
 
 /**
@@ -216,12 +213,12 @@ nsresult nsHtml5TreeOperation::AppendTextToTextNode(
   MOZ_ASSERT(aBuilder->IsInDocUpdate());
   uint32_t oldLength = aTextNode->TextLength();
   CharacterDataChangeInfo info = {true, oldLength, oldLength, aLength};
-  nsNodeUtils::CharacterDataWillChange(aTextNode, info);
+  MutationObservers::NotifyCharacterDataWillChange(aTextNode, info);
 
   nsresult rv = aTextNode->AppendText(aBuffer, aLength, false);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsNodeUtils::CharacterDataChanged(aTextNode, info);
+  MutationObservers::NotifyCharacterDataChanged(aTextNode, info);
   return rv;
 }
 
@@ -237,7 +234,7 @@ nsresult nsHtml5TreeOperation::AppendText(const char16_t* aBuffer,
   }
 
   nsNodeInfoManager* nodeInfoManager = aParent->OwnerDoc()->NodeInfoManager();
-  RefPtr<nsTextNode> text = new nsTextNode(nodeInfoManager);
+  RefPtr<nsTextNode> text = new (nodeInfoManager) nsTextNode(nodeInfoManager);
   NS_ASSERTION(text, "Infallible malloc failed?");
   rv = text->SetText(aBuffer, aLength, false);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -254,7 +251,7 @@ nsresult nsHtml5TreeOperation::Append(nsIContent* aNode, nsIContent* aParent,
   rv = aParent->AppendChildTo(aNode, false);
   if (NS_SUCCEEDED(rv)) {
     aNode->SetParserHasNotified();
-    nsNodeUtils::ContentAppended(aParent, aNode);
+    MutationObservers::NotifyContentAppended(aParent, aNode);
   }
   return rv;
 }
@@ -274,7 +271,7 @@ nsresult nsHtml5TreeOperation::AppendToDocument(
   }
   NS_ENSURE_SUCCESS(rv, rv);
   aNode->SetParserHasNotified();
-  nsNodeUtils::ContentInserted(doc, aNode);
+  MutationObservers::NotifyContentInserted(doc, aNode);
 
   NS_ASSERTION(!nsContentUtils::IsSafeToRunScript(),
                "Someone forgot to block scripts");
@@ -293,7 +290,7 @@ static bool IsElementOrTemplateContent(nsINode* aNode) {
     if (aNode->IsDocumentFragment()) {
       // Check if the node is a template content.
       nsIContent* fragHost = aNode->AsDocumentFragment()->GetHost();
-      if (fragHost && nsNodeUtils::IsTemplateElement(fragHost)) {
+      if (fragHost && fragHost->IsTemplateElement()) {
         return true;
       }
     }
@@ -327,7 +324,7 @@ nsresult nsHtml5TreeOperation::AppendChildrenToNewParent(
     didAppend = true;
   }
   if (didAppend) {
-    nsNodeUtils::ContentAppended(aParent, aParent->GetLastChild());
+    MutationObservers::NotifyContentAppended(aParent, aParent->GetLastChild());
   }
   return NS_OK;
 }
@@ -345,7 +342,7 @@ nsresult nsHtml5TreeOperation::FosterParent(nsIContent* aNode,
 
     nsresult rv = foster->InsertChildBefore(aNode, aTable, false);
     NS_ENSURE_SUCCESS(rv, rv);
-    nsNodeUtils::ContentInserted(foster, aNode);
+    MutationObservers::NotifyContentInserted(foster, aNode);
     return rv;
   }
 
@@ -460,10 +457,8 @@ nsIContent* nsHtml5TreeOperation::CreateHTMLElement(
     aBuilder->HoldElement(newElement.forget());
 
     if (MOZ_UNLIKELY(aName == nsGkAtoms::style || aName == nsGkAtoms::link)) {
-      nsCOMPtr<nsIStyleSheetLinkingElement> ssle(do_QueryInterface(newContent));
-      if (ssle) {
-        ssle->InitStyleLinkElement(false);
-        ssle->SetEnableUpdates(false);
+      if (auto* linkStyle = dom::LinkStyle::FromNode(*newContent)) {
+        linkStyle->SetEnableUpdates(false);
       }
     }
 
@@ -488,10 +483,8 @@ nsIContent* nsHtml5TreeOperation::CreateHTMLElement(
     aBuilder->HoldElement(newElement.forget());
 
     if (MOZ_UNLIKELY(aName == nsGkAtoms::style || aName == nsGkAtoms::link)) {
-      nsCOMPtr<nsIStyleSheetLinkingElement> ssle(do_QueryInterface(newContent));
-      if (ssle) {
-        ssle->InitStyleLinkElement(false);
-        ssle->SetEnableUpdates(false);
+      if (auto* linkStyle = dom::LinkStyle::FromNode(*newContent)) {
+        linkStyle->SetEnableUpdates(false);
       }
     }
 
@@ -537,10 +530,8 @@ nsIContent* nsHtml5TreeOperation::CreateSVGElement(
   aBuilder->HoldElement(newElement.forget());
 
   if (MOZ_UNLIKELY(aName == nsGkAtoms::style)) {
-    nsCOMPtr<nsIStyleSheetLinkingElement> ssle(do_QueryInterface(newContent));
-    if (ssle) {
-      ssle->InitStyleLinkElement(false);
-      ssle->SetEnableUpdates(false);
+    if (auto* linkStyle = dom::LinkStyle::FromNode(*newContent)) {
+      linkStyle->SetEnableUpdates(false);
     }
   }
 
@@ -656,14 +647,14 @@ nsresult nsHtml5TreeOperation::FosterParentText(
 
     nsNodeInfoManager* nodeInfoManager =
         aStackParent->OwnerDoc()->NodeInfoManager();
-    RefPtr<nsTextNode> text = new nsTextNode(nodeInfoManager);
+    RefPtr<nsTextNode> text = new (nodeInfoManager) nsTextNode(nodeInfoManager);
     NS_ASSERTION(text, "Infallible malloc failed?");
     rv = text->SetText(aBuffer, aLength, false);
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = foster->InsertChildBefore(text, aTable, false);
     NS_ENSURE_SUCCESS(rv, rv);
-    nsNodeUtils::ContentInserted(foster, text);
+    MutationObservers::NotifyContentInserted(foster, text);
     return rv;
   }
 
@@ -674,7 +665,8 @@ nsresult nsHtml5TreeOperation::AppendComment(nsIContent* aParent,
                                              char16_t* aBuffer, int32_t aLength,
                                              nsHtml5DocumentBuilder* aBuilder) {
   nsNodeInfoManager* nodeInfoManager = aParent->OwnerDoc()->NodeInfoManager();
-  RefPtr<dom::Comment> comment = new dom::Comment(nodeInfoManager);
+  RefPtr<dom::Comment> comment =
+      new (nodeInfoManager) dom::Comment(nodeInfoManager);
   NS_ASSERTION(comment, "Infallible malloc failed?");
   nsresult rv = comment->SetText(aBuffer, aLength, false);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -684,8 +676,8 @@ nsresult nsHtml5TreeOperation::AppendComment(nsIContent* aParent,
 
 nsresult nsHtml5TreeOperation::AppendCommentToDocument(
     char16_t* aBuffer, int32_t aLength, nsHtml5DocumentBuilder* aBuilder) {
-  RefPtr<dom::Comment> comment =
-      new dom::Comment(aBuilder->GetNodeInfoManager());
+  RefPtr<dom::Comment> comment = new (aBuilder->GetNodeInfoManager())
+      dom::Comment(aBuilder->GetNodeInfoManager());
   NS_ASSERTION(comment, "Infallible malloc failed?");
   nsresult rv = comment->SetText(aBuffer, aLength, false);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -997,9 +989,8 @@ nsresult nsHtml5TreeOperation::Perform(nsHtml5TreeOpExecutor* aBuilder,
 
     nsresult operator()(const opSetStyleLineNumber& aOperation) {
       nsIContent* node = *(aOperation.mContent);
-      nsCOMPtr<nsIStyleSheetLinkingElement> ssle = do_QueryInterface(node);
-      if (ssle) {
-        ssle->SetLineNumber(aOperation.mLineNumber);
+      if (auto* linkStyle = dom::LinkStyle::FromNode(*node)) {
+        linkStyle->SetLineNumber(aOperation.mLineNumber);
       } else {
         MOZ_ASSERT(nsNameSpaceManager::GetInstance()->mSVGDisabled,
                    "Node didn't QI to style, but SVG wasn't disabled.");
@@ -1127,8 +1118,8 @@ nsresult nsHtml5TreeOperation::Perform(nsHtml5TreeOpExecutor* aBuilder,
         klass.AppendLiteral(" error");
         element->SetAttr(kNameSpaceID_None, nsGkAtoms::_class, klass, true);
       } else {
-        element->SetAttr(kNameSpaceID_None, nsGkAtoms::_class,
-                         NS_LITERAL_STRING("error"), true);
+        element->SetAttr(kNameSpaceID_None, nsGkAtoms::_class, u"error"_ns,
+                         true);
       }
 
       nsresult rv;
@@ -1164,7 +1155,7 @@ nsresult nsHtml5TreeOperation::Perform(nsHtml5TreeOpExecutor* aBuilder,
     nsresult operator()(const opAddLineNumberId& aOperation) {
       Element* element = (*(aOperation.mElement))->AsElement();
       int32_t lineNumber = aOperation.mLineNumber;
-      nsAutoString val(NS_LITERAL_STRING("line"));
+      nsAutoString val(u"line"_ns);
       val.AppendInt(lineNumber);
       element->SetAttr(kNameSpaceID_None, nsGkAtoms::id, val, true);
       return NS_OK;

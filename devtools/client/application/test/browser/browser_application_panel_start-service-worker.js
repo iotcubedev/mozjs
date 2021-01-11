@@ -21,7 +21,6 @@ add_task(async function() {
   const { panel, tab, target } = await openNewTabAndApplicationPanel(TAB_URL);
   const doc = panel.panelWin.document;
 
-  // select service worker view
   selectPage(panel, "service-workers");
 
   await waitForWorkerRegistration(tab);
@@ -47,37 +46,9 @@ add_task(async function() {
   });
   ok(true, "Worker status is 'Running'");
 
-  await unregisterAllWorkers(target.client);
-});
+  await unregisterAllWorkers(target.client, doc);
 
-/**
- * Tests that Start button is disabled for service workers, when they cannot be debugged
- */
-add_task(async function() {
-  await enableApplicationPanel();
-
-  // disable sw debugging by increasing the # of processes and thus multi-e10s kicking in
-  info("Disable service worker debugging");
-  await pushPref("dom.ipc.processCount", 8);
-
-  const { panel, tab, target } = await openNewTabAndApplicationPanel(TAB_URL);
-  const doc = panel.panelWin.document;
-
-  // select service worker view
-  selectPage(panel, "service-workers");
-
-  await waitForWorkerRegistration(tab);
-
-  info("Wait until the service worker appears in the application panel");
-  await waitUntil(() => getWorkerContainers(doc).length === 1);
-
-  info("Wait until the start button is displayed");
-  const container = getWorkerContainers(doc)[0];
-  await waitUntil(() => container.querySelector(".js-start-button"));
-  ok(
-    container.querySelector(".js-start-button").disabled,
-    "Start button is disabled"
-  );
-
-  await unregisterAllWorkers(target.client);
+  // close the tab
+  info("Closing the tab.");
+  await BrowserTestUtils.removeTab(tab);
 });

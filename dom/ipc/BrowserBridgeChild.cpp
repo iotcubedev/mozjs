@@ -4,17 +4,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if defined(ACCESSIBILITY) && defined(XP_WIN)
-#  include "mozilla/a11y/ProxyAccessible.h"
-#  include "mozilla/a11y/ProxyWrappers.h"
+#ifdef ACCESSIBILITY
+#  ifdef XP_WIN
+#    include "mozilla/a11y/ProxyAccessible.h"
+#    include "mozilla/a11y/ProxyWrappers.h"
+#  endif
+#  include "mozilla/a11y/DocAccessible.h"
+#  include "mozilla/a11y/DocManager.h"
+#  include "mozilla/a11y/OuterDocAccessible.h"
 #endif
 #include "mozilla/dom/BrowserBridgeChild.h"
+#include "mozilla/dom/BrowserBridgeHost.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/MozFrameLoaderOwnerBinding.h"
 #include "nsFocusManager.h"
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
-#include "nsIDocShellTreeOwner.h"
 #include "nsQueryObject.h"
 #include "nsSubDocumentFrame.h"
 #include "nsView.h"
@@ -24,14 +29,9 @@ using namespace mozilla::ipc;
 namespace mozilla {
 namespace dom {
 
-BrowserBridgeChild::BrowserBridgeChild(nsFrameLoader* aFrameLoader,
-                                       BrowsingContext* aBrowsingContext,
-                                       TabId aId)
-    : mId{aId},
-      mLayersId{0},
-      mIPCOpen(true),
-      mFrameLoader(aFrameLoader),
-      mBrowsingContext(aBrowsingContext) {}
+BrowserBridgeChild::BrowserBridgeChild(BrowsingContext* aBrowsingContext,
+                                       TabId aId, const LayersId& aLayersId)
+    : mId{aId}, mLayersId{aLayersId}, mBrowsingContext(aBrowsingContext) {}
 
 BrowserBridgeChild::~BrowserBridgeChild() {
 #if defined(ACCESSIBILITY) && defined(XP_WIN)
@@ -39,6 +39,35 @@ BrowserBridgeChild::~BrowserBridgeChild() {
     mEmbeddedDocAccessible->Shutdown();
   }
 #endif
+}
+
+already_AddRefed<BrowserBridgeHost> BrowserBridgeChild::FinishInit(
+    nsFrameLoader* aFrameLoader) {
+  MOZ_DIAGNOSTIC_ASSERT(!mFrameLoader);
+  mFrameLoader = aFrameLoader;
+
+  RefPtr<Element> owner = mFrameLoader->GetOwnerContent();
+  nsCOMPtr<nsIDocShell> docShell = do_GetInterface(owner->GetOwnerGlobal());
+  MOZ_DIAGNOSTIC_ASSERT(docShell);
+
+  nsDocShell::Cast(docShell)->OOPChildLoadStarted(this);
+
+#if defined(ACCESSIBILITY)
+  if (a11y::DocAccessible* docAcc =
+          a11y::GetExistingDocAccessible(owner->OwnerDoc())) {
+    if (a11y::Accessible* ownerAcc = docAcc->GetAccessible(owner)) {
+      if (a11y::OuterDocAccessible* outerAcc = ownerAcc->AsOuterDoc()) {
+        outerAcc->SendEmbedderAccessible(this);
+      }
+    }
+  }
+#endif  // defined(ACCESSIBILITY)
+
+  return MakeAndAddRef<BrowserBridgeHost>(this);
+}
+
+nsILoadContext* BrowserBridgeChild::GetLoadContext() {
+  return mBrowsingContext;
 }
 
 void BrowserBridgeChild::NavigateByKey(bool aForward,
@@ -75,30 +104,14 @@ BrowserBridgeChild* BrowserBridgeChild::GetFrom(nsIContent* aContent) {
   return GetFrom(frameLoader);
 }
 
-IPCResult BrowserBridgeChild::RecvSetLayersId(
-    const mozilla::layers::LayersId& aLayersId) {
-  MOZ_ASSERT(!mLayersId.IsValid() && aLayersId.IsValid());
-  mLayersId = aLayersId;
-
-  // Invalidate the nsSubdocumentFrame now that we have a layers ID for the
-  // child browser
-  if (RefPtr<Element> owner = mFrameLoader->GetOwnerContent()) {
-    if (nsIFrame* frame = owner->GetPrimaryFrame()) {
-      frame->InvalidateFrame();
-    }
-  }
-
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult BrowserBridgeChild::RecvRequestFocus(
-    const bool& aCanRaise) {
+    const bool& aCanRaise, const CallerType aCallerType) {
   // Adapted from BrowserParent
   RefPtr<Element> owner = mFrameLoader->GetOwnerContent();
   if (!owner) {
     return IPC_OK();
   }
-  nsContentUtils::RequestFrameFocus(*owner, aCanRaise);
+  nsContentUtils::RequestFrameFocus(*owner, aCanRaise, aCallerType);
   return IPC_OK();
 }
 
@@ -145,19 +158,25 @@ BrowserBridgeChild::RecvSetEmbeddedDocAccessibleCOMProxy(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult BrowserBridgeChild::RecvFireFrameLoadEvent(
-    bool aIsTrusted) {
+mozilla::ipc::IPCResult BrowserBridgeChild::RecvMaybeFireEmbedderLoadEvents(
+    EmbedderElementEventType aFireEventAtEmbeddingElement) {
   RefPtr<Element> owner = mFrameLoader->GetOwnerContent();
   if (!owner) {
     return IPC_OK();
   }
 
-  // Fire the `load` event on our embedder element.
-  nsEventStatus status = nsEventStatus_eIgnore;
-  WidgetEvent event(aIsTrusted, eLoad);
-  event.mFlags.mBubbles = false;
-  event.mFlags.mCancelable = false;
-  EventDispatcher::Dispatch(owner, nullptr, &event, nullptr, &status);
+  if (aFireEventAtEmbeddingElement == EmbedderElementEventType::LoadEvent) {
+    nsEventStatus status = nsEventStatus_eIgnore;
+    WidgetEvent event(/* aIsTrusted = */ true, eLoad);
+    event.mFlags.mBubbles = false;
+    event.mFlags.mCancelable = false;
+    EventDispatcher::Dispatch(owner, nullptr, &event, nullptr, &status);
+  } else if (aFireEventAtEmbeddingElement ==
+             EmbedderElementEventType::ErrorEvent) {
+    mFrameLoader->FireErrorEvent();
+  }
+
+  UnblockOwnerDocsLoadEvent();
 
   return IPC_OK();
 }
@@ -194,26 +213,33 @@ mozilla::ipc::IPCResult BrowserBridgeChild::RecvScrollRectIntoView(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult BrowserBridgeChild::RecvSubFrameCrashed(
-    BrowsingContext* aContext) {
-  if (aContext) {
-    RefPtr<nsFrameLoaderOwner> frameLoaderOwner =
-        do_QueryObject(aContext->GetEmbedderElement());
-    IgnoredErrorResult rv;
-    RemotenessOptions options;
-    options.mError.Construct(static_cast<uint32_t>(NS_ERROR_FRAME_CRASHED));
-    frameLoaderOwner->ChangeRemoteness(options, rv);
-
-    if (NS_WARN_IF(rv.Failed())) {
-      return IPC_FAIL(this, "Remoteness change failed");
-    }
+mozilla::ipc::IPCResult BrowserBridgeChild::RecvSubFrameCrashed() {
+  if (RefPtr<nsFrameLoaderOwner> frameLoaderOwner =
+          do_QueryObject(mFrameLoader->GetOwnerContent())) {
+    frameLoaderOwner->SubframeCrashed();
   }
-
   return IPC_OK();
 }
 
 void BrowserBridgeChild::ActorDestroy(ActorDestroyReason aWhy) {
-  mIPCOpen = false;
+  if (!mBrowsingContext) {
+    // This BBC was never valid, skip teardown.
+    return;
+  }
+
+  // Ensure we unblock our document's 'load' event (in case the OOP-iframe has
+  // been removed before it finished loading, or its subprocess crashed):
+  UnblockOwnerDocsLoadEvent();
+}
+
+void BrowserBridgeChild::UnblockOwnerDocsLoadEvent() {
+  if (!mHadInitialLoad) {
+    mHadInitialLoad = true;
+    if (auto* docShell =
+            nsDocShell::Cast(mBrowsingContext->GetParent()->GetDocShell())) {
+      docShell->OOPChildLoadDone(this);
+    }
+  }
 }
 
 }  // namespace dom

@@ -44,6 +44,7 @@ EXPORTS += [
     'gfxLineSegment.h',
     'gfxMathTable.h',
     'gfxMatrix.h',
+    'gfxOTSUtils.h',
     'gfxPattern.h',
     'gfxPlatform.h',
     'gfxPlatformFontList.h',
@@ -60,14 +61,17 @@ EXPORTS += [
     'gfxUtils.h',
     'SharedFontList.h',
     'SoftwareVsyncSource.h',
+    'ThebesRLBoxTypes.h',
     'VsyncSource.h',
 ]
 
 EXPORTS.mozilla.gfx += [
     'D3D11Checks.h',
     'DeviceManagerDx.h',
+    'DisplayConfigWindows.h',
     'PrintTarget.h',
     'PrintTargetThebes.h',
+    'ThebesRLBox.h',
 ]
 
 if CONFIG['MOZ_ENABLE_SKIA']:
@@ -153,6 +157,7 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
         'PrintTargetWindows.h',
     ]
     SOURCES += [
+        'DisplayConfigWindows.cpp',
         'gfxDWriteCommon.cpp',
         'gfxDWriteFonts.cpp',
         'gfxGDIFont.cpp',

@@ -4,19 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
-#include "nsIServiceManager.h"
 #include "nsResizerFrame.h"
 #include "nsIContent.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/UniquePtr.h"
 #include "nsGkAtoms.h"
 #include "nsNameSpaceManager.h"
 
 #include "nsPresContext.h"
 #include "nsFrameManager.h"
-#include "nsIDocShell.h"
+#include "nsDocShell.h"
 #include "nsIDocShellTreeOwner.h"
 #include "nsIBaseWindow.h"
 #include "nsPIDOMWindow.h"
@@ -64,7 +63,7 @@ nsresult nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
     case eMouseDown: {
       if (aEvent->mClass == eTouchEventClass ||
           (aEvent->mClass == eMouseEventClass &&
-           aEvent->AsMouseEvent()->mButton == MouseButton::eLeft)) {
+           aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary)) {
         nsCOMPtr<nsIBaseWindow> window;
         mozilla::PresShell* presShell = aPresContext->GetPresShell();
         nsIContent* contentToResize =
@@ -122,7 +121,7 @@ nsresult nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
     case eMouseUp: {
       if (aEvent->mClass == eTouchEventClass ||
           (aEvent->mClass == eMouseEventClass &&
-           aEvent->AsMouseEvent()->mButton == MouseButton::eLeft)) {
+           aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary)) {
         // we're done tracking.
         mTrackingMouseMove = false;
 
@@ -286,13 +285,20 @@ nsresult nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
 
     case eMouseClick: {
       WidgetMouseEvent* mouseEvent = aEvent->AsMouseEvent();
-      if (mouseEvent->IsLeftClickEvent()) {
+      if (mouseEvent->IsLeftClickEvent()
+#ifdef XP_MACOSX
+          // On Mac, ctrl-click will send a context menu event from the widget,
+          // so we don't want to dispatch widget command if it is redispatched
+          // from the mouse event with ctrl key is pressed.
+          && !mouseEvent->IsControl()
+#endif
+      ) {
         MouseClicked(mouseEvent);
       }
       break;
     }
     case eMouseDoubleClick:
-      if (aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+      if (aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
         nsCOMPtr<nsIBaseWindow> window;
         mozilla::PresShell* presShell = aPresContext->GetPresShell();
         nsIContent* contentToResize =
@@ -341,9 +347,7 @@ nsIContent* nsResizerFrame::GetContentToResize(mozilla::PresShell* aPresShell,
     }
 
     // don't allow resizing windows in content shells
-    nsCOMPtr<nsIDocShellTreeItem> dsti =
-        aPresShell->GetPresContext()->GetDocShell();
-    if (!dsti || dsti->ItemType() != nsIDocShellTreeItem::typeChrome) {
+    if (!aPresShell->GetPresContext()->IsChrome()) {
       // don't allow resizers in content shells, except for the viewport
       // scrollbar which doesn't have a parent
       nsIContent* nonNativeAnon =
@@ -425,29 +429,27 @@ void nsResizerFrame::ResizeContent(nsIContent* aContent,
       nsICSSDeclaration* decl = inlineStyleContent->Style();
 
       if (aOriginalSizeInfo) {
-        decl->GetPropertyValue(NS_LITERAL_STRING("width"),
-                               aOriginalSizeInfo->width);
-        decl->GetPropertyValue(NS_LITERAL_STRING("height"),
-                               aOriginalSizeInfo->height);
+        decl->GetPropertyValue("width"_ns, aOriginalSizeInfo->width);
+        decl->GetPropertyValue("height"_ns, aOriginalSizeInfo->height);
       }
 
       // only set the property if the element could have changed in that
       // direction
       if (aDirection.mHorizontal) {
-        nsAutoString widthstr(aSizeInfo.width);
+        NS_ConvertUTF16toUTF8 widthstr(aSizeInfo.width);
         if (!widthstr.IsEmpty() &&
             !Substring(widthstr, widthstr.Length() - 2, 2).EqualsLiteral("px"))
           widthstr.AppendLiteral("px");
-        decl->SetProperty(NS_LITERAL_STRING("width"), widthstr, EmptyString());
+        decl->SetProperty("width"_ns, widthstr, EmptyString(), IgnoreErrors());
       }
       if (aDirection.mVertical) {
-        nsAutoString heightstr(aSizeInfo.height);
+        NS_ConvertUTF16toUTF8 heightstr(aSizeInfo.height);
         if (!heightstr.IsEmpty() &&
             !Substring(heightstr, heightstr.Length() - 2, 2)
                  .EqualsLiteral("px"))
           heightstr.AppendLiteral("px");
-        decl->SetProperty(NS_LITERAL_STRING("height"), heightstr,
-                          EmptyString());
+        decl->SetProperty("height"_ns, heightstr, EmptyString(),
+                          IgnoreErrors());
       }
     }
   }
@@ -461,10 +463,12 @@ void nsResizerFrame::MaybePersistOriginalSize(nsIContent* aContent,
   aContent->GetProperty(nsGkAtoms::_moz_original_size, &rv);
   if (rv != NS_PROPTABLE_PROP_NOT_THERE) return;
 
-  nsAutoPtr<SizeInfo> sizeInfo(new SizeInfo(aSizeInfo));
+  UniquePtr<SizeInfo> sizeInfo(new SizeInfo(aSizeInfo));
   rv = aContent->SetProperty(nsGkAtoms::_moz_original_size, sizeInfo.get(),
                              nsINode::DeleteProperty<nsResizerFrame::SizeInfo>);
-  if (NS_SUCCEEDED(rv)) sizeInfo.forget();
+  if (NS_SUCCEEDED(rv)) {
+    Unused << sizeInfo.release();
+  }
 }
 
 /* static */
@@ -477,13 +481,13 @@ void nsResizerFrame::RestoreOriginalSize(nsIContent* aContent) {
   NS_ASSERTION(sizeInfo, "We set a null sizeInfo!?");
   Direction direction = {1, 1};
   ResizeContent(aContent, direction, *sizeInfo, nullptr);
-  aContent->DeleteProperty(nsGkAtoms::_moz_original_size);
+  aContent->RemoveProperty(nsGkAtoms::_moz_original_size);
 }
 
 /* returns a Direction struct containing the horizontal and vertical direction
  */
 nsResizerFrame::Direction nsResizerFrame::GetDirection() {
-  static const Element::AttrValuesArray strings[] = {
+  static const mozilla::dom::Element::AttrValuesArray strings[] = {
       // clang-format off
      nsGkAtoms::topleft,    nsGkAtoms::top,    nsGkAtoms::topright,
      nsGkAtoms::left,                          nsGkAtoms::right,
@@ -516,7 +520,7 @@ nsResizerFrame::Direction nsResizerFrame::GetDirection() {
     // Directions 8 and higher are RTL-aware directions and should reverse the
     // horizontal component if RTL.
     WritingMode wm = GetWritingMode();
-    if (!(wm.IsVertical() ? wm.IsVerticalLR() : wm.IsBidiLTR())) {
+    if (wm.IsPhysicalRTL()) {
       Direction direction = directions[index];
       direction.mHorizontal *= -1;
       return direction;

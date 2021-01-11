@@ -22,18 +22,19 @@
 
 class nsICanvasRenderingContextInternal;
 class nsITimerCallback;
+enum class gfxAlphaType;
 
 namespace mozilla {
 
-class WebGLContext;
+class ClientWebGLContext;
 
 namespace layers {
-class AsyncCanvasRenderer;
 class CanvasRenderer;
 class CanvasLayer;
 class Image;
 class Layer;
 class LayerManager;
+class OOPCanvasRenderer;
 class SharedSurfaceTextureClient;
 class WebRenderCanvasData;
 }  // namespace layers
@@ -41,6 +42,9 @@ namespace gfx {
 class SourceSurface;
 class VRLayerChild;
 }  // namespace gfx
+namespace webgpu {
+class CanvasContext;
+}  // namespace webgpu
 
 namespace dom {
 class BlobCallback;
@@ -49,6 +53,7 @@ class File;
 class HTMLCanvasPrintState;
 class OffscreenCanvas;
 class PrintCallback;
+class PWebGLChild;
 class RequestedFrameRefreshObserver;
 
 // Listen visibilitychange and memory-pressure event and inform
@@ -66,8 +71,8 @@ class HTMLCanvasElementObserver final : public nsIObserver,
   void RegisterVisibilityChangeEvent();
   void UnregisterVisibilityChangeEvent();
 
-  void RegisterMemoryPressureEvent();
-  void UnregisterMemoryPressureEvent();
+  void RegisterObserverEvents();
+  void UnregisterObserverEvents();
 
  private:
   ~HTMLCanvasElementObserver();
@@ -83,10 +88,8 @@ class HTMLCanvasElementObserver final : public nsIObserver,
  * will be given a copy of the just-painted canvas.
  * All FrameCaptureListeners get the same copy.
  */
-class FrameCaptureListener : public SupportsWeakPtr<FrameCaptureListener> {
+class FrameCaptureListener : public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(FrameCaptureListener)
-
   FrameCaptureListener() : mFrameCaptureRequested(false) {}
 
   /*
@@ -107,16 +110,16 @@ class FrameCaptureListener : public SupportsWeakPtr<FrameCaptureListener> {
                         const TimeStamp& aTime) = 0;
 
  protected:
-  virtual ~FrameCaptureListener() {}
+  virtual ~FrameCaptureListener() = default;
 
   bool mFrameCaptureRequested;
 };
 
 class HTMLCanvasElement final : public nsGenericHTMLElement,
-                                public CanvasRenderingContextHelper {
+                                public CanvasRenderingContextHelper,
+                                public SupportsWeakPtr {
   enum { DEFAULT_CANVAS_WIDTH = 300, DEFAULT_CANVAS_HEIGHT = 150 };
 
-  typedef layers::AsyncCanvasRenderer AsyncCanvasRenderer;
   typedef layers::CanvasRenderer CanvasRenderer;
   typedef layers::CanvasLayer CanvasLayer;
   typedef layers::Layer Layer;
@@ -322,13 +325,11 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   layers::LayersBackend GetCompositorBackendType() const;
 
   void OnVisibilityChange();
-
   void OnMemoryPressure();
-
-  static void SetAttrFromAsyncCanvasRenderer(AsyncCanvasRenderer* aRenderer);
-  static void InvalidateFromAsyncCanvasRenderer(AsyncCanvasRenderer* aRenderer);
+  void OnDeviceReset();
 
   already_AddRefed<layers::SharedSurfaceTextureClient> GetVRFrame();
+  void ClearVRFrame();
 
   bool MaybeModified() const { return mMaybeModified; };
 
@@ -362,8 +363,11 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
                                           const nsAttrValueOrString& aValue,
                                           bool aNotify) override;
 
-  AsyncCanvasRenderer* GetAsyncCanvasRenderer();
+ public:
+  ClientWebGLContext* GetWebGLContext();
+  webgpu::CanvasContext* GetWebGPUContext();
 
+ protected:
   bool mResetLayer;
   bool mMaybeModified;  // we fetched the context, so we may have written to the
                         // canvas
@@ -372,7 +376,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
   RefPtr<HTMLCanvasPrintState> mPrintState;
   nsTArray<WeakPtr<FrameCaptureListener>> mRequestedFrameListeners;
   RefPtr<RequestedFrameRefreshObserver> mRequestedFrameRefreshObserver;
-  RefPtr<AsyncCanvasRenderer> mAsyncCanvasRenderer;
+  RefPtr<CanvasRenderer> mCanvasRenderer;
   RefPtr<OffscreenCanvas> mOffscreenCanvas;
   RefPtr<HTMLCanvasElementObserver> mContextObserver;
 
@@ -392,7 +396,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
   bool IsPrintCallbackDone();
 
-  void HandlePrintCallback(nsPresContext::nsPresContextType aType);
+  void HandlePrintCallback(nsPresContext*);
 
   nsresult DispatchPrintCallback(nsITimerCallback* aCallback);
 
@@ -400,7 +404,7 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
   HTMLCanvasElement* GetOriginalCanvas();
 
-  CanvasContextType GetCurrentContextType() { return mCurrentContextType; }
+  CanvasContextType GetCurrentContextType();
 
  private:
   /**

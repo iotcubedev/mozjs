@@ -10,10 +10,12 @@ import os
 import datetime
 import functools
 import requests
+import six
 import logging
 import taskcluster_urls as liburls
 from mozbuild.util import memoize
 from requests.packages.urllib3.util.retry import Retry
+from taskcluster import Hooks
 from taskgraph.task import Task
 from taskgraph.util import yaml
 
@@ -24,7 +26,7 @@ testing = False
 
 # Default rootUrl to use if none is given in the environment; this should point
 # to the production Taskcluster deployment used for CI.
-PRODUCTION_TASKCLUSTER_ROOT_URL = 'https://taskcluster.net'
+PRODUCTION_TASKCLUSTER_ROOT_URL = 'https://firefox-ci-tc.services.mozilla.com'
 
 # the maximum number of parallel Taskcluster API calls to make
 CONCURRENCY = 50
@@ -39,7 +41,7 @@ def get_root_url(use_proxy):
     is not set."""
     if use_proxy:
         try:
-            return os.environ['TASKCLUSTER_PROXY_URL']
+            return six.ensure_text(os.environ['TASKCLUSTER_PROXY_URL'])
         except KeyError:
             if 'TASK_ID' not in os.environ:
                 raise RuntimeError(
@@ -57,27 +59,42 @@ def get_root_url(use_proxy):
     logger.debug('Running in Taskcluster instance {}{}'.format(
         os.environ['TASKCLUSTER_ROOT_URL'],
         ' with taskcluster-proxy' if 'TASKCLUSTER_PROXY_URL' in os.environ else ''))
-    return os.environ['TASKCLUSTER_ROOT_URL']
+    return six.ensure_text(os.environ['TASKCLUSTER_ROOT_URL'])
 
 
-@memoize
-def get_session():
-    session = requests.Session()
-
-    retry = Retry(total=5, backoff_factor=0.1,
-                  status_forcelist=[500, 502, 503, 504])
+def requests_retry_session(
+    retries,
+    backoff_factor=0.1,
+    status_forcelist=(500, 502, 504),
+    concurrency=CONCURRENCY,
+    session=None,
+):
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
 
     # Default HTTPAdapter uses 10 connections. Mount custom adapter to increase
     # that limit. Connections are established as needed, so using a large value
     # should not negatively impact performance.
     http_adapter = requests.adapters.HTTPAdapter(
-        pool_connections=CONCURRENCY,
-        pool_maxsize=CONCURRENCY,
-        max_retries=retry)
-    session.mount('https://', http_adapter)
+        pool_connections=concurrency,
+        pool_maxsize=concurrency,
+        max_retries=retry,
+    )
     session.mount('http://', http_adapter)
+    session.mount('https://', http_adapter)
 
     return session
+
+
+@memoize
+def get_session():
+    return requests_retry_session(retries=5)
 
 
 def _do_request(url, force_get=False, **kwargs):
@@ -107,7 +124,7 @@ def _handle_artifact(path, response):
 def get_artifact_url(task_id, path, use_proxy=False):
     artifact_tmpl = liburls.api(get_root_url(False), 'queue', 'v1',
                                 'task/{}/artifacts/{}')
-    data = artifact_tmpl.format(task_id, path)
+    data = six.ensure_text(artifact_tmpl.format(task_id, path))
     if use_proxy:
         # Until Bug 1405889 is deployed, we can't download directly
         # from the taskcluster-proxy.  Work around by using the /bewit
@@ -118,7 +135,7 @@ def get_artifact_url(task_id, path, use_proxy=False):
             os.environ['TASKCLUSTER_PROXY_URL'] + '/bewit',
             data=data,
             allow_redirects=False)
-        return response.text
+        return six.ensure_text(response.text)
     return data
 
 
@@ -146,6 +163,8 @@ def get_artifact_prefix(task):
         prefix = task.get('attributes', {}).get("artifact_prefix")
     elif isinstance(task, Task):
         prefix = task.attributes.get("artifact_prefix")
+    else:
+        raise Exception("Can't find artifact-prefix of non-task: {}".format(task))
     return prefix or "public/build"
 
 
@@ -158,9 +177,9 @@ def get_index_url(index_path, use_proxy=False, multiple=False):
     return index_tmpl.format('s' if multiple else '', index_path)
 
 
-def find_task_id(index_path, use_proxy=False):
+def find_task_id(index_path):
     try:
-        response = _do_request(get_index_url(index_path, use_proxy))
+        response = _do_request(get_index_url(index_path))
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             raise KeyError("index path {} not found".format(index_path))
@@ -240,6 +259,16 @@ def rerun_task(task_id):
         logger.info('Would have rerun {}.'.format(task_id))
     else:
         _do_request(get_task_url(task_id, use_proxy=True) + '/rerun', json={})
+
+
+def trigger_hook(hook_group_id, hook_id, hook_payload):
+    hooks = Hooks({'rootUrl': get_root_url(True)})
+    response = hooks.triggerHook(hook_group_id, hook_id, hook_payload)
+
+    logger.info('Task seen here: {}/tasks/{}'.format(
+        get_root_url(os.environ.get('TASKCLUSTER_PROXY_URL')),
+        response['status']['taskId'])
+    )
 
 
 def get_current_scopes():

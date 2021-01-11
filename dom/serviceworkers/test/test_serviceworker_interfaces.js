@@ -22,9 +22,10 @@
 // IMPORTANT: Do not change this list without review from
 //            a JavaScript Engine peer!
 var ecmaGlobals = [
+  "AggregateError",
   "Array",
   "ArrayBuffer",
-  { name: "Atomics", disabled: true },
+  "Atomics",
   "Boolean",
   "BigInt",
   "BigInt64Array",
@@ -35,6 +36,7 @@ var ecmaGlobals = [
   "Date",
   "Error",
   "EvalError",
+  "FinalizationRegistry",
   "Float32Array",
   "Float64Array",
   "Function",
@@ -58,7 +60,10 @@ var ecmaGlobals = [
   "Reflect",
   "RegExp",
   "Set",
-  { name: "SharedArrayBuffer", disabled: true },
+  {
+    name: "SharedArrayBuffer",
+    crossOriginIsolated: true,
+  },
   "String",
   "Symbol",
   "SyntaxError",
@@ -70,6 +75,7 @@ var ecmaGlobals = [
   "Uint8ClampedArray",
   "URIError",
   "WeakMap",
+  "WeakRef",
   "WeakSet",
   { name: "WebAssembly", optional: true },
 ];
@@ -209,15 +215,21 @@ var interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "PromiseRejectionEvent",
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushEvent", fennecOrDesktop: true },
+  { name: "PushEvent" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushManager", fennecOrDesktop: true },
+  { name: "PushManager" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushMessageData", fennecOrDesktop: true },
+  { name: "PushMessageData" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushSubscription", fennecOrDesktop: true },
+  { name: "PushSubscription" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushSubscriptionOptions", fennecOrDesktop: true },
+  { name: "PushSubscriptionOptions" },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "Report", nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportBody", nightly: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportingObserver", nightly: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   "Request",
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -256,11 +268,13 @@ var interfaceNamesInGlobalScope = [
 
 function createInterfaceMap({
   isNightly,
+  isEarlyBetaOrEarlier,
   isRelease,
   isDesktop,
   isAndroid,
   isInsecureContext,
   isFennec,
+  isCrossOriginIsolated,
 }) {
   var interfaceMap = {};
 
@@ -282,6 +296,8 @@ function createInterfaceMap({
           entry.fennecOrDesktop === (isAndroid && !isFennec) ||
           entry.fennec === !isFennec ||
           entry.release === !isRelease ||
+          entry.earlyBetaOrEarlier === !isEarlyBetaOrEarlier ||
+          entry.crossOriginIsolated === !isCrossOriginIsolated ||
           entry.disabled
         ) {
           interfaceMap[entry.name] = false;

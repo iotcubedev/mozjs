@@ -4,17 +4,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/dom/HTMLIFrameElementBinding.h"
-#include "mozilla/dom/BrowserParent.h"
+#include "PresentationSessionInfo.h"
+
+#include <utility>
+
+#include "PresentationLog.h"
+#include "PresentationService.h"
 #include "mozilla/Logging.h"
-#include "mozilla/Move.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/ElementBinding.h"
+#include "mozilla/dom/HTMLIFrameElementBinding.h"
 #include "nsContentUtils.h"
-#include "nsGlobalWindow.h"
-#include "nsIDocShell.h"
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
+#include "nsGlobalWindow.h"
+#include "nsIDocShell.h"
 #include "nsIMutableArray.h"
 #include "nsINetAddr.h"
 #include "nsISocketTransport.h"
@@ -23,9 +29,6 @@
 #include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
-#include "PresentationLog.h"
-#include "PresentationService.h"
-#include "PresentationSessionInfo.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "nsIPresentationNetworkHelper.h"
@@ -120,7 +123,7 @@ class TCPPresentationChannelDescription final
       : mAddress(aAddress), mPort(aPort) {}
 
  private:
-  ~TCPPresentationChannelDescription() {}
+  ~TCPPresentationChannelDescription() = default;
 
   nsCString mAddress;
   uint16_t mPort;
@@ -319,13 +322,11 @@ nsresult PresentationSessionInfo::Close(nsresult aReason, uint32_t aState) {
   return NS_OK;
 }
 
-nsresult PresentationSessionInfo::OnTerminate(
+void PresentationSessionInfo::OnTerminate(
     nsIPresentationControlChannel* aControlChannel) {
   mIsOnTerminating = true;  // Mark for terminating transport channel
   SetStateWithReason(nsIPresentationSessionListener::STATE_TERMINATED, NS_OK);
   SetControlChannel(aControlChannel);
-
-  return NS_OK;
 }
 
 nsresult PresentationSessionInfo::ReplySuccess() {
@@ -1028,7 +1029,7 @@ nsresult PresentationControllingInfo::NotifyReconnectResult(nsresult aStatus) {
 
   mIsReconnecting = false;
   nsCOMPtr<nsIPresentationServiceCallback> callback =
-      mReconnectCallback.forget();
+      std::move(mReconnectCallback);
   if (NS_FAILED(aStatus)) {
     return callback->NotifyError(aStatus);
   }

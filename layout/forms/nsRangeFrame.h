@@ -57,7 +57,7 @@ class nsRangeFrame final : public nsContainerFrame,
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("Range"), aResult);
+    return MakeFrameName(u"Range"_ns, aResult);
   }
 #endif
 
@@ -88,10 +88,6 @@ class nsRangeFrame final : public nsContainerFrame,
         aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock));
   }
 
-  ComputedStyle* GetAdditionalComputedStyle(int32_t aIndex) const override;
-  void SetAdditionalComputedStyle(int32_t aIndex,
-                                  ComputedStyle* aComputedStyle) override;
-
   /**
    * Returns true if the slider's thumb moves horizontally, or else false if it
    * moves vertically.
@@ -111,8 +107,7 @@ class nsRangeFrame final : public nsContainerFrame,
    */
   bool IsRightToLeft() const {
     MOZ_ASSERT(IsHorizontal());
-    mozilla::WritingMode wm = GetWritingMode();
-    return wm.IsVertical() ? wm.IsVerticalRL() : !wm.IsBidiLTR();
+    return GetWritingMode().IsPhysicalRTL();
   }
 
   double GetMin() const;
@@ -146,7 +141,7 @@ class nsRangeFrame final : public nsContainerFrame,
  private:
   // Return our preferred size in the cross-axis (the axis perpendicular
   // to the direction of movement of the thumb).
-  nscoord AutoCrossSize(nscoord aEm);
+  nscoord AutoCrossSize(mozilla::Length aEm);
 
   nsresult MakeAnonymousDiv(Element** aResult, PseudoStyleType aPseudoType,
                             nsTArray<ContentInfo>& aElements);
@@ -181,14 +176,9 @@ class nsRangeFrame final : public nsContainerFrame,
    */
   nsCOMPtr<Element> mThumbDiv;
 
-  /**
-   * Cached ComputedStyle for -moz-focus-outer CSS pseudo-element style.
-   */
-  RefPtr<ComputedStyle> mOuterFocusStyle;
-
   class DummyTouchListener final : public nsIDOMEventListener {
    private:
-    ~DummyTouchListener() {}
+    ~DummyTouchListener() = default;
 
    public:
     NS_DECL_ISUPPORTS

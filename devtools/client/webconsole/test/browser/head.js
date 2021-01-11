@@ -5,12 +5,7 @@
 
 "use strict";
 
-// Import helpers registering the test-actor in remote targets
-/* globals registerTestActor, getTestActor, Task, openToolboxForTab, gBrowser */
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/devtools/client/shared/test/test-actor-registry.js",
-  this
-);
+/* globals Task, openToolboxForTab, gBrowser */
 
 // shared-head.js handles imports, constants, and utility functions
 // Load the shared-head file first.
@@ -62,7 +57,7 @@ registerCleanupFunction(async function() {
   });
   const browserConsole = BrowserConsoleManager.getBrowserConsole();
   if (browserConsole) {
-    browserConsole.ui.clearOutput(true);
+    await clearOutput(browserConsole);
     await BrowserConsoleManager.toggleBrowserConsole();
   }
 });
@@ -74,12 +69,14 @@ registerCleanupFunction(async function() {
  *        The URL for the tab to be opened.
  * @param Boolean clearJstermHistory
  *        true (default) if the jsterm history should be cleared.
+ * @param String hostId (optional)
+ *        The type of toolbox host to be used.
  * @return Promise
  *         Resolves when the tab has been added, loaded and the toolbox has been opened.
- *         Resolves to the toolbox.
+ *         Resolves to the hud.
  */
-async function openNewTabAndConsole(url, clearJstermHistory = true) {
-  const toolbox = await openNewTabAndToolbox(url, "webconsole");
+async function openNewTabAndConsole(url, clearJstermHistory = true, hostId) {
+  const toolbox = await openNewTabAndToolbox(url, "webconsole", hostId);
   const hud = toolbox.getCurrentPanel().hud;
 
   if (clearJstermHistory) {
@@ -88,6 +85,42 @@ async function openNewTabAndConsole(url, clearJstermHistory = true) {
   }
 
   return hud;
+}
+
+/**
+ * Add a new tab with iframes, open the toolbox in it, and select the webconsole.
+ *
+ * @param string url
+ *        The URL for the tab to be opened.
+ * @param Arra<string> iframes
+ *        An array of URLs that will be added to the top document.
+ * @return Promise
+ *         Resolves when the tab has been added, loaded, iframes loaded, and the toolbox
+ *         has been opened. Resolves to the hud.
+ */
+async function openNewTabWithIframesAndConsole(tabUrl, iframes) {
+  // We need to add the tab and the iframes before opening the console in case we want
+  // to handle remote frames (we don't support creating frames target when the toolbox
+  // is already open).
+  await addTab(tabUrl);
+  await ContentTask.spawn(gBrowser.selectedBrowser, iframes, async function(
+    urls
+  ) {
+    const iframesLoadPromises = urls.map((url, i) => {
+      const iframe = content.document.createElement("iframe");
+      iframe.classList.add(`iframe-${i + 1}`);
+      const onLoadIframe = new Promise(resolve => {
+        iframe.addEventListener("load", resolve, { once: true });
+      });
+      content.document.body.append(iframe);
+      iframe.src = url;
+      return onLoadIframe;
+    });
+
+    await Promise.all(iframesLoadPromises);
+  });
+
+  return openConsole();
 }
 
 /**
@@ -100,7 +133,7 @@ async function openNewTabAndConsole(url, clearJstermHistory = true) {
  *         Resolves to the toolbox.
  */
 async function openNewWindowAndConsole(url) {
-  const win = await openNewBrowserWindow();
+  const win = await BrowserTestUtils.openNewBrowserWindow();
   const tab = await addTab(url, { window: win });
   win.gBrowser.selectedTab = tab;
   const hud = await openConsole(tab);
@@ -125,7 +158,15 @@ function logAllStoreChanges(hud) {
         return { id, type, parameters, messageText };
       }
     );
-    info("messages : " + JSON.stringify(debugMessages));
+    info(
+      "messages : " +
+        JSON.stringify(debugMessages, function(key, value) {
+          if (value && value.getGrip) {
+            return value.getGrip();
+          }
+          return value;
+        })
+    );
   });
 }
 
@@ -251,6 +292,34 @@ function executeAndWaitForMessage(
 }
 
 /**
+ * Set the input value, simulates the right keyboard event to evaluate it, depending on
+ * if the console is in editor mode or not, and wait for a message with the expected text
+ * (and an optional selector) to be displayed in the output.
+ *
+ * @param {Object} hud : The webconsole.
+ * @param {String} input : The input expression to execute.
+ * @param {String} matchingText : A string that should match the message body content.
+ * @param {String} selector : A selector that should match the message node.
+ */
+function keyboardExecuteAndWaitForMessage(
+  hud,
+  input,
+  matchingText,
+  selector = ".message"
+) {
+  setInputValue(hud, input);
+  const onMessage = waitForMessage(hud, matchingText, selector);
+  if (isEditorModeEnabled(hud)) {
+    EventUtils.synthesizeKey("KEY_Enter", {
+      [Services.appinfo.OS === "Darwin" ? "metaKey" : "ctrlKey"]: true,
+    });
+  } else {
+    EventUtils.synthesizeKey("VK_RETURN");
+  }
+  return onMessage;
+}
+
+/**
  * Wait for a predicate to return a result.
  *
  * @param function condition
@@ -355,9 +424,30 @@ function _getContextMenu(hud) {
   return doc.getElementById("webconsole-menu");
 }
 
-function loadDocument(url, browser = gBrowser.selectedBrowser) {
-  BrowserTestUtils.loadURI(browser, url);
-  return BrowserTestUtils.browserLoaded(browser);
+async function toggleConsoleSetting(hud, selector) {
+  const toolbox = hud.toolbox;
+  const doc = toolbox ? toolbox.doc : hud.chromeWindow.document;
+
+  const menuItem = doc.querySelector(selector);
+  menuItem.click();
+}
+
+function getConsoleSettingElement(hud, selector) {
+  const toolbox = hud.toolbox;
+  const doc = toolbox ? toolbox.doc : hud.chromeWindow.document;
+
+  return doc.querySelector(selector);
+}
+
+function checkConsoleSettingState(hud, selector, enabled) {
+  const el = getConsoleSettingElement(hud, selector);
+  const checked = el.getAttribute("aria-checked") === "true";
+
+  if (enabled) {
+    ok(checked, "setting is enabled");
+  } else {
+    ok(!checked, "setting is disabled");
+  }
 }
 
 /**
@@ -441,7 +531,12 @@ async function checkClickOnNode(
 ) {
   info("checking click on node location");
 
-  const onSourceInDebuggerOpened = once(hud.ui, "source-in-debugger-opened");
+  // If the debugger hasn't fully loaded yet and breakpoints are still being
+  // added when we click on the logpoint link, the logpoint panel might not
+  // render. Work around this for now, see bug 1592854.
+  await waitForTime(1000);
+
+  const onSourceInDebuggerOpened = once(hud, "source-in-debugger-opened");
 
   EventUtils.sendMouseEvent(
     { type: "click" },
@@ -474,8 +569,8 @@ async function checkClickOnNode(
     ok(line, `source line found ("${line}")`);
 
     is(
-      dbg._selectors.getSelectedLocation(dbg._getState()).line,
-      line,
+      parseInt(dbg._selectors.getSelectedLocation(dbg._getState()).line, 10),
+      parseInt(line, 10),
       "expected source line"
     );
   }
@@ -484,8 +579,8 @@ async function checkClickOnNode(
     ok(column, `source column found ("${column}")`);
 
     is(
-      dbg._selectors.getSelectedLocation(dbg._getState()).column,
-      column,
+      parseInt(dbg._selectors.getSelectedLocation(dbg._getState()).column, 10),
+      parseInt(column, 10),
       "expected source column"
     );
   }
@@ -556,12 +651,26 @@ async function setInputValueForAutocompletion(
 ) {
   const { jsterm } = hud;
 
+  const initialPromises = [];
+  if (jsterm.autocompletePopup.isOpen) {
+    initialPromises.push(jsterm.autocompletePopup.once("popup-closed"));
+  }
   setInputValue(hud, "");
+  await Promise.all(initialPromises);
+
+  // Wait for next tick. Tooltip tests sometimes fail to successively hide and
+  // show tooltips on Win32 debug.
+  await waitForTick();
+
   jsterm.focus();
 
   const updated = jsterm.once("autocomplete-updated");
-  EventUtils.sendString(value);
+  EventUtils.sendString(value, hud.iframeWindow);
   await updated;
+
+  // Wait for next tick. Tooltip tests sometimes fail to successively hide and
+  // show tooltips on Win32 debug.
+  await waitForTick();
 
   if (caretPosition < 0) {
     caretPosition = value.length + caretPosition;
@@ -644,6 +753,7 @@ function checkInputValueAndCursorPosition(
 
   const inputValue = expectedStringWithCursor.replace("|", "");
   const { jsterm } = hud;
+
   is(getInputValue(hud), inputValue, "console input has expected value");
   const lines = expectedStringWithCursor.split("\n");
   const lineWithCursor = lines.findIndex(line => line.includes("|"));
@@ -661,6 +771,19 @@ function checkInputValueAndCursorPosition(
 function getInputCompletionValue(hud) {
   const { jsterm } = hud;
   return jsterm.editor.getAutoCompletionText();
+}
+
+function closeAutocompletePopup(hud) {
+  const { jsterm } = hud;
+
+  if (!jsterm.autocompletePopup.isOpen) {
+    return Promise.resolve();
+  }
+
+  const onPopupClosed = jsterm.autocompletePopup.once("popup-closed");
+  const onAutocompleteUpdated = jsterm.once("autocomplete-updated");
+  EventUtils.synthesizeKey("KEY_Escape");
+  return Promise.all([onPopupClosed, onAutocompleteUpdated]);
 }
 
 /**
@@ -711,18 +834,8 @@ async function openDebugger(options = {}) {
   toolbox = await gDevTools.showToolbox(target, "jsdebugger");
   const panel = toolbox.getCurrentPanel();
 
-  // Do not clear VariableView lazily so it doesn't disturb test ending.
-  if (panel._view) {
-    panel._view.Variables.lazyEmpty = false;
-  }
+  await toolbox.threadFront.getSources();
 
-  // Old debugger
-  if (panel.panelWin && panel.panelWin.DebuggerController) {
-    await panel.panelWin.DebuggerController.waitForSourcesLoaded();
-  } else {
-    // New debugger
-    await toolbox.threadFront.getSources();
-  }
   return { target, toolbox, panel };
 }
 
@@ -734,6 +847,25 @@ async function openInspector(options = {}) {
   const target = await TargetFactory.forTab(options.tab);
   const toolbox = await gDevTools.showToolbox(target, "inspector");
 
+  return toolbox.getCurrentPanel();
+}
+
+/**
+ * Open the netmonitor for the given tab, or the current one if none given.
+ *
+ * @param Element tab
+ *        Optional tab element for which you want open the netmonitor.
+ *        Defaults to current selected tab.
+ * @return Promise
+ *         A promise that is resolved with the netmonitor panel once the netmonitor is open.
+ */
+async function openNetMonitor(tab) {
+  const target = await TargetFactory.forTab(tab || gBrowser.selectedTab);
+  let toolbox = await gDevTools.getToolbox(target);
+  if (!toolbox) {
+    toolbox = await gDevTools.showToolbox(target);
+  }
+  await toolbox.selectTool("netmonitor");
   return toolbox.getCurrentPanel();
 }
 
@@ -850,26 +982,6 @@ function overrideOpenLink(fn) {
 }
 
 /**
- * Open a new browser window and return a promise that resolves when the new window has
- * fired the "browser-delayed-startup-finished" event.
- *
- * @param {Object} options: An options object that will be passed to OpenBrowserWindow.
- * @returns Promise
- *          A Promise that resolves when the window is ready.
- */
-function openNewBrowserWindow(options) {
-  const win = OpenBrowserWindow(options);
-  return new Promise(resolve => {
-    Services.obs.addObserver(function observer(subject, topic) {
-      if (win == subject) {
-        Services.obs.removeObserver(observer, topic);
-        resolve(win);
-      }
-    }, "browser-delayed-startup-finished");
-  });
-}
-
-/**
  * Open a network request logged in the webconsole in the netmonitor panel.
  *
  * @param {Object} toolbox
@@ -915,17 +1027,17 @@ async function openMessageInNetmonitor(toolbox, hud, url, urlInConsole) {
 
   store.dispatch(nmActions.batchEnable(false));
 
-  await waitUntil(() => {
+  await waitFor(() => {
     const selected = getSelectedRequest(store.getState());
     return selected && selected.url === url;
-  });
+  }, "network entry for the URL wasn't found");
 
   ok(true, "The attached url is correct.");
 
   info(
-    "Wait for the netmonitor headers panel to appear as it spawn RDP requests"
+    "Wait for the netmonitor headers panel to appear as it spawns RDP requests"
   );
-  await waitUntil(() =>
+  await waitFor(() =>
     panelWin.document.querySelector("#headers-panel .headers-overview")
   );
 }
@@ -972,11 +1084,8 @@ async function getFilterState(hud) {
   const result = {};
 
   for (const button of buttons) {
-    const classes = new Set(button.classList.values());
-    classes.delete("devtools-togglebutton");
-    const category = classes.values().next().value;
-
-    result[category] = button.getAttribute("aria-pressed") === "true";
+    result[button.dataset.category] =
+      button.getAttribute("aria-pressed") === "true";
   }
 
   return result;
@@ -1016,16 +1125,17 @@ async function setFilterState(hud, settings) {
 
   for (const category in settings) {
     const value = settings[category];
-    const button = filterBar.querySelector(`.${category}`);
+    const button = filterBar.querySelector(`[data-category="${category}"]`);
 
     if (category === "text") {
       const filterInput = getFilterInput(hud);
       filterInput.focus();
       filterInput.select();
+      const win = outputNode.ownerDocument.defaultView;
       if (!value) {
-        EventUtils.synthesizeKey("KEY_Delete");
+        EventUtils.synthesizeKey("KEY_Delete", {}, win);
       } else {
-        EventUtils.sendString(value);
+        EventUtils.sendString(value, win);
       }
       await waitFor(() => filterInput.value === value);
       continue;
@@ -1122,6 +1232,36 @@ function isReverseSearchInputFocused(hud) {
   const reverseSearchInput = outputNode.querySelector(".reverse-search-input");
 
   return document.activeElement == reverseSearchInput && documentIsFocused;
+}
+
+function getEagerEvaluationElement(hud) {
+  return hud.ui.outputNode.querySelector(".eager-evaluation-result");
+}
+
+async function waitForEagerEvaluationResult(hud, text) {
+  await waitUntil(() => {
+    const elem = getEagerEvaluationElement(hud);
+    if (elem) {
+      if (text instanceof RegExp) {
+        return text.test(elem.innerText);
+      }
+      return elem.innerText == text;
+    }
+    return false;
+  });
+  ok(true, `Got eager evaluation result ${text}`);
+}
+
+// This just makes sure the eager evaluation result disappears. This will pass
+// even for inputs which eventually have a result because nothing will be shown
+// while the evaluation happens. Waiting here does make sure that a previous
+// input was processed and sent down to the server for evaluating.
+async function waitForNoEagerEvaluationResult(hud) {
+  await waitUntil(() => {
+    const elem = getEagerEvaluationElement(hud);
+    return elem && elem.innerText == "";
+  });
+  ok(true, `Eager evaluation result disappeared`);
 }
 
 /**
@@ -1263,6 +1403,50 @@ function getAutocompletePopupLabels(popup) {
 }
 
 /**
+ * Check if the retrieved list of autocomplete labels of the specific popup
+ * includes all of the expected labels.
+ *
+ * @param {AutocompletPopup} popup
+ * @param {Array<String>} expected the array of expected labels
+ */
+function hasExactPopupLabels(popup, expected) {
+  return hasPopupLabels(popup, expected, true);
+}
+
+/**
+ * Check if the expected label is included in the list of autocomplete labels
+ * of the specific popup.
+ *
+ * @param {AutocompletPopup} popup
+ * @param {String} label the label to check
+ */
+function hasPopupLabel(popup, label) {
+  return hasPopupLabels(popup, [label]);
+}
+
+/**
+ * Validate the expected labels against the autocomplete labels.
+ *
+ * @param {AutocompletPopup} popup
+ * @param {Array<String>} expectedLabels
+ * @param {Boolean} checkAll
+ */
+function hasPopupLabels(popup, expectedLabels, checkAll = false) {
+  const autocompleteLabels = getAutocompletePopupLabels(popup);
+  if (checkAll) {
+    return (
+      autocompleteLabels.length === expectedLabels.length &&
+      autocompleteLabels.every((autoLabel, idx) => {
+        return expectedLabels.indexOf(autoLabel) === idx;
+      })
+    );
+  }
+  return expectedLabels.every(expectedLabel => {
+    return autocompleteLabels.includes(expectedLabel);
+  });
+}
+
+/**
  * Return the "Confirm Dialog" element.
  *
  * @param toolbox
@@ -1296,9 +1480,9 @@ async function selectFrame(dbg, frame) {
 async function pauseDebugger(dbg) {
   info("Waiting for debugger to pause");
   const onPaused = waitForPaused(dbg);
-  ContentTask.spawn(gBrowser.selectedBrowser, {}, async function() {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     content.wrappedJSObject.firstCall();
-  });
+  }).catch(() => {});
   await onPaused;
 }
 
@@ -1448,32 +1632,56 @@ function checkConsoleOutputForWarningGroup(hud, expectedMessages) {
 
 /**
  * Check that there is a message with the specified text that has the specified
- * stack information.
+ * stack information.  Self-hosted frames are ignored.
  * @param {WebConsole} hud
  * @param {string} text
  *        message substring to look for
- * @param {Array<number>} frameLines
+ * @param {Array<number>} expectedFrameLines
  *        line numbers of the frames expected in the stack
  */
-async function checkMessageStack(hud, text, frameLines) {
-  const msgNode = await waitFor(() => findMessage(hud, text));
+async function checkMessageStack(hud, text, expectedFrameLines) {
+  info(`Checking message stack for "${text}"`);
+  const msgNode = await waitFor(
+    () => findMessage(hud, text),
+    `Couln't find message including "${text}"`
+  );
   ok(!msgNode.classList.contains("open"), `Error logged not expanded`);
 
-  const button = await waitFor(() => msgNode.querySelector(".collapse-button"));
+  const button = await waitFor(
+    () => msgNode.querySelector(".collapse-button"),
+    `Couldn't find the expand button on "${text}" message`
+  );
   button.click();
 
-  const framesNode = await waitFor(() => msgNode.querySelector(".frames"));
-  const frameNodes = framesNode.querySelectorAll(".frame");
-  ok(
-    frameNodes.length == frameLines.length,
-    `Found ${frameLines.length} frames`
+  const framesNode = await waitFor(
+    () => msgNode.querySelector(".message-body-wrapper > .stacktrace .frames"),
+    `Couldn't find stacktrace frames on "${text}" message`
   );
-  for (let i = 0; i < frameLines.length; i++) {
-    ok(
-      frameNodes[i].querySelector(".line").textContent == "" + frameLines[i],
-      `Found line ${frameLines[i]} for frame #${i}`
+  const frameNodes = Array.from(framesNode.querySelectorAll(".frame")).filter(
+    el => {
+      const fileName = el.querySelector(".filename").textContent;
+      return (
+        fileName !== "self-hosted" &&
+        !fileName.startsWith("chrome:") &&
+        !fileName.startsWith("resource:")
+      );
+    }
+  );
+
+  for (let i = 0; i < frameNodes.length; i++) {
+    const frameNode = frameNodes[i];
+    is(
+      frameNode.querySelector(".line").textContent,
+      expectedFrameLines[i].toString(),
+      `Found line ${expectedFrameLines[i]} for frame #${i}`
     );
   }
+
+  is(
+    frameNodes.length,
+    expectedFrameLines.length,
+    `Found ${frameNodes.length} frames`
+  );
 }
 
 /**
@@ -1487,7 +1695,7 @@ function reloadPage() {
     "load",
     true
   );
-  ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.location.reload();
   });
   return onLoad;
@@ -1529,5 +1737,191 @@ async function waitForLazyRequests(toolbox) {
   const { wrapper } = toolbox.getCurrentPanel().hud.ui;
   return waitUntil(() => {
     return !wrapper.networkDataProvider.lazyRequestData.size;
+  });
+}
+
+/**
+ * Clear the console output and wait for eventual object actors to be released.
+ *
+ * @param {WebConsole} hud
+ * @param {Object} An options object with the following properties:
+ *                 - {Boolean} keepStorage: true to prevent clearing the messages storage.
+ */
+async function clearOutput(hud, { keepStorage = false } = {}) {
+  const { ui } = hud;
+  const promises = [ui.once("messages-cleared")];
+
+  // If there's an object inspector, we need to wait for the actors to be released.
+  if (ui.outputNode.querySelector(".object-inspector")) {
+    promises.push(ui.once("fronts-released"));
+  }
+
+  ui.clearOutput(!keepStorage);
+  await Promise.all(promises);
+}
+
+/**
+ * Retrieve all the items of the context selector menu.
+ *
+ * @param {WebConsole} hud
+ * @return Array<Element>
+ */
+function getContextSelectorItems(hud) {
+  const toolbox = hud.toolbox;
+  const doc = toolbox ? toolbox.doc : hud.chromeWindow.document;
+  const list = doc.getElementById(
+    "webconsole-console-evaluation-context-selector-menu-list"
+  );
+  return Array.from(list.querySelectorAll("li.menuitem button"));
+}
+
+/**
+ * Check that the evaluation context selector menu has the expected item, in the expected
+ * state.
+ *
+ * @param {WebConsole} hud
+ * @param {Array<Object>} expected: An array of object which can have the following shape:
+ *         - {String} label: The label of the target
+ *         - {String} tooltip: The tooltip of the target element in the menu
+ *         - {Boolean} checked: if the target should be selected or not
+ *         - {Boolean} separator: if the element is a simple separator
+ */
+function checkContextSelectorMenu(hud, expected) {
+  const items = getContextSelectorItems(hud);
+
+  is(
+    items.length,
+    expected.length,
+    "The context selector menu has the expected number of items"
+  );
+
+  expected.forEach(({ label, tooltip, checked, separator }, i) => {
+    const el = items[i];
+
+    if (separator === true) {
+      is(
+        el.getAttribute("role"),
+        "menuseparator",
+        "The element is a separator"
+      );
+      return;
+    }
+
+    const elChecked = el.getAttribute("aria-checked") === "true";
+    const elTooltip = el.getAttribute("title");
+    const elLabel = el.querySelector(".label").innerText;
+
+    is(elLabel, label, `The item has the expected label`);
+    is(elTooltip, tooltip, `Item "${label}" has the expected tooltip`);
+    is(
+      elChecked,
+      checked,
+      `Item "${label}" is ${checked ? "checked" : "unchecked"}`
+    );
+  });
+}
+
+/**
+ * Select a target in the context selector.
+ *
+ * @param {WebConsole} hud
+ * @param {String} targetLabel: The label of the target to select.
+ */
+function selectTargetInContextSelector(hud, targetLabel) {
+  const items = getContextSelectorItems(hud);
+  const itemToSelect = items.find(
+    item => item.querySelector(".label").innerText === targetLabel
+  );
+  if (!itemToSelect) {
+    ok(false, `Couldn't find target with "${targetLabel}" label`);
+    return;
+  }
+
+  itemToSelect.click();
+}
+
+/**
+ * A helper that returns the size of the image that was just put into the clipboard by the
+ * :screenshot command.
+ * @return The {width, height} dimension object.
+ */
+async function getImageSizeFromClipboard() {
+  const clipid = Ci.nsIClipboard;
+  const clip = Cc["@mozilla.org/widget/clipboard;1"].getService(clipid);
+  const trans = Cc["@mozilla.org/widget/transferable;1"].createInstance(
+    Ci.nsITransferable
+  );
+  const flavor = "image/png";
+  trans.init(null);
+  trans.addDataFlavor(flavor);
+
+  clip.getData(trans, clipid.kGlobalClipboard);
+  const data = {};
+  trans.getTransferData(flavor, data);
+
+  ok(data.value, "screenshot exists");
+
+  let image = data.value;
+
+  // Due to the differences in how images could be stored in the clipboard the
+  // checks below are needed. The clipboard could already provide the image as
+  // byte streams or as image container. If it's not possible obtain a
+  // byte stream, the function throws.
+
+  if (image instanceof Ci.imgIContainer) {
+    image = Cc["@mozilla.org/image/tools;1"]
+      .getService(Ci.imgITools)
+      .encodeImage(image, flavor);
+  }
+
+  if (!(image instanceof Ci.nsIInputStream)) {
+    throw new Error("Unable to read image data");
+  }
+
+  const binaryStream = Cc["@mozilla.org/binaryinputstream;1"].createInstance(
+    Ci.nsIBinaryInputStream
+  );
+  binaryStream.setInputStream(image);
+  const available = binaryStream.available();
+  const buffer = new ArrayBuffer(available);
+  is(
+    binaryStream.readArrayBuffer(available, buffer),
+    available,
+    "Read expected amount of data"
+  );
+
+  // We are going to load the image in the content page to measure its size.
+  // We don't want to insert the image directly in the browser's document
+  // (which is value of the global `document` here). Doing so might push the
+  // toolbox upwards, shrink the content page and fail the fullpage screenshot
+  // test.
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [buffer], async function(
+    _buffer
+  ) {
+    const img = content.document.createElement("img");
+    const loaded = new Promise(r => {
+      img.addEventListener("load", r, { once: true });
+    });
+
+    // Build a URL from the buffer passed to the ContentTask
+    const url = content.URL.createObjectURL(
+      new Blob([_buffer], { type: "image/png" })
+    );
+
+    // Load the image
+    img.src = url;
+    content.document.documentElement.appendChild(img);
+
+    info("Waiting for the clipboard image to load in the content page");
+    await loaded;
+
+    // Remove the image and revoke the URL.
+    img.remove();
+    content.URL.revokeObjectURL(url);
+
+    return {
+      width: img.width,
+      height: img.height,
+    };
   });
 }

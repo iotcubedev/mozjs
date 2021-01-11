@@ -7,6 +7,7 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import logging
+import os
 import re
 import taskcluster_urls
 
@@ -58,6 +59,8 @@ SCOPE_WHITELIST = [
     # internal downloads are OK
     re.compile(r'^docker-worker:relengapi-proxy:tooltool.download.internal$'),
     re.compile(r'^project:releng:services/tooltool/api/download/internal$'),
+    # private toolchain artifacts from tasks
+    re.compile(r'^queue:get-artifact:project/gecko/.*$'),
     # level-appropriate secrets are generally necessary to run a task; these
     # also are "not that secret" - most of them are built into the resulting
     # binary and could be extracted by someone with `strings`.
@@ -85,7 +88,6 @@ def context(params):
     title='Create Interactive Task',
     name='create-interactive',
     symbol='create-inter',
-    generic=True,
     description=(
         'Create a a copy of the task that you can interact with'
     ),
@@ -155,8 +157,9 @@ def create_interactive_action(parameters, graph_config, input, task_group_id, ta
 
     # Create the task and any of its dependencies. This uses a new taskGroupId to avoid
     # polluting the existing taskGroup with interactive tasks.
+    action_task_id = os.environ.get('TASK_ID')
     label_to_taskid = create_tasks(graph_config, [label], full_task_graph, label_to_taskid,
-                                   parameters, modifier=edit)
+                                   parameters, decision_task_id=action_task_id, modifier=edit)
 
     taskId = label_to_taskid[label]
     logger.info('Created interactive task {}; sending notification'.format(taskId))

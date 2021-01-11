@@ -12,6 +12,7 @@
 #include "mozilla/TaggedAnonymousMemory.h"
 
 #include "js/HeapAPI.h"
+#include "util/Memory.h"
 #include "vm/Runtime.h"
 
 #ifdef XP_WIN
@@ -46,6 +47,9 @@ static size_t allocGranularity = 0;
 /* The number of bits used by addresses on this platform. */
 static size_t numAddressBits = 0;
 
+/* An estimate of the number of bytes available for virtual memory. */
+static size_t virtualMemoryLimit = size_t(-1);
+
 /*
  * System allocation functions may hand out regions of memory in increasing or
  * decreasing order. This ordering is used as a hint during chunk alignment to
@@ -58,13 +62,9 @@ static size_t numAddressBits = 0;
  * VirtualAlloc always hands out regions of memory in increasing order.
  */
 #if defined(XP_DARWIN)
-static mozilla::Atomic<int, mozilla::Relaxed,
-                       mozilla::recordreplay::Behavior::DontPreserve>
-    growthDirection(1);
+static mozilla::Atomic<int, mozilla::Relaxed> growthDirection(1);
 #elif defined(XP_UNIX)
-static mozilla::Atomic<int, mozilla::Relaxed,
-                       mozilla::recordreplay::Behavior::DontPreserve>
-    growthDirection(0);
+static mozilla::Atomic<int, mozilla::Relaxed> growthDirection(0);
 #endif
 
 /*
@@ -115,6 +115,8 @@ static size_t hugeSplit = 0;
 size_t SystemPageSize() { return pageSize; }
 
 size_t SystemAddressBits() { return numAddressBits; }
+
+size_t VirtualMemoryLimit() { return virtualMemoryLimit; }
 
 bool UsingScattershotAllocator() {
 #ifdef JS_64BIT
@@ -262,7 +264,6 @@ static inline uint64_t GetNumberInRange(uint64_t minNum, uint64_t maxNum) {
   do {
     mozilla::Maybe<uint64_t> result;
     do {
-      mozilla::recordreplay::AutoPassThroughThreadEvents pt;
       result = mozilla::RandomUint64();
     } while (!result);
     rndNum = result.value() / binSize;
@@ -379,6 +380,13 @@ void InitMemorySubsystem() {
     }
 #else  // !defined(JS_64BIT)
     numAddressBits = 32;
+#endif
+#ifdef RLIMIT_AS
+    rlimit as_limit;
+    if (getrlimit(RLIMIT_AS, &as_limit) == 0 &&
+        as_limit.rlim_max != RLIM_INFINITY) {
+      virtualMemoryLimit = as_limit.rlim_max;
+    }
 #endif
   }
 }
@@ -822,9 +830,6 @@ bool MarkPagesInUseHard(void* region, size_t length) {
 }
 
 size_t GetPageFaultCount() {
-  if (mozilla::recordreplay::IsRecordingOrReplaying()) {
-    return 0;
-  }
 #ifdef XP_WIN
   PROCESS_MEMORY_COUNTERS pmc;
   if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)) == 0) {

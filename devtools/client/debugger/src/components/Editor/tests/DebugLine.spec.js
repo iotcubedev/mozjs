@@ -41,13 +41,11 @@ function generateDefaults(editor, overrides) {
   };
 }
 
-function createFrame(line) {
+function createLocation(line) {
   return {
-    location: {
-      sourceId: "foo",
-      line,
-      column: 2,
-    },
+    sourceId: "foo",
+    line,
+    column: 2,
   };
 }
 
@@ -80,13 +78,13 @@ describe("DebugLine Component", () => {
         },
       });
       const line = 2;
-      const frame = createFrame(line);
+      const location = createLocation(line);
 
-      component.setProps({ ...props, frame });
+      component.setProps({ ...props, location });
 
       expect(doc.removeLineClass.mock.calls).toEqual([]);
       expect(doc.addLineClass.mock.calls).toEqual([
-        [toEditorLine("foo", line), "line", "new-debug-line"],
+        [toEditorLine("foo", line), "wrapClass", "new-debug-line"],
       ]);
     });
 
@@ -107,19 +105,19 @@ describe("DebugLine Component", () => {
         const firstLine = 2;
         const secondLine = 2;
 
-        component.setProps({ ...props, frame: createFrame(firstLine) });
+        component.setProps({ ...props, location: createLocation(firstLine) });
         component.setProps({
           ...props,
-          frame: createFrame(secondLine),
+          frame: createLocation(secondLine),
         });
 
         expect(doc.removeLineClass.mock.calls).toEqual([
-          [toEditorLine("foo", firstLine), "line", "new-debug-line"],
+          [toEditorLine("foo", firstLine), "wrapClass", "new-debug-line"],
         ]);
 
         expect(doc.addLineClass.mock.calls).toEqual([
-          [toEditorLine("foo", firstLine), "line", "new-debug-line"],
-          [toEditorLine("foo", secondLine), "line", "new-debug-line"],
+          [toEditorLine("foo", firstLine), "wrapClass", "new-debug-line"],
+          [toEditorLine("foo", secondLine), "wrapClass", "new-debug-line"],
         ]);
 
         expect(doc.markText.mock.calls).toEqual([
@@ -143,9 +141,9 @@ describe("DebugLine Component", () => {
       it("should not set the debug line", () => {
         const { component, props, doc } = render({ frame: null });
         const line = 2;
-        const frame = createFrame(line);
+        const location = createLocation(line);
 
-        component.setProps({ ...props, frame });
+        component.setProps({ ...props, location });
         expect(doc.removeLineClass).not.toHaveBeenCalled();
       });
     });

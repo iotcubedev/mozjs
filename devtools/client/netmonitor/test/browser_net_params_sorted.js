@@ -7,7 +7,9 @@
  * Tests whether keys in Params panel are sorted.
  */
 add_task(async function() {
-  const { tab, monitor } = await initNetMonitor(POST_ARRAY_DATA_URL);
+  const { tab, monitor } = await initNetMonitor(POST_ARRAY_DATA_URL, {
+    requestCount: 1,
+  });
   info("Starting test... ");
 
   const { document, store, windowRequire } = monitor.panelWin;
@@ -27,7 +29,7 @@ add_task(async function() {
 
   EventUtils.sendMouseEvent(
     { type: "click" },
-    document.querySelector("#params-tab")
+    document.querySelector("#request-tab")
   );
 
   // The Params panel should render the following
@@ -47,20 +49,18 @@ add_task(async function() {
   //           2: "b"
   //         c: 15
   const expectedKeys = [
-    "JSON",
     "watches\t[…]",
-    "0\thello",
-    "1\thow",
-    "2\tare",
-    "3\tyou",
+    `0\t"hello"`,
+    `1\t"how"`,
+    `2\t"are"`,
+    `3\t"you"`,
     "4\t{…}",
     "a\t10",
     "b\t[…]",
-    "0\ta",
-    "1\tc",
-    "2\tb",
+    `0\t"a"`,
+    `1\t"c"`,
+    `2\t"b"`,
     "c\t15",
-    "Request payload",
   ];
 
   const waitForTreeRow = waitForDOM(

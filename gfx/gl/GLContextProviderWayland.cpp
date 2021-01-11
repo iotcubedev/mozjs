@@ -10,19 +10,18 @@
 
 #include "GLContextProvider.h"
 
-namespace mozilla {
-namespace gl {
+namespace mozilla::gl {
 
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
 
-static class GLContextProviderGLX sGLContextProviderGLX;
+static class GLContextProviderX11 sGLContextProviderX11;
 static class GLContextProviderEGL sGLContextProviderEGL;
 
 already_AddRefed<GLContext> GLContextProviderWayland::CreateWrappingExisting(
     void* aContext, void* aSurface) {
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.CreateWrappingExisting(aContext, aSurface);
+    return sGLContextProviderX11.CreateWrappingExisting(aContext, aSurface);
   } else {
     return sGLContextProviderEGL.CreateWrappingExisting(aContext, aSurface);
   }
@@ -32,7 +31,7 @@ already_AddRefed<GLContext> GLContextProviderWayland::CreateForCompositorWidget(
     CompositorWidget* aCompositorWidget, bool aWebRender,
     bool aForceAccelerated) {
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.CreateForCompositorWidget(
+    return sGLContextProviderX11.CreateForCompositorWidget(
         aCompositorWidget, aWebRender, aForceAccelerated);
   } else {
     return sGLContextProviderEGL.CreateForCompositorWidget(
@@ -40,44 +39,20 @@ already_AddRefed<GLContext> GLContextProviderWayland::CreateForCompositorWidget(
   }
 }
 
-already_AddRefed<GLContext> GLContextProviderWayland::CreateForWindow(
-    nsIWidget* aWidget, bool aWebRender, bool aForceAccelerated) {
-  if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.CreateForWindow(aWidget, aWebRender,
-                                                 aForceAccelerated);
-  } else {
-    return sGLContextProviderEGL.CreateForWindow(aWidget, aWebRender,
-                                                 aForceAccelerated);
-  }
-}
-
 /*static*/
 already_AddRefed<GLContext> GLContextProviderWayland::CreateHeadless(
-    CreateContextFlags flags, nsACString* const out_failureId) {
+    const GLContextCreateDesc& desc, nsACString* const out_failureId) {
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.CreateHeadless(flags, out_failureId);
+    return sGLContextProviderX11.CreateHeadless(desc, out_failureId);
   } else {
-    return sGLContextProviderEGL.CreateHeadless(flags, out_failureId);
-  }
-}
-
-/*static*/
-already_AddRefed<GLContext> GLContextProviderWayland::CreateOffscreen(
-    const IntSize& size, const SurfaceCaps& minCaps, CreateContextFlags flags,
-    nsACString* const out_failureId) {
-  if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.CreateOffscreen(size, minCaps, flags,
-                                                 out_failureId);
-  } else {
-    return sGLContextProviderEGL.CreateOffscreen(size, minCaps, flags,
-                                                 out_failureId);
+    return sGLContextProviderEGL.CreateHeadless(desc, out_failureId);
   }
 }
 
 /*static*/
 GLContext* GLContextProviderWayland::GetGlobalContext() {
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    return sGLContextProviderGLX.GetGlobalContext();
+    return sGLContextProviderX11.GetGlobalContext();
   } else {
     return sGLContextProviderEGL.GetGlobalContext();
   }
@@ -86,11 +61,10 @@ GLContext* GLContextProviderWayland::GetGlobalContext() {
 /*static*/
 void GLContextProviderWayland::Shutdown() {
   if (GDK_IS_X11_DISPLAY(gdk_display_get_default())) {
-    sGLContextProviderGLX.Shutdown();
+    sGLContextProviderX11.Shutdown();
   } else {
     sGLContextProviderEGL.Shutdown();
   }
 }
 
-} /* namespace gl */
-} /* namespace mozilla */
+}  // namespace mozilla::gl

@@ -72,15 +72,18 @@ WeaveService.prototype = {
   classID: Components.ID("{74b89fb0-f200-4ae8-a3ec-dd164117f6de}"),
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
 
-  ensureLoaded() {
+  get Weave() {
     const { Weave } = ChromeUtils.import("resource://services-sync/main.js");
+    return Weave;
+  },
 
+  ensureLoaded() {
     // Side-effect of accessing the service is that it is instantiated.
-    Weave.Service;
+    this.Weave.Service;
   },
 
   whenLoaded() {
@@ -117,8 +120,6 @@ WeaveService.prototype = {
             isConfigured =
               Weave.Status.checkSetup() != Weave.CLIENT_NOT_CONFIGURED;
           }
-          let getHistogramById = Services.telemetry.getHistogramById;
-          getHistogramById("WEAVE_CONFIGURED").add(isConfigured);
           if (isConfigured) {
             this.ensureLoaded();
           }
@@ -150,8 +151,8 @@ AboutWeaveLog.prototype = {
   classID: Components.ID("{d28f8a0b-95da-48f4-b712-caf37097be41}"),
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIAboutModule,
-    Ci.nsISupportsWeakReference,
+    "nsIAboutModule",
+    "nsISupportsWeakReference",
   ]),
 
   getURIFlags(aURI) {

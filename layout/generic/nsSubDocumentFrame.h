@@ -34,7 +34,7 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
 
 #ifdef DEBUG_FRAME_DUMP
   void List(FILE* out = stderr, const char* aPrefix = "",
-            uint32_t aFlags = 0) const override;
+            ListFlags aFlags = ListFlags()) const override;
   nsresult GetFrameName(nsAString& aResult) const override;
 #endif
 
@@ -128,9 +128,6 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
 
  protected:
   friend class AsyncFrameInit;
-
-  // Helper method to look up the HTML marginwidth & marginheight attributes.
-  mozilla::CSSIntSize GetMarginAttributes();
 
   bool IsInline() { return mIsInline; }
 

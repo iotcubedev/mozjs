@@ -5,31 +5,34 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef include_dom_media_ipc_RemoteDecoderManagerChild_h
 #define include_dom_media_ipc_RemoteDecoderManagerChild_h
+#include "GPUVideoImage.h"
 #include "mozilla/PRemoteDecoderManagerChild.h"
+#include "mozilla/layers/VideoBridgeUtils.h"
 
 namespace mozilla {
 
-class RemoteDecoderManagerChild final : public PRemoteDecoderManagerChild,
-                                        public mozilla::ipc::IShmemAllocator {
+class RemoteDecoderManagerChild final
+    : public PRemoteDecoderManagerChild,
+      public mozilla::ipc::IShmemAllocator,
+      public mozilla::layers::IGPUVideoSurfaceManager {
   friend class PRemoteDecoderManagerChild;
 
  public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteDecoderManagerChild)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteDecoderManagerChild, override)
 
   // Can only be called from the manager thread
   static RemoteDecoderManagerChild* GetRDDProcessSingleton();
   static RemoteDecoderManagerChild* GetGPUProcessSingleton();
 
   // Can be called from any thread.
-  static nsIThread* GetManagerThread();
-  static AbstractThread* GetManagerAbstractThread();
+  static nsISerialEventTarget* GetManagerThread();
 
   // Can be called from any thread, dispatches the request to the IPDL thread
   // internally and will be ignored if the IPDL actor has been destroyed.
   already_AddRefed<gfx::SourceSurface> Readback(
-      const SurfaceDescriptorGPUVideo& aSD);
-  void DeallocateSurfaceDescriptorGPUVideo(
-      const SurfaceDescriptorGPUVideo& aSD);
+      const SurfaceDescriptorGPUVideo& aSD) override;
+  void DeallocateSurfaceDescriptor(
+      const SurfaceDescriptorGPUVideo& aSD) override;
 
   bool AllocShmem(size_t aSize,
                   mozilla::ipc::SharedMemory::SharedMemoryType aShmType,
@@ -48,6 +51,7 @@ class RemoteDecoderManagerChild final : public PRemoteDecoderManagerChild,
   bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override;
 
   // Main thread only
+  static void InitializeThread();
   static void InitForRDDProcess(
       Endpoint<PRemoteDecoderManagerChild>&& aVideoManager);
   static void InitForGPUProcess(
@@ -60,12 +64,11 @@ class RemoteDecoderManagerChild final : public PRemoteDecoderManagerChild,
   // called from the manager thread.
   void RunWhenGPUProcessRecreated(already_AddRefed<Runnable> aTask);
 
-  bool CanSend();
+  layers::VideoBridgeSource GetSource() const { return mSource; }
 
  protected:
   void InitIPDL();
 
-  void ActorDestroy(ActorDestroyReason aWhy) override;
   void ActorDealloc() override;
 
   void HandleFatalError(const char* aMsg) const override;
@@ -78,10 +81,7 @@ class RemoteDecoderManagerChild final : public PRemoteDecoderManagerChild,
   bool DeallocPRemoteDecoderChild(PRemoteDecoderChild* actor);
 
  private:
-  // Main thread only
-  static void InitializeThread();
-
-  RemoteDecoderManagerChild() = default;
+  explicit RemoteDecoderManagerChild(layers::VideoBridgeSource aSource);
   ~RemoteDecoderManagerChild() = default;
 
   static void OpenForRDDProcess(
@@ -91,8 +91,8 @@ class RemoteDecoderManagerChild final : public PRemoteDecoderManagerChild,
 
   RefPtr<RemoteDecoderManagerChild> mIPDLSelfRef;
 
-  // Should only ever be accessed on the manager thread.
-  bool mCanSend = false;
+  // The associated source of this decoder manager
+  layers::VideoBridgeSource mSource;
 };
 
 }  // namespace mozilla

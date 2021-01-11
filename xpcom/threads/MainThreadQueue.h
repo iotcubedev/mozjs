@@ -27,17 +27,13 @@ inline already_AddRefed<nsThread> CreateMainThread(
   MainThreadQueueT* prioritized = queue.get();
 
   RefPtr<SynchronizedQueueT> synchronizedQueue =
-      new SynchronizedQueueT(std::move(queue));
+      new SynchronizedQueueT(std::move(queue), true);
 
   prioritized->SetMutexRef(synchronizedQueue->MutexRef());
 
   // Setup "main" thread
   RefPtr<nsThread> mainThread =
       new nsThread(WrapNotNull(synchronizedQueue), nsThread::MAIN_THREAD, 0);
-
-#ifndef RELEASE_OR_BETA
-  prioritized->SetNextIdleDeadlineRef(mainThread->NextIdleDeadlineRef());
-#endif
 
   if (aSynchronizedQueue) {
     synchronizedQueue.forget(aSynchronizedQueue);

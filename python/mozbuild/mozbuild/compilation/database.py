@@ -7,7 +7,6 @@
 from __future__ import absolute_import, print_function
 
 import os
-import types
 
 from mozbuild.backend.common import CommonBackend
 from mozbuild.frontend.data import (
@@ -85,7 +84,7 @@ class CompileDBBackend(CommonBackend):
 
         db = []
 
-        for (directory, filename, unified), cmd in self._db.iteritems():
+        for (directory, filename, unified), cmd in self._db.items():
             env = self._envs[directory]
             cmd = list(cmd)
             if unified is None:
@@ -102,13 +101,31 @@ class CompileDBBackend(CommonBackend):
             variables.update(self._local_flags[directory])
             c = []
             for a in cmd:
-                a = expand_variables(a, variables).split()
-                if not a:
-                    continue
-                if isinstance(a, types.StringTypes):
-                    c.append(a)
-                else:
-                    c.extend(a)
+                accum = ''
+                for word in expand_variables(a, variables).split():
+                    # We can't just split() the output of expand_variables since
+                    # there can be spaces enclosed by quotes, e.g. '"foo bar"'.
+                    # Handle that case by checking whether there are an even
+                    # number of double-quotes in the word and appending it to
+                    # the accumulator if not. Meanwhile, shlex.split() and
+                    # mozbuild.shellutil.split() aren't able to properly handle
+                    # this and break in various ways, so we can't use something
+                    # off-the-shelf.
+                    has_quote = bool(word.count('"') % 2)
+                    if accum and has_quote:
+                        c.append(accum + ' ' + word)
+                        accum = ''
+                    elif accum and not has_quote:
+                        accum += ' ' + word
+                    elif not accum and has_quote:
+                        accum = word
+                    else:
+                        c.append(word)
+            # Tell clangd to keep parsing to the end of a file, regardless of
+            # how many errors are encountered. (Unified builds mean that we
+            # encounter a lot of errors parsing some files.)
+            c.insert(-1, "-ferror-limit=0")
+
             per_source_flags = self._per_source_flags.get(filename)
             if per_source_flags is not None:
                 c.extend(per_source_flags)
@@ -183,7 +200,7 @@ class CompileDBBackend(CommonBackend):
             value = cenv.substs.get(name)
             if not value:
                 return
-            if isinstance(value, types.StringTypes):
+            if isinstance(value, str):
                 value = value.split()
             db.extend(value)
 

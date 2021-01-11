@@ -13,9 +13,11 @@ const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { KeyCodes } = require("devtools/client/shared/keycodes");
 const { LocalizationHelper } = require("devtools/shared/l10n");
 
-const BoxModelEditable = createFactory(require("./BoxModelEditable"));
+const BoxModelEditable = createFactory(
+  require("devtools/client/inspector/boxmodel/components/BoxModelEditable")
+);
 
-const Types = require("../types");
+const Types = require("devtools/client/inspector/boxmodel/types");
 
 const SHARED_STRINGS_URI = "devtools/client/locales/shared.properties";
 const SHARED_L10N = new LocalizationHelper(SHARED_STRINGS_URI);
@@ -338,7 +340,7 @@ class BoxModelMain extends PureComponent {
 
             this.setAriaActive(nextLayout);
 
-            if (target && target._editable) {
+            if (target?._editable) {
               target.blur();
             }
 
@@ -391,7 +393,7 @@ class BoxModelMain extends PureComponent {
     );
     this.setAriaActive(nextLayout);
 
-    if (target && target._editable) {
+    if (target?._editable) {
       target.blur();
     }
   }
@@ -458,7 +460,10 @@ class BoxModelMain extends PureComponent {
             })
           )
         : dom.p(
-            { className: "boxmodel-size" },
+            {
+              className: "boxmodel-size",
+              id: "boxmodel-size-id",
+            },
             dom.span(
               { title: "content" },
               SHARED_L10N.getFormatStr("dimensions", width, height)
@@ -494,12 +499,17 @@ class BoxModelMain extends PureComponent {
             className: "boxmodel-legend",
             "data-box": "margin",
             title: "margin",
+            role: "region",
+            "aria-level": "1", // margin, outermost box
+            "aria-owns":
+              "margin-top-id margin-right-id margin-bottom-id margin-left-id margins-div",
           },
           "margin"
         ),
         dom.div(
           {
             className: "boxmodel-margins",
+            id: "margins-div",
             "data-box": "margin",
             title: "margin",
             ref: div => {
@@ -511,12 +521,17 @@ class BoxModelMain extends PureComponent {
               className: "boxmodel-legend",
               "data-box": "border",
               title: "border",
+              role: "region",
+              "aria-level": "2", // margin -> border, second box
+              "aria-owns":
+                "border-top-width-id border-right-width-id border-bottom-width-id border-left-width-id borders-div",
             },
             "border"
           ),
           dom.div(
             {
               className: "boxmodel-borders",
+              id: "borders-div",
               "data-box": "border",
               title: "border",
               ref: div => {
@@ -528,22 +543,37 @@ class BoxModelMain extends PureComponent {
                 className: "boxmodel-legend",
                 "data-box": "padding",
                 title: "padding",
+                role: "region",
+                "aria-level": "3", // margin -> border -> padding
+                "aria-owns":
+                  "padding-top-id padding-right-id padding-bottom-id padding-left-id padding-div",
               },
               "padding"
             ),
             dom.div(
               {
                 className: "boxmodel-paddings",
+                id: "padding-div",
                 "data-box": "padding",
                 title: "padding",
+                "aria-owns": "boxmodel-contents-id",
                 ref: div => {
                   this.paddingLayout = div;
                 },
               },
               dom.div({
                 className: "boxmodel-contents",
+                id: "boxmodel-contents-id",
                 "data-box": "content",
                 title: "content",
+                role: "region",
+                "aria-level": "4", // margin -> border -> padding -> content
+                "aria-label": SHARED_L10N.getFormatStr(
+                  "boxModelSize.accessibleLabel",
+                  width,
+                  height
+                ),
+                "aria-owns": "boxmodel-size-id",
                 ref: div => {
                   this.contentLayout = div;
                 },

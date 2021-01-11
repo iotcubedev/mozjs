@@ -220,7 +220,7 @@ already_AddRefed<TrackMetadataBase> OpusTrackEncoder::GetMetadata() {
 
   nsTArray<nsCString> comments;
   comments.AppendElement(
-      NS_LITERAL_CSTRING("ENCODER=Mozilla" MOZ_APP_UA_VERSION));
+      nsLiteralCString("ENCODER=Mozilla" MOZ_APP_UA_VERSION));
 
   SerializeOpusCommentHeader(vendor, comments, &meta->mCommentHeader);
 
@@ -271,7 +271,7 @@ nsresult OpusTrackEncoder::GetEncodedTrack(
       return NS_OK;
     }
 
-    // Pad |mLookahead| samples to the end of source stream to prevent lost of
+    // Pad |mLookahead| samples to the end of source track to prevent lost of
     // original data, the pcm duration will be calculated at rate 48K later.
     if (mEndOfStream && !mEosSetInEncoder) {
       mEosSetInEncoder = true;
@@ -289,7 +289,7 @@ nsresult OpusTrackEncoder::GetEncodedTrack(
       AudioChunk chunk = *iter;
 
       // Chunk to the required frame size.
-      StreamTime frameToCopy = chunk.GetDuration();
+      TrackTime frameToCopy = chunk.GetDuration();
       if (frameToCopy > framesToFetch - frameCopied) {
         frameToCopy = framesToFetch - frameCopied;
       }

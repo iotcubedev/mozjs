@@ -30,13 +30,13 @@ add_task(async function() {
       onClearHistory() {},
       onPageChanged() {},
       onDeleteVisits() {},
-      QueryInterface: ChromeUtils.generateQI([Ci.nsINavHistoryObserver]),
+      QueryInterface: ChromeUtils.generateQI(["nsINavHistoryObserver"]),
     };
 
     PlacesUtils.history.addObserver(observer);
   });
 
-  await ContentTask.spawn(tab.linkedBrowser, null, async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     let title = content.document.title;
     content.history.pushState("", "", "new_page");
     Assert.ok(title, "Content window should initially have a title.");
@@ -44,7 +44,7 @@ add_task(async function() {
 
   let newtitle = await newTitlePromise;
 
-  await ContentTask.spawn(tab.linkedBrowser, { newtitle }, async function(
+  await SpecialPowers.spawn(tab.linkedBrowser, [{ newtitle }], async function(
     args
   ) {
     Assert.equal(

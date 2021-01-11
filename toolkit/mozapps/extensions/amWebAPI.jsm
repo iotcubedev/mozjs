@@ -20,6 +20,13 @@ XPCOMUtils.defineLazyPreferenceGetter(
   false
 );
 
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "AMO_ABUSEREPORT",
+  "extensions.abuseReport.amWebAPI.enabled",
+  false
+);
+
 const MSG_PROMISE_REQUEST = "WebAPIPromiseRequest";
 const MSG_PROMISE_RESULT = "WebAPIPromiseResult";
 const MSG_INSTALL_EVENT = "WebAPIInstallEvent";
@@ -240,16 +247,18 @@ class WebAPI extends APIObject {
     if (!Services.prefs.getBoolPref("xpinstall.enabled", true)) {
       throw new this.window.Error("Software installation is disabled.");
     }
+
+    const triggeringPrincipal = this.window.document.nodePrincipal;
+
     let installOptions = {
       ...options,
+      triggeringPrincipal,
       // Provide the host from which the amWebAPI is being called
       // (so that we can detect if the API is being used from the disco pane,
       // AMO, testpilot or another unknown webpage).
-      sourceHost:
-        this.window.document.nodePrincipal.URI &&
-        this.window.document.nodePrincipal.URI.host,
+      sourceHost: this.window.location?.host,
+      sourceURL: this.window.location?.href,
     };
-    installOptions.triggeringPrincipal = this.window.document.nodePrincipal;
     return this._apiTask("createInstall", [installOptions], installInfo => {
       if (!installInfo) {
         return null;
@@ -260,8 +269,16 @@ class WebAPI extends APIObject {
     });
   }
 
+  reportAbuse(id) {
+    return this._apiTask("addonReportAbuse", [id]);
+  }
+
   get permissionPromptsEnabled() {
     return WEBEXT_PERMISSION_PROMPTS;
+  }
+
+  get abuseReportPanelEnabled() {
+    return AMO_ABUSEREPORT;
   }
 
   eventListenerAdded(type) {

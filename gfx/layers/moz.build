@@ -93,12 +93,13 @@ EXPORTS.mozilla.dom += [
 EXPORTS.mozilla.layers += [
     'AnimationHelper.h',
     'AnimationInfo.h',
+    'AnimationStorageData.h',
     'apz/public/APZInputBridge.h',
     'apz/public/APZSampler.h',
-    'apz/public/APZTypes.h',
     'apz/public/APZUpdater.h',
     'apz/public/CompositorController.h',
     'apz/public/GeckoContentController.h',
+    'apz/public/GeckoContentControllerTypes.h',
     'apz/public/IAPZCTreeManager.h',
     'apz/public/MatrixMessage.h',
     'apz/public/MetricsSharingController.h',
@@ -121,7 +122,6 @@ EXPORTS.mozilla.layers += [
     'apz/util/ScrollLinkedEffectDetector.h',
     'apz/util/TouchActionHelper.h',
     'apz/util/TouchCounter.h',
-    'AsyncCanvasRenderer.h',
     'AtomicRefCountedWithFinalize.h',
     'AxisPhysicsModel.h',
     'AxisPhysicsMSDModel.h',
@@ -132,7 +132,6 @@ EXPORTS.mozilla.layers += [
     'BufferTexture.h',
     'CanvasDrawEventRecorder.h',
     'CanvasRenderer.h',
-    'CanvasTranslator.h',
     'client/CanvasClient.h',
     'client/CompositableClient.h',
     'client/ContentClient.h',
@@ -166,8 +165,8 @@ EXPORTS.mozilla.layers += [
     'composite/TiledContentHost.h',
     'CompositionRecorder.h',
     'Compositor.h',
+    'CompositorAnimationStorage.h',
     'CompositorTypes.h',
-    'CopyableCanvasRenderer.h',
     'D3D11ShareHandleImage.h',
     'D3D11YCbCrImage.h',
     'D3D9SurfaceImage.h',
@@ -180,7 +179,8 @@ EXPORTS.mozilla.layers += [
     'ipc/APZInputBridgeChild.h',
     'ipc/APZInputBridgeParent.h',
     'ipc/CanvasChild.h',
-    'ipc/CanvasParent.h',
+    'ipc/CanvasThread.h',
+    'ipc/CanvasTranslator.h',
     'ipc/CompositableForwarder.h',
     'ipc/CompositableTransactionParent.h',
     'ipc/CompositorBridgeChild.h',
@@ -215,6 +215,7 @@ EXPORTS.mozilla.layers += [
     'ipc/UiCompositorControllerParent.h',
     'ipc/VideoBridgeChild.h',
     'ipc/VideoBridgeParent.h',
+    'ipc/VideoBridgeUtils.h',
     'LayerAttributes.h',
     'LayerMetricsWrapper.h',
     'LayersHelpers.h',
@@ -229,6 +230,7 @@ EXPORTS.mozilla.layers += [
     'mlgpu/ShaderDefinitionsMLGPU.h',
     'mlgpu/UtilityMLGPU.h',
     'NativeLayer.h',
+    'OOPCanvasRenderer.h',
     'opengl/CompositingRenderTargetOGL.h',
     'opengl/CompositorOGL.h',
     'opengl/MacIOSurfaceTextureClientOGL.h',
@@ -245,6 +247,7 @@ EXPORTS.mozilla.layers += [
     'ShareableCanvasRenderer.h',
     'SourceSurfaceSharedData.h',
     'SourceSurfaceVolatileData.h',
+    'SurfacePool.h',
     'SyncObject.h',
     'TextureSourceProvider.h',
     'TextureWrapperImage.h',
@@ -253,8 +256,10 @@ EXPORTS.mozilla.layers += [
     'UpdateImageHelper.h',
     'wr/AsyncImagePipelineManager.h',
     'wr/ClipManager.h',
+    'wr/DisplayItemCache.h',
     'wr/IpcResourceUpdateQueue.h',
-    'wr/RenderRootBoundary.h',
+    'wr/OMTAController.h',
+    'wr/OMTASampler.h',
     'wr/RenderRootStateManager.h',
     'wr/RenderRootTypes.h',
     'wr/StackingContextHelper.h',
@@ -292,10 +297,22 @@ if CONFIG['MOZ_X11']:
         'opengl/X11TextureSourceOGL.cpp',
     ]
 
+if CONFIG['MOZ_WAYLAND']:
+    EXPORTS.mozilla.layers += [
+        'DMABUFSurfaceImage.h',
+        'opengl/DMABUFTextureClientOGL.h',
+        'opengl/DMABUFTextureHostOGL.h',
+    ]
+    SOURCES += [
+        'DMABUFSurfaceImage.cpp',
+        'opengl/DMABUFTextureClientOGL.cpp',
+        'opengl/DMABUFTextureHostOGL.cpp',
+    ]
+
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     EXPORTS.mozilla.layers += [
         'NativeLayerCA.h',
-        'opengl/GLManager.h',
+        'SurfacePoolCA.h',
         'TextureSync.h',
     ]
     EXPORTS += [
@@ -304,7 +321,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     ]
     UNIFIED_SOURCES += [
         'NativeLayerCA.mm',
-        'opengl/GLManager.cpp',
+        'SurfacePoolCA.mm',
         'TextureSync.cpp',
     ]
     SOURCES += [
@@ -317,14 +334,14 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
+    EXPORTS.mozilla.layers += [
+        'AndroidHardwareBuffer.h',
+    ]
     UNIFIED_SOURCES += [
+        'AndroidHardwareBuffer.cpp',
         'apz/src/AndroidAPZ.cpp',
-        'apz/src/AndroidDynamicToolbarAnimator.cpp',
         'apz/src/AndroidFlingPhysics.cpp',
         'apz/src/AndroidVelocityTracker.cpp',
-    ]
-    EXPORTS.mozilla.layers += [
-        'apz/src/AndroidDynamicToolbarAnimator.h',
     ]
 
 UNIFIED_SOURCES += [
@@ -353,6 +370,7 @@ UNIFIED_SOURCES += [
     'apz/src/OverscrollHandoffState.cpp',
     'apz/src/PotentialCheckerboardDurationTracker.cpp',
     'apz/src/QueuedInput.cpp',
+    'apz/src/SampledAPZCState.cpp',
     'apz/src/SimpleVelocityTracker.cpp',
     'apz/src/WheelScrollAnimation.cpp',
     'apz/testutil/APZTestData.cpp',
@@ -368,7 +386,6 @@ UNIFIED_SOURCES += [
     'apz/util/ScrollLinkedEffectDetector.cpp',
     'apz/util/TouchActionHelper.cpp',
     'apz/util/TouchCounter.cpp',
-    'AsyncCanvasRenderer.cpp',
     'AxisPhysicsModel.cpp',
     'AxisPhysicsMSDModel.cpp',
     'basic/BasicCanvasLayer.cpp',
@@ -383,7 +400,6 @@ UNIFIED_SOURCES += [
     'BufferTexture.cpp',
     'CanvasDrawEventRecorder.cpp',
     'CanvasRenderer.cpp',
-    'CanvasTranslator.cpp',
     'client/CanvasClient.cpp',
     'client/ClientCanvasLayer.cpp',
     'client/ClientCanvasRenderer.cpp',
@@ -399,7 +415,6 @@ UNIFIED_SOURCES += [
     'client/ImageClient.cpp',
     'client/MultiTiledContentClient.cpp',
     'client/SingleTiledContentClient.cpp',
-    'client/TextureClient.cpp',
     'client/TextureClientPool.cpp',
     'client/TextureClientRecycleAllocator.cpp',
     'client/TextureClientSharedSurface.cpp',
@@ -426,7 +441,7 @@ UNIFIED_SOURCES += [
     'composite/TiledContentHost.cpp',
     'CompositionRecorder.cpp',
     'Compositor.cpp',
-    'CopyableCanvasRenderer.cpp',
+    'CompositorAnimationStorage.cpp',
     'Effects.cpp',
     'FrameMetrics.cpp',
     'GLImages.cpp',
@@ -438,7 +453,8 @@ UNIFIED_SOURCES += [
     'ipc/APZInputBridgeChild.cpp',
     'ipc/APZInputBridgeParent.cpp',
     'ipc/CanvasChild.cpp',
-    'ipc/CanvasParent.cpp',
+    'ipc/CanvasThread.cpp',
+    'ipc/CanvasTranslator.cpp',
     'ipc/CompositableTransactionParent.cpp',
     'ipc/CompositorBench.cpp',
     'ipc/CompositorBridgeChild.cpp',
@@ -511,7 +527,10 @@ UNIFIED_SOURCES += [
     'TextureWrapperImage.cpp',
     'wr/AsyncImagePipelineManager.cpp',
     'wr/ClipManager.cpp',
+    'wr/DisplayItemCache.cpp',
     'wr/IpcResourceUpdateQueue.cpp',
+    'wr/OMTAController.cpp',
+    'wr/OMTASampler.cpp',
     'wr/RenderRootStateManager.cpp',
     'wr/RenderRootTypes.cpp',
     'wr/StackingContextHelper.cpp',
@@ -533,6 +552,7 @@ UNIFIED_SOURCES += [
 SOURCES += [
     'basic/BasicCompositor.cpp',
     'basic/BasicImageLayer.cpp',
+    'client/TextureClient.cpp',
     'ImageContainer.cpp',
     'PersistentBufferProvider.cpp',
     'protobuf/LayerScopePacket.pb.cc',
@@ -557,6 +577,7 @@ IPDL_SOURCES += [
     'ipc/PAPZInputBridge.ipdl',
     'ipc/PCanvas.ipdl',
     'ipc/PCompositorBridge.ipdl',
+    'ipc/PCompositorBridgeTypes.ipdlh',
     'ipc/PCompositorManager.ipdl',
     'ipc/PImageBridge.ipdl',
     'ipc/PLayerTransaction.ipdl',
@@ -570,20 +591,14 @@ IPDL_SOURCES += [
 include('/ipc/chromium/chromium-config.mozbuild')
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
-  GENERATED_FILES = [
-      'CompositorD3D11Shaders.h',
-      'MLGShaders.h',
-  ]
-
-  d3d11_shaders = GENERATED_FILES['CompositorD3D11Shaders.h']
-  d3d11_shaders.script = 'd3d11/genshaders.py'
-  d3d11_shaders.inputs = ['d3d11/shaders.manifest']
-  mlg_shaders = GENERATED_FILES['MLGShaders.h']
-  mlg_shaders.script = 'd3d11/genshaders.py'
-  mlg_shaders.inputs = ['d3d11/mlgshaders/shaders.manifest']
+  GeneratedFile('CompositorD3D11Shaders.h', script='d3d11/genshaders.py',
+                inputs=['d3d11/shaders.manifest'])
+  GeneratedFile('MLGShaders.h', script='d3d11/genshaders.py',
+                inputs=['d3d11/mlgshaders/shaders.manifest'])
 
 LOCAL_INCLUDES += [
     '/docshell/base',  # for nsDocShell.h
+    '/dom/canvas',     # for intertwined WebGL headers
     '/layout/base',    # for TouchManager.h
     '/layout/generic', # for nsTextFrame.h
     '/media/libyuv/libyuv/include', # for libyuv.h

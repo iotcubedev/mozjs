@@ -10,6 +10,7 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Array.h"
+#include "ShutdownPhase.h"
 #include "MainThreadUtils.h"
 
 #include <functional>
@@ -31,7 +32,7 @@
  * want to "leak" on shutdown.
  *
  * Although ClearOnShutdown will work with any smart pointer (i.e., nsCOMPtr,
- * nsRefPtr, nsAutoPtr, StaticRefPtr, and StaticAutoPtr), you probably want to
+ * RefPtr, StaticRefPtr, and StaticAutoPtr), you probably want to
  * use it only with StaticRefPtr and StaticAutoPtr.  There is no way to undo a
  * call to ClearOnShutdown, so you can call it only on smart pointers which you
  * know will live until the program shuts down.  In practice, these are likely
@@ -53,26 +54,12 @@
 
 namespace mozilla {
 
-// Must be contiguous starting at 0
-enum class ShutdownPhase {
-  NotInShutdown = 0,
-  WillShutdown,
-  Shutdown,
-  ShutdownThreads,
-  ShutdownLoaders,
-  ShutdownFinal,
-  ShutdownPostLastCycleCollection,
-  ShutdownPhase_Length,  // never pass this value
-  First = WillShutdown,  // for iteration
-  Last = ShutdownFinal
-};
-
 namespace ClearOnShutdown_Internal {
 
 class ShutdownObserver : public LinkedListElement<ShutdownObserver> {
  public:
   virtual void Shutdown() = 0;
-  virtual ~ShutdownObserver() {}
+  virtual ~ShutdownObserver() = default;
 };
 
 template <class SmartPtr>

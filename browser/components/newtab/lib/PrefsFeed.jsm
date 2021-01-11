@@ -41,6 +41,27 @@ this.PrefsFeed = class PrefsFeed {
     }
   }
 
+  _setStringPref(values, key, defaultValue) {
+    this._setPref(values, key, defaultValue, Services.prefs.getStringPref);
+  }
+
+  _setBoolPref(values, key, defaultValue) {
+    this._setPref(values, key, defaultValue, Services.prefs.getBoolPref);
+  }
+
+  _setIntPref(values, key, defaultValue) {
+    this._setPref(values, key, defaultValue, Services.prefs.getIntPref);
+  }
+
+  _setPref(values, key, defaultValue, getPrefFunction) {
+    let value = getPrefFunction(
+      `browser.newtabpage.activity-stream.${key}`,
+      defaultValue
+    );
+    values[key] = value;
+    this._prefMap.set(key, { value });
+  }
+
   init() {
     this._prefs.observeBranch(this);
     this._storage = this.store.dbStorage.getDbTable("sectionPrefs");
@@ -60,6 +81,12 @@ this.PrefsFeed = class PrefsFeed {
     values.fxa_endpoint = Services.prefs.getStringPref(
       "browser.newtabpage.activity-stream.fxaccounts.endpoint",
       "https://accounts.firefox.com"
+    );
+
+    // Get the firefox update channel with values as default, nightly, beta or release
+    values.appUpdateChannel = Services.prefs.getStringPref(
+      "app.update.channel",
+      ""
     );
 
     // Read the pref for search shortcuts top sites experiment from firefox.js and store it
@@ -84,36 +111,30 @@ this.PrefsFeed = class PrefsFeed {
       value: handoffToAwesomebarPrefValue,
     });
 
-    let discoveryStreamEnabled = Services.prefs.getBoolPref(
-      "browser.newtabpage.activity-stream.discoverystream.enabled",
-      false
-    );
-    let discoveryStreamHardcodedBasicLayout = Services.prefs.getBoolPref(
-      "browser.newtabpage.activity-stream.discoverystream.hardcoded-basic-layout",
-      false
-    );
-    let discoveryStreamSpocsEndpoint = Services.prefs.getStringPref(
-      "browser.newtabpage.activity-stream.discoverystream.spocs-endpoint",
+    this._setBoolPref(values, "feeds.section.topstories", false);
+    this._setBoolPref(values, "discoverystream.enabled", false);
+    this._setBoolPref(values, "discoverystream.isCollectionDismissible", false);
+    this._setBoolPref(values, "discoverystream.hardcoded-basic-layout", false);
+    this._setBoolPref(values, "discoverystream.recs.personalized", false);
+    this._setBoolPref(values, "discoverystream.spocs.personalized", false);
+    this._setStringPref(
+      values,
+      "discoverystream.personalization.modelKeys",
       ""
     );
-    values["discoverystream.enabled"] = discoveryStreamEnabled;
-    this._prefMap.set("discoverystream.enabled", {
-      value: discoveryStreamEnabled,
-    });
-    values[
-      "discoverystream.hardcoded-basic-layout"
-    ] = discoveryStreamHardcodedBasicLayout;
-    this._prefMap.set("discoverystream.hardcoded-basic-layout", {
-      value: discoveryStreamHardcodedBasicLayout,
-    });
-    values["discoverystream.spocs-endpoint"] = discoveryStreamSpocsEndpoint;
-    this._prefMap.set("discoverystream.spocs-endpoint", {
-      value: discoveryStreamSpocsEndpoint,
-    });
+    this._setIntPref(values, "discoverystream.personalization.version", 1);
+    this._setIntPref(values, "discoverystream.personalization.overrideVersion");
+    this._setStringPref(values, "discoverystream.spocs-endpoint", "");
 
     // Set the initial state of all prefs in redux
     this.store.dispatch(
-      ac.BroadcastToContent({ type: at.PREFS_INITIAL_VALUES, data: values })
+      ac.BroadcastToContent({
+        type: at.PREFS_INITIAL_VALUES,
+        data: values,
+        meta: {
+          isStartup: true,
+        },
+      })
     );
   }
 

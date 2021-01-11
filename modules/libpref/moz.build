@@ -26,6 +26,7 @@ XPIDL_MODULE = 'pref'
 
 pref_groups = [
     'accessibility',
+    'alerts',
     'apz',
     'beacon',
     'bidi',
@@ -34,8 +35,11 @@ pref_groups = [
     'channelclassifier',
     'clipboard',
     'content',
+    'converter',
+    'datareporting',
     'device',
     'devtools',
+    'docshell',
     'dom',
     'editor',
     'extensions',
@@ -52,7 +56,6 @@ pref_groups = [
     'image',
     'intl',
     'javascript',
-    'keyword',
     'layers',
     'layout',
     'mathml',
@@ -61,19 +64,24 @@ pref_groups = [
     'network',
     'nglayout',
     'page_load',
+    'permissions',
     'plain_text',
+    'plugin',
     'plugins',
     'preferences',
     'print',
     'privacy',
+    'prompts',
     'security',
     'slider',
+    'storage',
     'svg',
     'telemetry',
     'test',
     'threads',
     'toolkit',
     'ui',
+    'urlclassifier',
     'view_source',
     'webgl',
     'widget',
@@ -117,11 +125,8 @@ UNIFIED_SOURCES += [
 
 gen_all_tuple = tuple(gen_h + gen_cpp + gen_rs)
 
-GENERATED_FILES += [gen_all_tuple]
-
-static_pref_list = GENERATED_FILES[gen_all_tuple]
-static_pref_list.script = 'init/generate_static_pref_list.py:emit_code'
-static_pref_list.inputs = ['init/StaticPrefList.yaml']
+GeneratedFile(*gen_all_tuple, script='init/generate_static_pref_list.py',
+              entry_point='emit_code', inputs=['init/StaticPrefList.yaml'])
 
 PYTHON_UNITTEST_MANIFESTS += [
     'test/python.ini',
@@ -131,7 +136,7 @@ XPCOM_MANIFESTS += [
     'components.conf',
 ]
 
-SPHINX_TREES['libpref'] = 'docs'
+SPHINX_TREES['/modules/libpref'] = 'docs'
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
@@ -142,6 +147,9 @@ DEFINES['MOZ_WIDGET_TOOLKIT'] = CONFIG['MOZ_WIDGET_TOOLKIT']
 
 if CONFIG['MOZ_SERVICES_SYNC']:
   DEFINES['MOZ_SERVICES_SYNC'] = True
+
+if CONFIG['MOZ_BUILD_APP'] == 'browser':
+    DEFINES['MOZ_BUILD_APP_IS_BROWSER'] = True
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
     if not CONFIG['MOZ_ANDROID_FAT_AAR_ARCHITECTURES']:

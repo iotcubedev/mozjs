@@ -11,7 +11,6 @@
 #  include "PlatformDecoderModule.h"
 #  include "WMF.h"
 #  include "mozilla/RefPtr.h"
-#  include "nsAutoPtr.h"
 
 namespace mozilla {
 
@@ -103,8 +102,7 @@ class WMFMediaDataDecoder
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
 
   nsCString GetDescriptionName() const override {
-    return mMFTManager ? mMFTManager->GetDescriptionName()
-                       : NS_LITERAL_CSTRING("");
+    return mMFTManager ? mMFTManager->GetDescriptionName() : ""_ns;
   }
 
   ConversionRequired NeedsConversion() const override {
@@ -137,7 +135,7 @@ class WMFMediaDataDecoder
 
   const RefPtr<TaskQueue> mTaskQueue;
 
-  nsAutoPtr<MFTManager> mMFTManager;
+  UniquePtr<MFTManager> mMFTManager;
 
   // The last offset into the media resource that was passed into Input().
   // This is used to approximate the decoder's position in the media resource.

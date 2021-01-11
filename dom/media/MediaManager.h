@@ -7,23 +7,21 @@
 
 #include "MediaEngine.h"
 #include "MediaEnginePrefs.h"
-#include "mozilla/media/DeviceChangeCallback.h"
+#include "MediaEventSource.h"
 #include "mozilla/dom/GetUserMediaRequest.h"
 #include "mozilla/Unused.h"
-#include "nsAutoPtr.h"
 #include "nsIMediaManager.h"
 
 #include "nsHashKeys.h"
 #include "nsClassHashtable.h"
 #include "nsRefPtrHashtable.h"
 #include "nsIObserver.h"
-#include "nsIPrefService.h"
-#include "nsIPrefBranch.h"
 
 #include "nsIDOMNavigatorUserMedia.h"
 #include "nsXULAppAPI.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
@@ -39,11 +37,10 @@
 #  include "mtransport/runnable_utils.h"
 #endif
 
-// Note, these suck in Windows headers, unfortunately.
-#include "base/thread.h"
-#include "base/task.h"
+class nsIPrefBranch;
 
 namespace mozilla {
+class TaskQueue;
 namespace dom {
 struct MediaStreamConstraints;
 struct MediaTrackConstraints;
@@ -72,20 +69,24 @@ class MediaDevice : public nsIMediaDevice {
 
   MediaDevice(const RefPtr<AudioDeviceInfo>& aAudioDeviceInfo,
               const nsString& aID, const nsString& aGroupID,
-              const nsString& aRawID = NS_LITERAL_STRING(""));
+              const nsString& aRawID = u""_ns);
 
   MediaDevice(const RefPtr<MediaDevice>& aOther, const nsString& aID,
-              const nsString& aGroupID, const nsString& aRawID);
+              const nsString& aGroupID, const nsString& aRawID,
+              const nsString& aRawGroupID);
+
+  MediaDevice(const RefPtr<MediaDevice>& aOther, const nsString& aID,
+              const nsString& aGroupID, const nsString& aRawID,
+              const nsString& aRawGroupID, const nsString& aName);
 
   uint32_t GetBestFitnessDistance(
       const nsTArray<const NormalizedConstraintSet*>& aConstraintSets,
       bool aIsChrome);
 
   nsresult Allocate(const dom::MediaTrackConstraints& aConstraints,
-                    const MediaEnginePrefs& aPrefs,
-                    const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
+                    const MediaEnginePrefs& aPrefs, uint64_t aWindowId,
                     const char** aOutBadConstraint);
-  void SetTrack(const RefPtr<SourceMediaStream>& aStream, TrackID aTrackID,
+  void SetTrack(const RefPtr<SourceMediaTrack>& aTrack,
                 const PrincipalHandle& aPrincipal);
   nsresult Start();
   nsresult Reconfigure(const dom::MediaTrackConstraints& aConstraints,
@@ -124,15 +125,15 @@ class MediaDevice : public nsIMediaDevice {
   const nsString mID;
   const nsString mGroupID;
   const nsString mRawID;
+  const nsString mRawGroupID;
+  const nsString mRawName;
 };
 
 typedef nsRefPtrHashtable<nsUint64HashKey, GetUserMediaWindowListener>
     WindowTable;
 typedef MozPromise<RefPtr<AudioDeviceInfo>, nsresult, true> SinkInfoPromise;
 
-class MediaManager final : public nsIMediaManagerService,
-                           public nsIObserver,
-                           public DeviceChangeCallback {
+class MediaManager final : public nsIMediaManagerService, public nsIObserver {
   friend SourceListener;
 
  public:
@@ -144,7 +145,7 @@ class MediaManager final : public nsIMediaManagerService,
   static MediaManager* Get();
   static MediaManager* GetIfExists();
   static void StartupInit();
-  static void PostTask(already_AddRefed<Runnable> task);
+  static void Dispatch(already_AddRefed<Runnable> task);
 
   /**
    * Posts an async operation to the media manager thread.
@@ -154,14 +155,14 @@ class MediaManager final : public nsIMediaManagerService,
    * manager thread.
    */
   template <typename MozPromiseType, typename FunctionType>
-  static RefPtr<MozPromiseType> PostTask(const char* aName,
+  static RefPtr<MozPromiseType> Dispatch(const char* aName,
                                          FunctionType&& aFunction);
 
 #ifdef DEBUG
   static bool IsInMediaThread();
 #endif
 
-  static bool Exists() { return !!sSingleton; }
+  static bool Exists() { return !!GetIfExists(); }
 
   static nsresult NotifyRecordingStatusChange(nsPIDOMWindowInner* aWindow);
 
@@ -198,7 +199,7 @@ class MediaManager final : public nsIMediaManagerService,
                           dom::MediaStreamError& aError);
   MOZ_CAN_RUN_SCRIPT
   static void CallOnSuccess(GetUserMediaSuccessCallback& aCallback,
-                            DOMMediaStream& aStream);
+                            DOMMediaStream& aTrack);
 
   typedef nsTArray<RefPtr<MediaDevice>> MediaDeviceSet;
   typedef media::Refcountable<MediaDeviceSet> MediaDeviceSetRefCnt;
@@ -255,10 +256,11 @@ class MediaManager final : public nsIMediaManagerService,
   void OnNavigation(uint64_t aWindowID);
   bool IsActivelyCapturingOrHasAPermission(uint64_t aWindowId);
 
-  MediaEnginePrefs mPrefs;
+  MediaEventSource<void>& DeviceListChangeEvent() {
+    return mDeviceListChangeEvent;
+  }
 
-  virtual int AddDeviceChangeCallback(DeviceChangeCallback* aCallback) override;
-  virtual void OnDeviceChange() override;
+  MediaEnginePrefs mPrefs;
 
  private:
   static nsresult GenerateUUID(nsAString& aResult);
@@ -316,9 +318,9 @@ class MediaManager final : public nsIMediaManagerService,
   void GetPrefs(nsIPrefBranch* aBranch, const char* aData);
 
   // Make private because we want only one instance of this class
-  MediaManager();
+  explicit MediaManager(already_AddRefed<TaskQueue> aMediaThread);
 
-  ~MediaManager() {}
+  ~MediaManager() = default;
   void Shutdown();
 
   void StopScreensharing(uint64_t aWindowID);
@@ -331,8 +333,8 @@ class MediaManager final : public nsIMediaManagerService,
   void IterateWindowListeners(nsPIDOMWindowInner* aWindow,
                               const FunctionType& aCallback);
 
-  void StopMediaStreams();
   void RemoveMediaDevicesCallback(uint64_t aWindowID);
+  void DeviceListChanged();
 
   // ONLY access from MainThread so we don't need to lock
   WindowTable mActiveWindows;
@@ -341,15 +343,21 @@ class MediaManager final : public nsIMediaManagerService,
   nsTArray<RefPtr<dom::GetUserMediaRequest>> mPendingGUMRequest;
 
   // Always exists
-  nsAutoPtr<base::Thread> mMediaThread;
+  const RefPtr<TaskQueue> mMediaThread;
   nsCOMPtr<nsIAsyncShutdownBlocker> mShutdownBlocker;
 
   // ONLY accessed from MediaManagerThread
   RefPtr<MediaEngine> mBackend;
 
   static StaticRefPtr<MediaManager> sSingleton;
+  static StaticMutex sSingletonMutex;
 
   nsTArray<nsString> mDeviceIDs;
+
+  // Connect/Disconnect on media thread only
+  MediaEventListener mDeviceListChangeListener;
+
+  MediaEventProducer<void> mDeviceListChangeEvent;
 
  public:
   RefPtr<media::Parent<media::NonE10s>> mNonE10sParent;

@@ -14,6 +14,7 @@
 #include "mozilla/dom/ContentProcessMessageManager.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/IOBuffers.h"
 #include "mozilla/ScriptPreloader.h"
 
 using namespace mozilla::loader;
@@ -128,8 +129,8 @@ void SharedMap::Update(const FileDescriptor& aMapFile, size_t aMapSize,
                                               fallible);
   }
 
-  RefPtr<SharedMapChangeEvent> event = SharedMapChangeEvent::Constructor(
-      this, NS_LITERAL_STRING("change"), init);
+  RefPtr<SharedMapChangeEvent> event =
+      SharedMapChangeEvent::Constructor(this, u"change"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);
@@ -245,7 +246,7 @@ WritableSharedMap::WritableSharedMap() : SharedMap() {
 
 SharedMap* WritableSharedMap::GetReadOnly() {
   if (!mReadOnly) {
-    nsTArray<RefPtr<BlobImpl>> blobs(mBlobImpls);
+    nsTArray<RefPtr<BlobImpl>> blobs(mBlobImpls.Clone());
     mReadOnly =
         new SharedMap(ContentProcessMessageManager::Get()->GetParentObject(),
                       CloneMapFile(), MapSize(), std::move(blobs));
@@ -368,7 +369,7 @@ void WritableSharedMap::BroadcastChanges() {
   }
 
   if (mReadOnly) {
-    nsTArray<RefPtr<BlobImpl>> blobImpls(mBlobImpls);
+    nsTArray<RefPtr<BlobImpl>> blobImpls(mBlobImpls.Clone());
     mReadOnly->Update(CloneMapFile(), mMap.size(), std::move(blobImpls),
                       std::move(mChangedKeys));
   }

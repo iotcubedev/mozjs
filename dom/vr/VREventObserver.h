@@ -31,6 +31,7 @@ class VREventObserver final : public gfx::VRManagerEventObserver {
   void NotifyVRDisplayPresentChange(uint32_t aDisplayID) override;
   void NotifyPresentationGenerationChanged(uint32_t aDisplayID) override;
   void NotifyEnumerationCompleted() override;
+  void NotifyDetectRuntimesCompleted() override;
 
   void DisconnectFromOwner();
   void UpdateSpentTimeIn2DTelemetry(bool aUpdate);
@@ -40,6 +41,8 @@ class VREventObserver final : public gfx::VRManagerEventObserver {
 
  private:
   ~VREventObserver();
+
+  bool IsWebVR(uint32_t aDisplayID) const;
 
   RefPtr<nsGlobalWindowInner> mWindow;
   // For WebVR telemetry for tracking users who view content

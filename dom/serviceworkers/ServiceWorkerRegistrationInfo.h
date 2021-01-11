@@ -12,6 +12,7 @@
 #include "mozilla/dom/ServiceWorkerInfo.h"
 #include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
+#include "nsContentUtils.h"
 #include "nsProxyRelease.h"
 #include "nsTObserverArray.h"
 
@@ -36,6 +37,8 @@ class ServiceWorkerRegistrationInfo final
         : mDescriptor(aDescriptor), mTimeStamp(TimeStamp::Now()) {}
   };
   nsTArray<UniquePtr<VersionEntry>> mVersionList;
+
+  const nsID mAgentClusterId = nsContentUtils::GenerateUUID();
 
   uint32_t mControlledClientsCounter;
   uint32_t mDelayMultiplier;
@@ -102,6 +105,14 @@ class ServiceWorkerRegistrationInfo final
     return newest.forget();
   }
 
+  already_AddRefed<ServiceWorkerInfo> NewestIncludingEvaluating() const {
+    if (mEvaluatingWorker) {
+      RefPtr<ServiceWorkerInfo> newest = mEvaluatingWorker;
+      return newest.forget();
+    }
+    return Newest();
+  }
+
   already_AddRefed<ServiceWorkerInfo> GetServiceWorkerInfoById(uint64_t aId);
 
   void StartControllingClient() {
@@ -117,6 +128,10 @@ class ServiceWorkerRegistrationInfo final
   bool IsControllingClients() const {
     return mActiveWorker && mControlledClientsCounter;
   }
+
+  // As a side effect, this nullifies
+  // `m{Evaluating,Installing,Waiting,Active}Worker`s.
+  void ShutdownWorkers();
 
   void Clear();
 
@@ -209,6 +224,8 @@ class ServiceWorkerRegistrationInfo final
 
   void ClearWhenIdle();
 
+  const nsID& AgentClusterId() const;
+
  private:
   // Roughly equivalent to [[Update Registration State algorithm]]. Make sure
   // this is called *before* updating SW instances' state, otherwise they
@@ -227,6 +244,13 @@ class ServiceWorkerRegistrationInfo final
   static uint64_t GetNextId();
 
   static uint64_t GetNextVersion();
+
+  // `aFunc`'s argument will be a reference to
+  // `m{Evaluating,Installing,Waiting,Active}Worker` (not to copy of them).
+  // Additionally, a null check will be performed for each worker before each
+  // call to `aFunc`, so `aFunc` will always get a reference to a non-null
+  // pointer.
+  void ForEachWorker(void (*aFunc)(RefPtr<ServiceWorkerInfo>&));
 };
 
 }  // namespace dom

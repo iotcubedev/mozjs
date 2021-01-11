@@ -29,6 +29,7 @@ type Props = {
   openElementInInspector: typeof actions.openElementInInspectorCommand,
   highlightDomElement: typeof actions.highlightDomElement,
   unHighlightDomElement: typeof actions.unHighlightDomElement,
+  openInspector: typeof actions.openInspector,
   deleteBreakpoint: typeof deleteDOMMutationBreakpoint,
   toggleBreakpoint: typeof toggleDOMMutationBreakpointState,
   setSkipPausing: typeof actions.setSkipPausing,
@@ -90,10 +91,20 @@ class DOMMutationBreakpointsContents extends Component<Props> {
     );
   }
 
+  /* eslint-disable react/no-danger */
   renderEmpty() {
+    const { openInspector } = this.props;
+    const text = L10N.getFormatStr(
+      "noDomMutationBreakpoints",
+      `<a>${L10N.getStr("inspectorTool")}</a>`
+    );
+
     return (
       <div className="dom-mutation-empty">
-        {L10N.getStr("noDomMutationBreakpointsText")}
+        <div
+          onClick={() => openInspector()}
+          dangerouslySetInnerHTML={{ __html: text }}
+        />
       </div>
     );
   }
@@ -135,19 +146,18 @@ class DomMutationBreakpoints extends Component<Props> {
         highlightDomElement={this.props.highlightDomElement}
         unHighlightDomElement={this.props.unHighlightDomElement}
         setSkipPausing={this.props.setSkipPausing}
+        openInspector={this.props.openInspector}
       />
     );
   }
 }
 
-export default connect(
-  undefined,
-  {
-    // the debugger-specific action bound to the debugger store
-    // since there is no `storeKey`
-    openElementInInspector: actions.openElementInInspectorCommand,
-    highlightDomElement: actions.highlightDomElement,
-    unHighlightDomElement: actions.unHighlightDomElement,
-    setSkipPausing: actions.setSkipPausing,
-  }
-)(DomMutationBreakpoints);
+export default connect(undefined, {
+  // the debugger-specific action bound to the debugger store
+  // since there is no `storeKey`
+  openElementInInspector: actions.openElementInInspectorCommand,
+  highlightDomElement: actions.highlightDomElement,
+  unHighlightDomElement: actions.unHighlightDomElement,
+  setSkipPausing: actions.setSkipPausing,
+  openInspector: actions.openInspector,
+})(DomMutationBreakpoints);

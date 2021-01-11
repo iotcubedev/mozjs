@@ -8,13 +8,11 @@
 
 #include "nsString.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsTArray.h"
 #include "nsIProtocolProxyService2.h"
 #include "nsIProtocolProxyFilter.h"
 #include "nsIProxyInfo.h"
 #include "nsIObserver.h"
-#include "nsIThread.h"
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "prio.h"
@@ -312,7 +310,8 @@ class nsProtocolProxyService final : public nsIProtocolProxyService2,
   void MaybeDisableDNSPrefetch(nsIProxyInfo* aProxy);
 
  private:
-  nsresult SetupPACThread(nsIEventTarget* mainThreadEventTarget = nullptr);
+  nsresult SetupPACThread(
+      nsISerialEventTarget* mainThreadEventTarget = nullptr);
   nsresult ResetPACThread();
   nsresult ReloadNetworkPAC();
 
@@ -365,7 +364,7 @@ class nsProtocolProxyService final : public nsIProtocolProxyService2,
   bool mFilterLocalHosts;
 
   // Holds an array of HostInfo objects
-  nsTArray<nsAutoPtr<HostInfo>> mHostFiltersArray;
+  nsTArray<UniquePtr<HostInfo>> mHostFiltersArray;
 
   // Filters, always sorted by the position.
   nsTArray<RefPtr<FilterLink>> mFilters;
@@ -402,9 +401,9 @@ class nsProtocolProxyService final : public nsIProtocolProxyService2,
   nsresult AsyncResolveInternal(nsIChannel* channel, uint32_t flags,
                                 nsIProtocolProxyCallback* callback,
                                 nsICancelable** result, bool isSyncOK,
-                                nsIEventTarget* mainThreadEventTarget);
+                                nsISerialEventTarget* mainThreadEventTarget);
   bool mIsShutdown;
-  nsCOMPtr<nsIEventTarget> mProxySettingTarget;
+  nsCOMPtr<nsISerialEventTarget> mProxySettingTarget;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsProtocolProxyService,

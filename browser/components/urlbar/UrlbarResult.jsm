@@ -19,6 +19,8 @@ const { XPCOMUtils } = ChromeUtils.import(
 );
 XPCOMUtils.defineLazyModuleGetters(this, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
+  JsonSchemaValidator:
+    "resource://gre/modules/components-utils/JsonSchemaValidator.jsm",
   Services: "resource://gre/modules/Services.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
@@ -57,7 +59,11 @@ class UrlbarResult {
     this.source = resultSource;
 
     // UrlbarView is responsible for updating this.
-    this.uiIndex = -1;
+    this.rowIndex = -1;
+
+    // This is an optional hint to the Muxer that can be set by a provider to
+    // suggest a specific position among the results.
+    this.suggestedIndex = -1;
 
     // May be used to indicate an heuristic result. Heuristic results can bypass
     // source filters in the ProvidersManager, that otherwise may skip them.
@@ -68,7 +74,7 @@ class UrlbarResult {
     if (!payload || typeof payload != "object") {
       throw new Error("Invalid result payload");
     }
-    this.payload = payload;
+    this.payload = this.validatePayload(payload);
 
     if (!payloadHighlights || typeof payloadHighlights != "object") {
       throw new Error("Invalid result payload highlights");
@@ -122,9 +128,12 @@ class UrlbarResult {
           case UrlbarUtils.KEYWORD_OFFER.HIDE:
             return ["", []];
         }
-        return this.payload.suggestion
-          ? [this.payload.suggestion, this.payloadHighlights.suggestion]
-          : [this.payload.query, this.payloadHighlights.query];
+        if (this.payload.tail && this.payload.tailOffsetIndex >= 0) {
+          return [this.payload.tail, this.payloadHighlights.tail];
+        } else if (this.payload.suggestion) {
+          return [this.payload.suggestion, this.payloadHighlights.suggestion];
+        }
+        return [this.payload.query, this.payloadHighlights.query];
       default:
         return ["", []];
     }
@@ -136,6 +145,29 @@ class UrlbarResult {
    */
   get icon() {
     return this.payload.icon;
+  }
+
+  /**
+   * Returns the given payload if it's valid or throws an error if it's not.
+   * The schemas in UrlbarUtils.RESULT_PAYLOAD_SCHEMA are used for validation.
+   *
+   * @param {object} payload The payload object.
+   * @returns {object} `payload` if it's valid.
+   */
+  validatePayload(payload) {
+    let schema = UrlbarUtils.getPayloadSchema(this.type);
+    if (!schema) {
+      throw new Error(`Unrecognized result type: ${this.type}`);
+    }
+    let result = JsonSchemaValidator.validate(payload, schema, {
+      allowExplicitUndefinedProperties: true,
+      allowNullAsUndefinedProperties: true,
+      allowExtraProperties: this.type == UrlbarUtils.RESULT_TYPE.DYNAMIC,
+    });
+    if (!result.valid) {
+      throw result.error;
+    }
+    return payload;
   }
 
   /**
@@ -196,13 +228,16 @@ class UrlbarResult {
       // For display purposes we need to unescape the url.
       payloadInfo.displayUrl = [...payloadInfo.url];
       let url = payloadInfo.displayUrl[0];
-      if (UrlbarPrefs.get("trimURLs")) {
-        url = BrowserUtils.trimURL(url || "");
+      if (url && UrlbarPrefs.get("trimURLs")) {
+        url = BrowserUtils.removeSingleTrailingSlashFromURL(url);
+        if (url.startsWith("https://")) {
+          url = url.substring(8);
+          if (url.startsWith("www.")) {
+            url = url.substring(4);
+          }
+        }
       }
-      payloadInfo.displayUrl[0] = Services.textToSubURI.unEscapeURIForUI(
-        "UTF-8",
-        url
-      );
+      payloadInfo.displayUrl[0] = Services.textToSubURI.unEscapeURIForUI(url);
     }
 
     // For performance reasons limit excessive string lengths, to reduce the
@@ -232,5 +267,55 @@ class UrlbarResult {
         return highlights;
       }, {}),
     ];
+  }
+
+  static _dynamicResultTypesByName = new Map();
+
+  /**
+   * Registers a dynamic result type.  Dynamic result types are types that are
+   * created at runtime, for example by an extension.  A particular type should
+   * be added only once; if this method is called for a type more than once, the
+   * `type` in the last call overrides those in previous calls.
+   *
+   * @param {string} name
+   *   The name of the type.  This is used in CSS selectors, so it shouldn't
+   *   contain any spaces or punctuation except for -, _, etc.
+   * @param {object} type
+   *   An object that describes the type.  Currently types do not have any
+   *   associated metadata, so this object should be empty.
+   */
+  static addDynamicResultType(name, type = {}) {
+    if (/[^a-z0-9_-]/i.test(name)) {
+      Cu.reportError(`Illegal dynamic type name: ${name}`);
+      return;
+    }
+    this._dynamicResultTypesByName.set(name, type);
+  }
+
+  /**
+   * Unregisters a dynamic result type.
+   *
+   * @param {string} name
+   *   The name of the type.
+   */
+  static removeDynamicResultType(name) {
+    let type = this._dynamicResultTypesByName.get(name);
+    if (type) {
+      this._dynamicResultTypesByName.delete(name);
+    }
+  }
+
+  /**
+   * Returns an object describing a registered dynamic result type.
+   *
+   * @param {string} name
+   *   The name of the type.
+   * @returns {object}
+   *   Currently types do not have any associated metadata, so the return value
+   *   is an empty object if the type exists.  If the type doesn't exist,
+   *   undefined is returned.
+   */
+  static getDynamicResultType(name) {
+    return this._dynamicResultTypesByName.get(name);
   }
 }

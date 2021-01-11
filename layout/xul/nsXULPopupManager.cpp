@@ -12,15 +12,12 @@
 #include "nsMenuBarListener.h"
 #include "nsContentUtils.h"
 #include "nsXULElement.h"
-#include "nsIDOMXULMenuListElement.h"
 #include "nsIDOMXULCommandDispatcher.h"
-#include "nsBindingManager.h"
 #include "nsCSSFrameConstructor.h"
 #include "nsGlobalWindow.h"
 #include "nsIContentInlines.h"
 #include "nsLayoutUtils.h"
 #include "nsViewManager.h"
-#include "nsIComponentManager.h"
 #include "nsITimer.h"
 #include "nsFocusManager.h"
 #include "nsIDocShell.h"
@@ -41,12 +38,13 @@
 #include "mozilla/dom/KeyboardEventBinding.h"
 #include "mozilla/dom/MouseEvent.h"
 #include "mozilla/dom/UIEvent.h"
+#include "mozilla/dom/UserActivation.h"
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/EventStateManager.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_ui.h"
 #include "mozilla/StaticPrefs_xul.h"
 #include "mozilla/widget/nsAutoRollup.h"
 
@@ -128,10 +126,6 @@ void nsMenuChainItem::CheckForAnchorChange() {
   }
 }
 
-bool nsXULPopupManager::sDevtoolsDisableAutoHide = false;
-
-const char kPrefDevtoolsDisableAutoHide[] = "ui.popup.disable_autohide";
-
 NS_IMPL_ISUPPORTS(nsXULPopupManager, nsIDOMEventListener, nsIObserver)
 
 nsXULPopupManager::nsXULPopupManager()
@@ -145,8 +139,6 @@ nsXULPopupManager::nsXULPopupManager()
   if (obs) {
     obs->AddObserver(this, "xpcom-shutdown", false);
   }
-  Preferences::AddBoolVarCache(&sDevtoolsDisableAutoHide,
-                               kPrefDevtoolsDisableAutoHide, false);
 }
 
 nsXULPopupManager::~nsXULPopupManager() {
@@ -167,14 +159,12 @@ nsXULPopupManager::Observe(nsISupports* aSubject, const char* aTopic,
                            const char16_t* aData) {
   if (!nsCRT::strcmp(aTopic, "xpcom-shutdown")) {
     if (mKeyListener) {
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keypress"), this,
-                                        true);
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keydown"), this,
-                                        true);
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keyup"), this, true);
+      mKeyListener->RemoveEventListener(u"keypress"_ns, this, true);
+      mKeyListener->RemoveEventListener(u"keydown"_ns, this, true);
+      mKeyListener->RemoveEventListener(u"keyup"_ns, this, true);
       mKeyListener = nullptr;
     }
-    mRangeParent = nullptr;
+    mRangeParentContent = nullptr;
     // mOpeningPopup is cleared explicitly soon after using it.
     nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
     if (obs) {
@@ -198,7 +188,7 @@ bool nsXULPopupManager::Rollup(uint32_t aCount, bool aFlush,
   }
 
   // We can disable the autohide behavior via a pref to ease debugging.
-  if (nsXULPopupManager::sDevtoolsDisableAutoHide) {
+  if (StaticPrefs::ui_popup_disable_autohide()) {
     // Required on linux to allow events to work on other targets.
     if (mWidget) {
       mWidget->CaptureRollupEvents(nullptr, false);
@@ -358,7 +348,7 @@ bool nsXULPopupManager::ShouldRollupOnMouseWheelEvent() {
 
   nsAutoString value;
   element->GetAttr(kNameSpaceID_None, nsGkAtoms::type, value);
-  return StringBeginsWith(value, NS_LITERAL_STRING("autocomplete"));
+  return StringBeginsWith(value, u"autocomplete"_ns);
 }
 
 bool nsXULPopupManager::ShouldConsumeOnMouseWheelEvent() {
@@ -564,10 +554,6 @@ nsMenuChainItem* nsXULPopupManager::GetTopVisibleMenu() {
   return nullptr;
 }
 
-nsINode* nsXULPopupManager::GetMouseLocationParent() { return mRangeParent; }
-
-int32_t nsXULPopupManager::MouseLocationOffset() { return mRangeOffset; }
-
 void nsXULPopupManager::InitTriggerEvent(Event* aEvent, nsIContent* aPopup,
                                          nsIContent** aTriggerContent) {
   mCachedMousePoint = LayoutDeviceIntPoint(0, 0);
@@ -585,8 +571,9 @@ void nsXULPopupManager::InitTriggerEvent(Event* aEvent, nsIContent* aPopup,
 
   RefPtr<UIEvent> uiEvent = aEvent ? aEvent->AsUIEvent() : nullptr;
   if (uiEvent) {
-    mRangeParent = uiEvent->GetRangeParent();
-    mRangeOffset = uiEvent->RangeOffset();
+    mRangeOffset = -1;
+    mRangeParentContent =
+        uiEvent->GetRangeParentContentAndOffset(&mRangeOffset);
 
     // get the event coordinates relative to the root frame of the document
     // containing the popup.
@@ -627,7 +614,7 @@ void nsXULPopupManager::InitTriggerEvent(Event* aEvent, nsIContent* aPopup,
                 thisDocToRootDocOffset.y);
           } else if (rootDocumentRootFrame) {
             nsPoint pnt = nsLayoutUtils::GetEventCoordinatesRelativeTo(
-                event, rootDocumentRootFrame);
+                event, RelativeTo{rootDocumentRootFrame});
             mCachedMousePoint = LayoutDeviceIntPoint(
                 rootDocPresContext->AppUnitsToDevPixels(pnt.x),
                 rootDocPresContext->AppUnitsToDevPixels(pnt.y));
@@ -636,7 +623,7 @@ void nsXULPopupManager::InitTriggerEvent(Event* aEvent, nsIContent* aPopup,
       }
     }
   } else {
-    mRangeParent = nullptr;
+    mRangeParentContent = nullptr;
     mRangeOffset = 0;
   }
 }
@@ -984,7 +971,7 @@ void nsXULPopupManager::HidePopup(nsIContent* aPopup, bool aHideChain,
 // This is used to hide the popup after a transition finishes.
 class TransitionEnder final : public nsIDOMEventListener {
  protected:
-  virtual ~TransitionEnder() {}
+  virtual ~TransitionEnder() = default;
 
  public:
   nsCOMPtr<nsIContent> mContent;
@@ -997,8 +984,7 @@ class TransitionEnder final : public nsIDOMEventListener {
       : mContent(aContent), mDeselectMenu(aDeselectMenu) {}
 
   NS_IMETHOD HandleEvent(Event* aEvent) override {
-    mContent->RemoveSystemEventListener(NS_LITERAL_STRING("transitionend"),
-                                        this, false);
+    mContent->RemoveSystemEventListener(u"transitionend"_ns, this, false);
 
     nsMenuPopupFrame* popupFrame = do_QueryFrame(mContent->GetPrimaryFrame());
 
@@ -1108,7 +1094,7 @@ void nsXULPopupManager::HidePopupAfterDelay(nsMenuPopupFrame* aPopup) {
   KillMenuTimer();
 
   int32_t menuDelay =
-      LookAndFeel::GetInt(LookAndFeel::eIntID_SubmenuDelay, 300);  // ms
+      LookAndFeel::GetInt(LookAndFeel::IntID::SubmenuDelay, 300);  // ms
 
   // Kick off the timer.
   nsIEventTarget* target = nullptr;
@@ -1363,8 +1349,10 @@ void nsXULPopupManager::FirePopupShowingEvent(nsIContent* aPopup,
   }
 
   // clear these as they are no longer valid
-  mRangeParent = nullptr;
+  mRangeParentContent = nullptr;
   mRangeOffset = 0;
+
+  aPopup->OwnerDoc()->FlushPendingNotifications(FlushType::Frames);
 
   // get the frame again in case it went away
   popupFrame = do_QueryFrame(aPopup->GetPrimaryFrame());
@@ -1395,6 +1383,7 @@ void nsXULPopupManager::FirePopupHidingEvent(
     nsIContent* aPopup, nsIContent* aNextPopup, nsIContent* aLastPopup,
     nsPresContext* aPresContext, nsPopupType aPopupType, bool aDeselectMenu,
     bool aIsCancel) {
+  nsCOMPtr<nsIContent> popup = aPopup;
   RefPtr<PresShell> presShell = aPresContext->PresShell();
   mozilla::Unused << presShell;  // This presShell may be keeping things alive
                                  // on non GTK platforms
@@ -1421,6 +1410,8 @@ void nsXULPopupManager::FirePopupHidingEvent(
       }
     }
   }
+
+  aPopup->OwnerDoc()->FlushPendingNotifications(FlushType::Frames);
 
   // get frame again in case it went away
   nsMenuPopupFrame* popupFrame = do_QueryFrame(aPopup->GetPrimaryFrame());
@@ -1464,8 +1455,8 @@ void nsXULPopupManager::FirePopupHidingEvent(
                   aPopup->AsElement(), PseudoStyleType::NotPseudo)) {
             RefPtr<TransitionEnder> ender =
                 new TransitionEnder(aPopup, aDeselectMenu);
-            aPopup->AddSystemEventListener(NS_LITERAL_STRING("transitionend"),
-                                           ender, false, false);
+            aPopup->AddSystemEventListener(u"transitionend"_ns, ender, false,
+                                           false);
             return;
           }
         }
@@ -1596,36 +1587,64 @@ bool nsXULPopupManager::MayShowPopup(nsMenuPopupFrame* aPopup) {
   }
 
   // if the popup was just rolled up, don't reopen it
-  if (mozilla::widget::nsAutoRollup::GetLastRollup() == aPopup->GetContent())
+  if (mozilla::widget::nsAutoRollup::GetLastRollup() == aPopup->GetContent()) {
     return false;
+  }
 
-  nsCOMPtr<nsIDocShellTreeItem> dsti = aPopup->PresContext()->GetDocShell();
-  nsCOMPtr<nsIBaseWindow> baseWin = do_QueryInterface(dsti);
-  if (!baseWin) return false;
+  nsCOMPtr<nsIDocShell> docShell = aPopup->PresContext()->GetDocShell();
+
+  nsCOMPtr<nsIBaseWindow> baseWin = do_QueryInterface(docShell);
+  if (!baseWin) {
+    return false;
+  }
 
   nsCOMPtr<nsIDocShellTreeItem> root;
-  dsti->GetInProcessRootTreeItem(getter_AddRefs(root));
+  docShell->GetInProcessRootTreeItem(getter_AddRefs(root));
   if (!root) {
     return false;
   }
 
   nsCOMPtr<nsPIDOMWindowOuter> rootWin = root->GetWindow();
 
-  // chrome shells can always open popups, but other types of shells can only
-  // open popups when they are focused and visible
-  if (dsti->ItemType() != nsIDocShellTreeItem::typeChrome) {
-    // only allow popups in active windows
-    nsIFocusManager* fm = nsFocusManager::GetFocusManager();
-    if (!fm || !rootWin) return false;
+  if (XRE_IsParentProcess()) {
+    // chrome shells can always open popups, but other types of shells can only
+    // open popups when they are focused and visible
+    if (docShell->ItemType() != nsIDocShellTreeItem::typeChrome) {
+      // only allow popups in active windows
+      nsFocusManager* fm = nsFocusManager::GetFocusManager();
+      if (!fm || !rootWin) {
+        return false;
+      }
 
-    nsCOMPtr<mozIDOMWindowProxy> activeWindow;
-    fm->GetActiveWindow(getter_AddRefs(activeWindow));
-    if (activeWindow != rootWin) return false;
+      nsCOMPtr<nsPIDOMWindowOuter> activeWindow = fm->GetActiveWindow();
+      if (activeWindow != rootWin) {
+        return false;
+      }
 
+      // only allow popups in visible frames
+      bool visible;
+      baseWin->GetVisibility(&visible);
+      if (!visible) {
+        return false;
+      }
+    }
+  } else {
     // only allow popups in visible frames
     bool visible;
     baseWin->GetVisibility(&visible);
-    if (!visible) return false;
+    if (!visible) {
+      return false;
+    }
+
+    nsFocusManager* fm = nsFocusManager::GetFocusManager();
+    BrowsingContext* bc = docShell->GetBrowsingContext();
+    if (!fm || !bc) {
+      return false;
+    }
+
+    if (fm->GetActiveBrowsingContext() != bc->Top()) {
+      return false;
+    }
   }
 
   // platforms respond differently when an popup is opened in a minimized
@@ -1755,19 +1774,17 @@ void nsXULPopupManager::UpdateKeyboardListeners() {
 
   if (mKeyListener != newTarget) {
     if (mKeyListener) {
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keypress"), this,
-                                        true);
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keydown"), this,
-                                        true);
-      mKeyListener->RemoveEventListener(NS_LITERAL_STRING("keyup"), this, true);
+      mKeyListener->RemoveEventListener(u"keypress"_ns, this, true);
+      mKeyListener->RemoveEventListener(u"keydown"_ns, this, true);
+      mKeyListener->RemoveEventListener(u"keyup"_ns, this, true);
       mKeyListener = nullptr;
       nsContentUtils::NotifyInstalledMenuKeyboardListener(false);
     }
 
     if (newTarget) {
-      newTarget->AddEventListener(NS_LITERAL_STRING("keypress"), this, true);
-      newTarget->AddEventListener(NS_LITERAL_STRING("keydown"), this, true);
-      newTarget->AddEventListener(NS_LITERAL_STRING("keyup"), this, true);
+      newTarget->AddEventListener(u"keypress"_ns, this, true);
+      newTarget->AddEventListener(u"keydown"_ns, this, true);
+      newTarget->AddEventListener(u"keyup"_ns, this, true);
       nsContentUtils::NotifyInstalledMenuKeyboardListener(isForMenu);
       mKeyListener = newTarget;
     }
@@ -1962,11 +1979,15 @@ bool nsXULPopupManager::HandleShortcutNavigation(KeyboardEvent* aKeyEvent,
 }
 
 bool nsXULPopupManager::HandleKeyboardNavigation(uint32_t aKeyCode) {
+  if (nsMenuChainItem* nextitem = GetTopVisibleMenu()) {
+    nextitem->Content()->OwnerDoc()->FlushPendingNotifications(
+        FlushType::Frames);
+  }
+
   // navigate up through the open menus, looking for the topmost one
   // in the same hierarchy
   nsMenuChainItem* item = nullptr;
   nsMenuChainItem* nextitem = GetTopVisibleMenu();
-
   while (nextitem) {
     item = nextitem;
     nextitem = item->GetParent();
@@ -2095,7 +2116,7 @@ bool nsXULPopupManager::HandleKeyboardNavigationInPopup(
       // Cursor navigation does not wrap on Mac or for menulists on Windows.
       bool wrap =
 #ifdef XP_WIN
-          aFrame->IsMenuList() ? false : true;
+          !aFrame->IsMenuList();
 #elif defined XP_MACOSX
           false;
 #else
@@ -2157,7 +2178,7 @@ bool nsXULPopupManager::HandleKeyboardEventWithKeyCode(
         Rollup(0, false, nullptr, nullptr);
         break;
       }
-      MOZ_FALLTHROUGH;
+      [[fallthrough]];
 #endif
 
     case KeyboardEvent_Binding::DOM_VK_LEFT:
@@ -2203,7 +2224,7 @@ bool nsXULPopupManager::HandleKeyboardEventWithKeyCode(
         break;
       }
       // Intentional fall-through to RETURN case
-      MOZ_FALLTHROUGH;
+      [[fallthrough]];
 
     case KeyboardEvent_Binding::DOM_VK_RETURN: {
       // If there is a popup open, check if the current item needs to be opened.
@@ -2245,9 +2266,7 @@ static nsIContent* FindDefaultInsertionPoint(nsIContent* aParent) {
       return slot;
     }
   }
-  bool multiple = false;  // Unused
-  return aParent->OwnerDoc()->BindingManager()->FindNestedSingleInsertionPoint(
-      aParent, &multiple);
+  return aParent;
 }
 
 nsContainerFrame* nsXULPopupManager::ImmediateParentFrame(
@@ -2395,7 +2414,7 @@ bool nsXULPopupManager::IsValidMenuItem(nsIContent* aContent, bool aOnPopup) {
   bool skipNavigatingDisabledMenuItem = true;
   if (aOnPopup && (!menuFrame || !menuFrame->IsParentMenuList())) {
     skipNavigatingDisabledMenuItem =
-        LookAndFeel::GetInt(LookAndFeel::eIntID_SkipNavigatingDisabledMenuItem,
+        LookAndFeel::GetInt(LookAndFeel::IntID::SkipNavigatingDisabledMenuItem,
                             0) != 0;
   }
 
@@ -2651,8 +2670,7 @@ nsXULMenuCommandEvent::Run() {
     if (menuFrame->IsChecked()) {
       mMenu->UnsetAttr(kNameSpaceID_None, nsGkAtoms::checked, true);
     } else {
-      mMenu->SetAttr(kNameSpaceID_None, nsGkAtoms::checked,
-                     NS_LITERAL_STRING("true"), true);
+      mMenu->SetAttr(kNameSpaceID_None, nsGkAtoms::checked, u"true"_ns, true);
     }
   }
 

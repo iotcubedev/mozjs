@@ -1,5 +1,7 @@
 /* import-globals-from antitracking_head.js */
 
+requestLongerTimeout(4);
+
 AntiTracking.runTestInNormalAndPrivateMode(
   "localStorage",
   async _ => {
@@ -63,11 +65,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   },
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     localStorage.foo = 42;
     ok(true, "LocalStorage is allowed");

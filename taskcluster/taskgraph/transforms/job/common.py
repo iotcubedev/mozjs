@@ -49,31 +49,6 @@ def add_cache(job, taskdesc, name, mount_point, skip_untrusted=False):
         pass
 
 
-def docker_worker_add_workspace_cache(config, job, taskdesc, extra=None):
-    """Add the workspace cache.
-
-    Args:
-        config (TransformConfig): Transform configuration object.
-        job (dict): Task's job description.
-        taskdesc (dict): Target task description to modify.
-        extra (str): Optional context passed in that supports extending the cache
-            key name to avoid undesired conflicts with other caches.
-    """
-    cache_name = '{}-build-{}-{}-workspace'.format(
-        config.params['project'],
-        taskdesc['attributes']['build_platform'],
-        taskdesc['attributes']['build_type'],
-    )
-    if extra:
-        cache_name = '{}-{}'.format(cache_name, extra)
-
-    mount_point = "{workdir}/workspace".format(**job['run'])
-
-    # Don't enable the workspace cache when we can't guarantee its
-    # behavior, like on Try.
-    add_cache(job, taskdesc, cache_name, mount_point, skip_untrusted=True)
-
-
 def add_artifacts(config, job, taskdesc, path):
     taskdesc['worker'].setdefault('artifacts', []).append({
         'name': get_artifact_prefix(taskdesc),
@@ -106,7 +81,7 @@ def support_vcs_checkout(config, job, taskdesc, sparse=False):
     worker = job['worker']
     is_mac = worker['os'] == 'macosx'
     is_win = worker['os'] == 'windows'
-    is_linux = worker['os'] == 'linux'
+    is_linux = worker['os'] == 'linux' or 'linux-bitbar'
     assert is_mac or is_win or is_linux
 
     if is_win:
@@ -210,7 +185,7 @@ def setup_secrets(config, job, taskdesc):
             job['treeherder']['kind'], config.params['level'], sec))
 
 
-def docker_worker_add_tooltool(config, job, taskdesc, internal=False):
+def add_tooltool(config, job, taskdesc, internal=False):
     """Give the task access to tooltool.
 
     Enables the tooltool cache. Adds releng proxy. Configures scopes.
@@ -222,15 +197,15 @@ def docker_worker_add_tooltool(config, job, taskdesc, internal=False):
     reserved for use with ``run-task``.
     """
 
-    assert job['worker']['implementation'] in ('docker-worker',)
+    if job['worker']['implementation'] in ('docker-worker',):
+        add_cache(job, taskdesc, 'tooltool-cache',
+                  '{workdir}/tooltool-cache'.format(**job['run']))
 
-    level = config.params['level']
-    add_cache(job, taskdesc, 'tooltool-cache'.format(level),
-              '{workdir}/tooltool-cache'.format(**job['run']))
-
-    taskdesc['worker'].setdefault('env', {}).update({
-        'TOOLTOOL_CACHE': '{workdir}/tooltool-cache'.format(**job['run']),
-    })
+        taskdesc['worker'].setdefault('env', {}).update({
+            'TOOLTOOL_CACHE': '{workdir}/tooltool-cache'.format(**job['run']),
+        })
+    elif not internal:
+        return
 
     taskdesc['worker']['taskcluster-proxy'] = True
     taskdesc['scopes'].extend([

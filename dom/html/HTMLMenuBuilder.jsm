@@ -27,18 +27,18 @@ function HTMLMenuBuilder() {
 
 HTMLMenuBuilder.prototype = {
   classID: Components.ID("{51c65f5d-0de5-4edc-9058-60e50cef77f8}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIMenuBuilder]),
+  QueryInterface: ChromeUtils.generateQI(["nsIMenuBuilder"]),
 
   currentNode: null,
   root: null,
   items: {},
   nestedStack: [],
 
-  toJSONString: function() {
+  toJSONString() {
     return JSON.stringify(this.root);
   },
 
-  openContainer: function(aLabel) {
+  openContainer(aLabel) {
     if (!this.currentNode) {
       this.root = {
         type: "menu",
@@ -57,7 +57,7 @@ HTMLMenuBuilder.prototype = {
     }
   },
 
-  addItemFor: function(aElement, aCanLoadIcon) {
+  addItemFor(aElement, aCanLoadIcon) {
     // Since we no longer type check this at the IDL level, make sure we've got
     // the right element type here.
     if (ChromeUtils.getClassName(aElement) !== "HTMLMenuItemElement") {
@@ -96,7 +96,7 @@ HTMLMenuBuilder.prototype = {
     this.items[item.id] = aElement;
   },
 
-  addSeparator: function() {
+  addSeparator() {
     if (!("children" in this.currentNode)) {
       return;
     }
@@ -104,7 +104,7 @@ HTMLMenuBuilder.prototype = {
     this.currentNode.children.push({ type: "separator" });
   },
 
-  undoAddSeparator: function() {
+  undoAddSeparator() {
     if (!("children" in this.currentNode)) {
       return;
     }
@@ -115,13 +115,13 @@ HTMLMenuBuilder.prototype = {
     }
   },
 
-  closeContainer: function() {
+  closeContainer() {
     this.currentNode = this.nestedStack.length
       ? this.nestedStack.pop()
       : this.root;
   },
 
-  click: function(id) {
+  click(id) {
     let item = this.items[id];
     if (item) {
       item.click();

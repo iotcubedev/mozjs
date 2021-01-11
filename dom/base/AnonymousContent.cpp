@@ -8,6 +8,7 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
 #include "mozilla/dom/AnonymousContentBinding.h"
 #include "nsComputedDOMStyle.h"
 #include "nsCycleCollectionParticipant.h"
@@ -178,7 +179,7 @@ bool AnonymousContent::WrapObject(JSContext* aCx,
 }
 
 void AnonymousContent::GetComputedStylePropertyValue(
-    const nsAString& aElementId, const nsAString& aPropertyName,
+    const nsAString& aElementId, const nsACString& aPropertyName,
     DOMString& aResult, ErrorResult& aRv) {
   Element* element = GetElementById(aElementId);
   if (!element) {
@@ -191,9 +192,8 @@ void AnonymousContent::GetComputedStylePropertyValue(
     return;
   }
 
-  RefPtr<nsComputedDOMStyle> cs =
-      new nsComputedDOMStyle(element, NS_LITERAL_STRING(""),
-                             element->OwnerDoc(), nsComputedDOMStyle::eAll);
+  RefPtr<nsComputedDOMStyle> cs = new nsComputedDOMStyle(
+      element, u""_ns, element->OwnerDoc(), nsComputedDOMStyle::eAll);
   aRv = cs->GetPropertyValue(aPropertyName, aResult);
 }
 
@@ -207,8 +207,8 @@ void AnonymousContent::GetTargetIdForEvent(Event& aEvent, DOMString& aResult) {
   aResult.SetNull();
 }
 
-void AnonymousContent::SetStyle(const nsAString& aProperty,
-                                const nsAString& aValue, ErrorResult& aRv) {
+void AnonymousContent::SetStyle(const nsACString& aProperty,
+                                const nsACString& aValue, ErrorResult& aRv) {
   if (!mContentNode->IsHTMLElement()) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
     return;
@@ -216,7 +216,7 @@ void AnonymousContent::SetStyle(const nsAString& aProperty,
 
   nsGenericHTMLElement* element = nsGenericHTMLElement::FromNode(mContentNode);
   nsCOMPtr<nsICSSDeclaration> declaration = element->Style();
-  declaration->SetProperty(aProperty, aValue, EmptyString());
+  declaration->SetProperty(aProperty, aValue, EmptyString(), IgnoreErrors());
 }
 
 }  // namespace dom

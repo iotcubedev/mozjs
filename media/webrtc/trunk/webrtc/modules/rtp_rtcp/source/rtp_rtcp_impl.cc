@@ -98,6 +98,7 @@ ModuleRtpRtcpImpl::ModuleRtpRtcpImpl(const Configuration& configuration)
                      configuration.receiver_only,
                      configuration.rtcp_packet_type_counter_observer,
                      configuration.bandwidth_callback,
+                     configuration.event_callback,
                      configuration.intra_frame_callback,
                      configuration.transport_feedback_callback,
                      configuration.bitrate_allocation_observer,
@@ -642,8 +643,10 @@ void ModuleRtpRtcpImpl::GetRtpPacketLossStats(
 
 // Received RTCP report.
 void ModuleRtpRtcpImpl::RemoteRTCPSenderInfo(uint32_t* packet_count,
-                                             uint32_t* octet_count) const {
-  return rtcp_receiver_.RemoteRTCPSenderInfo(packet_count, octet_count);
+                                             uint32_t* octet_count,
+                                             NtpTime* ntp_timestamp) const {
+  return rtcp_receiver_.RemoteRTCPSenderInfo(packet_count, octet_count,
+                                             ntp_timestamp);
 }
 
 int32_t ModuleRtpRtcpImpl::RemoteRTCPStat(

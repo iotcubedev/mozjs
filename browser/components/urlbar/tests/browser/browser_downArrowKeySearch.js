@@ -8,7 +8,14 @@
 
 add_task(async function init() {
   await PlacesUtils.history.clear();
-  await PlacesTestUtils.addVisits("http://example.com/");
+  // Enough vists to get this site into Top Sites.
+  for (let i = 0; i < 5; i++) {
+    await PlacesTestUtils.addVisits("http://example.com/");
+  }
+
+  await updateTopSites(
+    sites => sites && sites[0] && sites[0].url == "http://example.com/"
+  );
   registerCleanupFunction(async function() {
     await PlacesUtils.history.clear();
   });
@@ -21,7 +28,7 @@ add_task(async function url() {
     gURLBar.selectionStart = gURLBar.untrimmedValue.length;
     EventUtils.synthesizeKey("KEY_ArrowDown");
     await UrlbarTestUtils.promiseSearchComplete(window);
-    Assert.equal(UrlbarTestUtils.getSelectedIndex(window), 0);
+    Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), 0);
     let details = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
     Assert.ok(details.autofill);
     Assert.equal(details.url, "http://example.com/");
@@ -31,11 +38,15 @@ add_task(async function url() {
 });
 
 add_task(async function userTyping() {
-  await promiseAutocompleteResultPopup("foo", window, true);
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "foo",
+    fireInputEvent: true,
+  });
   await UrlbarTestUtils.promisePopupClose(window);
   EventUtils.synthesizeKey("KEY_ArrowDown");
   await UrlbarTestUtils.promiseSearchComplete(window);
-  Assert.equal(UrlbarTestUtils.getSelectedIndex(window), 0);
+  Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), 0);
   let details = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
   Assert.equal(details.type, UrlbarUtils.RESULT_TYPE.SEARCH);
   Assert.ok(details.searchParams);
@@ -45,12 +56,28 @@ add_task(async function userTyping() {
 });
 
 add_task(async function empty() {
-  await promiseAutocompleteResultPopup("", window, true);
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "",
+    fireInputEvent: true,
+  });
   await UrlbarTestUtils.promisePopupClose(window);
   EventUtils.synthesizeKey("KEY_ArrowDown");
   await UrlbarTestUtils.promiseSearchComplete(window);
-  Assert.equal(UrlbarTestUtils.getSelectedIndex(window), -1);
+  Assert.equal(UrlbarTestUtils.getSelectedRowIndex(window), -1);
   let details = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
   Assert.equal(details.url, "http://example.com/");
   Assert.equal(gURLBar.value, "");
+});
+
+add_task(async function new_window() {
+  let win = await BrowserTestUtils.openNewBrowserWindow();
+  win.gURLBar.focus();
+  EventUtils.synthesizeKey("KEY_ArrowDown", {}, win);
+  await UrlbarTestUtils.promiseSearchComplete(win);
+  Assert.equal(UrlbarTestUtils.getSelectedRowIndex(win), -1);
+  let details = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
+  Assert.equal(details.url, "http://example.com/");
+  Assert.equal(win.gURLBar.value, "");
+  await BrowserTestUtils.closeWindow(win);
 });

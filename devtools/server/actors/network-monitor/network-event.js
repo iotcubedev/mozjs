@@ -40,6 +40,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     };
 
     this._timings = {};
+    this._serverTimings = [];
     this._stackTrace = {};
 
     this._discardRequestBody = false;
@@ -49,6 +50,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
   _request: null,
   _response: null,
   _timings: null,
+  _serverTimings: null,
 
   /**
    * Returns a grip for this actor for returning in a protocol message.
@@ -68,6 +70,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
       isThirdPartyTrackingResource: this._isThirdPartyTrackingResource,
       referrerPolicy: this._referrerPolicy,
       blockedReason: this._blockedReason,
+      blockingExtension: this._blockingExtension,
       channelId: this._channelId,
     };
   },
@@ -132,6 +135,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     this._discardResponseBody = !!networkEvent.discardResponseBody;
 
     this._blockedReason = networkEvent.blockedReason;
+    this._blockingExtension = networkEvent.blockingExtension;
 
     this._truncated = false;
     this._private = networkEvent.private;
@@ -250,6 +254,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
       timings: this._timings,
       totalTime: this._totalTime,
       offsets: this._offsets,
+      serverTimings: this._serverTimings,
     };
   },
 
@@ -405,6 +410,7 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     this._response.status = info.status;
     this._response.statusText = info.statusText;
     this._response.headersSize = info.headersSize;
+    this._response.waitingTime = info.waitingTime;
     // Consider as not discarded if info.discardResponseBody is undefined
     this._discardResponseBody = !!info.discardResponseBody;
 
@@ -484,7 +490,10 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
    *        - boolean truncated
    *          Tells if the some of the response content is missing.
    */
-  addResponseContent(content, { discardResponseBody, truncated }) {
+  addResponseContent(
+    content,
+    { discardResponseBody, truncated, blockedReason, blockingExtension }
+  ) {
     // Ignore calls when this actor is already destroyed
     if (!this.actorID) {
       return;
@@ -504,6 +513,8 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
       encoding: content.encoding,
       transferredSize: content.transferredSize,
       discardResponseBody,
+      blockedReason,
+      blockingExtension,
     });
   },
 
@@ -524,8 +535,11 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
    *        The total time of the network event.
    * @param object timings
    *        Timing details about the network event.
+   * @param object offsets
+   * @param object serverTimings
+   *        Timing details extracted from the Server-Timing header.
    */
-  addEventTimings(total, timings, offsets) {
+  addEventTimings(total, timings, offsets, serverTimings) {
     // Ignore calls when this actor is already destroyed
     if (!this.actorID) {
       return;
@@ -535,9 +549,28 @@ const NetworkEventActor = protocol.ActorClassWithSpec(networkEventSpec, {
     this._timings = timings;
     this._offsets = offsets;
 
+    if (serverTimings) {
+      this._serverTimings = serverTimings;
+    }
+
     this.emit("network-event-update:event-timings", "eventTimings", {
       totalTime: total,
     });
+  },
+
+  /**
+   * Store server timing information. They will be merged together
+   * with network event timing data when they are available and
+   * notification sent to the client.
+   * See `addEventTimnings`` above for more information.
+   *
+   * @param object serverTimings
+   *        Timing details extracted from the Server-Timing header.
+   */
+  addSeverTimings(serverTimings) {
+    if (serverTimings) {
+      this._serverTimings = serverTimings;
+    }
   },
 
   /**

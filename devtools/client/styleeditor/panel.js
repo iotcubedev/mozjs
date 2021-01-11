@@ -14,13 +14,11 @@ var {
 var {
   getString,
 } = require("resource://devtools/client/styleeditor/StyleEditorUtil.jsm");
-var { initCssProperties } = require("devtools/shared/fronts/css-properties");
 
 var StyleEditorPanel = function StyleEditorPanel(panelWin, toolbox) {
   EventEmitter.decorate(this);
 
   this._toolbox = toolbox;
-  this._target = toolbox.target;
   this._panelWin = panelWin;
   this._panelDoc = panelWin.document;
 
@@ -31,10 +29,6 @@ var StyleEditorPanel = function StyleEditorPanel(panelWin, toolbox) {
 exports.StyleEditorPanel = StyleEditorPanel;
 
 StyleEditorPanel.prototype = {
-  get target() {
-    return this._toolbox.target;
-  },
-
   get panelWindow() {
     return this._panelWin;
   },
@@ -43,21 +37,13 @@ StyleEditorPanel.prototype = {
    * open is effectively an asynchronous constructor
    */
   async open() {
-    this.target.on("close", this.destroy);
-
-    this._debuggee = await this.target.getFront("stylesheets");
-
     // Initialize the CSS properties database.
-    const { cssProperties } = await initCssProperties(this._toolbox);
+    const { cssProperties } = await this._toolbox.target.getFront(
+      "cssProperties"
+    );
 
     // Initialize the UI
-    this.UI = new StyleEditorUI(
-      this._toolbox,
-      this._debuggee,
-      this.target,
-      this._panelDoc,
-      cssProperties
-    );
+    this.UI = new StyleEditorUI(this._toolbox, this._panelDoc, cssProperties);
     this.UI.on("error", this._showError);
     await this.UI.initialize();
 
@@ -109,8 +95,8 @@ StyleEditorPanel.prototype = {
   /**
    * Select a stylesheet.
    *
-   * @param {string} href
-   *        Url of stylesheet to find and select in editor
+   * @param {StyleSheetFront} front
+   *        The front of stylesheet to find and select in editor.
    * @param {number} line
    *        Line number to jump to after selecting. One-indexed
    * @param {number} col
@@ -119,11 +105,42 @@ StyleEditorPanel.prototype = {
    *         Promise that will resolve when the editor is selected and ready
    *         to be used.
    */
-  selectStyleSheet: function(href, line, col) {
-    if (!this._debuggee || !this.UI) {
+  selectStyleSheet: function(front, line, col) {
+    if (!this.UI) {
       return null;
     }
-    return this.UI.selectStyleSheet(href, line - 1, col ? col - 1 : 0);
+
+    return this.UI.selectStyleSheet(front, line - 1, col ? col - 1 : 0);
+  },
+
+  /**
+   * Given a location in an original file, open that file in the editor.
+   *
+   * @param {string} originalId
+   *        The original "sourceId" returned from the sourcemap worker.
+   * @param {number} line
+   *        Line number to jump to after selecting. One-indexed
+   * @param {number} col
+   *        Column number to jump to after selecting. One-indexed
+   * @return {Promise}
+   *         Promise that will resolve when the editor is selected and ready
+   *         to be used.
+   */
+  selectOriginalSheet: function(originalId, line, col) {
+    if (!this.UI) {
+      return null;
+    }
+
+    const originalSheet = this.UI.getOriginalSourceSheet(originalId);
+    return this.UI.selectStyleSheet(originalSheet, line - 1, col ? col - 1 : 0);
+  },
+
+  getStylesheetFrontForGeneratedURL: function(url) {
+    if (!this.UI) {
+      return null;
+    }
+
+    return this.UI.getStylesheetFrontForGeneratedURL(url);
   },
 
   /**
@@ -135,13 +152,9 @@ StyleEditorPanel.prototype = {
     }
     this._destroyed = true;
 
-    this._target.off("close", this.destroy);
-    this._target = null;
     this._toolbox = null;
     this._panelWin = null;
     this._panelDoc = null;
-    this._debuggee.destroy();
-    this._debuggee = null;
 
     this.UI.destroy();
     this.UI = null;

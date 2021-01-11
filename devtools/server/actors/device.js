@@ -8,14 +8,16 @@ const { Ci, Cc } = require("chrome");
 const Services = require("Services");
 const protocol = require("devtools/shared/protocol");
 const { LongStringActor } = require("devtools/server/actors/string");
-const {
-  addDebugServiceWorkersListener,
-  canDebugServiceWorkers,
-  isParentInterceptEnabled,
-  removeDebugServiceWorkersListener,
-} = require("devtools/shared/service-workers-debug-helper");
 
-const { DebuggerServer } = require("devtools/server/debugger-server");
+const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.jsm");
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "swm",
+  "@mozilla.org/serviceworkers/manager;1",
+  "nsIServiceWorkerManager"
+);
+
+const { DevToolsServer } = require("devtools/server/devtools-server");
 const { getSystemInfo } = require("devtools/shared/system");
 const { deviceSpec } = require("devtools/shared/specs/device");
 const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
@@ -30,11 +32,6 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
       this._window.addEventListener("pageshow", this._onPageShow, true);
     }
     this._acquireWakeLock();
-
-    this._onDebugServiceWorkersUpdated = this._onDebugServiceWorkersUpdated.bind(
-      this
-    );
-    addDebugServiceWorkersListener(this._onDebugServiceWorkersUpdated);
   },
 
   destroy: function() {
@@ -43,17 +40,14 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
     if (this._window) {
       this._window.removeEventListener("pageshow", this._onPageShow, true);
     }
-    removeDebugServiceWorkersListener(this._onDebugServiceWorkersUpdated);
-  },
-
-  _onDebugServiceWorkersUpdated: function() {
-    this.emit("can-debug-sw-updated", canDebugServiceWorkers());
   },
 
   getDescription: function() {
     return Object.assign({}, getSystemInfo(), {
-      canDebugServiceWorkers: canDebugServiceWorkers(),
-      isParentInterceptEnabled: isParentInterceptEnabled(),
+      // ServiceWorker debugging is only supported when parent-intercept is
+      // enabled. This cannot change at runtime, so it can be treated as a
+      // constant for the device.
+      canDebugServiceWorkers: swm.isParentInterceptEnabled(),
     });
   },
 
@@ -107,6 +101,6 @@ exports.DeviceActor = protocol.ActorClassWithSpec(deviceSpec, {
   },
 
   get _window() {
-    return Services.wm.getMostRecentWindow(DebuggerServer.chromeWindowType);
+    return Services.wm.getMostRecentWindow(DevToolsServer.chromeWindowType);
   },
 });

@@ -42,12 +42,15 @@ add_task(async function() {
     gBrowser,
     "about:mozilla"
   );
-  await promiseAutocompleteResultPopup("keyword a");
-  await waitForAutocompleteResultAt(1);
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "keyword a",
+  });
+  await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
 
   // First item should already be selected
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     0,
     "Should have the first item selected"
   );
@@ -55,7 +58,7 @@ add_task(async function() {
   // Select next one (important!)
   EventUtils.synthesizeKey("KEY_ArrowDown");
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     1,
     "Should have the second item selected"
   );
@@ -63,13 +66,13 @@ add_task(async function() {
   // Re-select keyword item
   EventUtils.synthesizeKey("KEY_ArrowUp");
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     0,
     "Should have the first item selected"
   );
 
   EventUtils.sendString("b");
-  await promiseSearchComplete();
+  await UrlbarTestUtils.promiseSearchComplete(window);
 
   Assert.equal(
     gURLBar.value,

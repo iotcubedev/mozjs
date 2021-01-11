@@ -66,7 +66,7 @@ class RequestResolver final : public nsIQuotaCallback {
   NS_DECL_NSIQUOTACALLBACK
 
  private:
-  ~RequestResolver() {}
+  ~RequestResolver() = default;
 
   nsresult GetStorageEstimate(nsIVariant* aResult);
 
@@ -98,8 +98,8 @@ class EstimateWorkerMainThreadRunnable final : public WorkerMainThreadRunnable {
  public:
   EstimateWorkerMainThreadRunnable(WorkerPrivate* aWorkerPrivate,
                                    PromiseWorkerProxy* aProxy)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate, NS_LITERAL_CSTRING("StorageManager :: Estimate")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "StorageManager :: Estimate"_ns),
         mProxy(aProxy) {
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -116,8 +116,8 @@ class PersistedWorkerMainThreadRunnable final
  public:
   PersistedWorkerMainThreadRunnable(WorkerPrivate* aWorkerPrivate,
                                     PromiseWorkerProxy* aProxy)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate, NS_LITERAL_CSTRING("StorageManager :: Persisted")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "StorageManager :: Persisted"_ns),
         mProxy(aProxy) {
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
@@ -140,8 +140,8 @@ class PersistentStoragePermissionRequest final
                                      nsPIDOMWindowInner* aWindow,
                                      Promise* aPromise)
       : ContentPermissionRequestBase(aPrincipal, aWindow,
-                                     NS_LITERAL_CSTRING("dom.storageManager"),
-                                     NS_LITERAL_CSTRING("persistent-storage")),
+                                     "dom.storageManager"_ns,
+                                     "persistent-storage"_ns),
         mPromise(aPromise) {
     MOZ_ASSERT(aWindow);
     MOZ_ASSERT(aPromise);
@@ -250,7 +250,21 @@ already_AddRefed<Promise> ExecuteOpOnMainOrWorkerThread(
     // Storage Standard 7. API
     // If origin is an opaque origin, then reject promise with a TypeError.
     if (principal->GetIsNullPrincipal()) {
-      promise->MaybeReject(NS_ERROR_DOM_TYPE_ERR);
+      switch (aType) {
+        case RequestResolver::Type::Persisted:
+          promise->MaybeRejectWithTypeError(
+              "persisted() called for opaque origin");
+          break;
+        case RequestResolver::Type::Persist:
+          promise->MaybeRejectWithTypeError(
+              "persist() called for opaque origin");
+          break;
+        case RequestResolver::Type::Estimate:
+          promise->MaybeRejectWithTypeError(
+              "estimate() called for opaque origin");
+          break;
+      }
+
       return promise.forget();
     }
 
@@ -271,6 +285,8 @@ already_AddRefed<Promise> ExecuteOpOnMainOrWorkerThread(
 
         // In private browsing mode, no permission prompt.
         if (nsContentUtils::IsInPrivateBrowsing(doc)) {
+          aRv = request->Cancel();
+        } else if (!request->CheckPermissionDelegate()) {
           aRv = request->Cancel();
         } else {
           aRv = request->Start();
@@ -381,7 +397,8 @@ void RequestResolver::ResolveOrReject() {
     if (NS_SUCCEEDED(mResultCode)) {
       promise->MaybeResolve(mStorageEstimate);
     } else {
-      promise->MaybeReject(NS_ERROR_DOM_TYPE_ERR);
+      promise->MaybeRejectWithTypeError(
+          "Internal error while estimating storage usage");
     }
 
     return;
@@ -671,7 +688,7 @@ StorageManager::StorageManager(nsIGlobalObject* aGlobal) : mOwner(aGlobal) {
   MOZ_ASSERT(aGlobal);
 }
 
-StorageManager::~StorageManager() {}
+StorageManager::~StorageManager() = default;
 
 already_AddRefed<Promise> StorageManager::Persisted(ErrorResult& aRv) {
   MOZ_ASSERT(mOwner);

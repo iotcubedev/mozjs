@@ -10,6 +10,7 @@
 #include "Layers.h"                 // for Layer, ContainerLayer, etc
 #include "gfxPoint.h"               // for gfxPoint, gfxSize
 #include "mozilla/ServoBindings.h"  // for Servo_AnimationValue_GetOpacity, etc
+#include "mozilla/ScopeExit.h"      // for MakeScopeExit
 #include "mozilla/StaticPrefs_apz.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/WidgetUtils.h"      // for ComputeTransformForRotation
@@ -21,6 +22,7 @@
 #include "mozilla/layers/APZSampler.h"  // for APZSampler
 #include "mozilla/layers/APZUtils.h"    // for CompleteAsyncTransform
 #include "mozilla/layers/Compositor.h"  // for Compositor
+#include "mozilla/layers/CompositorAnimationStorage.h"  // for CompositorAnimationStorage
 #include "mozilla/layers/CompositorBridgeParent.h"  // for CompositorBridgeParent, etc
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/LayerAnimationUtils.h"  // for TimingFunctionToComputedTimingFunction
@@ -74,7 +76,7 @@ AsyncCompositionManager::AsyncCompositionManager(
   MOZ_ASSERT(mCompositorBridge);
 }
 
-AsyncCompositionManager::~AsyncCompositionManager() {}
+AsyncCompositionManager::~AsyncCompositionManager() = default;
 
 void AsyncCompositionManager::ResolveRefLayers(
     CompositorBridgeParent* aCompositor, bool* aHasRemoteContent,
@@ -282,44 +284,6 @@ static void AccumulateLayerTransforms(Layer* aLayer, Layer* aAncestor,
   }
 }
 
-static LayerPoint GetLayerFixedMarginsOffset(
-    Layer* aLayer, const ScreenMargin& aFixedLayerMargins) {
-  // Work out the necessary translation, in root scrollable layer space.
-  // Because fixed layer margins are stored relative to the root scrollable
-  // layer, we can just take the difference between these values.
-  LayerPoint translation;
-  int32_t sides = aLayer->GetFixedPositionSides();
-
-  if ((sides & eSideBitsLeftRight) == eSideBitsLeftRight) {
-    translation.x += (aFixedLayerMargins.left - aFixedLayerMargins.right) / 2;
-  } else if (sides & eSideBitsRight) {
-    translation.x -= aFixedLayerMargins.right;
-  } else if (sides & eSideBitsLeft) {
-    translation.x += aFixedLayerMargins.left;
-  }
-
-  if ((sides & eSideBitsTopBottom) == eSideBitsTopBottom) {
-    translation.y += (aFixedLayerMargins.top - aFixedLayerMargins.bottom) / 2;
-  } else if (sides & eSideBitsBottom) {
-    translation.y -= aFixedLayerMargins.bottom;
-  } else if (sides & eSideBitsTop) {
-    translation.y += aFixedLayerMargins.top;
-  }
-
-  return translation;
-}
-
-static gfxFloat IntervalOverlap(gfxFloat aTranslation, gfxFloat aMin,
-                                gfxFloat aMax) {
-  // Determine the amount of overlap between the 1D vector |aTranslation|
-  // and the interval [aMin, aMax].
-  if (aTranslation > 0) {
-    return std::max(0.0, std::min(aMax, aTranslation) - std::max(aMin, 0.0));
-  } else {
-    return std::min(0.0, std::max(aMin, aTranslation) - std::min(aMax, 0.0));
-  }
-}
-
 /**
  * Finds the metrics on |aLayer| with scroll id |aScrollId|, and returns a
  * LayerMetricsWrapper representing the (layer, metrics) pair, or the null
@@ -378,32 +342,6 @@ static bool AsyncTransformShouldBeUnapplied(
   return false;
 }
 
-/**
- * Given a fixed-position layer, check if it's fixed with respect to the
- * zoomed APZC.
- */
-static bool IsFixedToZoomContainer(Layer* aFixedLayer) {
-  ScrollableLayerGuid::ViewID targetId =
-      aFixedLayer->GetFixedPositionScrollContainerId();
-  MOZ_ASSERT(targetId != ScrollableLayerGuid::NULL_SCROLL_ID);
-  LayerMetricsWrapper result(aFixedLayer, LayerMetricsWrapper::StartAt::BOTTOM);
-  while (result) {
-    if (Maybe<ScrollableLayerGuid::ViewID> zoomedScrollId =
-            result.IsAsyncZoomContainer()) {
-      return *zoomedScrollId == targetId;
-    }
-    // Don't ascend into another layer tree. Scroll IDs are not unique
-    // across layer trees, and in any case position:fixed doesn't reach
-    // across documents.
-    if (result.AsRefLayer() != nullptr) {
-      break;
-    }
-
-    result = result.GetParent();
-  }
-  return false;
-}
-
 // If |aLayer| is fixed or sticky, returns the scroll id of the scroll frame
 // that it's fixed or sticky to. Otherwise, returns Nothing().
 static Maybe<ScrollableLayerGuid::ViewID> IsFixedOrSticky(Layer* aLayer) {
@@ -420,10 +358,11 @@ static Maybe<ScrollableLayerGuid::ViewID> IsFixedOrSticky(Layer* aLayer) {
 
 void AsyncCompositionManager::AlignFixedAndStickyLayers(
     Layer* aTransformedSubtreeRoot, Layer* aStartTraversalAt,
-    ScrollableLayerGuid::ViewID aTransformScrollId,
+    SideBits aStuckSides, ScrollableLayerGuid::ViewID aTransformScrollId,
     const LayerToParentLayerMatrix4x4& aPreviousTransformForRoot,
     const LayerToParentLayerMatrix4x4& aCurrentTransformForRoot,
-    const ScreenMargin& aFixedLayerMargins, ClipPartsCache& aClipPartsCache) {
+    const ScreenMargin& aFixedLayerMargins, ClipPartsCache& aClipPartsCache,
+    const ScreenMargin& aGeckoFixedLayerMargins) {
   Layer* layer = aStartTraversalAt;
   bool needsAsyncTransformUnapplied = false;
   if (Maybe<ScrollableLayerGuid::ViewID> fixedTo = IsFixedOrSticky(layer)) {
@@ -438,25 +377,27 @@ void AsyncCompositionManager::AlignFixedAndStickyLayers(
   if (!needsAsyncTransformUnapplied) {
     for (Layer* child = layer->GetFirstChild(); child;
          child = child->GetNextSibling()) {
-      AlignFixedAndStickyLayers(aTransformedSubtreeRoot, child,
+      AlignFixedAndStickyLayers(aTransformedSubtreeRoot, child, aStuckSides,
                                 aTransformScrollId, aPreviousTransformForRoot,
                                 aCurrentTransformForRoot, aFixedLayerMargins,
-                                aClipPartsCache);
+                                aClipPartsCache, aGeckoFixedLayerMargins);
     }
     return;
   }
 
-  AdjustFixedOrStickyLayer(aTransformedSubtreeRoot, layer, aTransformScrollId,
-                           aPreviousTransformForRoot, aCurrentTransformForRoot,
-                           aFixedLayerMargins, aClipPartsCache);
+  AdjustFixedOrStickyLayer(aTransformedSubtreeRoot, layer, aStuckSides,
+                           aTransformScrollId, aPreviousTransformForRoot,
+                           aCurrentTransformForRoot, aFixedLayerMargins,
+                           aClipPartsCache, aGeckoFixedLayerMargins);
 }
 
 void AsyncCompositionManager::AdjustFixedOrStickyLayer(
-    Layer* aTransformedSubtreeRoot, Layer* aFixedOrSticky,
+    Layer* aTransformedSubtreeRoot, Layer* aFixedOrSticky, SideBits aStuckSides,
     ScrollableLayerGuid::ViewID aTransformScrollId,
     const LayerToParentLayerMatrix4x4& aPreviousTransformForRoot,
     const LayerToParentLayerMatrix4x4& aCurrentTransformForRoot,
-    const ScreenMargin& aFixedLayerMargins, ClipPartsCache& aClipPartsCache) {
+    const ScreenMargin& aFixedLayerMargins, ClipPartsCache& aClipPartsCache,
+    const ScreenMargin& aGeckoFixedLayerMargins) {
   Layer* layer = aFixedOrSticky;
 
   // Insert a translation so that the position of the anchor point is the same
@@ -510,10 +451,27 @@ void AsyncCompositionManager::AdjustFixedOrStickyLayer(
   // (before any transform is applied).
   LayerPoint anchor = layer->GetFixedPositionAnchor();
 
+  SideBits sideBits = layer->GetFixedPositionSides();
+  if (layer->GetIsStickyPosition()) {
+    // For sticky items, it may be that only some of the sides are actively
+    // stuck. Only take into account those sides.
+    sideBits &= aStuckSides;
+  }
+
   // Offset the layer's anchor point to make sure fixed position content
   // respects content document fixed position margins.
+  ScreenPoint offset = ComputeFixedMarginsOffset(
+      aFixedLayerMargins, sideBits,
+      // For sticky layers, we don't need to factor aGeckoFixedLayerMargins
+      // because Gecko doesn't shift the position of sticky elements for dynamic
+      // toolbar movements.
+      layer->GetIsStickyPosition() ? ScreenMargin() : aGeckoFixedLayerMargins);
+
+  // Fixed margins only apply to layers fixed to the root, so we can view
+  // the offset in layer space.
   LayerPoint offsetAnchor =
-      anchor + GetLayerFixedMarginsOffset(layer, aFixedLayerMargins);
+      anchor + ViewAs<LayerPixel>(
+                   offset, PixelCastJustification::ScreenIsParentLayerForRoot);
 
   // Additionally transform the anchor to compensate for the change
   // from the old transform to the new transform. We do
@@ -547,12 +505,14 @@ void AsyncCompositionManager::AdjustFixedOrStickyLayer(
     const LayerRectAbsolute& stickyInner = layer->GetStickyScrollRangeInner();
 
     LayerPoint originalTranslation = translation;
-    translation.y =
-        IntervalOverlap(translation.y, stickyOuter.Y(), stickyOuter.YMost()) -
-        IntervalOverlap(translation.y, stickyInner.Y(), stickyInner.YMost());
-    translation.x =
-        IntervalOverlap(translation.x, stickyOuter.X(), stickyOuter.XMost()) -
-        IntervalOverlap(translation.x, stickyInner.X(), stickyInner.XMost());
+    translation.y = apz::IntervalOverlap(translation.y, stickyOuter.Y(),
+                                         stickyOuter.YMost()) -
+                    apz::IntervalOverlap(translation.y, stickyInner.Y(),
+                                         stickyInner.YMost());
+    translation.x = apz::IntervalOverlap(translation.x, stickyOuter.X(),
+                                         stickyOuter.XMost()) -
+                    apz::IntervalOverlap(translation.x, stickyInner.X(),
+                                         stickyInner.XMost());
     unconsumedTranslation = translation - originalTranslation;
   }
 
@@ -586,207 +546,22 @@ void AsyncCompositionManager::AdjustFixedOrStickyLayer(
     // translation.
     for (Layer* child = layer->GetFirstChild(); child;
          child = child->GetNextSibling()) {
-      AlignFixedAndStickyLayers(aTransformedSubtreeRoot, child,
+      AlignFixedAndStickyLayers(aTransformedSubtreeRoot, child, aStuckSides,
                                 aTransformScrollId, aPreviousTransformForRoot,
                                 newTransform, aFixedLayerMargins,
-                                aClipPartsCache);
+                                aClipPartsCache, aGeckoFixedLayerMargins);
     }
   }
 }
 
-static Matrix4x4 FrameTransformToTransformInDevice(
-    const Matrix4x4& aFrameTransform, Layer* aLayer,
-    const TransformData& aTransformData) {
-  Matrix4x4 transformInDevice = aFrameTransform;
-  // If our parent layer is a perspective layer, then the offset into reference
-  // frame coordinates is already on that layer. If not, then we need to ask
-  // for it to be added here.
-  if (!aLayer->GetParent() ||
-      !aLayer->GetParent()->GetTransformIsPerspective()) {
-    nsLayoutUtils::PostTranslate(transformInDevice, aTransformData.origin(),
-                                 aTransformData.appUnitsPerDevPixel(), true);
-  }
+bool AsyncCompositionManager::SampleAnimations(Layer* aLayer,
+                                               TimeStamp aCurrentFrameTime) {
+  CompositorAnimationStorage* storage =
+      mCompositorBridge->GetAnimationStorage();
+  MOZ_ASSERT(storage);
 
-  if (ContainerLayer* c = aLayer->AsContainerLayer()) {
-    transformInDevice.PostScale(c->GetInheritedXScale(),
-                                c->GetInheritedYScale(), 1);
-  }
-
-  return transformInDevice;
-}
-
-static void ApplyAnimatedValue(
-    Layer* aLayer, CompositorAnimationStorage* aStorage,
-    nsCSSPropertyID aProperty, const Maybe<TransformData>& aAnimationData,
-    const nsTArray<RefPtr<RawServoAnimationValue>>& aValues) {
-  MOZ_ASSERT(!aValues.IsEmpty());
-
-  HostLayer* layerCompositor = aLayer->AsHostLayer();
-  switch (aProperty) {
-    case eCSSProperty_background_color: {
-      MOZ_ASSERT(aValues.Length() == 1);
-      // We don't support 'color' animations on the compositor yet so we never
-      // meet currentColor on the compositor.
-      nscolor color =
-          Servo_AnimationValue_GetColor(aValues[0], NS_RGBA(0, 0, 0, 0));
-      aLayer->AsColorLayer()->SetColor(gfx::Color::FromABGR(color));
-      aStorage->SetAnimatedValue(aLayer->GetCompositorAnimationsId(), color);
-
-      layerCompositor->SetShadowOpacity(aLayer->GetOpacity());
-      layerCompositor->SetShadowOpacitySetByAnimation(false);
-      layerCompositor->SetShadowBaseTransform(aLayer->GetBaseTransform());
-      layerCompositor->SetShadowTransformSetByAnimation(false);
-      break;
-    }
-    case eCSSProperty_opacity: {
-      MOZ_ASSERT(aValues.Length() == 1);
-      float opacity = Servo_AnimationValue_GetOpacity(aValues[0]);
-      layerCompositor->SetShadowOpacity(opacity);
-      layerCompositor->SetShadowOpacitySetByAnimation(true);
-      aStorage->SetAnimatedValue(aLayer->GetCompositorAnimationsId(), opacity);
-
-      layerCompositor->SetShadowBaseTransform(aLayer->GetBaseTransform());
-      layerCompositor->SetShadowTransformSetByAnimation(false);
-      break;
-    }
-    case eCSSProperty_rotate:
-    case eCSSProperty_scale:
-    case eCSSProperty_translate:
-    case eCSSProperty_transform: {
-      const TransformData& transformData = aAnimationData.ref();
-
-      Matrix4x4 frameTransform =
-          AnimationHelper::ServoAnimationValueToMatrix4x4(aValues,
-                                                          transformData);
-
-      Matrix4x4 transform = FrameTransformToTransformInDevice(
-          frameTransform, aLayer, transformData);
-
-      layerCompositor->SetShadowBaseTransform(transform);
-      layerCompositor->SetShadowTransformSetByAnimation(true);
-      aStorage->SetAnimatedValue(aLayer->GetCompositorAnimationsId(),
-                                 std::move(transform),
-                                 std::move(frameTransform), transformData);
-
-      layerCompositor->SetShadowOpacity(aLayer->GetOpacity());
-      layerCompositor->SetShadowOpacitySetByAnimation(false);
-      break;
-    }
-    default:
-      MOZ_ASSERT_UNREACHABLE("Unhandled animated property");
-  }
-}
-
-static bool SampleAnimations(Layer* aLayer,
-                             CompositorAnimationStorage* aStorage,
-                             TimeStamp aPreviousFrameTime,
-                             TimeStamp aCurrentFrameTime) {
-  bool isAnimating = false;
-
-  ForEachNode<ForwardIterator>(aLayer, [&](Layer* layer) {
-    auto& propertyAnimationGroups = layer->GetPropertyAnimationGroups();
-    if (propertyAnimationGroups.IsEmpty()) {
-      return;
-    }
-
-    isAnimating = true;
-    AnimatedValue* previousValue =
-        aStorage->GetAnimatedValue(layer->GetCompositorAnimationsId());
-
-    nsTArray<RefPtr<RawServoAnimationValue>> animationValues;
-    AnimationHelper::SampleResult sampleResult =
-        AnimationHelper::SampleAnimationForEachNode(
-            aPreviousFrameTime, aCurrentFrameTime, previousValue,
-            propertyAnimationGroups, animationValues);
-
-    const PropertyAnimationGroup& lastPropertyAnimationGroup =
-        propertyAnimationGroups.LastElement();
-
-    switch (sampleResult) {
-      case AnimationHelper::SampleResult::Sampled:
-        // We assume all transform like properties (on the same frame) live in
-        // a single same layer, so using the transform data of the last element
-        // should be fine.
-        ApplyAnimatedValue(
-            layer, aStorage, lastPropertyAnimationGroup.mProperty,
-            lastPropertyAnimationGroup.mAnimationData, animationValues);
-        break;
-      case AnimationHelper::SampleResult::Skipped:
-        switch (lastPropertyAnimationGroup.mProperty) {
-          case eCSSProperty_background_color:
-          case eCSSProperty_opacity: {
-            if (lastPropertyAnimationGroup.mProperty == eCSSProperty_opacity) {
-              MOZ_ASSERT(
-                  layer->AsHostLayer()->GetShadowOpacitySetByAnimation());
-#ifdef DEBUG
-              // Disable this assertion until the root cause is fixed in bug
-              // 1459775.
-              // MOZ_ASSERT(FuzzyEqualsMultiplicative(
-              //   Servo_AnimationValue_GetOpacity(animationValue),
-              //   *(aStorage->GetAnimationOpacity(layer->GetCompositorAnimationsId()))));
-#endif
-            }
-            // Even if opacity or background-color  animation value has
-            // unchanged, we have to set the shadow base transform value
-            // here since the value might have been changed by APZC.
-            HostLayer* layerCompositor = layer->AsHostLayer();
-            layerCompositor->SetShadowBaseTransform(layer->GetBaseTransform());
-            layerCompositor->SetShadowTransformSetByAnimation(false);
-            break;
-          }
-          case eCSSProperty_rotate:
-          case eCSSProperty_scale:
-          case eCSSProperty_translate:
-          case eCSSProperty_transform: {
-            MOZ_ASSERT(
-                layer->AsHostLayer()->GetShadowTransformSetByAnimation());
-            MOZ_ASSERT(previousValue);
-#ifdef DEBUG
-            const TransformData& transformData =
-                lastPropertyAnimationGroup.mAnimationData.ref();
-            Matrix4x4 frameTransform =
-                AnimationHelper::ServoAnimationValueToMatrix4x4(animationValues,
-                                                                transformData);
-            Matrix4x4 transformInDevice = FrameTransformToTransformInDevice(
-                frameTransform, layer, transformData);
-            MOZ_ASSERT(previousValue->Transform()
-                           .mTransformInDevSpace.FuzzyEqualsMultiplicative(
-                               transformInDevice));
-#endif
-            // In the case of transform we have to set the unchanged
-            // transform value again because APZC might have modified the
-            // previous shadow base transform value.
-            HostLayer* layerCompositor = layer->AsHostLayer();
-            layerCompositor->SetShadowBaseTransform(
-                // FIXME: Bug 1459775: It seems possible that we somehow try
-                // to sample animations and skip it even if the previous value
-                // has been discarded from the animation storage when we enable
-                // layer tree cache. So for the safety, in the case where we
-                // have no previous animation value, we set non-animating value
-                // instead.
-                previousValue ? previousValue->Transform().mTransformInDevSpace
-                              : layer->GetBaseTransform());
-            break;
-          }
-          default:
-            MOZ_ASSERT_UNREACHABLE("Unsupported properties");
-            break;
-        }
-        break;
-      case AnimationHelper::SampleResult::None: {
-        HostLayer* layerCompositor = layer->AsHostLayer();
-        layerCompositor->SetShadowBaseTransform(layer->GetBaseTransform());
-        layerCompositor->SetShadowTransformSetByAnimation(false);
-        layerCompositor->SetShadowOpacity(layer->GetOpacity());
-        layerCompositor->SetShadowOpacitySetByAnimation(false);
-        break;
-      }
-      default:
-        break;
-    }
-  });
-
-  return isAnimating;
+  return storage->SampleAnimations(aLayer, mCompositorBridge,
+                                   mPreviousFrameTimeStamp, aCurrentFrameTime);
 }
 
 void AsyncCompositionManager::RecordShadowTransforms(Layer* aLayer) {
@@ -900,6 +675,8 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
     Layer* aLayer, bool* aOutFoundRoot) {
   bool appliedTransform = false;
   std::stack<Maybe<ParentLayerIntRect>> stackDeferredClips;
+  std::stack<LayersId> layersIds;
+  layersIds.push(mCompositorBridge->RootLayerTreeId());
 
   // Maps layers to their ClipParts. The parts are not stored individually
   // on the layer, but during AlignFixedAndStickyLayers we need access to
@@ -912,6 +689,10 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
   ForEachNode<ForwardIterator>(
       aLayer,
       [&](Layer* layer) {
+        if (layer->AsRefLayer()) {
+          layersIds.push(layer->AsRefLayer()->GetReferentId());
+        }
+
         stackDeferredClips.push(Maybe<ParentLayerIntRect>());
 
         // If we encounter the async zoom container, find the corresponding
@@ -951,6 +732,8 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
         Maybe<ParentLayerIntRect> clipDeferredFromChildren =
             stackDeferredClips.top();
         stackDeferredClips.pop();
+        MOZ_ASSERT(!layersIds.empty());
+        LayersId currentLayersId = layersIds.top();
         LayerToParentLayerMatrix4x4 oldTransform =
             layer->GetTransformTyped() * AsyncTransformMatrix();
 
@@ -1030,10 +813,18 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
                  sampler->GetGuid(*zoomedMetrics) == sampler->GetGuid(wrapper))
                     ? AsyncTransformComponents{AsyncTransformComponent::eLayout}
                     : LayoutAndVisual;
-
             AsyncTransform asyncTransformWithoutOverscroll =
                 sampler->GetCurrentAsyncTransform(wrapper,
                                                   asyncTransformComponents);
+            Maybe<CompositionPayload> payload =
+                sampler->NotifyScrollSampling(wrapper);
+            // The scroll latency should be measured between composition and the
+            // first scrolling event. Otherwise we observe metrics with <16ms
+            // latency even when frame.delay is enabled.
+            if (payload.isSome()) {
+              mLayerManager->RegisterPayload(*payload);
+            }
+
             AsyncTransformComponentMatrix overscrollTransform =
                 sampler->GetOverscrollTransform(wrapper);
             AsyncTransformComponentMatrix asyncTransform =
@@ -1063,25 +854,16 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
                 Compositor* compositor = mLayerManager->GetCompositor();
                 if (CompositorBridgeParent* bridge =
                         compositor->GetCompositorBridgeParent()) {
-                  AndroidDynamicToolbarAnimator* animator =
-                      bridge->GetAndroidDynamicToolbarAnimator();
-
                   LayersId rootLayerTreeId = bridge->RootLayerTreeId();
                   if (mIsFirstPaint || FrameMetricsHaveUpdated(metrics)) {
-                    if (animator) {
-                      animator->UpdateRootFrameMetrics(metrics);
-                    } else if (RefPtr<UiCompositorControllerParent>
-                                   uiController = UiCompositorControllerParent::
-                                       GetFromRootLayerTreeId(
-                                           rootLayerTreeId)) {
+                    if (RefPtr<UiCompositorControllerParent> uiController =
+                            UiCompositorControllerParent::
+                                GetFromRootLayerTreeId(rootLayerTreeId)) {
                       uiController->NotifyUpdateScreenMetrics(metrics);
                     }
                     mLastMetrics = metrics;
                   }
                   if (mIsFirstPaint) {
-                    if (animator) {
-                      animator->FirstPaint();
-                    }
                     if (RefPtr<UiCompositorControllerParent> uiController =
                             UiCompositorControllerParent::
                                 GetFromRootLayerTreeId(rootLayerTreeId)) {
@@ -1098,15 +880,6 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
                     }
                     mLayersUpdated = false;
                   }
-                  // If this is not actually the root content then the animator
-                  // is not getting updated in
-                  // AsyncPanZoomController::NotifyLayersUpdated because the
-                  // root content document is not scrollable. So update it here
-                  // so it knows if the root composition size has changed.
-                  if (animator && !metrics.IsRootContent()) {
-                    animator->MaybeUpdateCompositionSizeAndRootFrameMetrics(
-                        metrics);
-                  }
                 }
                 fixedLayerMargins = GetFixedLayerMargins();
               }
@@ -1119,18 +892,14 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
 #endif
 
             // Transform the current local clips by this APZC's async transform.
-            // If we're using containerful scrolling, then the clip is not part
-            // of the scrolled frame and should not be transformed.
-            if (!scrollMetadata.UsesContainerScrolling()) {
-              MOZ_ASSERT(asyncTransform.Is2D());
-              if (clipParts.mFixedClip) {
-                *clipParts.mFixedClip =
-                    TransformBy(asyncTransform, *clipParts.mFixedClip);
-              }
-              if (clipParts.mScrolledClip) {
-                *clipParts.mScrolledClip =
-                    TransformBy(asyncTransform, *clipParts.mScrolledClip);
-              }
+            MOZ_ASSERT(asyncTransform.Is2D());
+            if (clipParts.mFixedClip) {
+              *clipParts.mFixedClip =
+                  TransformBy(asyncTransform, *clipParts.mFixedClip);
+            }
+            if (clipParts.mScrolledClip) {
+              *clipParts.mScrolledClip =
+                  TransformBy(asyncTransform, *clipParts.mScrolledClip);
             }
             // Note: we don't set the layer's shadow clip rect property yet;
             // AlignFixedAndStickyLayers will use the clip parts from the clip
@@ -1146,16 +915,16 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
             // layers. We do this by using GetTransform() as the base transform
             // rather than GetLocalTransform(), which would include those
             // factors.
-            AsyncTransform asyncTransformForFixedAdjustment =
-                sampler->GetCurrentAsyncTransformForFixedAdjustment(wrapper);
             LayerToParentLayerMatrix4x4 transformWithoutOverscrollOrOmta =
                 layer->GetTransformTyped() *
-                CompleteAsyncTransform(
-                    AdjustForClip(asyncTransformForFixedAdjustment, layer));
-            AlignFixedAndStickyLayers(layer, layer, metrics.GetScrollId(),
-                                      oldTransform,
+                CompleteAsyncTransform(AdjustForClip(asyncTransform, layer));
+            // See bug 1630274 for why we pass eNone here; fixing that bug will
+            // probably end up changing this to be more correct.
+            AlignFixedAndStickyLayers(layer, layer, SideBits::eNone,
+                                      metrics.GetScrollId(), oldTransform,
                                       transformWithoutOverscrollOrOmta,
-                                      fixedLayerMargins, clipPartsCache);
+                                      fixedLayerMargins, clipPartsCache,
+                                      sampler->GetGeckoFixedLayerMargins());
 
             // Combine the local clip with the ancestor scrollframe clip. This
             // is not included in the async transform above, since the ancestor
@@ -1222,6 +991,58 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
             }
           }
 
+          auto IsFixedToZoomContainer = [&](Layer* aFixedLayer) {
+            if (!zoomedMetrics) {
+              return false;
+            }
+            ScrollableLayerGuid::ViewID targetId =
+                aFixedLayer->GetFixedPositionScrollContainerId();
+            MOZ_ASSERT(targetId != ScrollableLayerGuid::NULL_SCROLL_ID);
+            ScrollableLayerGuid rootContent = sampler->GetGuid(*zoomedMetrics);
+            return rootContent.mScrollId == targetId &&
+                   rootContent.mLayersId == currentLayersId;
+          };
+
+          auto SidesStuckToZoomContainer = [&](Layer* aLayer) -> SideBits {
+            SideBits result = SideBits::eNone;
+            if (!zoomedMetrics) {
+              return result;
+            }
+            if (!aLayer->GetIsStickyPosition()) {
+              return result;
+            }
+
+            ScrollableLayerGuid::ViewID targetId =
+                aLayer->GetStickyScrollContainerId();
+            if (targetId == ScrollableLayerGuid::NULL_SCROLL_ID) {
+              return result;
+            }
+
+            ScrollableLayerGuid rootContent = sampler->GetGuid(*zoomedMetrics);
+            if (rootContent.mScrollId != targetId ||
+                rootContent.mLayersId != currentLayersId) {
+              return result;
+            }
+
+            ParentLayerPoint translation =
+                sampler
+                    ->GetCurrentAsyncTransform(
+                        *zoomedMetrics, {AsyncTransformComponent::eLayout})
+                    .mTranslation;
+
+            if (apz::IsStuckAtBottom(translation.y,
+                                     aLayer->GetStickyScrollRangeInner(),
+                                     aLayer->GetStickyScrollRangeOuter())) {
+              result |= SideBits::eBottom;
+            }
+            if (apz::IsStuckAtTop(translation.y,
+                                  aLayer->GetStickyScrollRangeInner(),
+                                  aLayer->GetStickyScrollRangeOuter())) {
+              result |= SideBits::eTop;
+            }
+            return result;
+          };
+
           // Layers fixed to the RCD-RSF no longer need
           // AdjustFixedOrStickyLayer() to scroll them by the eVisual transform,
           // as that's now applied to the async zoom container itself. However,
@@ -1229,18 +1050,18 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
           // account for dynamic toolbar transitions. This is also handled by
           // AdjustFixedOrStickyLayer(), so we now call it with empty transforms
           // to get it to perform just the fixed margins adjustment.
-          if (zoomedMetrics && layer->GetIsFixedPosition() &&
-              !layer->GetParent()->GetIsFixedPosition() &&
-              IsFixedToZoomContainer(layer)) {
+          SideBits stuckSides = SidesStuckToZoomContainer(layer);
+          if (zoomedMetrics && ((layer->GetIsFixedPosition() &&
+                                 !layer->GetParent()->GetIsFixedPosition() &&
+                                 IsFixedToZoomContainer(layer)) ||
+                                stuckSides != SideBits::eNone)) {
             LayerToParentLayerMatrix4x4 emptyTransform;
-            ScreenMargin marginsForFixedLayer;
-#ifdef MOZ_WIDGET_ANDROID
-            marginsForFixedLayer = GetFixedLayerMargins();
-#endif
-            AdjustFixedOrStickyLayer(zoomContainer, layer,
+            ScreenMargin marginsForFixedLayer = GetFixedLayerMargins();
+            AdjustFixedOrStickyLayer(zoomContainer, layer, stuckSides,
                                      sampler->GetGuid(*zoomedMetrics).mScrollId,
                                      emptyTransform, emptyTransform,
-                                     marginsForFixedLayer, clipPartsCache);
+                                     marginsForFixedLayer, clipPartsCache,
+                                     sampler->GetGeckoFixedLayerMargins());
           }
         }
 
@@ -1278,6 +1099,11 @@ bool AsyncCompositionManager::ApplyAsyncContentTransformToTree(
         if (layer->GetScrollbarData().mScrollbarLayerType ==
             layers::ScrollbarLayerType::Thumb) {
           ApplyAsyncTransformToScrollbar(layer);
+        }
+
+        if (layer->AsRefLayer()) {
+          MOZ_ASSERT(layersIds.size() > 1);
+          layersIds.pop();
         }
       });
 
@@ -1406,19 +1232,10 @@ bool AsyncCompositionManager::TransformShadowTree(
     return false;
   }
 
-  CompositorAnimationStorage* storage =
-      mCompositorBridge->GetAnimationStorage();
   // First, compute and set the shadow transforms from OMT animations.
   // NB: we must sample animations *before* sampling pan/zoom
   // transforms.
-  bool wantNextFrame =
-      SampleAnimations(root, storage, mPreviousFrameTimeStamp, aCurrentFrame);
-
-  if (!wantNextFrame) {
-    // Clean up the CompositorAnimationStorage because
-    // there are no active animations running
-    storage->Clear();
-  }
+  bool wantNextFrame = SampleAnimations(root, aCurrentFrame);
 
   // Advance animations to the next expected vsync timestamp, if we can
   // get it.
@@ -1429,23 +1246,18 @@ bool AsyncCompositionManager::TransformShadowTree(
     nextFrame += aVsyncRate;
   }
 
-#if defined(MOZ_WIDGET_ANDROID)
-  Compositor* compositor = mLayerManager->GetCompositor();
-  if (CompositorBridgeParent* bridge =
-          compositor->GetCompositorBridgeParent()) {
-    if (AndroidDynamicToolbarAnimator* animator =
-            bridge->GetAndroidDynamicToolbarAnimator()) {
-      wantNextFrame |= animator->UpdateAnimation(nextFrame);
-    }
-  }
-#endif  // defined(MOZ_WIDGET_ANDROID)
-
   // Reset the previous time stamp if we don't already have any running
   // animations to avoid using the time which is far behind for newly
   // started animations.
   mPreviousFrameTimeStamp = wantNextFrame ? aCurrentFrame : TimeStamp();
 
   if (!(aSkip & CompositorBridgeParentBase::TransformsToSkip::APZ)) {
+    bool apzAnimating = false;
+    if (RefPtr<APZSampler> apz = mCompositorBridge->GetAPZSampler()) {
+      apzAnimating = apz->AdvanceAnimations(nextFrame);
+    }
+    wantNextFrame |= apzAnimating;
+
     // Apply an async content transform to any layer that has
     // an async pan zoom controller.
     bool foundRoot = false;
@@ -1458,13 +1270,6 @@ bool AsyncCompositionManager::TransformShadowTree(
       }
 #endif
     }
-
-    bool apzAnimating = false;
-    if (RefPtr<APZSampler> apz = mCompositorBridge->GetAPZSampler()) {
-      apzAnimating =
-          apz->SampleAnimations(LayerMetricsWrapper(root), nextFrame);
-    }
-    wantNextFrame |= apzAnimating;
   }
 
   HostLayer* rootComposite = root->AsHostLayer();
@@ -1480,7 +1285,6 @@ bool AsyncCompositionManager::TransformShadowTree(
   return wantNextFrame;
 }
 
-#if defined(MOZ_WIDGET_ANDROID)
 void AsyncCompositionManager::SetFixedLayerMargins(ScreenIntCoord aTop,
                                                    ScreenIntCoord aBottom) {
   mFixedLayerMargins.top = aTop;
@@ -1494,7 +1298,34 @@ ScreenMargin AsyncCompositionManager::GetFixedLayerMargins() const {
   }
   return result;
 }
-#endif  // defined(MOZ_WIDGET_ANDROID)
+
+/*static*/
+ScreenPoint AsyncCompositionManager::ComputeFixedMarginsOffset(
+    const ScreenMargin& aCompositorFixedLayerMargins, SideBits aFixedSides,
+    const ScreenMargin& aGeckoFixedLayerMargins) {
+  // Work out the necessary translation, in screen space.
+  ScreenPoint translation;
+
+  ScreenMargin effectiveMargin =
+      aCompositorFixedLayerMargins - aGeckoFixedLayerMargins;
+  if ((aFixedSides & SideBits::eLeftRight) == SideBits::eLeftRight) {
+    translation.x += (effectiveMargin.left - effectiveMargin.right) / 2;
+  } else if (aFixedSides & SideBits::eRight) {
+    translation.x -= effectiveMargin.right;
+  } else if (aFixedSides & SideBits::eLeft) {
+    translation.x += effectiveMargin.left;
+  }
+
+  if ((aFixedSides & SideBits::eTopBottom) == SideBits::eTopBottom) {
+    translation.y += (effectiveMargin.top - effectiveMargin.bottom) / 2;
+  } else if (aFixedSides & SideBits::eBottom) {
+    translation.y -= effectiveMargin.bottom;
+  } else if (aFixedSides & SideBits::eTop) {
+    translation.y += effectiveMargin.top;
+  }
+
+  return translation;
+}
 
 }  // namespace layers
 }  // namespace mozilla

@@ -52,14 +52,13 @@ extern const uint8_t /* enum TxfmType */
 extern const uint8_t /* enum InterPredMode */
                      dav1d_comp_inter_pred_modes[N_COMP_INTER_PRED_MODES][2];
 
-extern const uint8_t dav1d_tx_type_count[N_TXTP_SETS];
-extern const uint8_t /* enum TxfmType */
-                     dav1d_tx_types_per_set[N_TXTP_SETS][N_TX_TYPES];
-extern const uint8_t dav1d_tx_type_set_index[2][N_TXTP_SETS];
+extern const uint8_t dav1d_partition_type_count[N_BL_LEVELS];
+extern const uint8_t /* enum TxfmType */ dav1d_tx_types_per_set[40];
 
 extern const uint8_t dav1d_filter_mode_to_y_mode[5];
 extern const uint8_t dav1d_ymode_size_context[N_BS_SIZES];
-extern const uint8_t dav1d_nz_map_ctx_offset[N_RECT_TX_SIZES][5][5];
+extern const uint8_t dav1d_lo_ctx_offsets[3][5][5];
+extern const uint8_t dav1d_skip_ctx[5][5];
 extern const uint8_t /* enum TxClass */
                      dav1d_tx_type_class[N_TX_TYPES_PLUS_LL];
 extern const uint8_t /* enum Filter2d */
@@ -106,12 +105,14 @@ static const unsigned interintra_allowed_mask =
 
 extern const Dav1dWarpedMotionParams dav1d_default_wm_params;
 
+extern const int8_t dav1d_cdef_directions[12][2];
+
 extern const int16_t dav1d_sgr_params[16][4];
 extern const uint8_t dav1d_sgr_x_by_x[256];
 
-extern const int8_t dav1d_mc_subpel_filters[5][15][8];
+extern const int8_t dav1d_mc_subpel_filters[5+ARCH_X86_64][15][8];
 extern const int8_t dav1d_mc_warp_filter[193][8];
-extern const int16_t dav1d_resize_filter[64][8];
+extern const int8_t dav1d_resize_filter[64][8];
 
 extern const uint8_t dav1d_sm_weights[128];
 extern const uint16_t dav1d_dr_intra_derivative[44];

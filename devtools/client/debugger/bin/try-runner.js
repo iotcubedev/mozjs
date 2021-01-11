@@ -59,23 +59,12 @@ function runFlow() {
   return runFlowJson();
 }
 
-function eslint() {
-  logStart("Eslint");
-  const { out } = execOut("yarn", ["lint:js"]);
-  console.log(out);
-  const errors = logErrors("eslint", out.match(/ {2}error {2}(.*)/g) || []);
-
-  return errors.length == 0;
-}
-
 function jest() {
   logStart("Jest");
   const { out } = execOut("yarn", ["test-ci"]);
   // Remove the non-JSON logs mixed with the JSON output by yarn.
   const jsonOut = out.substring(out.indexOf("{"), out.lastIndexOf("}") + 1);
   const results = JSON.parse(jsonOut);
-
-  const failed = results.numFailedTests == 0;
 
   // The individual failing tests are in jammed into the same message string :/
   const errors = [].concat(
@@ -85,7 +74,7 @@ function jest() {
   );
 
   logErrors("jest", errors);
-  return failed;
+  return errors.length == 0;
 }
 
 function stylelint() {
@@ -94,18 +83,6 @@ function stylelint() {
   console.log(out);
   const errors = logErrors("stylelint", out.match(/ {2}✖(.*)/g) || []);
 
-  return errors.length == 0;
-}
-
-function jsxAccessibility() {
-  logStart("Eslint (JSX Accessibility)");
-
-  const { out } = execOut("yarn", ["lint:jsx-a11y"]);
-  console.log(out);
-  const errors = logErrors(
-    "eslint (jsx accessibility)",
-    out.match(/ {2}error {2}(.*)/g) || []
-  );
   return errors.length == 0;
 }
 
@@ -119,33 +96,27 @@ function lintMd() {
 
 chdir(dbgPath);
 const flowPassed = runFlow();
-const eslintPassed = eslint();
 const jestPassed = jest();
 const styleLintPassed = stylelint();
-const jsxAccessibilityPassed = jsxAccessibility();
 const remarkPassed = lintMd();
 
 const success =
   flowPassed &&
-  eslintPassed &&
   jestPassed &&
   styleLintPassed &&
-  jsxAccessibilityPassed &&
   remarkPassed;
 
 console.log({
   flowPassed,
-  eslintPassed,
   jestPassed,
   styleLintPassed,
-  jsxAccessibilityPassed,
   remarkPassed,
 });
 
 if (!success) {
   console.log(
     "[debugger-node-test-runner] You can find documentation about the " +
-      "debugger node tests at https://docs.firefox-dev.tools/tests/node-tests.html"
+      "debugger node tests at https://firefox-source-docs.mozilla.org/devtools/tests/node-tests.html"
   );
 }
 

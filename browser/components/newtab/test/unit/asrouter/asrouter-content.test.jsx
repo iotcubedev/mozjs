@@ -9,6 +9,7 @@ import { OnboardingMessageProvider } from "lib/OnboardingMessageProvider.jsm";
 import React from "react";
 import { mount } from "enzyme";
 import { Trailhead } from "../../../content-src/asrouter/templates/Trailhead/Trailhead";
+import { Triplets } from "../../../content-src/asrouter/templates/FirstRun/Triplets";
 import { actionCreators as ac } from "common/Actions.jsm";
 
 let [FAKE_MESSAGE] = FAKE_LOCAL_MESSAGES;
@@ -53,6 +54,7 @@ describe("ASRouterUISurface", () => {
   let sandbox;
   let headerPortal;
   let footerPortal;
+  let root;
   let fakeDocument;
   let fetchStub;
 
@@ -60,6 +62,7 @@ describe("ASRouterUISurface", () => {
     sandbox = sinon.createSandbox();
     headerPortal = document.createElement("div");
     footerPortal = document.createElement("div");
+    root = document.createElement("div");
     sandbox.stub(footerPortal, "querySelector").returns(footerPortal);
     fetchStub = sandbox.stub(global, "fetch").resolves({
       ok: true,
@@ -98,6 +101,8 @@ describe("ASRouterUISurface", () => {
         switch (id) {
           case "header-asrouter-container":
             return headerPortal;
+          case "root":
+            return root;
           default:
             return footerPortal;
         }
@@ -174,9 +179,9 @@ describe("ASRouterUISurface", () => {
 
   it("should render a trailhead message in the header portal", async () => {
     // wrapper = shallow(<ASRouterUISurface document={fakeDocument} />);
-    const message = (await OnboardingMessageProvider.getUntranslatedMessages()).find(
-      msg => msg.template === "trailhead"
-    );
+    const message = (
+      await OnboardingMessageProvider.getUntranslatedMessages()
+    ).find(msg => msg.template === "trailhead");
 
     wrapper.setState({ message });
 
@@ -197,6 +202,14 @@ describe("ASRouterUISurface", () => {
     assert.property(stub.firstCall.args[0].detail.data, "ntp_text");
     assert.property(stub.firstCall.args[0].detail.data, "sidebar");
     assert.property(stub.firstCall.args[0].detail.data, "sidebar_text");
+  });
+
+  it("should set `dir=rtl` on the page's <html> element if the dir param is set", () => {
+    assert.notPropertyVal(fakeDocument, "dir", "rtl");
+    sandbox.stub(ASRouterUtils, "getPreviewEndpoint").returns({ dir: "rtl" });
+
+    wrapper = mount(<ASRouterUISurface document={fakeDocument} />);
+    assert.propertyVal(fakeDocument, "dir", "rtl");
   });
 
   describe("snippets", () => {
@@ -226,11 +239,72 @@ describe("ASRouterUISurface", () => {
 
   describe("trailhead", () => {
     it("should render trailhead if a trailhead message is received", async () => {
-      const message = (await OnboardingMessageProvider.getUntranslatedMessages()).find(
-        msg => msg.template === "trailhead"
-      );
+      const message = (
+        await OnboardingMessageProvider.getUntranslatedMessages()
+      ).find(msg => msg.template === "trailhead");
       wrapper.setState({ message });
       assert.lengthOf(wrapper.find(Trailhead), 1);
+    });
+
+    it("should render Triplets if a trailhead message with bundle is received", async () => {
+      const FAKE_TRIPLETS_BUNDLE = [
+        {
+          id: "test",
+          content: {
+            title: { string_id: "foo" },
+            text: { string_id: "text1" },
+            icon: "icon",
+            primary_button: {
+              label: { string_id: "button1" },
+              action: {
+                type: "OPEN_URL",
+                data: { args: "https://example.com/" },
+              },
+            },
+          },
+        },
+      ];
+      const message = (
+        await OnboardingMessageProvider.getUntranslatedMessages()
+      ).find(msg => msg.template === "trailhead");
+      wrapper.setState({
+        message: { ...message, bundle: FAKE_TRIPLETS_BUNDLE },
+      });
+      assert.lengthOf(wrapper.find(Triplets), 1);
+    });
+
+    it("should send NEW_TAB_MESSAGE_REQUEST if a bundle card id is blocked or cleared", async () => {
+      sandbox.stub(ASRouterUtils, "sendMessage");
+      const FAKE_TRIPLETS_BUNDLE_1 = [
+        {
+          id: "CARD_1",
+          content: {
+            title: { string_id: "onboarding-private-browsing-title" },
+            text: { string_id: "onboarding-private-browsing-text" },
+            icon: "icon",
+            primary_button: {
+              label: { string_id: "onboarding-button-label-get-started" },
+              action: {
+                type: "OPEN_URL",
+                data: { args: "https://example.com/" },
+              },
+            },
+          },
+        },
+      ];
+      const message = (
+        await OnboardingMessageProvider.getUntranslatedMessages()
+      ).find(msg => msg.id === "TRAILHEAD_1");
+      wrapper.setState({
+        message: { ...message, bundle: FAKE_TRIPLETS_BUNDLE_1 },
+      });
+
+      wrapper.instance().clearMessage("CARD_1");
+      assert.calledOnce(ASRouterUtils.sendMessage);
+      assert.calledWithExactly(ASRouterUtils.sendMessage, {
+        type: "NEWTAB_MESSAGE_REQUEST",
+        data: { endpoint: undefined },
+      });
     });
   });
 
@@ -372,6 +446,51 @@ describe("ASRouterUISurface", () => {
         `${FAKE_MESSAGE.provider}_user_event`
       );
       assert.propertyVal(payload, "source", "NEWTAB_FOOTER_BAR");
+    });
+
+    it("should construct a OPEN_ABOUT_PAGE action with attribution", () => {
+      wrapper.setState({ message: FAKE_MESSAGE });
+      const stub = sandbox.stub(ASRouterUtils, "executeAction");
+
+      wrapper.instance().sendClick({
+        target: {
+          dataset: {
+            metric: "",
+            entrypoint_value: "snippet",
+            action: "OPEN_PREFERENCES_PAGE",
+            args: "home",
+          },
+        },
+      });
+
+      assert.calledOnce(stub);
+      assert.calledWithExactly(stub, {
+        type: "OPEN_PREFERENCES_PAGE",
+        data: { args: "home", entrypoint: "snippet" },
+      });
+    });
+
+    it("should construct a OPEN_ABOUT_PAGE action with attribution", () => {
+      wrapper.setState({ message: FAKE_MESSAGE });
+      const stub = sandbox.stub(ASRouterUtils, "executeAction");
+
+      wrapper.instance().sendClick({
+        target: {
+          dataset: {
+            metric: "",
+            entrypoint_name: "entryPoint",
+            entrypoint_value: "snippet",
+            action: "OPEN_ABOUT_PAGE",
+            args: "logins",
+          },
+        },
+      });
+
+      assert.calledOnce(stub);
+      assert.calledWithExactly(stub, {
+        type: "OPEN_ABOUT_PAGE",
+        data: { args: "logins", entrypoint: "entryPoint=snippet" },
+      });
     });
   });
 

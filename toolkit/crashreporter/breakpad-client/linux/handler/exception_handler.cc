@@ -78,7 +78,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <sys/signal.h>
 #include <sys/ucontext.h>
 #include <sys/user.h>
 #include <ucontext.h>
@@ -88,6 +87,7 @@
 #include <vector>
 
 #include "common/basictypes.h"
+#include "common/linux/breakpad_getcontext.h"
 #include "common/linux/linux_libc_support.h"
 #include "common/memory_allocator.h"
 #include "linux/log/log.h"
@@ -579,7 +579,7 @@ bool ExceptionHandler::GenerateDump(
   if (child != 0) {
     static const char clonedMsg[] =
       "ExceptionHandler::GenerateDump cloned child ";
-    char pidMsg[32];
+    char pidMsg[32] = {};
 
     unsigned int pidLen = my_uint_len(child);
     my_uitos(pidMsg, child, pidLen);

@@ -6,6 +6,7 @@
 
 import { isConsole } from "../utils/preview";
 import { findBestMatchExpression } from "../utils/ast";
+import { getGrip, getFront } from "../utils/evaluation-result";
 import { getExpressionFromCoords } from "../utils/editor/get-expression";
 import { isOriginal } from "../utils/source";
 import { isTesting } from "devtools-environment";
@@ -19,6 +20,7 @@ import {
   getSymbols,
   getCurrentThread,
   getPreviewCount,
+  getSelectedException,
 } from "../selectors";
 
 import { getMappedExpression } from "./expressions";
@@ -27,7 +29,7 @@ import type { Action, ThunkArgs } from "./types";
 import type { Position, Context } from "../types";
 import type { AstLocation } from "../workers/parser";
 
-function findExpressionMatch(state, codeMirror, tokenPos) {
+function findExpressionMatch(state, codeMirror: any, tokenPos: Object) {
   const source = getSelectedSource(state);
   if (!source) {
     return;
@@ -114,24 +116,34 @@ export function setPreview(
       thread,
     });
 
+    const resultGrip = getGrip(result);
+
     // Error case occurs for a token that follows an errored evaluation
     // https://github.com/firefox-devtools/debugger/pull/8056
     // Accommodating for null allows us to show preview for falsy values
     // line "", false, null, Nan, and more
-    if (result === null) {
+    if (resultGrip === null) {
       return;
     }
 
     // Handle cases where the result is invisible to the debugger
     // and not possible to preview. Bug 1548256
-    if (result.class && result.class.includes("InvisibleToDebugger")) {
+    if (
+      resultGrip &&
+      resultGrip.class &&
+      typeof resultGrip.class === "string" &&
+      resultGrip.class.includes("InvisibleToDebugger")
+    ) {
       return;
     }
 
     const root = {
       name: expression,
       path: expression,
-      contents: { value: result },
+      contents: {
+        value: resultGrip,
+        front: getFront(result),
+      },
     };
     const properties = await client.loadObjectProperties(root);
 
@@ -152,7 +164,7 @@ export function setPreview(
       cx,
       value: {
         expression,
-        result,
+        resultGrip,
         properties,
         root,
         location,
@@ -177,5 +189,43 @@ export function clearPreview(cx: Context) {
         cx,
       }: Action)
     );
+  };
+}
+
+export function setExceptionPreview(
+  cx: Context,
+  target: HTMLElement,
+  tokenPos: Object,
+  codeMirror: any
+) {
+  return async ({ dispatch, getState }: ThunkArgs) => {
+    const cursorPos = target.getBoundingClientRect();
+
+    const match = findExpressionMatch(getState(), codeMirror, tokenPos);
+    if (!match) {
+      return;
+    }
+
+    const tokenColumnStart = match.location.start.column + 1;
+    const exception = getSelectedException(
+      getState(),
+      tokenPos.line,
+      tokenColumnStart
+    );
+    if (!exception) {
+      return;
+    }
+
+    dispatch({
+      type: "SET_PREVIEW",
+      cx,
+      value: {
+        exception,
+        location: match.location,
+        tokenPos,
+        cursorPos,
+        target,
+      },
+    });
   };
 }

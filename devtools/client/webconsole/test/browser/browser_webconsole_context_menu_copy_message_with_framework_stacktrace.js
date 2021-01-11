@@ -41,7 +41,7 @@ add_task(async function() {
 
   info("Call the log function defined in the test page");
   const onMessage = waitForMessage(hud, "wrapperTrace");
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.render();
   });
   const message = await onMessage;
@@ -122,5 +122,8 @@ async function copyMessageContent(hud, messageEl) {
   const copyMenuItem = menuPopup.querySelector("#console-menu-copy");
   ok(copyMenuItem, "copy menu item is enabled");
 
-  return waitForClipboardPromise(() => copyMenuItem.click(), data => data);
+  return waitForClipboardPromise(
+    () => copyMenuItem.click(),
+    data => data
+  );
 }

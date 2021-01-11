@@ -55,9 +55,9 @@ async function checkCacheEnabled(tabX, expected) {
 
   await reloadTab(tabX);
 
-  const oldGuid = await ContentTask.spawn(
+  const oldGuid = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
-    {},
+    [],
     function() {
       const doc = content.document;
       const h1 = doc.querySelector("h1");
@@ -67,9 +67,9 @@ async function checkCacheEnabled(tabX, expected) {
 
   await reloadTab(tabX);
 
-  const guid = await ContentTask.spawn(
+  const guid = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
-    {},
+    [],
     function() {
       const doc = content.document;
       const h1 = doc.querySelector("h1");
@@ -111,8 +111,9 @@ function reloadTab(tabX) {
   );
 
   info("Reloading tab " + tabX.title);
-  const mm = loadFrameScriptUtils();
-  mm.sendAsyncMessage("devtools:test:reload");
+  SpecialPowers.spawn(browser, [], () => {
+    content.location.reload(false);
+  });
 
   return reloadTabPromise;
 }

@@ -17,7 +17,7 @@
 #include "LocalStorageCache.h"
 #include "StorageObserver.h"
 #include "mozilla/Mutex.h"
-#include "nsAutoPtr.h"
+#include "mozilla/UniquePtr.h"
 
 namespace mozilla {
 
@@ -160,7 +160,7 @@ class StorageDBChild final : public PBackgroundStorageChild {
   RefPtr<LocalStorageManager> mManager;
 
   // Origins having data hash, for optimization purposes only
-  nsAutoPtr<nsTHashtable<nsCStringHashKey>> mOriginsHavingData;
+  UniquePtr<nsTHashtable<nsCStringHashKey>> mOriginsHavingData;
 
   // List of caches waiting for preload.  This ensures the contract that
   // AsyncPreload call references the cache for time of the preload.
@@ -270,13 +270,13 @@ class StorageDBParent final : public PBackgroundStorageParent {
     CacheParentBridge(StorageDBParent* aParentDB,
                       const nsACString& aOriginSuffix,
                       const nsACString& aOriginNoSuffix)
-        : mOwningEventTarget(GetCurrentThreadSerialEventTarget()),
+        : mOwningEventTarget(GetCurrentSerialEventTarget()),
           mParent(aParentDB),
           mOriginSuffix(aOriginSuffix),
           mOriginNoSuffix(aOriginNoSuffix),
           mLoaded(false),
           mLoadedCount(0) {}
-    virtual ~CacheParentBridge() {}
+    virtual ~CacheParentBridge() = default;
 
     // LocalStorageCacheBridge
     virtual const nsCString Origin() const override;
@@ -312,10 +312,10 @@ class StorageDBParent final : public PBackgroundStorageParent {
    public:
     UsageParentBridge(StorageDBParent* aParentDB,
                       const nsACString& aOriginScope)
-        : mOwningEventTarget(GetCurrentThreadSerialEventTarget()),
+        : mOwningEventTarget(GetCurrentSerialEventTarget()),
           mParent(aParentDB),
           mOriginScope(aOriginScope) {}
-    virtual ~UsageParentBridge() {}
+    virtual ~UsageParentBridge() = default;
 
     // StorageUsageBridge
     virtual const nsCString& OriginScope() override { return mOriginScope; }

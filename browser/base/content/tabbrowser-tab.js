@@ -8,6 +8,34 @@
 // a block to prevent accidentally leaking globals onto `window`.
 {
   class MozTabbrowserTab extends MozElements.MozTab {
+    static get markup() {
+      return `
+      <stack class="tab-stack" flex="1">
+        <vbox class="tab-background">
+          <hbox class="tab-line"/>
+          <spacer flex="1" class="tab-background-inner"/>
+          <hbox class="tab-bottom-line"/>
+        </vbox>
+        <hbox class="tab-loading-burst"/>
+        <hbox class="tab-content" align="center">
+          <hbox class="tab-throbber" layer="true"/>
+          <hbox class="tab-icon-pending"/>
+          <image class="tab-icon-image" validate="never" role="presentation"/>
+          <image class="tab-sharing-icon-overlay" role="presentation"/>
+          <image class="tab-icon-overlay" role="presentation"/>
+          <hbox class="tab-label-container"
+                onoverflow="this.setAttribute('textoverflow', 'true');"
+                onunderflow="this.removeAttribute('textoverflow');"
+                flex="1">
+            <label class="tab-text tab-label" role="presentation"/>
+          </hbox>
+          <image class="tab-icon-sound" role="presentation"/>
+          <image class="tab-close-button close-icon" role="presentation"/>
+        </hbox>
+      </stack>
+      `;
+    }
+
     constructor() {
       super();
 
@@ -69,44 +97,17 @@
       };
     }
 
-    get fragment() {
-      if (!this._fragment) {
-        this._fragment = MozXULElement.parseXULToFragment(`
-        <stack class="tab-stack" flex="1">
-          <vbox class="tab-background">
-            <hbox class="tab-line"/>
-            <spacer flex="1" class="tab-background-inner"/>
-            <hbox class="tab-bottom-line"/>
-          </vbox>
-          <hbox class="tab-loading-burst"/>
-          <hbox class="tab-content" align="center">
-            <hbox class="tab-throbber" layer="true"/>
-            <hbox class="tab-icon-pending"/>
-            <image class="tab-icon-image" validate="never" role="presentation"/>
-            <image class="tab-sharing-icon-overlay" role="presentation"/>
-            <image class="tab-icon-overlay" role="presentation"/>
-            <hbox class="tab-label-container"
-                  onoverflow="this.setAttribute('textoverflow', 'true');"
-                  onunderflow="this.removeAttribute('textoverflow');"
-                  flex="1">
-              <label class="tab-text tab-label" role="presentation"/>
-            </hbox>
-            <image class="tab-icon-sound" role="presentation"/>
-            <image class="tab-close-button close-icon" role="presentation"/>
-          </hbox>
-        </stack>
-      `);
-      }
-      return this.ownerDocument.importNode(this._fragment, true);
+    connectedCallback() {
+      this.initialize();
     }
 
-    connectedCallback() {
+    initialize() {
       if (this._initialized) {
         return;
       }
 
       this.textContent = "";
-      this.appendChild(this.fragment);
+      this.appendChild(this.constructor.fragment);
       this.initializeAttributeInheritance();
       this.setAttribute("context", "tabContextMenu");
       this._initialized = true;
@@ -213,7 +214,7 @@
         return false;
       }
 
-      if (!checkEmptyPageOrigin(browser)) {
+      if (!BrowserUtils.checkEmptyPageOrigin(browser)) {
         return false;
       }
 
@@ -291,7 +292,10 @@
     on_dragstart(event) {
       if (event.eventPhase == Event.CAPTURING_PHASE) {
         this.style.MozUserFocus = "";
-      } else if (this.mOverCloseButton) {
+      } else if (
+        this.mOverCloseButton ||
+        gSharedTabWarning.willShowSharedTabWarning(this)
+      ) {
         event.stopPropagation();
       }
     }
@@ -322,7 +326,7 @@
         gBrowser.warmupTab(gBrowser._findTabToBlurTo(this));
       }
 
-      if (event.button == 0 && tabContainer._multiselectEnabled) {
+      if (event.button == 0) {
         let shiftKey = event.shiftKey;
         let accelKey = event.getModifierState("Accel");
         if (shiftKey) {
@@ -351,6 +355,10 @@
         } else if (!this.selected && this.multiselected) {
           gBrowser.lockClearMultiSelectionOnce();
         }
+      }
+
+      if (gSharedTabWarning.willShowSharedTabWarning(this)) {
+        eventMaySelectTab = false;
       }
 
       if (eventMaySelectTab) {

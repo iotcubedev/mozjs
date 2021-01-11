@@ -20,24 +20,6 @@ function loginList() {
   ];
 }
 
-function openPopup(popup, browser) {
-  return new Promise(async resolve => {
-    let promiseShown = BrowserTestUtils.waitForEvent(popup, "popupshown");
-
-    await SimpleTest.promiseFocus(browser);
-    info("content window focused");
-
-    // Focus the username field to open the popup.
-    await ContentTask.spawn(browser, null, function openAutocomplete() {
-      content.document.getElementById("form-basic-username").focus();
-    });
-
-    let shown = await promiseShown;
-    ok(shown, "autocomplete popup shown");
-    resolve(shown);
-  });
-}
-
 /**
  * Initialize logins and set prefs needed for the test.
  */
@@ -63,7 +45,7 @@ add_task(async function test_autocomplete_footer_onclick() {
       let popup = document.getElementById("PopupAutoComplete");
       ok(popup, "Got popup");
 
-      await openPopup(popup, browser);
+      await openACPopup(popup, browser, "#form-basic-username");
 
       let footer = popup.querySelector(`[originaltype="loginsFooter"]`);
       ok(footer, "Got footer richlistitem");
@@ -73,18 +55,17 @@ add_task(async function test_autocomplete_footer_onclick() {
       }, "Waiting for footer to become visible");
 
       let openingFunc = () => EventUtils.synthesizeMouseAtCenter(footer, {});
-      let passwordManager = await openPasswordManager(openingFunc, true);
+      let passwordManager = await openPasswordManager(openingFunc, false);
 
       info("Password Manager was opened");
 
-      is(
-        passwordManager.filterValue,
-        "example.com",
-        "Search string should be set to filter logins"
+      ok(
+        !passwordManager.filterValue,
+        "Search string should not be set to filter logins"
       );
 
-      // open_management + filter
-      await LoginTestUtils.telemetry.waitForEventCount(2);
+      // open_management
+      await LoginTestUtils.telemetry.waitForEventCount(1);
 
       // Check event telemetry recorded when opening management UI
       TelemetryTestUtils.assertEvents(
@@ -94,7 +75,7 @@ add_task(async function test_autocomplete_footer_onclick() {
       );
 
       await passwordManager.close();
-      popup.hidePopup();
+      await closePopup(popup);
     }
   );
 });
@@ -110,7 +91,7 @@ add_task(async function test_autocomplete_footer_keydown() {
       let popup = document.getElementById("PopupAutoComplete");
       ok(popup, "Got popup");
 
-      await openPopup(popup, browser);
+      await openACPopup(popup, browser, "#form-basic-username");
 
       let footer = popup.querySelector(`[originaltype="loginsFooter"]`);
       ok(footer, "Got footer richlistitem");
@@ -124,13 +105,12 @@ add_task(async function test_autocomplete_footer_keydown() {
       await EventUtils.synthesizeKey("KEY_ArrowDown");
       let openingFunc = () => EventUtils.synthesizeKey("KEY_Enter");
 
-      let passwordManager = await openPasswordManager(openingFunc, true);
+      let passwordManager = await openPasswordManager(openingFunc, false);
       info("Login dialog was opened");
 
-      is(
-        passwordManager.filterValue,
-        "example.com",
-        "Search string should be set to filter logins"
+      ok(
+        !passwordManager.filterValue,
+        "Search string should not be set to filter logins"
       );
 
       // Check event telemetry recorded when opening management UI
@@ -141,7 +121,7 @@ add_task(async function test_autocomplete_footer_keydown() {
       );
 
       await passwordManager.close();
-      popup.hidePopup();
+      await closePopup(popup);
     }
   );
 });

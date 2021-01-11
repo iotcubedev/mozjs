@@ -47,7 +47,7 @@ add_task(async function test_context_menu_populate_password_noSchemeUpgrades() {
       let popupMenu = document.getElementById("fill-login-popup");
       checkMenu(popupMenu, 2);
 
-      CONTEXT_MENU.hidePopup();
+      await closePopup(CONTEXT_MENU);
     }
   );
 });
@@ -70,7 +70,7 @@ add_task(async function test_context_menu_populate_password_schemeUpgrades() {
       let popupMenu = document.getElementById("fill-login-popup");
       checkMenu(popupMenu, 3);
 
-      CONTEXT_MENU.hidePopup();
+      await closePopup(CONTEXT_MENU);
     }
   );
 });
@@ -97,7 +97,7 @@ add_task(
         let popupMenu = document.getElementById("fill-login-popup");
         checkMenu(popupMenu, 2);
 
-        CONTEXT_MENU.hidePopup();
+        await closePopup(CONTEXT_MENU);
       }
     );
   }
@@ -124,7 +124,7 @@ add_task(
         let popupMenu = document.getElementById("fill-login-popup");
         checkMenu(popupMenu, 3);
 
-        CONTEXT_MENU.hidePopup();
+        await closePopup(CONTEXT_MENU);
       }
     );
   }
@@ -142,9 +142,9 @@ add_task(async function test_context_menu_password_fill() {
       url: TEST_ORIGIN + MULTIPLE_FORMS_PAGE_PATH,
     },
     async function(browser) {
-      let formDescriptions = await ContentTask.spawn(
+      let formDescriptions = await SpecialPowers.spawn(
         browser,
-        {},
+        [],
         async function() {
           let forms = Array.from(
             content.document.getElementsByClassName("test-form")
@@ -156,15 +156,17 @@ add_task(async function test_context_menu_password_fill() {
       for (let description of formDescriptions) {
         info("Testing form: " + description);
 
-        let passwordInputIds = await ContentTask.spawn(
+        let passwordInputIds = await SpecialPowers.spawn(
           browser,
-          { description },
+          [{ description }],
           async function({ description }) {
             let formElement = content.document.querySelector(
               `[description="${description}"]`
             );
             let passwords = Array.from(
-              formElement.querySelectorAll("input[type='password']")
+              formElement.querySelectorAll(
+                "input[type='password'], input[data-type='password']"
+              )
             );
             return passwords.map(p => p.id);
           }
@@ -178,9 +180,9 @@ add_task(async function test_context_menu_password_fill() {
             browser,
             "#" + inputId,
             async function() {
-              let inputDisabled = await ContentTask.spawn(
+              let inputDisabled = await SpecialPowers.spawn(
                 browser,
-                { inputId },
+                [{ inputId }],
                 async function({ inputId }) {
                   let input = content.document.getElementById(inputId);
                   return input.disabled || input.readOnly;
@@ -192,8 +194,12 @@ add_task(async function test_context_menu_password_fill() {
               if (inputDisabled) {
                 Assert.ok(!POPUP_HEADER.hidden, "Popup menu is not hidden.");
                 Assert.ok(POPUP_HEADER.disabled, "Popup menu is disabled.");
-                CONTEXT_MENU.hidePopup();
+                await closePopup(CONTEXT_MENU);
               }
+              Assert.ok(
+                POPUP_HEADER.label.includes("Password"),
+                "top-level label is correct"
+              );
 
               return !inputDisabled;
             }
@@ -206,7 +212,7 @@ add_task(async function test_context_menu_password_fill() {
           // The only field affected by the password fill
           // should be the target password field itself.
           await assertContextMenuFill(browser, description, null, inputId, 1);
-          await ContentTask.spawn(browser, { inputId }, async function({
+          await SpecialPowers.spawn(browser, [{ inputId }], async function({
             inputId,
           }) {
             let passwordField = content.document.getElementById(inputId);
@@ -217,7 +223,7 @@ add_task(async function test_context_menu_password_fill() {
             );
           });
 
-          CONTEXT_MENU.hidePopup();
+          await closePopup(CONTEXT_MENU);
         }
       }
     }
@@ -236,9 +242,9 @@ add_task(async function test_context_menu_username_login_fill() {
       url: TEST_ORIGIN + MULTIPLE_FORMS_PAGE_PATH,
     },
     async function(browser) {
-      let formDescriptions = await ContentTask.spawn(
+      let formDescriptions = await SpecialPowers.spawn(
         browser,
-        {},
+        [],
         async function() {
           let forms = Array.from(
             content.document.getElementsByClassName("test-form")
@@ -249,15 +255,17 @@ add_task(async function test_context_menu_username_login_fill() {
 
       for (let description of formDescriptions) {
         info("Testing form: " + description);
-        let usernameInputIds = await ContentTask.spawn(
+        let usernameInputIds = await SpecialPowers.spawn(
           browser,
-          { description },
+          [{ description }],
           async function({ description }) {
             let formElement = content.document.querySelector(
               `[description="${description}"]`
             );
             let inputs = Array.from(
-              formElement.querySelectorAll("input[type='text']")
+              formElement.querySelectorAll(
+                "input[type='text']:not([data-type='password'])"
+              )
             );
             return inputs.map(p => p.id);
           }
@@ -273,17 +281,25 @@ add_task(async function test_context_menu_username_login_fill() {
             async function() {
               let headerHidden = POPUP_HEADER.hidden;
               let headerDisabled = POPUP_HEADER.disabled;
+              let headerLabel = POPUP_HEADER.label;
 
-              let data = { description, inputId, headerHidden, headerDisabled };
-              let shouldContinue = await ContentTask.spawn(
+              let data = {
+                description,
+                inputId,
+                headerHidden,
+                headerDisabled,
+                headerLabel,
+              };
+              let shouldContinue = await SpecialPowers.spawn(
                 browser,
-                data,
+                [data],
                 async function(data) {
                   let {
                     description,
                     inputId,
                     headerHidden,
                     headerDisabled,
+                    headerLabel,
                   } = data;
                   let formElement = content.document.querySelector(
                     `[description="${description}"]`
@@ -292,7 +308,7 @@ add_task(async function test_context_menu_username_login_fill() {
                   // We always want to check if the first password field is filled,
                   // since this is the current behavior from the _fillForm function.
                   let passwordField = formElement.querySelector(
-                    "input[type='password']"
+                    "input[type='password'], input[data-type='password']"
                   );
 
                   // If we don't want to see the actual popup menu,
@@ -312,12 +328,16 @@ add_task(async function test_context_menu_username_login_fill() {
                     }
                     return false;
                   }
+                  Assert.ok(
+                    headerLabel.includes("Login"),
+                    "top-level label is correct"
+                  );
                   return true;
                 }
               );
 
               if (!shouldContinue) {
-                CONTEXT_MENU.hidePopup();
+                await closePopup(CONTEXT_MENU);
               }
 
               return shouldContinue;
@@ -328,14 +348,16 @@ add_task(async function test_context_menu_username_login_fill() {
             continue;
           }
 
-          let passwordFieldId = await ContentTask.spawn(
+          let passwordFieldId = await SpecialPowers.spawn(
             browser,
-            { description },
+            [{ description }],
             async function({ description }) {
               let formElement = content.document.querySelector(
                 `[description="${description}"]`
               );
-              return formElement.querySelector("input[type='password']").id;
+              return formElement.querySelector(
+                "input[type='password'], input[data-type='password']"
+              ).id;
             }
           );
 
@@ -348,22 +370,24 @@ add_task(async function test_context_menu_username_login_fill() {
             1
           );
 
-          await ContentTask.spawn(browser, { passwordFieldId }, async function({
-            passwordFieldId,
-          }) {
-            let passwordField = content.document.getElementById(
-              passwordFieldId
-            );
-            if (!passwordField.hasAttribute("expectedFail")) {
-              Assert.equal(
-                passwordField.value,
-                "password1",
-                "Check upgraded login was actually used"
+          await SpecialPowers.spawn(
+            browser,
+            [{ passwordFieldId }],
+            async function({ passwordFieldId }) {
+              let passwordField = content.document.getElementById(
+                passwordFieldId
               );
+              if (!passwordField.hasAttribute("expectedFail")) {
+                Assert.equal(
+                  passwordField.value,
+                  "password1",
+                  "Check upgraded login was actually used"
+                );
+              }
             }
-          });
+          );
 
-          CONTEXT_MENU.hidePopup();
+          await closePopup(CONTEXT_MENU);
         }
       }
     }
@@ -396,7 +420,7 @@ add_task(async function test_context_menu_open_management() {
       );
 
       await passwordManager.close();
-      CONTEXT_MENU.hidePopup();
+      await closePopup(CONTEXT_MENU);
     }
   );
 });
@@ -418,7 +442,7 @@ async function assertContextMenuFill(
     unchangedSelector += `:not(#${usernameFieldId})`;
   }
 
-  await ContentTask.spawn(browser, { unchangedSelector }, async function({
+  await SpecialPowers.spawn(browser, [{ unchangedSelector }], async function({
     unchangedSelector,
   }) {
     let unchangedFields = content.document.querySelectorAll(unchangedSelector);

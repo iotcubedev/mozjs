@@ -9,33 +9,37 @@
 #include <utility>
 
 #include "MainThreadUtils.h"
+#include "nsCOMPtr.h"
 #include "nsDebug.h"
 #include "nsError.h"
 #include "nsIConsoleReportCollector.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIPrincipal.h"
-#include "nsIPermissionManager.h"
 #include "nsNetUtil.h"
 #include "nsProxyRelease.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 
 #include "RemoteWorkerService.h"
+#include "mozilla/ArrayAlgorithm.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/FetchEventOpProxyChild.h"
 #include "mozilla/dom/IndexedDatabaseManager.h"
 #include "mozilla/dom/MessagePort.h"
+#include "mozilla/dom/RemoteWorkerManager.h"  // RemoteWorkerManager::IsRemoteTypeAllowed
 #include "mozilla/dom/RemoteWorkerTypes.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
 #include "mozilla/dom/ServiceWorkerInterceptController.h"
 #include "mozilla/dom/ServiceWorkerOp.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
+#include "mozilla/dom/ServiceWorkerShutdownState.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/dom/workerinternals/ScriptLoader.h"
 #include "mozilla/dom/WorkerError.h"
@@ -44,7 +48,8 @@
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/URIUtils.h"
-#include "mozilla/net/CookieSettings.h"
+#include "mozilla/net/CookieJarSettings.h"
+#include "mozilla/PermissionManager.h"
 
 namespace mozilla {
 
@@ -143,63 +148,53 @@ class MessagePortIdentifierRunnable final : public WorkerRunnable {
         mPortIdentifier(aPortIdentifier) {}
 
  private:
-  virtual bool WorkerRun(JSContext* aCx,
-                         WorkerPrivate* aWorkerPrivate) override {
+  bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override {
     mActor->AddPortIdentifier(aCx, aWorkerPrivate, mPortIdentifier);
     return true;
   }
 
-  nsresult Cancel() override {
-    MessagePort::ForceClose(mPortIdentifier);
-    return WorkerRunnable::Cancel();
-  }
-
-  virtual bool PreDispatch(WorkerPrivate* aWorkerPrivate) override {
-    // Silence bad assertions.
-    return true;
-  }
-
-  virtual void PostDispatch(WorkerPrivate* aWorkerPrivate,
-                            bool aDispatchResult) override {
-    // Silence bad assertions.
-  }
-
-  bool PreRun(WorkerPrivate* aWorkerPrivate) override {
-    // Silence bad assertions.
-    return true;
-  }
-
-  void PostRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
-               bool aRunResult) override {
-    // Silence bad assertions.
-    return;
-  }
-
   SelfHolder mActor;
-  MessagePortIdentifier mPortIdentifier;
+  UniqueMessagePortId mPortIdentifier;
 };
 
-class ReleaseWorkerRunnable final : public WorkerRunnable {
+// This is used to release WeakWorkerRefs which can only have their refcount
+// modified on the owning thread (worker thread in this case). It also keeps
+// alive the associated WorkerPrivate until the WeakWorkerRef is released.
+class ReleaseWorkerRunnable final : public WorkerControlRunnable {
  public:
-  ReleaseWorkerRunnable(RefPtr<WorkerPrivate> aWorkerPrivate,
-                        already_AddRefed<WeakWorkerRef> aWeakRef)
-      : WorkerRunnable(aWorkerPrivate),
+  ReleaseWorkerRunnable(RefPtr<WorkerPrivate>&& aWorkerPrivate,
+                        RefPtr<WeakWorkerRef>&& aWeakRef)
+      : WorkerControlRunnable(aWorkerPrivate, WorkerThreadUnchangedBusyCount),
         mWorkerPrivate(std::move(aWorkerPrivate)),
-        mWeakRef(aWeakRef) {}
+        mWeakRef(std::move(aWeakRef)) {
+    MOZ_ASSERT(mWorkerPrivate);
+    MOZ_ASSERT(!mWorkerPrivate->IsOnWorkerThread());
+    MOZ_ASSERT(mWeakRef);
+  }
 
  private:
-  bool WorkerRun(JSContext*, WorkerPrivate*) override {
-    mWeakRef = nullptr;
-    mWorkerPrivate = nullptr;
+  ~ReleaseWorkerRunnable() { ReleaseMembers(); }
 
+  bool WorkerRun(JSContext*, WorkerPrivate*) override {
+    ReleaseMembers();
     return true;
   }
 
   nsresult Cancel() override {
-    mWeakRef = nullptr;
-    mWorkerPrivate = nullptr;
-
+    ReleaseMembers();
     return NS_OK;
+  }
+
+  void ReleaseMembers() {
+    if (!mWorkerPrivate) {
+      MOZ_ASSERT(!mWeakRef);
+      return;
+    }
+
+    mWeakRef = nullptr;
+
+    NS_ReleaseOnMainThread("ReleaseWorkerRunnable::mWorkerPrivate",
+                           mWorkerPrivate.forget());
   }
 
   RefPtr<WorkerPrivate> mWorkerPrivate;
@@ -211,12 +206,8 @@ class ReleaseWorkerRunnable final : public WorkerRunnable {
 class RemoteWorkerChild::InitializeWorkerRunnable final
     : public WorkerRunnable {
  public:
-  InitializeWorkerRunnable(RefPtr<WorkerPrivate> aWorkerPrivate,
-                           SelfHolder aActor)
-      : WorkerRunnable(aWorkerPrivate),
-        mWorkerPrivate(std::move(aWorkerPrivate)),
-        mActor(std::move(aActor)) {
-    MOZ_ASSERT(mWorkerPrivate);
+  InitializeWorkerRunnable(WorkerPrivate* aWorkerPrivate, SelfHolder aActor)
+      : WorkerRunnable(aWorkerPrivate), mActor(std::move(aActor)) {
     MOZ_ASSERT(mActor);
   }
 
@@ -224,7 +215,13 @@ class RemoteWorkerChild::InitializeWorkerRunnable final
   ~InitializeWorkerRunnable() { MaybeAbort(); }
 
   bool WorkerRun(JSContext*, WorkerPrivate*) override {
-    mActor->InitializeOnWorker(mWorkerPrivate.forget());
+    MOZ_ASSERT(mActor);
+
+    mActor->InitializeOnWorker();
+
+    SelfHolder holder = std::move(mActor);
+    MOZ_ASSERT(!mActor);
+
     return true;
   }
 
@@ -236,21 +233,19 @@ class RemoteWorkerChild::InitializeWorkerRunnable final
 
   // Slowly running out of synonyms for cancel, abort, terminate, etc...
   void MaybeAbort() {
-    if (!mWorkerPrivate) {
+    if (!mActor) {
       return;
     }
-
-    nsCOMPtr<nsIEventTarget> target =
-        SystemGroup::EventTargetFor(TaskCategory::Other);
-    NS_ProxyRelease("InitializeWorkerRunnable::mWorkerPrivate", target,
-                    mWorkerPrivate.forget());
 
     mActor->TransitionStateToTerminated();
     mActor->CreationFailedOnAnyThread();
     mActor->ShutdownOnWorker();
+
+    SelfHolder holder = std::move(mActor);
+    MOZ_ASSERT(!mActor);
   }
 
-  RefPtr<WorkerPrivate> mWorkerPrivate;
+  // Falsy indicates that WorkerRun or MaybeAbort has already been called.
   SelfHolder mActor;
 };
 
@@ -258,14 +253,13 @@ RemoteWorkerChild::RemoteWorkerChild(const RemoteWorkerData& aData)
     : mState(VariantType<Pending>(), "RemoteWorkerChild::mState"),
       mIsServiceWorker(aData.serviceWorkerData().type() ==
                        OptionalServiceWorkerData::TServiceWorkerData),
-      mOwningEventTarget(GetCurrentThreadSerialEventTarget()) {
+      mOwningEventTarget(GetCurrentSerialEventTarget()) {
   MOZ_ASSERT(RemoteWorkerService::Thread()->IsOnCurrentThread());
   MOZ_ASSERT(mOwningEventTarget);
 }
 
 RemoteWorkerChild::~RemoteWorkerChild() {
 #ifdef DEBUG
-  MOZ_ASSERT(mTerminationPromise.IsEmpty());
   auto lock = mState.Lock();
   MOZ_ASSERT(lock->is<Terminated>());
 #endif
@@ -276,31 +270,16 @@ nsISerialEventTarget* RemoteWorkerChild::GetOwningEventTarget() const {
 }
 
 void RemoteWorkerChild::ActorDestroy(ActorDestroyReason) {
-  Unused << NS_WARN_IF(!mTerminationPromise.IsEmpty());
-  mTerminationPromise.RejectIfExists(NS_ERROR_DOM_ABORT_ERR, __func__);
-
-  MOZ_ACCESS_THREAD_BOUND(mLauncherData, launcherData);
+  auto launcherData = mLauncherData.Access();
   launcherData->mIPCActive = false;
+
+  Unused << NS_WARN_IF(!launcherData->mTerminationPromise.IsEmpty());
+  launcherData->mTerminationPromise.RejectIfExists(NS_ERROR_DOM_ABORT_ERR,
+                                                   __func__);
 
   auto lock = mState.Lock();
 
   Unused << NS_WARN_IF(!lock->is<Terminated>());
-
-  if (NS_WARN_IF(lock->is<Running>())) {
-    nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
-        __func__,
-        [workerPrivate = std::move(lock->as<Running>().mWorkerPrivate),
-         workerRef = std::move(lock->as<Running>().mWorkerRef)]() mutable {
-          RefPtr<ReleaseWorkerRunnable> r =
-              new ReleaseWorkerRunnable(workerPrivate, workerRef.forget());
-
-          Unused << NS_WARN_IF(!r->Dispatch());
-
-          workerPrivate->Cancel();
-        });
-
-    MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
-  }
 
   *lock = VariantType<Terminated>();
 }
@@ -308,7 +287,7 @@ void RemoteWorkerChild::ActorDestroy(ActorDestroyReason) {
 void RemoteWorkerChild::ExecWorker(const RemoteWorkerData& aData) {
 #ifdef DEBUG
   MOZ_ASSERT(GetOwningEventTarget()->IsOnCurrentThread());
-  MOZ_ACCESS_THREAD_BOUND(mLauncherData, launcherData);
+  auto launcherData = mLauncherData.Access();
   MOZ_ASSERT(launcherData->mIPCActive);
 #endif
 
@@ -323,7 +302,8 @@ void RemoteWorkerChild::ExecWorker(const RemoteWorkerData& aData) {
         }
       });
 
-  MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
+  MOZ_ALWAYS_SUCCEEDS(
+      SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()));
 }
 
 nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
@@ -332,44 +312,56 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
   // Ensure that the IndexedDatabaseManager is initialized
   Unused << NS_WARN_IF(!IndexedDatabaseManager::GetOrCreate());
 
-  nsresult rv = NS_OK;
-
   auto scopeExit = MakeScopeExit([&] { TransitionStateToTerminated(); });
 
-  nsCOMPtr<nsIPrincipal> principal =
-      PrincipalInfoToPrincipal(aData.principalInfo(), &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+  // Verify the the RemoteWorker should be really allowed to run in this
+  // process, and fail if it shouldn't (This shouldn't normally happen,
+  // unless the RemoteWorkerData has been tempered in the process it was
+  // sent from).
+  if (!RemoteWorkerManager::IsRemoteTypeAllowed(aData)) {
+    return NS_ERROR_UNEXPECTED;
   }
 
-  nsCOMPtr<nsIPrincipal> loadingPrincipal =
-      PrincipalInfoToPrincipal(aData.loadingPrincipalInfo(), &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+  auto principalOrErr = PrincipalInfoToPrincipal(aData.principalInfo());
+  if (NS_WARN_IF(principalOrErr.isErr())) {
+    return principalOrErr.unwrapErr();
   }
 
-  nsCOMPtr<nsIPrincipal> storagePrincipal =
-      PrincipalInfoToPrincipal(aData.storagePrincipalInfo(), &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+
+  auto loadingPrincipalOrErr =
+      PrincipalInfoToPrincipal(aData.loadingPrincipalInfo());
+  if (NS_WARN_IF(loadingPrincipalOrErr.isErr())) {
+    return loadingPrincipalOrErr.unwrapErr();
+  }
+
+  auto partitionedPrincipalOrErr =
+      PrincipalInfoToPrincipal(aData.partitionedPrincipalInfo());
+  if (NS_WARN_IF(partitionedPrincipalOrErr.isErr())) {
+    return partitionedPrincipalOrErr.unwrapErr();
   }
 
   WorkerLoadInfo info;
   info.mBaseURI = DeserializeURI(aData.baseScriptURL());
   info.mResolvedScriptURI = DeserializeURI(aData.resolvedScriptURL());
 
-  info.mPrincipalInfo = new PrincipalInfo(aData.principalInfo());
-  info.mStoragePrincipalInfo = new PrincipalInfo(aData.storagePrincipalInfo());
+  info.mPrincipalInfo = MakeUnique<PrincipalInfo>(aData.principalInfo());
+  info.mPartitionedPrincipalInfo =
+      MakeUnique<PrincipalInfo>(aData.partitionedPrincipalInfo());
 
   info.mReferrerInfo = aData.referrerInfo();
   info.mDomain = aData.domain();
   info.mPrincipal = principal;
-  info.mStoragePrincipal = storagePrincipal;
-  info.mLoadingPrincipal = loadingPrincipal;
+  info.mPartitionedPrincipal = partitionedPrincipalOrErr.unwrap();
+  info.mLoadingPrincipal = loadingPrincipalOrErr.unwrap();
   info.mStorageAccess = aData.storageAccess();
+  info.mUseRegularPrincipal = aData.useRegularPrincipal();
+  info.mHasStorageAccessPermissionGranted =
+      aData.hasStorageAccessPermissionGranted();
   info.mOriginAttributes =
       BasePrincipal::Cast(principal)->OriginAttributesRef();
-  info.mCookieSettings = net::CookieSettings::Create();
+  net::CookieJarSettings::Deserialize(aData.cookieJarSettings(),
+                                      getter_AddRefs(info.mCookieJarSettings));
 
   // Default CSP permissions for now.  These will be overrided if necessary
   // based on the script CSP headers during load in ScriptLoader.
@@ -390,12 +382,14 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
     clientInfo.emplace(ClientInfo(aData.clientInfo().ref()));
   }
 
+  nsresult rv = NS_OK;
+
   if (clientInfo.isSome()) {
     Maybe<mozilla::ipc::CSPInfo> cspInfo = clientInfo.ref().GetCspInfo();
     if (cspInfo.isSome()) {
       info.mCSP = CSPInfoToCSP(cspInfo.ref(), nullptr);
-      info.mCSPInfo = new CSPInfo();
-      rv = CSPToCSPInfo(info.mCSP, info.mCSPInfo);
+      info.mCSPInfo = MakeUnique<CSPInfo>();
+      rv = CSPToCSPInfo(info.mCSP, info.mCSPInfo.get());
       if (NS_WARN_IF(NS_FAILED(rv))) {
         return rv;
       }
@@ -403,7 +397,7 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
   }
 
   rv = info.SetPrincipalsAndCSPOnMainThread(
-      info.mPrincipal, info.mStoragePrincipal, info.mLoadGroup, info.mCSP);
+      info.mPrincipal, info.mPartitionedPrincipal, info.mLoadGroup, info.mCSP);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -416,14 +410,6 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
     MOZ_ASSERT(!data.id().IsEmpty());
     workerPrivateId = std::move(data.id());
 
-    nsCOMPtr<nsIPermissionManager> permissionManager =
-        services::GetPermissionManager();
-
-    for (auto& keyAndPermissions : data.permissionsByKey()) {
-      permissionManager->SetPermissionsWithKey(keyAndPermissions.key(),
-                                               keyAndPermissions.permissions());
-    }
-
     info.mServiceWorkerCacheName = data.cacheName();
     info.mServiceWorkerDescriptor.emplace(data.descriptor());
     info.mServiceWorkerRegistrationDescriptor.emplace(
@@ -435,12 +421,14 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
     rv = ChannelFromScriptURLMainThread(
         info.mLoadingPrincipal, nullptr /* parent document */, info.mLoadGroup,
         info.mResolvedScriptURI, clientInfo,
-        nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER, info.mCookieSettings,
+        nsIContentPolicy::TYPE_INTERNAL_SHARED_WORKER, info.mCookieJarSettings,
         info.mReferrerInfo, getter_AddRefs(info.mChannel));
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
   }
+
+  info.mAgentClusterId = aData.agentClusterId();
 
   AutoJSAPI jsapi;
   jsapi.Init();
@@ -467,11 +455,43 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
   }
 
   RefPtr<InitializeWorkerRunnable> runnable =
-      new InitializeWorkerRunnable(std::move(workerPrivate), SelfHolder(this));
+      new InitializeWorkerRunnable(workerPrivate, SelfHolder(this));
 
-  if (NS_WARN_IF(!runnable->Dispatch())) {
-    rv = NS_ERROR_FAILURE;
-    return rv;
+  {
+    MOZ_ASSERT(workerPrivate);
+    auto lock = mState.Lock();
+    lock->as<Pending>().mWorkerPrivate = std::move(workerPrivate);
+  }
+
+  if (mIsServiceWorker) {
+    SelfHolder self = this;
+
+    nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
+        __func__, [initializeWorkerRunnable = std::move(runnable),
+                   self = std::move(self)] {
+          // Checking RemoteWorkerChild.mState
+          bool isPending;
+          {
+            auto lock = self->mState.Lock();
+            isPending = lock->is<Pending>();
+          }
+          if (NS_WARN_IF(!isPending || !initializeWorkerRunnable->Dispatch())) {
+            self->TransitionStateToTerminated();
+            self->CreationFailedOnAnyThread();
+          }
+        });
+
+    RefPtr<PermissionManager> permissionManager =
+        PermissionManager::GetInstance();
+    if (!permissionManager) {
+      return NS_ERROR_FAILURE;
+    }
+    permissionManager->WhenPermissionsAvailable(principal, r);
+  } else {
+    if (NS_WARN_IF(!runnable->Dispatch())) {
+      rv = NS_ERROR_FAILURE;
+      return rv;
+    }
   }
 
   scopeExit.release();
@@ -479,23 +499,21 @@ nsresult RemoteWorkerChild::ExecWorkerOnMainThread(RemoteWorkerData&& aData) {
   return NS_OK;
 }
 
-void RemoteWorkerChild::InitializeOnWorker(
-    already_AddRefed<WorkerPrivate> aWorkerPrivate) {
+void RemoteWorkerChild::InitializeOnWorker() {
+  RefPtr<WorkerPrivate> workerPrivate;
+
   {
     auto lock = mState.Lock();
 
     if (lock->is<PendingTerminated>()) {
-      nsCOMPtr<nsIEventTarget> target =
-          SystemGroup::EventTargetFor(TaskCategory::Other);
-      NS_ProxyRelease(__func__, target, std::move(aWorkerPrivate));
-
       TransitionStateToTerminated(lock.ref());
       ShutdownOnWorker();
       return;
     }
+
+    workerPrivate = std::move(lock->as<Pending>().mWorkerPrivate);
   }
 
-  RefPtr<WorkerPrivate> workerPrivate = aWorkerPrivate;
   MOZ_ASSERT(workerPrivate);
   workerPrivate->AssertIsOnWorkerThread();
 
@@ -508,8 +526,17 @@ void RemoteWorkerChild::InitializeOnWorker(
     NS_ProxyRelease(__func__, mOwningEventTarget, self.forget());
   });
 
+  // Let RemoteWorkerChild own the WorkerPrivate; RemoteWorkerChild's state
+  // transitions should guarantee the WorkerPrivate is cleaned up correctly.
+  // This also reduces some complexity around thread lifetimes guarantees that
+  // RemoteWorkerChild's state transitions rely on (e.g. the worker thread
+  // terminating unexpectedly).
+  RefPtr<StrongWorkerRef> strongRef =
+      StrongWorkerRef::Create(workerPrivate, __func__);
+
   RefPtr<WeakWorkerRef> workerRef = WeakWorkerRef::Create(
-      workerPrivate, [selfWeakRef = std::move(selfWeakRef)]() mutable {
+      workerPrivate, [selfWeakRef = std::move(selfWeakRef),
+                      strongRef = std::move(strongRef)]() mutable {
         RefPtr<RemoteWorkerChild> self(selfWeakRef);
 
         if (NS_WARN_IF(!self)) {
@@ -540,7 +567,7 @@ void RemoteWorkerChild::ShutdownOnWorker() {
 
   nsCOMPtr<nsIRunnable> r =
       NS_NewRunnableFunction(__func__, [self = std::move(self)] {
-        MOZ_ACCESS_THREAD_BOUND(self->mLauncherData, launcherData);
+        auto launcherData = self->mLauncherData.Access();
 
         if (!launcherData->mIPCActive) {
           return;
@@ -554,9 +581,8 @@ void RemoteWorkerChild::ShutdownOnWorker() {
 }
 
 RefPtr<GenericNonExclusivePromise> RemoteWorkerChild::GetTerminationPromise() {
-  MOZ_ASSERT(GetOwningEventTarget()->IsOnCurrentThread());
-
-  return mTerminationPromise.Ensure(__func__);
+  auto launcherData = mLauncherData.Access();
+  return launcherData->mTerminationPromise.Ensure(__func__);
 }
 
 void RemoteWorkerChild::CreationSucceededOnAnyThread() {
@@ -580,7 +606,7 @@ void RemoteWorkerChild::CreationSucceededOrFailedOnAnyThread(
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
       __func__,
       [self = std::move(self), didCreationSucceed = aDidCreationSucceed] {
-        MOZ_ACCESS_THREAD_BOUND(self->mLauncherData, launcherData);
+        auto launcherData = self->mLauncherData.Access();
 
         if (!launcherData->mIPCActive) {
           return;
@@ -589,19 +615,22 @@ void RemoteWorkerChild::CreationSucceededOrFailedOnAnyThread(
         Unused << self->SendCreated(didCreationSucceed);
       });
 
-  Unused << GetOwningEventTarget()->Dispatch(r.forget(), NS_DISPATCH_NORMAL);
+  GetOwningEventTarget()->Dispatch(r.forget(), NS_DISPATCH_NORMAL);
 }
 
 void RemoteWorkerChild::CloseWorkerOnMainThread(State& aState) {
   AssertIsOnMainThread();
   MOZ_ASSERT(!aState.is<PendingTerminated>());
 
+  // WeakWorkerRef callback will be asynchronously invoked after
+  // WorkerPrivate::Cancel.
+
   if (aState.is<Pending>()) {
+    aState.as<Pending>().mWorkerPrivate->Cancel();
     TransitionStateToPendingTerminated(aState);
     return;
   }
 
-  // The holder will be notified by this.
   if (aState.is<Running>()) {
     aState.as<Running>().mWorkerPrivate->Cancel();
   }
@@ -613,7 +642,7 @@ void RemoteWorkerChild::CloseWorkerOnMainThread(State& aState) {
 void RemoteWorkerChild::ErrorPropagation(const ErrorValue& aValue) {
   MOZ_ASSERT(GetOwningEventTarget()->IsOnCurrentThread());
 
-  MOZ_ACCESS_THREAD_BOUND(mLauncherData, launcherData);
+  auto launcherData = mLauncherData.Access();
 
   if (!launcherData->mIPCActive) {
     return;
@@ -639,16 +668,13 @@ void RemoteWorkerChild::ErrorPropagationOnMainThread(
 
   ErrorValue value;
   if (aIsErrorEvent) {
-    nsTArray<ErrorDataNote> notes;
-    for (size_t i = 0, len = aReport->mNotes.Length(); i < len; i++) {
-      const WorkerErrorNote& note = aReport->mNotes.ElementAt(i);
-      notes.AppendElement(ErrorDataNote(note.mLineNumber, note.mColumnNumber,
-                                        note.mMessage, note.mFilename));
-    }
-
-    ErrorData data(aReport->mLineNumber, aReport->mColumnNumber,
-                   aReport->mFlags, aReport->mMessage, aReport->mFilename,
-                   aReport->mLine, notes);
+    ErrorData data(
+        aReport->mIsWarning, aReport->mLineNumber, aReport->mColumnNumber,
+        aReport->mMessage, aReport->mFilename, aReport->mLine,
+        TransformIntoNewArray(aReport->mNotes, [](const WorkerErrorNote& note) {
+          return ErrorDataNote(note.mLineNumber, note.mColumnNumber,
+                               note.mMessage, note.mFilename);
+        }));
     value = data;
   } else {
     value = void_t();
@@ -687,15 +713,42 @@ void RemoteWorkerChild::FlushReportsOnMainThread(
 /**
  * Worker state transition methods
  */
+RemoteWorkerChild::WorkerPrivateAccessibleState::
+    ~WorkerPrivateAccessibleState() {
+  // mWorkerPrivate can be safely released on the main thread.
+  if (!mWorkerPrivate || NS_IsMainThread()) {
+    return;
+  }
+
+  NS_ReleaseOnMainThread(
+      "RemoteWorkerChild::WorkerPrivateAccessibleState::mWorkerPrivate",
+      mWorkerPrivate.forget());
+}
+
 RemoteWorkerChild::Running::~Running() {
+  // This can occur if the current object is a temporary.
   if (!mWorkerPrivate) {
     return;
   }
 
-  nsCOMPtr<nsIEventTarget> target =
-      SystemGroup::EventTargetFor(TaskCategory::Other);
-  NS_ProxyRelease("RemoteWorkerChild::Running::mWorkerPrivate", target,
-                  mWorkerPrivate.forget());
+  if (mWorkerPrivate->IsOnWorkerThread()) {
+    return;
+  }
+
+  RefPtr<ReleaseWorkerRunnable> runnable = new ReleaseWorkerRunnable(
+      std::move(mWorkerPrivate), std::move(mWorkerRef));
+
+  nsCOMPtr<nsIRunnable> dispatchWorkerRunnableRunnable =
+      NS_NewRunnableFunction(__func__, [runnable = std::move(runnable)] {
+        Unused << NS_WARN_IF(!runnable->Dispatch());
+      });
+
+  if (NS_IsMainThread()) {
+    dispatchWorkerRunnableRunnable->Run();
+  } else {
+    SchedulerGroup::Dispatch(TaskCategory::Other,
+                             dispatchWorkerRunnableRunnable.forget());
+  }
 }
 
 void RemoteWorkerChild::TransitionStateToPendingTerminated(State& aState) {
@@ -757,7 +810,17 @@ void RemoteWorkerChild::TransitionStateToTerminated(State& aState) {
     CancelAllPendingOps(aState);
   }
 
-  mTerminationPromise.ResolveIfExists(true, __func__);
+  nsCOMPtr<nsIRunnable> r =
+      NS_NewRunnableFunction(__func__, [self = SelfHolder(this)]() {
+        auto launcherData = self->mLauncherData.Access();
+        launcherData->mTerminationPromise.ResolveIfExists(true, __func__);
+      });
+
+  if (GetOwningEventTarget()->IsOnCurrentThread()) {
+    r->Run();
+  } else {
+    GetOwningEventTarget()->Dispatch(r.forget(), NS_DISPATCH_NORMAL);
+  }
 
   aState = VariantType<Terminated>();
 }
@@ -776,7 +839,7 @@ class RemoteWorkerChild::SharedWorkerOp : public RemoteWorkerChild::Op {
     MOZ_ASSERT(!mStarted);
     MOZ_ASSERT(aOwner);
 
-    MOZ_ACCESS_THREAD_BOUND(aOwner->mLauncherData, launcherData);
+    auto launcherData = aOwner->mLauncherData.Access();
 
     if (NS_WARN_IF(!launcherData->mIPCActive)) {
       Unused << NS_WARN_IF(!aState.is<Terminated>());
@@ -819,7 +882,8 @@ class RemoteWorkerChild::SharedWorkerOp : public RemoteWorkerChild::Op {
           self->Exec(owner);
         });
 
-    MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
+    MOZ_ALWAYS_SUCCEEDS(
+        SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()));
 
 #ifdef DEBUG
     mStarted = true;
@@ -874,7 +938,7 @@ class RemoteWorkerChild::SharedWorkerOp : public RemoteWorkerChild::Op {
               mOp.get_RemoteWorkerPortIdentifierOp().portIdentifier());
 
       if (NS_WARN_IF(!r->Dispatch())) {
-        aOwner->ErrorPropagation(NS_ERROR_FAILURE);
+        aOwner->ErrorPropagationDispatch(NS_ERROR_FAILURE);
       }
     } else if (mOp.type() == RemoteWorkerOp::TRemoteWorkerAddWindowIDOp) {
       aOwner->mWindowIDs.AppendElement(
@@ -896,7 +960,7 @@ class RemoteWorkerChild::SharedWorkerOp : public RemoteWorkerChild::Op {
 
 void RemoteWorkerChild::AddPortIdentifier(
     JSContext* aCx, WorkerPrivate* aWorkerPrivate,
-    const MessagePortIdentifier& aPortIdentifier) {
+    UniqueMessagePortId& aPortIdentifier) {
   if (NS_WARN_IF(!aWorkerPrivate->ConnectMessagePort(aCx, aPortIdentifier))) {
     ErrorPropagationDispatch(NS_ERROR_FAILURE);
   }
@@ -937,7 +1001,9 @@ IPCResult RemoteWorkerChild::RecvExecServiceWorkerOp(
       aArgs.type() != ServiceWorkerOpArgs::TServiceWorkerFetchEventOpArgs,
       "FetchEvent operations should be sent via PFetchEventOp(Proxy) actors!");
 
-  MaybeStartOp(ServiceWorkerOp::Create(aArgs, std::move(aResolve)));
+  MaybeReportServiceWorkerShutdownProgress(aArgs);
+
+  MaybeStartOp(ServiceWorkerOp::Create(std::move(aArgs), std::move(aResolve)));
 
   return IPC_OK();
 }
@@ -952,7 +1018,7 @@ RemoteWorkerChild::MaybeSendSetServiceWorkerSkipWaitingFlag() {
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(__func__, [self = std::move(
                                                                   self),
                                                               promise] {
-    MOZ_ACCESS_THREAD_BOUND(self->mLauncherData, launcherData);
+    auto launcherData = self->mLauncherData.Access();
 
     if (!launcherData->mIPCActive) {
       promise->Reject(NS_ERROR_DOM_ABORT_ERR, __func__);
@@ -960,7 +1026,7 @@ RemoteWorkerChild::MaybeSendSetServiceWorkerSkipWaitingFlag() {
     }
 
     self->SendSetServiceWorkerSkipWaitingFlag()->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [promise](
             const SetServiceWorkerSkipWaitingFlagPromise::ResolveOrRejectValue&
                 aResult) {

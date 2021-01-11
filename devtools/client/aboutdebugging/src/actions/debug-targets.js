@@ -10,21 +10,21 @@ const {
 } = require("devtools/client/shared/remote-debugging/remote-client-manager");
 const Services = require("Services");
 
-const { l10n } = require("../modules/l10n");
+const { l10n } = require("devtools/client/aboutdebugging/src/modules/l10n");
 
 const {
   isSupportedDebugTargetPane,
-} = require("../modules/debug-target-support");
+} = require("devtools/client/aboutdebugging/src/modules/debug-target-support");
 
 const {
   openTemporaryExtension,
   uninstallAddon,
-} = require("../modules/extensions-helper");
+} = require("devtools/client/aboutdebugging/src/modules/extensions-helper");
 
 const {
   getCurrentClient,
   getCurrentRuntime,
-} = require("../modules/runtimes-state-helper");
+} = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
 
 const {
   DEBUG_TARGETS,
@@ -48,9 +48,9 @@ const {
   TEMPORARY_EXTENSION_RELOAD_START,
   TEMPORARY_EXTENSION_RELOAD_SUCCESS,
   RUNTIMES,
-} = require("../constants");
+} = require("devtools/client/aboutdebugging/src/constants");
 
-const Actions = require("./index");
+const Actions = require("devtools/client/aboutdebugging/src/actions/index");
 
 function isCachedActorNeeded(runtime, type, id) {
   // Unique ids for workers were introduced in Firefox 68 (Bug 1539328). When debugging
@@ -143,24 +143,11 @@ function installTemporaryExtension() {
 function pushServiceWorker(id, registrationFront) {
   return async (_, getState) => {
     try {
-      /**
-       * Older servers will not define `ServiceWorkerRegistrationFront.push`,
-       * and `ServiceWorkerRegistrationFront.push` will only work if the
-       * underlying ServiceWorkerRegistration is "connected" to the
-       * corresponding running Service Worker - this is only guaranteed with
-       * parent-intercept mode. The `else` statement is for backward
-       * compatibility and can be removed when the release channel is >= FF69
-       * _and_ parent-intercept is stable (which definitely won't happen when
-       * the release channel is < FF69).
-       */
-      const { isParentInterceptEnabled } = registrationFront.traits;
-      if (registrationFront.push && isParentInterceptEnabled) {
-        await registrationFront.push();
-      } else {
-        const clientWrapper = getCurrentClient(getState().runtimes);
-        const workerActor = await clientWrapper.getServiceWorkerFront({ id });
-        await workerActor.push();
-      }
+      // The push button is only available if canDebugServiceWorkers is true,
+      // which is only true if dom.serviceWorkers.parent_intercept is true.
+      // With this configuration, `push` should always be called on the
+      // registration front, and not on the (service) WorkerTargetActor.
+      await registrationFront.push();
     } catch (e) {
       console.error(e);
     }
@@ -206,8 +193,17 @@ function requestTabs() {
         DEBUG_TARGET_PANE.TAB
       );
       const tabs = isSupported
-        ? await clientWrapper.listTabs({ favicons: true })
+        ? await clientWrapper.listTabs({
+            // Backward compatibility: this is only used for FF75 or older.
+            // The argument can be dropped when FF76 hits the release channel.
+            favicons: true,
+          })
         : [];
+
+      // Fetch the missing information for all tabs.
+      await Promise.all(
+        tabs.map(descriptorFront => descriptorFront.retrieveAsyncFormData())
+      );
 
       dispatch({ type: REQUEST_TABS_SUCCESS, tabs });
     } catch (e) {
@@ -238,14 +234,6 @@ function requestExtensions() {
         extensions = extensions.filter(e => !e.isSystem && !e.hidden);
       }
 
-      if (runtime.type !== RUNTIMES.THIS_FIREFOX) {
-        // manifestURL can only be used when debugging local addons, remove this
-        // information for the extension data.
-        extensions.forEach(extension => {
-          extension.manifestURL = null;
-        });
-      }
-
       const installedExtensions = extensions.filter(
         e => !e.temporarilyInstalled
       );
@@ -271,8 +259,8 @@ function requestProcesses() {
     const clientWrapper = getCurrentClient(getState().runtimes);
 
     try {
-      const mainProcessFront = await clientWrapper.getMainProcess();
-
+      const mainProcessDescriptorFront = await clientWrapper.getMainProcess();
+      const mainProcessFront = await mainProcessDescriptorFront.getTarget();
       dispatch({
         type: REQUEST_PROCESSES_SUCCESS,
         mainProcess: {
@@ -305,8 +293,16 @@ function requestWorkers() {
           continue;
         }
 
-        const subscription = await registrationFront.getPushSubscription();
-        serviceWorker.subscription = subscription;
+        try {
+          const subscription = await registrationFront.getPushSubscription();
+          serviceWorker.subscription = subscription;
+        } catch (e) {
+          // See Bug 1637687. On GeckoView, some PushSubscription methods are
+          // not implemented. PushSubscriptionActor was patched in FF78 to avoid
+          // throwing, but old servers might still throw.
+          // Backward-compatibility: remove when FF78 hits release.
+          console.error("Failed to retrieve service worker subscription", e);
+        }
       }
 
       dispatch({

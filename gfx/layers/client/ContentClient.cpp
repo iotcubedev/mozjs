@@ -39,8 +39,6 @@
 #include <utility>
 #include <vector>
 
-using namespace std;
-
 namespace mozilla {
 
 using namespace gfx;
@@ -86,15 +84,22 @@ already_AddRefed<ContentClient> ContentClient::CreateContentClient(
     useDoubleBuffering = gfxWindowsPlatform::GetPlatform()->IsDirect2DBackend();
   } else
 #endif
-#ifdef MOZ_WIDGET_GTK
-      // We can't use double buffering when using image content with
-      // Xrender support on Linux, as ContentHostDoubleBuffered is not
-      // suited for direct uploads to the server.
-      if (!gfxPlatformGtk::GetPlatform()->UseImageOffscreenSurfaces() ||
-          !gfxVars::UseXRender())
-#endif
   {
-    useDoubleBuffering = backend == LayersBackend::LAYERS_BASIC;
+#ifdef MOZ_WIDGET_GTK
+#  ifdef MOZ_WAYLAND
+    if (gfxPlatformGtk::GetPlatform()->UseDMABufTextures()) {
+      useDoubleBuffering = true;
+    } else
+#  endif
+        // We can't use double buffering when using image content with
+        // Xrender support on Linux, as ContentHostDoubleBuffered is not
+        // suited for direct uploads to the server.
+        if (!gfxPlatformGtk::GetPlatform()->UseImageOffscreenSurfaces() ||
+            !gfxVars::UseXRender())
+#endif
+    {
+      useDoubleBuffering = backend == LayersBackend::LAYERS_BASIC;
+    }
   }
 
   if (useDoubleBuffering || gfxEnv::ForceDoubleBuffering()) {
@@ -529,7 +534,7 @@ class RemoteBufferReadbackProcessor : public TextureReadbackSink {
   RemoteBufferReadbackProcessor(
       nsTArray<ReadbackProcessor::Update>* aReadbackUpdates,
       const IntRect& aBufferRect, const nsIntPoint& aBufferRotation)
-      : mReadbackUpdates(*aReadbackUpdates),
+      : mReadbackUpdates(aReadbackUpdates->Clone()),
         mBufferRect(aBufferRect),
         mBufferRotation(aBufferRotation) {
     for (uint32_t i = 0; i < mReadbackUpdates.Length(); ++i) {
@@ -574,7 +579,7 @@ class RemoteBufferReadbackProcessor : public TextureReadbackSink {
  private:
   nsTArray<ReadbackProcessor::Update> mReadbackUpdates;
   // This array is used to keep the layers alive until the callback.
-  vector<RefPtr<Layer>> mLayerRefs;
+  std::vector<RefPtr<Layer>> mLayerRefs;
 
   IntRect mBufferRect;
   nsIntPoint mBufferRotation;
@@ -715,7 +720,7 @@ void ContentClientRemoteBuffer::Updated(const nsIntRegion& aRegionToDraw,
     IntSize size = remoteBuffer->GetClient()->GetSize();
     t->mPictureRect = nsIntRect(0, 0, size.width, size.height);
 
-    GetForwarder()->UseTextures(this, textures, Nothing());
+    GetForwarder()->UseTextures(this, textures);
   }
 
   // This forces a synchronous transaction, so we can swap buffers now

@@ -10,6 +10,7 @@ import org.json.JSONException;
 import org.json.JSONTokener;
 import org.mozilla.gecko.GeckoThread;
 import org.mozilla.gecko.util.ThreadUtils;
+import org.mozilla.geckoview.Autofill;
 import org.mozilla.geckoview.ContentBlocking;
 import org.mozilla.geckoview.GeckoDisplay;
 import org.mozilla.geckoview.GeckoResult;
@@ -19,13 +20,15 @@ import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.RuntimeTelemetry;
 import org.mozilla.geckoview.SessionTextInput;
 import org.mozilla.geckoview.WebExtension;
-import org.mozilla.geckoview.test.util.HttpBin;
+import org.mozilla.geckoview.WebExtensionController;
+import org.mozilla.geckoview.test.util.TestServer;
 import org.mozilla.geckoview.test.util.RuntimeCreator;
 import org.mozilla.geckoview.test.util.Environment;
 import org.mozilla.geckoview.test.util.UiThreadUtils;
 import org.mozilla.geckoview.test.util.Callbacks;
 
 import static org.hamcrest.Matchers.*;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 
@@ -45,7 +48,7 @@ import android.os.Parcel;
 import android.os.SystemClock;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.test.InstrumentationRegistry;
+import androidx.test.platform.app.InstrumentationRegistry;
 import android.util.Log;
 import android.util.Pair;
 import android.view.MotionEvent;
@@ -63,7 +66,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -88,12 +90,15 @@ import kotlin.reflect.KClass;
  */
 public class GeckoSessionTestRule implements TestRule {
     private static final String LOGTAG = "GeckoSessionTestRule";
-    public static final String TEST_ENDPOINT = "http://localhost:4245";
+
+    private static final int TEST_PORT = 4245;
+    public static final String TEST_ENDPOINT = "http://localhost:" + TEST_PORT;
 
     private static final Method sOnPageStart;
     private static final Method sOnPageStop;
     private static final Method sOnNewSession;
     private static final Method sOnCrash;
+    private static final Method sOnKill;
 
     static {
         try {
@@ -104,6 +109,8 @@ public class GeckoSessionTestRule implements TestRule {
             sOnNewSession = GeckoSession.NavigationDelegate.class.getMethod(
                     "onNewSession", GeckoSession.class, String.class);
             sOnCrash = GeckoSession.ContentDelegate.class.getMethod(
+                    "onCrash", GeckoSession.class);
+            sOnKill = GeckoSession.ContentDelegate.class.getMethod(
                     "onKill", GeckoSession.class);
         } catch (final NoSuchMethodException e) {
             throw new RuntimeException(e);
@@ -163,19 +170,19 @@ public class GeckoSessionTestRule implements TestRule {
      * under test. Can be used on classes or methods. Note that the settings values must
      * be string literals regardless of the type of the settings.
      * <p>
-     * Disable e10s for a particular test:
+     * Enable tracking protection for a particular test:
      * <pre>
-     * &#64;Setting.List(&#64;Setting(key = Setting.Key.USE_MULTIPROCESS,
+     * &#64;Setting.List(&#64;Setting(key = Setting.Key.USE_TRACKING_PROTECTION,
      *                        value = "false"))
      * &#64;Test public void test() { ... }
      * </pre>
      * <p>
      * Use multiple settings:
      * <pre>
-     * &#64;Setting.List({&#64;Setting(key = Setting.Key.USE_MULTIPROCESS,
-     *                         value = "false"),
+     * &#64;Setting.List({&#64;Setting(key = Setting.Key.USE_PRIVATE_MODE,
+     *                         value = "true"),
      *                &#64;Setting(key = Setting.Key.USE_TRACKING_PROTECTION,
-     *                         value = "true")})
+     *                         value = "false")})
      * </pre>
      */
     @Target({ElementType.METHOD, ElementType.TYPE})
@@ -186,7 +193,6 @@ public class GeckoSessionTestRule implements TestRule {
             DISPLAY_MODE,
             ALLOW_JAVASCRIPT,
             SCREEN_ID,
-            USE_MULTIPROCESS,
             USE_PRIVATE_MODE,
             USE_TRACKING_PROTECTION,
             FULL_ACCESSIBILITY_TREE;
@@ -614,7 +620,7 @@ public class GeckoSessionTestRule implements TestRule {
 
         /** Generate a JS function to set new prefs and return a set of saved prefs. */
         public void setPrefs(final @NonNull Map<String, ?> prefs) {
-            try {
+            mOldPrefs = (JSONObject) webExtensionApiCall("SetPrefs", args -> {
                 final JSONObject existingPrefs = mOldPrefs != null ? mOldPrefs : new JSONObject();
 
                 final JSONObject newPrefs = new JSONObject();
@@ -628,14 +634,9 @@ public class GeckoSessionTestRule implements TestRule {
                     }
                 }
 
-                final JSONObject args = new JSONObject();
                 args.put("oldPrefs", existingPrefs);
                 args.put("newPrefs", newPrefs);
-
-                mOldPrefs = (JSONObject) webExtensionApiCall("SetPrefs", args);
-            } catch (JSONException ex) {
-                throw new RuntimeException(ex);
-            }
+            });
         }
 
         /** Generate a JS function to set new prefs and reset a set of saved prefs. */
@@ -644,15 +645,10 @@ public class GeckoSessionTestRule implements TestRule {
                 return;
             }
 
-            try {
-                final JSONObject args = new JSONObject();
+            webExtensionApiCall("RestorePrefs", args -> {
                 args.put("oldPrefs", mOldPrefs);
-                webExtensionApiCall("RestorePrefs", args);
-
                 mOldPrefs = null;
-            } catch (JSONException ex) {
-                throw new RuntimeException(ex);
-            }
+            });
         }
 
         public void clear() {
@@ -763,7 +759,6 @@ public class GeckoSessionTestRule implements TestRule {
 
     public GeckoSessionTestRule() {
         mDefaultSettings = new GeckoSessionSettings.Builder()
-                .useMultiprocess(env.isMultiprocess())
                 .build();
     }
 
@@ -880,6 +875,10 @@ public class GeckoSessionTestRule implements TestRule {
             return GeckoSession.class.getMethod("setContentBlockingDelegate", cls)
                    .invoke(session, delegate);
         }
+        if (cls == Autofill.Delegate.class) {
+            return GeckoSession.class.getMethod("setAutofillDelegate", cls)
+                   .invoke(session, delegate);
+        }
         return GeckoSession.class.getMethod("set" + cls.getSimpleName(), cls)
                .invoke(session, delegate);
     }
@@ -893,6 +892,10 @@ public class GeckoSessionTestRule implements TestRule {
         }
         if (cls == ContentBlocking.Delegate.class) {
             return GeckoSession.class.getMethod("getContentBlockingDelegate")
+                   .invoke(session);
+        }
+        if (cls == Autofill.Delegate.class) {
+            return GeckoSession.class.getMethod("getAutofillDelegate")
                    .invoke(session);
         }
         return GeckoSession.class.getMethod("get" + cls.getSimpleName())
@@ -1029,7 +1032,8 @@ public class GeckoSessionTestRule implements TestRule {
                         session = (GeckoSession) args[0];
                     }
 
-                    if (sOnCrash.equals(method) && !mIgnoreCrash && isUsingSession(session)) {
+                    if ((sOnCrash.equals(method) || sOnKill.equals(method))
+                            && !mIgnoreCrash && isUsingSession(session)) {
                         if (env.shouldShutdownOnCrash()) {
                             getRuntime().shutdown();
                         }
@@ -1094,8 +1098,13 @@ public class GeckoSessionTestRule implements TestRule {
     }
 
     protected void prepareSession(final GeckoSession session) {
-        session.setMessageDelegate(RuntimeCreator.TEST_SUPPORT_WEB_EXTENSION, mMessageDelegate,
-                "browser");
+        UiThreadUtils.waitForCondition(() ->
+                        RuntimeCreator.sTestSupport.get() != RuntimeCreator.TEST_SUPPORT_INITIAL,
+                env.getDefaultTimeoutMillis());
+        session.getWebExtensionController()
+                .setMessageDelegate(RuntimeCreator.sTestSupportExtension,
+                                    mMessageDelegate,
+                          "browser");
         for (final Class<?> cls : DEFAULT_DELEGATES) {
             try {
                 setDelegate(cls, session, mNullDelegates.contains(cls) ? null : mCallbackProxy);
@@ -1192,7 +1201,27 @@ public class GeckoSessionTestRule implements TestRule {
         }
     }
 
-    protected void cleanupStatement() {
+    protected void cleanupExtensions() throws Throwable {
+        WebExtensionController controller = getRuntime().getWebExtensionController();
+        List<WebExtension> list = waitForResult(controller.list());
+
+        boolean hasTestSupport = false;
+        // Uninstall any left-over extensions
+        for (WebExtension extension : list) {
+            if (!extension.id.equals(RuntimeCreator.TEST_SUPPORT_EXTENSION_ID)) {
+                waitForResult(controller.uninstall(extension));
+            } else {
+                hasTestSupport = true;
+            }
+        }
+
+        // If an extension was still installed, this test should fail.
+        // Note the test support extension is always kept for speed.
+        assertThat("A WebExtension was left installed during this test.",
+                list.size(), equalTo(hasTestSupport ? 1 : 0));
+    }
+
+    protected void cleanupStatement() throws Throwable {
         mWaitScopeDelegates.clear();
         mTestScopeDelegates.clear();
 
@@ -1201,6 +1230,7 @@ public class GeckoSessionTestRule implements TestRule {
         }
 
         cleanupSession(mMainSession);
+        cleanupExtensions();
 
         if (mIgnoreCrash) {
             deleteCrashDumps();
@@ -1232,38 +1262,34 @@ public class GeckoSessionTestRule implements TestRule {
     @Override
     public Statement apply(final Statement base, final Description description) {
         return new Statement() {
+            private TestServer mServer;
+
+            private void initTest() {
+                try {
+                    mServer.start(TEST_PORT);
+
+                    RuntimeCreator.setPortDelegate(mPortDelegate);
+                    getRuntime();
+
+                    Log.e(LOGTAG, "====");
+                    Log.e(LOGTAG, "before prepareStatement " + description);
+                    prepareStatement(description);
+                    Log.e(LOGTAG, "after prepareStatement");
+                } catch (final Throwable t) {
+                    // Any error here is not related to a specific test
+                    throw new TestHarnessException(t);
+                }
+            }
+
             @Override
             public void evaluate() throws Throwable {
                 final AtomicReference<Throwable> exceptionRef = new AtomicReference<>();
 
-                HttpBin httpBin = new HttpBin(InstrumentationRegistry.getTargetContext(),
-                        URI.create(TEST_ENDPOINT));
+                mServer = new TestServer(InstrumentationRegistry.getInstrumentation().getTargetContext());
 
                 mInstrumentation.runOnMainSync(() -> {
                     try {
-                        httpBin.start();
-
-                        RuntimeCreator.setPortDelegate(mPortDelegate);
-
-                        getRuntime();
-
-                        long timeout = env.getDefaultTimeoutMillis() + System.currentTimeMillis();
-                        while (!GeckoThread.isStateAtLeast(GeckoThread.State.PROFILE_READY)) {
-                            if (System.currentTimeMillis() > timeout) {
-                                throw new TimeoutException("Could not startup runtime after "
-                                        + env.getDefaultTimeoutMillis() + ".ms");
-                            }
-                            Log.e(LOGTAG, "GeckoThread not ready, sleeping 1000ms.");
-                            try {
-                                Thread.sleep(1000);
-                            } catch (InterruptedException ex) {
-                            }
-                        }
-
-                        Log.e(LOGTAG, "====");
-                        Log.e(LOGTAG, "before prepareStatement " + description);
-                        prepareStatement(description);
-                        Log.e(LOGTAG, "after prepareStatement");
+                        initTest();
                         base.evaluate();
                         Log.e(LOGTAG, "after evaluate");
                         performTestEndCheck();
@@ -1274,7 +1300,7 @@ public class GeckoSessionTestRule implements TestRule {
                         exceptionRef.set(t);
                     } finally {
                         try {
-                            httpBin.stop();
+                            mServer.stop();
                             cleanupStatement();
                         } catch (Throwable t) {
                             exceptionRef.compareAndSet(null, t);
@@ -1288,6 +1314,13 @@ public class GeckoSessionTestRule implements TestRule {
                 }
             }
         };
+    }
+
+    /**
+     * This simply sends an empty message to the web content and waits for a reply.
+     */
+    public void waitForRoundTrip(final GeckoSession session) {
+        waitForJS(session, "true");
     }
 
     /**
@@ -1853,6 +1886,11 @@ public class GeckoSessionTestRule implements TestRule {
         return waitForMessage(id);
     }
 
+    public int getSessionPid(final @NonNull GeckoSession session) {
+        final Double dblPid = (Double) webExtensionApiCall(session, "GetPidForTab", null);
+        return dblPid.intValue();
+    }
+
     private Object waitForMessage(String id) {
         UiThreadUtils.waitForCondition(() -> mPendingMessages.containsKey(id),
                 mTimeoutMillis);
@@ -1911,6 +1949,21 @@ public class GeckoSessionTestRule implements TestRule {
         final GeckoSession session = new GeckoSession(mMainSession.getSettings());
         session.readFromParcel(source);
         return wrapSession(session);
+    }
+
+    /**
+     * This method is a temporary hack to ensure that sessions reconstituted from parcels
+     * have their WebExtension.Port transferred over to the reconstituted session.
+     *
+     * This will be removed when we remove the ability of GeckoSession to be Parcelable.
+     */
+    public void transferPort(@NonNull final GeckoSession fromSession, @NonNull final GeckoSession toSession) {
+        final WebExtension.Port port = mPorts.remove(fromSession);
+        if (port == null) {
+            throw new NullPointerException("Expected a valid port, got null instead");
+        }
+
+        mPorts.put(toSession, port);
     }
 
     /**
@@ -1997,14 +2050,9 @@ public class GeckoSessionTestRule implements TestRule {
      * @return Pref values as a list of values.
      */
     public JSONArray getPrefs(final @NonNull String... prefs) {
-        try {
-            final JSONObject args = new JSONObject();
+        return (JSONArray) webExtensionApiCall("GetPrefs", args -> {
             args.put("prefs", new JSONArray(Arrays.asList(prefs)));
-
-            return (JSONArray) webExtensionApiCall("GetPrefs", args);
-        } catch (JSONException ex) {
-            throw new RuntimeException(ex);
-        }
+        });
     }
 
     /**
@@ -2015,15 +2063,10 @@ public class GeckoSessionTestRule implements TestRule {
      * @return String representing the color, e.g. rgb(0, 0, 255)
      */
     public String getLinkColor(final String uri, final String selector) {
-        try {
-            final JSONObject args = new JSONObject();
+        return (String) webExtensionApiCall("GetLinkColor", args -> {
             args.put("uri", uri);
             args.put("selector", selector);
-
-            return (String) webExtensionApiCall("GetLinkColor", args);
-        } catch (JSONException ex) {
-            throw new RuntimeException(ex);
-        }
+        });
     }
 
     public List<String> getRequestedLocales() {
@@ -2048,30 +2091,93 @@ public class GeckoSessionTestRule implements TestRule {
      * @param value to add to the histogram.
      */
     public void addHistogram(final String id, final long value) {
-        try {
-            final JSONObject args = new JSONObject();
+        webExtensionApiCall("AddHistogram", args -> {
             args.put("id", id);
             args.put("value", value);
-
-            webExtensionApiCall("AddHistogram", args);
-        } catch (JSONException ex) {
-            throw new RuntimeException(ex);
-        }
+        });
     }
 
-    private Object webExtensionApiCall(final String apiName, JSONObject args) throws JSONException {
+    /**
+     * Revokes SSL overrides set for a given host and port
+     *
+     * @param host the host.
+     * @param port the port (-1 == 443).
+     */
+    public void removeCertOverride(final String host, final long port) {
+        webExtensionApiCall("RemoveCertOverride", args -> {
+            args.put("host", host);
+            args.put("port", port);
+        });
+    }
+
+    private interface SetArgs {
+        void setArgs(JSONObject object) throws JSONException;
+    }
+
+    /**
+     * Sets value to the given scalar.
+     *
+     * @param id the scalar to be set.
+     * @param value the value to set.
+     */
+    public <T> void setScalar(final String id, final T value) {
+        webExtensionApiCall("SetScalar", args -> {
+            args.put("id", id);
+            args.put("value", value);
+        });
+    }
+
+    /**
+     * Invokes nsIDOMWindowUtils.setResolutionAndScaleTo.
+     */
+    public void setResolutionAndScaleTo(final float resolution) {
+        webExtensionApiCall("SetResolutionAndScaleTo", args -> {
+            args.put("resolution", resolution);
+        });
+    }
+
+    private Object webExtensionApiCall(final @NonNull String apiName, final @NonNull SetArgs argsSetter) {
+        return webExtensionApiCall(null, apiName, argsSetter);
+    }
+
+    private Object webExtensionApiCall(final GeckoSession session, final @NonNull String apiName,
+                                       final @NonNull SetArgs argsSetter) {
         // Ensure background script is connected
         UiThreadUtils.waitForCondition(() -> RuntimeCreator.backgroundPort() != null,
                 mTimeoutMillis);
 
+        if (session != null) {
+            // Ensure content script is connected
+            UiThreadUtils.waitForCondition(() -> mPorts.get(session) != null,
+                    mTimeoutMillis);
+        }
+
         final String id = UUID.randomUUID().toString();
 
         final JSONObject message = new JSONObject();
-        message.put("id", id);
-        message.put("type", apiName);
-        message.put("args", args);
 
-        RuntimeCreator.backgroundPort().postMessage(message);
+        try {
+            final JSONObject args = new JSONObject();
+            if (argsSetter != null) {
+                argsSetter.setArgs(args);
+            }
+
+            message.put("id", id);
+            message.put("type", apiName);
+            message.put("args", args);
+        } catch (JSONException ex) {
+            throw new RuntimeException(ex);
+        }
+
+        if (session == null) {
+            RuntimeCreator.backgroundPort().postMessage(message);
+        } else {
+            // We post the message using session's port instead of the background port. By routing
+            // the message through the extension's content script, we are able to obtain and attach
+            // the session's WebExtension tab as a `tab` argument to the API.
+            mPorts.get(session).postMessage(message);
+        }
+
         return waitForMessage(id);
     }
 

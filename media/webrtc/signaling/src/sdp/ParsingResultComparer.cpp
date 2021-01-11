@@ -1,9 +1,13 @@
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "signaling/src/sdp/Sdp.h"
 #include "signaling/src/sdp/ParsingResultComparer.h"
+#include "signaling/src/sdp/SipccSdpParser.h"
+#include "signaling/src/sdp/RsdparsaSdpParser.h"
 
 #include <string>
 #include <ostream>
@@ -40,6 +44,29 @@ std::string ToString(const T& serializable) {
   os << serializable;
   return os.str();
 }
+bool ParsingResultComparer::Compare(const Results& aResA, const Results& aResB,
+                                    const std::string& aOriginalSdp,
+                                    const SdpPref::AlternateParseModes& aMode) {
+  MOZ_ASSERT(aResA, "aResA must not be a nullptr");
+  MOZ_ASSERT(aResB, "aResB must not be a nullptr");
+  MOZ_ASSERT(aResA->ParserName() != aResB->ParserName(),
+             "aResA and aResB must be from different parsers");
+  SdpTelemetry::RecordCompare(aResA, aResB, aMode);
+
+  ParsingResultComparer comparer;
+  if (!aResA->Sdp() || !aResB->Sdp()) {
+    return !aResA->Sdp() && !aResB->Sdp();
+  }
+  if (SipccSdpParser::IsNamed(aResA->ParserName())) {
+    MOZ_ASSERT(RsdparsaSdpParser::IsNamed(aResB->ParserName()));
+    return comparer.Compare(*aResB->Sdp(), *aResA->Sdp(), aOriginalSdp,
+                            SdpComparisonResult::Equal);
+  }
+  MOZ_ASSERT(SipccSdpParser::IsNamed(aResB->ParserName()));
+  MOZ_ASSERT(RsdparsaSdpParser::IsNamed(aResA->ParserName()));
+  return comparer.Compare(*aResA->Sdp(), *aResB->Sdp(), aOriginalSdp,
+                          SdpComparisonResult::Equal);
+}
 
 bool ParsingResultComparer::Compare(const Sdp& rsdparsaSdp, const Sdp& sipccSdp,
                                     const std::string& originalSdp,
@@ -52,7 +79,7 @@ bool ParsingResultComparer::Compare(const Sdp& rsdparsaSdp, const Sdp& sipccSdp,
   LOG_EXPECT(result, expect, ("The original sdp: \n%s", mOriginalSdp.c_str()));
   if (result) {
     Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                         NS_LITERAL_STRING("serialization_is_equal"), 1);
+                         u"serialization_is_equal"_ns, 1);
     LOG_EXPECT(result, expect, ("Serialization is equal"));
     return result;
   }
@@ -60,7 +87,7 @@ bool ParsingResultComparer::Compare(const Sdp& rsdparsaSdp, const Sdp& sipccSdp,
   result = true;
 
   Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                       NS_LITERAL_STRING("serialization_is_not_equal"), 1);
+                       u"serialization_is_not_equal"_ns, 1);
   LOG_EXPECT(result, expect,
              ("Serialization is not equal\n"
               " --- Sipcc SDP ---\n"
@@ -74,8 +101,8 @@ bool ParsingResultComparer::Compare(const Sdp& rsdparsaSdp, const Sdp& sipccSdp,
 
   // Compare the session level
   if (rsdparsaOriginStr != sipccOriginStr) {
-    Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                         NS_LITERAL_STRING("o="), 1);
+    Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF, u"o="_ns,
+                         1);
     result = false;
     LOG_EXPECT(result, expect,
                ("origin is not equal\nrust origin: %s\nsipcc origin: %s",
@@ -105,7 +132,7 @@ bool ParsingResultComparer::Compare(const Sdp& rsdparsaSdp, const Sdp& sipccSdp,
   if (sipccMediaSecCount != rsdparsaMediaSecCount) {
     result = false;
     Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                         NS_LITERAL_STRING("inequal_msec_count"), 1);
+                         u"inequal_msec_count"_ns, 1);
     LOG_EXPECT(result, expect,
                ("Media section count is NOT equal, rsdparsa: %d, sipcc: %d \n",
                 rsdparsaMediaSecCount, sipccMediaSecCount));
@@ -129,7 +156,7 @@ bool ParsingResultComparer::CompareMediaSections(
                                     auto rustValue, auto sipccValue,
                                     const nsString& valueDescription) {
     result = false;
-    nsString typeStr = NS_LITERAL_STRING("m=");
+    nsString typeStr = u"m="_ns;
     typeStr += valueDescription;
     Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF, typeStr,
                          1);
@@ -157,26 +184,19 @@ bool ParsingResultComparer::CompareMediaSections(
                               valueDescription);
       };
 
-  compareSimpleMediaLineValue(&SdpMediaSection::GetMediaType,
-                              NS_LITERAL_STRING("media_type"));
-  compareSimpleMediaLineValue(&SdpMediaSection::GetPort,
-                              NS_LITERAL_STRING("port"));
-  compareSimpleMediaLineValue(&SdpMediaSection::GetPortCount,
-                              NS_LITERAL_STRING("port_count"));
-  compareSimpleMediaLineValue(&SdpMediaSection::GetProtocol,
-                              NS_LITERAL_STRING("protocol"));
+  compareSimpleMediaLineValue(&SdpMediaSection::GetMediaType, u"media_type"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::GetPort, u"port"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::GetPortCount, u"port_count"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::GetProtocol, u"protocol"_ns);
   compareSimpleMediaLineValue(&SdpMediaSection::IsReceiving,
-                              NS_LITERAL_STRING("is_receiving"));
-  compareSimpleMediaLineValue(&SdpMediaSection::IsSending,
-                              NS_LITERAL_STRING("is_sending"));
-  compareSimpleMediaLineValue(&SdpMediaSection::GetDirection,
-                              NS_LITERAL_STRING("direction"));
-  compareSimpleMediaLineValue(&SdpMediaSection::GetLevel,
-                              NS_LITERAL_STRING("level"));
+                              u"is_receiving"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::IsSending, u"is_sending"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::GetDirection, u"direction"_ns);
+  compareSimpleMediaLineValue(&SdpMediaSection::GetLevel, u"level"_ns);
 
   compareMediaLineValue(ToString(rustMediaSection.GetConnection()),
                         ToString(sipccMediaSection.GetConnection()),
-                        NS_LITERAL_STRING("connection"));
+                        u"connection"_ns);
 
   result &= CompareAttrLists(rustMediaSection.GetAttributeList(),
                              sipccMediaSection.GetAttributeList(),
@@ -206,7 +226,7 @@ bool ParsingResultComparer::CompareAttrLists(
         result = false;
         nsString typeStr;
         typeStr.AssignASCII(attrStr.c_str());
-        typeStr += NS_LITERAL_STRING("_missing");
+        typeStr += u"_missing"_ns;
         Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
                              typeStr, 1);
         LOG_EXPECT(result, expect,
@@ -231,7 +251,7 @@ bool ParsingResultComparer::CompareAttrLists(
           result = false;
           nsString typeStr;
           typeStr.AssignASCII(attrStr.c_str());
-          typeStr += NS_LITERAL_STRING("_inequal");
+          typeStr += u"_inequal"_ns;
           Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
                                typeStr, 1);
           LOG_EXPECT(result, expect,
@@ -254,7 +274,7 @@ bool ParsingResultComparer::CompareAttrLists(
       if (rustAttrlist.HasAttribute(type, false)) {
         nsString typeStr;
         typeStr.AssignASCII(attrStr.c_str());
-        typeStr += NS_LITERAL_STRING("_unexpected");
+        typeStr += u"_unexpected"_ns;
         Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
                              typeStr, 1);
       }
@@ -262,19 +282,6 @@ bool ParsingResultComparer::CompareAttrLists(
   }
 
   return result;
-}
-
-void ParsingResultComparer::TrackRustParsingFailed(
-    size_t sipccErrorCount) const {
-  if (sipccErrorCount) {
-    Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                         NS_LITERAL_STRING("rsdparsa_failed__sipcc_has_errors"),
-                         1);
-  } else {
-    Telemetry::ScalarAdd(Telemetry::ScalarID::WEBRTC_SDP_PARSER_DIFF,
-                         NS_LITERAL_STRING("rsdparsa_failed__sipcc_succeeded"),
-                         1);
-  }
 }
 
 std::vector<std::string> SplitLines(const std::string& sdp) {

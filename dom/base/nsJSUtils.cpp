@@ -15,26 +15,23 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 #include "js/CompilationAndEvaluation.h"
-#include "js/Modules.h"  // JS::CompileModule{,DontInflate}, JS::GetModuleScript, JS::Module{Instantiate,Evaluate}
+#include "js/Date.h"
+#include "js/Modules.h"  // JS::CompileModule, JS::GetModuleScript, JS::Module{Instantiate,Evaluate}
 #include "js/OffThreadScriptCompilation.h"
 #include "js/SourceText.h"
 #include "nsIScriptContext.h"
 #include "nsIScriptElement.h"
 #include "nsIScriptGlobalObject.h"
-#include "nsIXPConnect.h"
 #include "nsCOMPtr.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsPIDOMWindow.h"
 #include "GeckoProfiler.h"
 #include "nsJSPrincipals.h"
 #include "xpcpublic.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindow.h"
-#include "nsXBLPrototypeBinding.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Date.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
@@ -204,26 +201,6 @@ nsresult nsJSUtils::ExecutionContext::JoinCompile(
   return NS_OK;
 }
 
-static JSScript* CompileScript(
-    JSContext* aCx, JS::Handle<JS::StackGCVector<JSObject*>> aScopeChain,
-    JS::CompileOptions& aCompileOptions, JS::SourceText<char16_t>& aSrcBuf) {
-  return aScopeChain.length() == 0
-             ? JS::Compile(aCx, aCompileOptions, aSrcBuf)
-             : JS::CompileForNonSyntacticScope(aCx, aCompileOptions, aSrcBuf);
-}
-
-static JSScript* CompileScript(
-    JSContext* aCx, JS::Handle<JS::StackGCVector<JSObject*>> aScopeChain,
-    JS::CompileOptions& aCompileOptions, JS::SourceText<Utf8Unit>& aSrcBuf) {
-  // Once the UTF-8 overloads don't inflate, we can get rid of these two
-  // |CompileScript| overloads and just call the JSAPI directly in the one
-  // caller.
-  return aScopeChain.length() == 0
-             ? JS::CompileDontInflate(aCx, aCompileOptions, aSrcBuf)
-             : JS::CompileForNonSyntacticScopeDontInflate(aCx, aCompileOptions,
-                                                          aSrcBuf);
-}
-
 template <typename Unit>
 nsresult nsJSUtils::ExecutionContext::InternalCompile(
     JS::CompileOptions& aCompileOptions, JS::SourceText<Unit>& aSrcBuf) {
@@ -238,7 +215,10 @@ nsresult nsJSUtils::ExecutionContext::InternalCompile(
 #endif
 
   MOZ_ASSERT(!mScript);
-  mScript = CompileScript(mCx, mScopeChain, aCompileOptions, aSrcBuf);
+  mScript =
+      mScopeChain.length() == 0
+          ? JS::Compile(mCx, aCompileOptions, aSrcBuf)
+          : JS::CompileForNonSyntacticScope(mCx, aCompileOptions, aSrcBuf);
   if (!mScript) {
     mSkip = true;
     mRv = EvaluationExceptionToNSResult(mCx);
@@ -327,69 +307,12 @@ nsresult nsJSUtils::ExecutionContext::JoinDecode(
 
 nsresult nsJSUtils::ExecutionContext::JoinDecodeBinAST(
     JS::OffThreadToken** aOffThreadToken) {
-#ifdef JS_BUILD_BINAST
-  if (mSkip) {
-    return mRv;
-  }
-
-  MOZ_ASSERT(!mWantsReturnValue);
-  MOZ_ASSERT(!mExpectScopeChain);
-
-  mScript.set(JS::FinishOffThreadBinASTDecode(mCx, *aOffThreadToken));
-  *aOffThreadToken = nullptr;  // Mark the token as having been finished.
-
-  if (!mScript) {
-    mSkip = true;
-    mRv = EvaluationExceptionToNSResult(mCx);
-    return mRv;
-  }
-
-  if (mEncodeBytecode && !StartIncrementalEncoding(mCx, mScript)) {
-    mSkip = true;
-    mRv = EvaluationExceptionToNSResult(mCx);
-    return mRv;
-  }
-
-  return NS_OK;
-#else
   return NS_ERROR_NOT_IMPLEMENTED;
-#endif
 }
 
 nsresult nsJSUtils::ExecutionContext::DecodeBinAST(
     JS::CompileOptions& aCompileOptions, const uint8_t* aBuf, size_t aLength) {
-#ifdef JS_BUILD_BINAST
-  MOZ_ASSERT(mScopeChain.length() == 0,
-             "BinAST decoding is not supported in non-syntactic scopes");
-
-  if (mSkip) {
-    return mRv;
-  }
-
-  MOZ_ASSERT(aBuf);
-  MOZ_ASSERT(mRetValue.isUndefined());
-#  ifdef DEBUG
-  mWantsReturnValue = !aCompileOptions.noScriptRval;
-#  endif
-
-  mScript.set(JS::DecodeBinAST(mCx, aCompileOptions, aBuf, aLength));
-
-  if (!mScript) {
-    mSkip = true;
-    mRv = EvaluationExceptionToNSResult(mCx);
-    return mRv;
-  }
-
-  if (mEncodeBytecode && !StartIncrementalEncoding(mCx, mScript)) {
-    mSkip = true;
-    mRv = EvaluationExceptionToNSResult(mCx);
-    return mRv;
-  }
-
-  return NS_OK;
-#else
   return NS_ERROR_NOT_IMPLEMENTED;
-#endif
 }
 
 JSScript* nsJSUtils::ExecutionContext::GetScript() {
@@ -476,21 +399,6 @@ nsresult nsJSUtils::ExecutionContext::ExecScript(
   return NS_OK;
 }
 
-static JSObject* CompileModule(JSContext* aCx,
-                               JS::CompileOptions& aCompileOptions,
-                               JS::SourceText<char16_t>& aSrcBuf) {
-  return JS::CompileModule(aCx, aCompileOptions, aSrcBuf);
-}
-
-static JSObject* CompileModule(JSContext* aCx,
-                               JS::CompileOptions& aCompileOptions,
-                               JS::SourceText<Utf8Unit>& aSrcBuf) {
-  // Once compile-UTF-8-without-inflating is stable, it'll be renamed to remove
-  // the "DontInflate" suffix, these two overloads can be removed, and
-  // |JS::CompileModule| can be used in the sole caller below.
-  return JS::CompileModuleDontInflate(aCx, aCompileOptions, aSrcBuf);
-}
-
 template <typename Unit>
 static nsresult CompileJSModule(JSContext* aCx, JS::SourceText<Unit>& aSrcBuf,
                                 JS::Handle<JSObject*> aEvaluationGlobal,
@@ -507,7 +415,7 @@ static nsresult CompileJSModule(JSContext* aCx, JS::SourceText<Unit>& aSrcBuf,
 
   NS_ENSURE_TRUE(xpc::Scriptability::Get(aEvaluationGlobal).Allowed(), NS_OK);
 
-  JSObject* module = CompileModule(aCx, aCompileOptions, aSrcBuf);
+  JSObject* module = JS::CompileModule(aCx, aCompileOptions, aSrcBuf);
   if (!module) {
     return NS_ERROR_FAILURE;
   }
@@ -532,27 +440,6 @@ nsresult nsJSUtils::CompileModule(JSContext* aCx,
                                   JS::MutableHandle<JSObject*> aModule) {
   return CompileJSModule(aCx, aSrcBuf, aEvaluationGlobal, aCompileOptions,
                          aModule);
-}
-
-nsresult nsJSUtils::InitModuleSourceElement(JSContext* aCx,
-                                            JS::Handle<JSObject*> aModule,
-                                            nsIScriptElement* aElement) {
-  JS::Rooted<JS::Value> value(aCx);
-  nsresult rv = nsContentUtils::WrapNative(aCx, aElement, &value,
-                                           /* aAllowWrapping = */ true);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  MOZ_ASSERT(value.isObject());
-  JS::Rooted<JSObject*> object(aCx, &value.toObject());
-
-  JS::Rooted<JSScript*> script(aCx, JS::GetModuleScript(aModule));
-  if (!JS::InitScriptSourceElement(aCx, script, object, nullptr)) {
-    return NS_ERROR_FAILURE;
-  }
-
-  return NS_OK;
 }
 
 nsresult nsJSUtils::ModuleInstantiate(JSContext* aCx,
@@ -619,29 +506,6 @@ bool nsJSUtils::GetScopeChainForElement(
 }
 
 /* static */
-bool nsJSUtils::GetScopeChainForXBL(
-    JSContext* aCx, Element* aElement,
-    const nsXBLPrototypeBinding& aProtoBinding,
-    JS::MutableHandleVector<JSObject*> aScopeChain) {
-  if (!aElement) {
-    return true;
-  }
-
-  if (!aProtoBinding.SimpleScopeChain()) {
-    return GetScopeChainForElement(aCx, aElement, aScopeChain);
-  }
-
-  if (!AddScopeChainItem(aCx, aElement, aScopeChain)) {
-    return false;
-  }
-
-  if (!AddScopeChainItem(aCx, aElement->OwnerDoc(), aScopeChain)) {
-    return false;
-  }
-  return true;
-}
-
-/* static */
 void nsJSUtils::ResetTimeZone() { JS::ResetTimeZone(); }
 
 /* static */
@@ -657,7 +521,8 @@ bool nsJSUtils::DumpEnabled() {
 // nsDOMJSUtils.h
 //
 
-bool nsAutoJSString::init(const JS::Value& v) {
+template <typename T>
+bool nsTAutoJSString<T>::init(const JS::Value& v) {
   // Note: it's okay to use danger::GetJSContext here instead of AutoJSAPI,
   // because the init() call below is careful not to run script (for instance,
   // it only calls JS::ToString for non-object values).
@@ -666,6 +531,8 @@ bool nsAutoJSString::init(const JS::Value& v) {
     JS_ClearPendingException(cx);
     return false;
   }
-
   return true;
 }
+
+template bool nsTAutoJSString<char16_t>::init(const JS::Value&);
+template bool nsTAutoJSString<char>::init(const JS::Value&);

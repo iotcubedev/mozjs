@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory(require("devtools/client/shared/vendor/react-prop-types"), require("devtools/client/shared/vendor/react-dom-factories"), require("devtools/client/shared/vendor/react"), require("Services"), require("devtools/client/shared/vendor/react-redux"));
@@ -202,7 +206,7 @@ class TreeNode extends Component {
 
   constructor(props) {
     super(props);
-    this.treeNodeRef = _react.default.createRef();
+    this.treeNodeRef = /*#__PURE__*/_react.default.createRef();
     this._onKeyDown = this._onKeyDown.bind(this);
   }
 
@@ -214,7 +218,9 @@ class TreeNode extends Component {
     const elms = this.getFocusableElements();
 
     if (this.props.active) {
-      if (elms.length > 0 && !elms.includes(document.activeElement)) {
+      const doc = this.treeNodeRef.current.ownerDocument;
+
+      if (elms.length > 0 && !elms.includes(doc.activeElement)) {
         elms[0].focus();
       }
     } else {
@@ -345,10 +351,15 @@ const TreeNodeFactory = createFactory(TreeNode);
  * frame.
  *
  * @param {Function} fn
+ * @param {Object} options: object that contains the following properties:
+ *                      - {Function} getDocument: A function that return the document
+ *                                                the component is rendered in.
  * @returns {Function}
  */
 
-function oncePerAnimationFrame(fn) {
+function oncePerAnimationFrame(fn, {
+  getDocument
+}) {
   let animationId = null;
   let argsToPass = null;
   return function (...args) {
@@ -358,7 +369,13 @@ function oncePerAnimationFrame(fn) {
       return;
     }
 
-    animationId = requestAnimationFrame(() => {
+    const doc = getDocument();
+
+    if (!doc) {
+      return;
+    }
+
+    animationId = doc.defaultView.requestAnimationFrame(() => {
       fn.call(this, ...argsToPass);
       animationId = null;
       argsToPass = null;
@@ -591,14 +608,19 @@ class Tree extends Component {
     this.state = {
       autoExpanded: new Set()
     };
-    this.treeRef = _react.default.createRef();
-    this._onExpand = oncePerAnimationFrame(this._onExpand).bind(this);
-    this._onCollapse = oncePerAnimationFrame(this._onCollapse).bind(this);
-    this._focusPrevNode = oncePerAnimationFrame(this._focusPrevNode).bind(this);
-    this._focusNextNode = oncePerAnimationFrame(this._focusNextNode).bind(this);
-    this._focusParentNode = oncePerAnimationFrame(this._focusParentNode).bind(this);
-    this._focusFirstNode = oncePerAnimationFrame(this._focusFirstNode).bind(this);
-    this._focusLastNode = oncePerAnimationFrame(this._focusLastNode).bind(this);
+    this.treeRef = /*#__PURE__*/_react.default.createRef();
+
+    const opaf = fn => oncePerAnimationFrame(fn, {
+      getDocument: () => this.treeRef.current && this.treeRef.current.ownerDocument
+    });
+
+    this._onExpand = opaf(this._onExpand).bind(this);
+    this._onCollapse = opaf(this._onCollapse).bind(this);
+    this._focusPrevNode = opaf(this._focusPrevNode).bind(this);
+    this._focusNextNode = opaf(this._focusNextNode).bind(this);
+    this._focusParentNode = opaf(this._focusParentNode).bind(this);
+    this._focusFirstNode = opaf(this._focusFirstNode).bind(this);
+    this._focusLastNode = opaf(this._focusLastNode).bind(this);
     this._autoExpand = this._autoExpand.bind(this);
     this._preventArrowKeyScrolling = this._preventArrowKeyScrolling.bind(this);
     this._preventEvent = this._preventEvent.bind(this);
@@ -823,7 +845,9 @@ class Tree extends Component {
     if (this.props.active != undefined) {
       this._activate(undefined);
 
-      if (this.treeRef.current !== document.activeElement) {
+      const doc = this.treeRef.current && this.treeRef.current.ownerDocument;
+
+      if (this.treeRef.current !== doc.activeElement) {
         this.treeRef.current.focus();
       }
     }
@@ -862,7 +886,8 @@ class Tree extends Component {
   _scrollNodeIntoView(item, options = {}) {
     if (item !== undefined) {
       const treeElement = this.treeRef.current;
-      const element = document.getElementById(this.props.getKey(item));
+      const doc = treeElement && treeElement.ownerDocument;
+      const element = doc.getElementById(this.props.getKey(item));
 
       if (element) {
         const {
@@ -934,6 +959,8 @@ class Tree extends Component {
 
     this._preventArrowKeyScrolling(e);
 
+    const doc = this.treeRef.current && this.treeRef.current.ownerDocument;
+
     switch (e.key) {
       case "ArrowUp":
         this._focusPrevNode();
@@ -975,7 +1002,7 @@ class Tree extends Component {
 
       case "Enter":
       case " ":
-        if (this.treeRef.current === document.activeElement) {
+        if (this.treeRef.current === doc.activeElement) {
           this._preventEvent(e);
 
           if (this.props.active !== this.props.focused) {
@@ -992,7 +1019,7 @@ class Tree extends Component {
           this._activate(undefined);
         }
 
-        if (this.treeRef.current !== document.activeElement) {
+        if (this.treeRef.current !== doc.activeElement) {
           this.treeRef.current.focus();
         }
 
@@ -1208,7 +1235,11 @@ exports.default = _default;
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Dependencies
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Dependencies
 
 
 const {
@@ -1222,17 +1253,12 @@ const PropRep = __webpack_require__(39);
 const {
   MODE
 } = __webpack_require__(4);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders generic grip. Grip is client representation
  * of remote JS object and is used as an input object
  * for this rep component.
  */
+
 
 GripRep.propTypes = {
   object: PropTypes.object.isRequired,
@@ -1243,14 +1269,16 @@ GripRep.propTypes = {
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
-  noGrip: PropTypes.bool
+  noGrip: PropTypes.bool,
+  shouldRenderTooltip: PropTypes.bool
 };
 const DEFAULT_TITLE = "Object";
 
 function GripRep(props) {
   const {
     mode = MODE.SHORT,
-    object
+    object,
+    shouldRenderTooltip
   } = props;
   const config = {
     "data-link-actor-id": object.actor,
@@ -1268,17 +1296,18 @@ function GripRep(props) {
         className: "objectLeftBrace"
       }, "{"), propertiesLength > 0 ? span({
         key: "more",
-        className: "more-ellipsis",
-        title: "more…"
+        className: "more-ellipsis"
       }, "…") : null, span({
         className: "objectRightBrace"
       }, "}"));
     }
 
+    config.title = shouldRenderTooltip ? getTitle(props, object) : null;
     return span(config, ...tinyModeItems);
   }
 
   const propsArray = safePropIterator(props, object, maxLengthMap.get(mode));
+  config.title = shouldRenderTooltip ? getTitle(props, object) : null;
   return span(config, getTitleElement(props, object), span({
     className: "objectLeftBrace"
   }, " { "), ...interleave(propsArray, ", "), span({
@@ -1372,10 +1401,12 @@ function propIterator(props, object, max) {
     } = object.preview;
     const length = max - indexes.length;
     const symbolsProps = ownSymbols.slice(0, length).map(symbolItem => {
+      const symbolValue = symbolItem.descriptor.value;
+      const symbolGrip = symbolValue && symbolValue.getGrip ? symbolValue.getGrip() : symbolValue;
       return PropRep({ ...props,
         mode: MODE.TINY,
         name: symbolItem,
-        object: symbolItem.descriptor.value,
+        object: symbolGrip,
         equal: ": ",
         defaultRep: Grip,
         title: null,
@@ -1391,8 +1422,7 @@ function propIterator(props, object, max) {
     // There are some undisplayed props. Then display "more...".
     propsArray.push(span({
       key: "more",
-      className: "more-ellipsis",
-      title: "more…"
+      className: "more-ellipsis"
     }, "…"));
   }
 
@@ -1590,6 +1620,10 @@ function getValue(item) {
   return undefined;
 }
 
+function getFront(item) {
+  return item && item.contents && item.contents.front;
+}
+
 function getActor(item, roots) {
   const isRoot = isNodeRoot(item, roots);
   const value = getValue(item);
@@ -1662,7 +1696,7 @@ function nodeIsUnmappedBinding(item) {
   return value && value.unmapped;
 } // Used to check if an item represents a binding that exists in the debugger's
 // parser result, but does not match up with a binding returned by the
-// debugger server.
+// devtools server.
 
 
 function nodeIsUnscopedBinding(item) {
@@ -1784,29 +1818,6 @@ function nodeHasEntries(item) {
   return value.class === "Map" || value.class === "Set" || value.class === "WeakMap" || value.class === "WeakSet" || value.class === "Storage";
 }
 
-function nodeHasAllEntriesInPreview(item) {
-  const {
-    preview
-  } = getValue(item) || {};
-
-  if (!preview) {
-    return false;
-  }
-
-  const {
-    entries,
-    items,
-    length,
-    size
-  } = preview;
-
-  if (!entries && !items) {
-    return false;
-  }
-
-  return entries ? entries.length === size : items.length === length;
-}
-
 function nodeNeedsNumericalBuckets(item) {
   return nodeSupportsNumericalBucketing(item) && getNumericalPropertiesCount(item) > MAX_NUMERICAL_PROPERTIES;
 }
@@ -1848,7 +1859,8 @@ function makeNodesForPromiseProperties(item) {
       parent: item,
       name: "<value>",
       contents: {
-        value: value
+        value: value.getGrip ? value.getGrip() : value,
+        front: value.getGrip ? value : null
       },
       type: NODE_TYPES.PROMISE_VALUE
     }));
@@ -1862,18 +1874,26 @@ function makeNodesForProxyProperties(loadedProps, item) {
     proxyHandler,
     proxyTarget
   } = loadedProps;
+  const isProxyHandlerFront = proxyHandler && proxyHandler.getGrip;
+  const proxyHandlerGrip = isProxyHandlerFront ? proxyHandler.getGrip() : proxyHandler;
+  const proxyHandlerFront = isProxyHandlerFront ? proxyHandler : null;
+  const isProxyTargetFront = proxyTarget && proxyTarget.getGrip;
+  const proxyTargetGrip = isProxyTargetFront ? proxyTarget.getGrip() : proxyTarget;
+  const proxyTargetFront = isProxyTargetFront ? proxyTarget : null;
   return [createNode({
     parent: item,
     name: "<target>",
     contents: {
-      value: proxyTarget
+      value: proxyTargetGrip,
+      front: proxyTargetFront
     },
     type: NODE_TYPES.PROXY_TARGET
   }), createNode({
     parent: item,
     name: "<handler>",
     contents: {
-      value: proxyHandler
+      value: proxyHandlerGrip,
+      front: proxyHandlerFront
     },
     type: NODE_TYPES.PROXY_HANDLER
   })];
@@ -1881,46 +1901,6 @@ function makeNodesForProxyProperties(loadedProps, item) {
 
 function makeNodesForEntries(item) {
   const nodeName = "<entries>";
-  const entriesPath = "<entries>";
-
-  if (nodeHasAllEntriesInPreview(item)) {
-    let entriesNodes = [];
-    const {
-      preview
-    } = getValue(item);
-
-    if (preview.entries) {
-      entriesNodes = preview.entries.map(([key, value], index) => {
-        return createNode({
-          parent: item,
-          name: index,
-          path: `${entriesPath}/${index}`,
-          contents: {
-            value: GripMapEntryRep.createGripMapEntry(key, value)
-          }
-        });
-      });
-    } else if (preview.items) {
-      entriesNodes = preview.items.map((value, index) => {
-        return createNode({
-          parent: item,
-          name: index,
-          path: `${entriesPath}/${index}`,
-          contents: {
-            value
-          }
-        });
-      });
-    }
-
-    return createNode({
-      parent: item,
-      name: nodeName,
-      contents: entriesNodes,
-      type: NODE_TYPES.ENTRIES
-    });
-  }
-
   return createNode({
     parent: item,
     name: nodeName,
@@ -1940,18 +1920,26 @@ function makeNodesForMapEntry(item) {
     key,
     value
   } = nodeValue.preview;
+  const isKeyFront = key && key.getGrip;
+  const keyGrip = isKeyFront ? key.getGrip() : key;
+  const keyFront = isKeyFront ? key : null;
+  const isValueFront = value && value.getGrip;
+  const valueGrip = isValueFront ? value.getGrip() : value;
+  const valueFront = isValueFront ? value : null;
   return [createNode({
     parent: item,
     name: "<key>",
     contents: {
-      value: key
+      value: keyGrip,
+      front: keyFront
     },
     type: NODE_TYPES.MAP_ENTRY_KEY
   }), createNode({
     parent: item,
     name: "<value>",
     contents: {
-      value
+      value: valueGrip,
+      front: valueFront
     },
     type: NODE_TYPES.MAP_ENTRY_VALUE
   })];
@@ -2027,12 +2015,7 @@ function makeDefaultPropsBucket(propertiesNames, parent, ownProperties) {
       contents: null,
       type: NODE_TYPES.DEFAULT_PROPERTIES
     });
-    const defaultNodes = defaultProperties.map((name, index) => createNode({
-      parent: defaultPropertiesNode,
-      name: maybeEscapePropertyName(name),
-      path: `${index}/${name}`,
-      contents: ownProperties[name]
-    }));
+    const defaultNodes = makeNodesForOwnProps(defaultProperties, defaultPropertiesNode, ownProperties);
     nodes.push(setNodeChildren(defaultPropertiesNode, defaultNodes));
   }
 
@@ -2040,11 +2023,30 @@ function makeDefaultPropsBucket(propertiesNames, parent, ownProperties) {
 }
 
 function makeNodesForOwnProps(propertiesNames, parent, ownProperties) {
-  return propertiesNames.map(name => createNode({
-    parent,
-    name: maybeEscapePropertyName(name),
-    contents: ownProperties[name]
-  }));
+  return propertiesNames.map(name => {
+    const property = ownProperties[name];
+    let propertyValue = property;
+
+    if (property && property.hasOwnProperty("getterValue")) {
+      propertyValue = property.getterValue;
+    } else if (property && property.hasOwnProperty("value")) {
+      propertyValue = property.value;
+    } // propertyValue can be a front (LongString or Object) or a primitive grip.
+
+
+    const isFront = propertyValue && propertyValue.getGrip;
+    const front = isFront ? propertyValue : null;
+    const grip = isFront ? front.getGrip() : propertyValue;
+    return createNode({
+      parent,
+      name: maybeEscapePropertyName(name),
+      propertyName: name,
+      contents: { ...(property || {}),
+        value: grip,
+        front
+      }
+    });
+  });
 }
 
 function makeNodesForProperties(objProps, parent) {
@@ -2067,21 +2069,23 @@ function makeNodesForProperties(objProps, parent) {
     const properties = Object.getOwnPropertyNames(allProperties[name]);
     return properties.some(property => ["value", "getterValue", "get", "set"].includes(property));
   });
-  let nodes = [];
-
-  if (parentValue && parentValue.class == "Window") {
-    nodes = makeDefaultPropsBucket(propertiesNames, parent, allProperties);
-  } else {
-    nodes = makeNodesForOwnProps(propertiesNames, parent, allProperties);
-  }
+  const isParentNodeWindow = parentValue && parentValue.class == "Window";
+  const nodes = isParentNodeWindow ? makeDefaultPropsBucket(propertiesNames, parent, allProperties) : makeNodesForOwnProps(propertiesNames, parent, allProperties);
 
   if (Array.isArray(ownSymbols)) {
     ownSymbols.forEach((ownSymbol, index) => {
+      const descriptorValue = ownSymbol && ownSymbol.descriptor && ownSymbol.descriptor.value;
+      const isFront = descriptorValue && descriptorValue.getGrip;
+      const symbolGrip = isFront ? descriptorValue.getGrip() : descriptorValue;
+      const symbolFront = isFront ? ownSymbol.descriptor.value : null;
       nodes.push(createNode({
         parent,
         name: ownSymbol.name,
         path: `symbol-${index}`,
-        contents: ownSymbol.descriptor || null
+        contents: symbolGrip ? {
+          value: symbolGrip,
+          front: symbolFront
+        } : null
       }));
     }, this);
   }
@@ -2095,20 +2099,25 @@ function makeNodesForProperties(objProps, parent) {
   } // Add accessor nodes if needed
 
 
+  const defaultPropertiesNode = isParentNodeWindow ? nodes.find(node => nodeIsDefaultProperties(node)) : null;
+
   for (const name of propertiesNames) {
     const property = allProperties[name];
+    const isDefaultProperty = isParentNodeWindow && defaultPropertiesNode && isDefaultWindowProperty(name);
+    const parentNode = isDefaultProperty ? defaultPropertiesNode : parent;
+    const parentContentsArray = isDefaultProperty && defaultPropertiesNode ? defaultPropertiesNode.contents : nodes;
 
     if (property.get && property.get.type !== "undefined") {
-      nodes.push(createGetterNode({
-        parent,
+      parentContentsArray.push(createGetterNode({
+        parent: parentNode,
         property,
         name
       }));
     }
 
     if (property.set && property.set.type !== "undefined") {
-      nodes.push(createSetterNode({
-        parent,
+      parentContentsArray.push(createSetterNode({
+        parent: parentNode,
         property,
         name
       }));
@@ -2151,7 +2160,8 @@ function makeNodeForPrototype(objProps, parent) {
       parent,
       name: "<prototype>",
       contents: {
-        value: prototype
+        value: prototype.getGrip ? prototype.getGrip() : prototype,
+        front: prototype.getGrip ? prototype : null
       },
       type: NODE_TYPES.PROTOTYPE
     });
@@ -2164,6 +2174,7 @@ function createNode(options) {
   const {
     parent,
     name,
+    propertyName,
     path,
     contents,
     type = NODE_TYPES.GRIP,
@@ -2174,16 +2185,15 @@ function createNode(options) {
     return null;
   } // The path is important to uniquely identify the item in the entire
   // tree. This helps debugging & optimizes React's rendering of large
-  // lists. The path will be separated by property name, wrapped in a Symbol
-  // to avoid name clashing,
-  // i.e. `{ foo: { bar: { baz: 5 }}}` will have a path of Symbol(`foo/bar/baz`)
-  // for the inner object.
+  // lists. The path will be separated by property name.
 
 
   return {
     parent,
     name,
-    path: parent ? Symbol(`${getSymbolDescriptor(parent.path)}/${path || name}`) : Symbol(path || name),
+    // `name` can be escaped; propertyName contains the original property name.
+    propertyName,
+    path: createPath(parent && parent.path, path || name),
     contents,
     type,
     meta
@@ -2195,11 +2205,15 @@ function createGetterNode({
   property,
   name
 }) {
+  const isFront = property.get && property.get.getGrip;
+  const grip = isFront ? property.get.getGrip() : property.get;
+  const front = isFront ? property.get : null;
   return createNode({
     parent,
     name: `<get ${name}()>`,
     contents: {
-      value: property.get
+      value: grip,
+      front
     },
     type: NODE_TYPES.GET
   });
@@ -2210,18 +2224,18 @@ function createSetterNode({
   property,
   name
 }) {
+  const isFront = property.set && property.set.getGrip;
+  const grip = isFront ? property.set.getGrip() : property.set;
+  const front = isFront ? property.set : null;
   return createNode({
     parent,
     name: `<set ${name}()>`,
     contents: {
-      value: property.set
+      value: grip,
+      front
     },
     type: NODE_TYPES.SET
   });
-}
-
-function getSymbolDescriptor(symbol) {
-  return symbol.toString().replace(/^(Symbol\()(.*)(\))$/, "$2");
 }
 
 function setNodeChildren(node, children) {
@@ -2234,8 +2248,14 @@ function getEvaluatedItem(item, evaluations) {
     return item;
   }
 
+  const evaluation = evaluations.get(item.path);
+  const isFront = evaluation && evaluation.getterValue && evaluation.getterValue.getGrip;
+  const contents = isFront ? {
+    getterValue: evaluation.getterValue.getGrip(),
+    front: evaluation.getterValue
+  } : evaluations.get(item.path);
   return { ...item,
-    contents: evaluations.get(item.path)
+    contents
   };
 }
 
@@ -2328,6 +2348,17 @@ function getChildren(options) {
   }
 
   return addToCache(makeNodesForProperties(loadedProps, item));
+} // Builds an expression that resolves to the value of the item in question
+// e.g. `b` in { a: { b: 2 } } resolves to `a.b`
+
+
+function getPathExpression(item) {
+  if (item && item.parent) {
+    const parent = nodeIsBucket(item.parent) ? item.parent.parent : item.parent;
+    return `${getPathExpression(parent)}.${item.name}`;
+  }
+
+  return item.name;
 }
 
 function getParent(item) {
@@ -2411,6 +2442,16 @@ function getParentGripValue(item) {
   return getValue(parentGripNode);
 }
 
+function getParentFront(item) {
+  const parentGripNode = getParentGripNode(item);
+
+  if (!parentGripNode) {
+    return null;
+  }
+
+  return getFront(parentGripNode);
+}
+
 function getNonPrototypeParentGripValue(item) {
   const parentGripNode = getParentGripNode(item);
 
@@ -2425,6 +2466,10 @@ function getNonPrototypeParentGripValue(item) {
   return getValue(parentGripNode);
 }
 
+function createPath(parentPath, path) {
+  return parentPath ? `${parentPath}◦${path}` : path;
+}
+
 module.exports = {
   createNode,
   createGetterNode,
@@ -2434,7 +2479,11 @@ module.exports = {
   getChildrenWithEvaluations,
   getClosestGripNode,
   getClosestNonBucketNode,
+  getEvaluatedItem,
+  getFront,
+  getPathExpression,
   getParent,
+  getParentFront,
   getParentGripValue,
   getNonPrototypeParentGripValue,
   getNumericalPropertiesCount,
@@ -2444,7 +2493,6 @@ module.exports = {
   makeNodesForProperties,
   makeNumericalBuckets,
   nodeHasAccessors,
-  nodeHasAllEntriesInPreview,
   nodeHasChildren,
   nodeHasEntries,
   nodeHasProperties,
@@ -2487,16 +2535,17 @@ module.exports = {
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
-function initialState() {
+function initialOIState(overrides) {
   return {
     expandedPaths: new Set(),
     loadedProperties: new Map(),
     evaluations: new Map(),
-    actors: new Set()
+    watchpoints: new Map(),
+    ...overrides
   };
 }
 
-function reducer(state = initialState(), action = {}) {
+function reducer(state = initialOIState(), action = {}) {
   const {
     type,
     data
@@ -2520,9 +2569,36 @@ function reducer(state = initialState(), action = {}) {
     });
   }
 
+  if (type == "SET_WATCHPOINT") {
+    const {
+      watchpoint,
+      property,
+      path
+    } = data;
+    const obj = state.loadedProperties.get(path);
+    return cloneState({
+      loadedProperties: new Map(state.loadedProperties).set(path, updateObject(obj, property, watchpoint)),
+      watchpoints: new Map(state.watchpoints).set(data.actor, data.watchpoint)
+    });
+  }
+
+  if (type === "REMOVE_WATCHPOINT") {
+    const {
+      path,
+      property,
+      actor
+    } = data;
+    const obj = state.loadedProperties.get(path);
+    const watchpoints = new Map(state.watchpoints);
+    watchpoints.delete(actor);
+    return cloneState({
+      loadedProperties: new Map(state.loadedProperties).set(path, updateObject(obj, property, null)),
+      watchpoints: watchpoints
+    });
+  }
+
   if (type === "NODE_PROPERTIES_LOADED") {
     return cloneState({
-      actors: data.actor ? new Set(state.actors || []).add(data.actor) : state.actors,
       loadedProperties: new Map(state.loadedProperties).set(data.node.path, action.data.properties)
     });
   }
@@ -2533,7 +2609,6 @@ function reducer(state = initialState(), action = {}) {
 
   if (type === "GETTER_INVOKED") {
     return cloneState({
-      actors: data.actor ? new Set(state.actors || []).add(data.result.from) : state.actors,
       evaluations: new Map(state.evaluations).set(data.node.path, {
         getterValue: data.result && data.result.value && (data.result.value.throw || data.result.value.return)
       })
@@ -2543,10 +2618,22 @@ function reducer(state = initialState(), action = {}) {
 
 
   if (type === "RESUME" || type == "NAVIGATE") {
-    return initialState();
+    return initialOIState({
+      watchpoints: state.watchpoints
+    });
   }
 
   return state;
+}
+
+function updateObject(obj, property, watchpoint) {
+  return { ...obj,
+    ownProperties: { ...obj.ownProperties,
+      [property]: { ...obj.ownProperties[property],
+        watchpoint
+      }
+    }
+  };
 }
 
 function getObjectInspectorState(state) {
@@ -2561,8 +2648,8 @@ function getExpandedPathKeys(state) {
   return [...getExpandedPaths(state).keys()];
 }
 
-function getActors(state) {
-  return getObjectInspectorState(state).actors;
+function getWatchpoints(state) {
+  return getObjectInspectorState(state).watchpoints;
 }
 
 function getLoadedProperties(state) {
@@ -2578,7 +2665,7 @@ function getEvaluations(state) {
 }
 
 const selectors = {
-  getActors,
+  getWatchpoints,
   getEvaluations,
   getExpandedPathKeys,
   getExpandedPaths,
@@ -2588,7 +2675,9 @@ const selectors = {
 Object.defineProperty(module.exports, "__esModule", {
   value: true
 });
-module.exports = selectors;
+module.exports = { ...selectors,
+  initialOIState
+};
 module.exports.default = reducer;
 
 /***/ }),
@@ -2623,14 +2712,14 @@ const {
   }
 } = __webpack_require__(24);
 
-function shouldRenderRootsInReps(roots) {
-  if (roots.length > 1) {
+function shouldRenderRootsInReps(roots, props = {}) {
+  if (roots.length !== 1) {
     return false;
   }
 
   const root = roots[0];
   const name = root && root.name;
-  return (name === null || typeof name === "undefined") && (nodeIsPrimitive(root) || nodeIsError(root));
+  return (name === null || typeof name === "undefined") && (nodeIsPrimitive(root) || nodeIsError(root) && (props === null || props === void 0 ? void 0 : props.customFormat) === true);
 }
 
 function renderRep(item, props) {
@@ -2659,33 +2748,48 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
+const {
+  span
+} = __webpack_require__(1);
+
 const PropTypes = __webpack_require__(0);
 
 const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
- * Renders a number
+ * Renders a BigInt Number
  */
 
+
 BigInt.propTypes = {
-  object: PropTypes.oneOfType([PropTypes.object, PropTypes.number, PropTypes.bool]).isRequired
+  object: PropTypes.oneOfType([PropTypes.object, PropTypes.number, PropTypes.bool]).isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function BigInt(props) {
   const {
-    text
-  } = props.object;
-  return span({
-    className: "objectBox objectBox-number"
-  }, `${text}n`);
+    object,
+    shouldRenderTooltip
+  } = props;
+  const text = object.text;
+  const config = getElementConfig({
+    text,
+    shouldRenderTooltip
+  });
+  return span(config, `${text}n`);
+}
+
+function getElementConfig(opts) {
+  const {
+    text,
+    shouldRenderTooltip
+  } = opts;
+  return {
+    className: "objectBox objectBox-number",
+    title: shouldRenderTooltip ? `${text}n` : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -2707,7 +2811,12 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  button,
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -2721,11 +2830,6 @@ const {
   MODE
 } = __webpack_require__(4);
 
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 const IGNORED_SOURCE_URLS = ["debugger eval code"];
 /**
  * This component represents a template for Function objects.
@@ -2733,24 +2837,25 @@ const IGNORED_SOURCE_URLS = ["debugger eval code"];
 
 FunctionRep.propTypes = {
   object: PropTypes.object.isRequired,
-  parameterNames: PropTypes.array,
-  onViewSourceInDebugger: PropTypes.func
+  onViewSourceInDebugger: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function FunctionRep(props) {
   const {
     object: grip,
     onViewSourceInDebugger,
-    recordTelemetryEvent
+    recordTelemetryEvent,
+    shouldRenderTooltip
   } = props;
-  let jumpToDefinitionButton;
+  let jumpToDefinitionButton; // Test to see if we should display the link back to the original function definition
 
   if (onViewSourceInDebugger && grip.location && grip.location.url && !IGNORED_SOURCE_URLS.includes(grip.location.url)) {
-    jumpToDefinitionButton = dom.button({
+    jumpToDefinitionButton = button({
       className: "jump-definition",
       draggable: false,
       title: "Jump to definition",
-      onClick: e => {
+      onClick: async e => {
         // Stop the event propagation so we don't trigger ObjectInspector
         // expand/collapse.
         e.stopPropagation();
@@ -2764,16 +2869,38 @@ function FunctionRep(props) {
     });
   }
 
-  return span({
+  const elProps = {
     "data-link-actor-id": grip.actor,
     className: "objectBox objectBox-function",
-    // Set dir="ltr" to prevent function parentheses from
+    // Set dir="ltr" to prevent parentheses from
     // appearing in the wrong direction
     dir: "ltr"
-  }, getTitle(grip, props), getFunctionName(grip, props), "(", ...renderParams(props), ")", jumpToDefinitionButton);
+  };
+  const parameterNames = (grip.parameterNames || []).filter(Boolean);
+  const fnTitle = getFunctionTitle(grip, props);
+  const fnName = getFunctionName(grip, props);
+
+  if (grip.isClassConstructor) {
+    const classTitle = getClassTitle(grip, props);
+    const classBodyTooltip = getClassBody(parameterNames, true, props);
+    const classTooltip = `${classTitle ? classTitle.props.children : ""}${fnName ? fnName : ""}${classBodyTooltip.join("")}`;
+    elProps.title = shouldRenderTooltip ? classTooltip : null;
+    return span(elProps, classTitle, fnName, ...getClassBody(parameterNames, false, props), jumpToDefinitionButton);
+  }
+
+  const fnTooltip = `${fnTitle ? fnTitle.props.children : ""}${fnName ? fnName : ""}(${parameterNames.join(", ")})`;
+  elProps.title = shouldRenderTooltip ? fnTooltip : null;
+  const returnSpan = span(elProps, fnTitle, fnName, "(", ...getParams(parameterNames), ")", jumpToDefinitionButton);
+  return returnSpan;
 }
 
-function getTitle(grip, props) {
+function getClassTitle(grip) {
+  return span({
+    className: "objectTitle"
+  }, "class ");
+}
+
+function getFunctionTitle(grip, props) {
   const {
     mode
   } = props;
@@ -2849,23 +2976,38 @@ function cleanFunctionName(name) {
   return name;
 }
 
-function renderParams(props) {
+function getClassBody(constructorParams, textOnly = false, props) {
   const {
-    parameterNames = []
+    mode
   } = props;
-  return parameterNames.filter(param => param).reduce((res, param, index, arr) => {
-    res.push(span({
+
+  if (mode === MODE.TINY) {
+    return [];
+  }
+
+  return [" {", ...getClassConstructor(textOnly, constructorParams), "}"];
+}
+
+function getClassConstructor(textOnly = false, parameterNames) {
+  if (parameterNames.length === 0) {
+    return [];
+  }
+
+  if (textOnly) {
+    return [` constructor(${parameterNames.join(", ")}) `];
+  }
+
+  return [" constructor(", ...getParams(parameterNames), ") "];
+}
+
+function getParams(parameterNames) {
+  return parameterNames.flatMap((param, index, arr) => {
+    return [span({
       className: "param"
-    }, param));
-
-    if (index < arr.length - 1) {
-      res.push(span({
-        className: "delimiter"
-      }, ", "));
-    }
-
-    return res;
-  }, []);
+    }, param), index === arr.length - 1 ? "" : span({
+      className: "delimiter"
+    }, ", ")];
+  });
 } // Registration
 
 
@@ -2927,7 +3069,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Utils
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Utils
 
 
 const {
@@ -2948,11 +3094,6 @@ const {
   MODE
 } = __webpack_require__(4);
 
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 const IGNORED_SOURCE_URLS = ["debugger eval code"];
 /**
  * Renders Error objects.
@@ -2963,15 +3104,37 @@ ErrorRep.propTypes = {
   // @TODO Change this to Object.values when supported in Node's version of V8
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
   // An optional function that will be used to render the Error stacktrace.
-  renderStacktrace: PropTypes.func
+  renderStacktrace: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
+/**
+ * Render an Error object.
+ * The customFormat prop allows to print a simplified view of the object, with only the
+ * message and the stacktrace, e.g.:
+ *      Error: "blah"
+ *          <anonymous> debugger eval code:1
+ *
+ * The customFormat prop will only be taken into account if the mode isn't tiny and the
+ * depth is 0. This is because we don't want error in previews or in object to be
+ * displayed unlike other objects:
+ *      - Object { err: Error }
+ *      - â–¼ {
+ *            err: Error: "blah"
+ *        }
+ */
 
 function ErrorRep(props) {
-  const object = props.object;
+  const {
+    object,
+    mode,
+    shouldRenderTooltip,
+    depth
+  } = props;
   const preview = object.preview;
+  const customFormat = props.customFormat && mode !== MODE.TINY && !depth;
   let name;
 
-  if (preview && preview.name && preview.kind) {
+  if (preview && preview.name && typeof preview.name === "string" && preview.kind) {
     switch (preview.kind) {
       case "Error":
         name = preview.name;
@@ -2988,23 +3151,43 @@ function ErrorRep(props) {
     name = "Error";
   }
 
+  const errorTitle = mode === MODE.TINY ? name : `${name}: `;
   const content = [];
 
-  if (props.mode === MODE.TINY) {
-    content.push(name);
+  if (customFormat) {
+    content.push(errorTitle);
   } else {
-    content.push(`${name}: "${preview.message}"`);
+    content.push(span({
+      className: "objectTitle",
+      key: "title"
+    }, errorTitle));
   }
 
-  if (preview.stack && props.mode !== MODE.TINY) {
+  if (mode !== MODE.TINY) {
+    const {
+      Rep
+    } = __webpack_require__(24);
+
+    content.push(Rep({ ...props,
+      key: "message",
+      object: preview.message,
+      mode: props.mode || MODE.TINY,
+      useQuotes: false
+    }));
+  }
+
+  const renderStack = preview.stack && customFormat;
+
+  if (renderStack) {
     const stacktrace = props.renderStacktrace ? props.renderStacktrace(parseStackString(preview.stack)) : getStacktraceElements(props, preview);
     content.push(stacktrace);
   }
 
   return span({
     "data-link-actor-id": object.actor,
-    className: "objectBox-stackTrace"
-  }, content);
+    className: `objectBox-stackTrace ${customFormat ? "reps-custom-format" : ""}`,
+    title: shouldRenderTooltip ? `${name}: "${preview.message}"` : null
+  }, ...content);
 }
 /**
  * Returns a React element reprensenting the Error stacktrace, i.e.
@@ -3083,14 +3266,18 @@ function getStacktraceElements(props, preview) {
 
 
 function parseStackString(stack) {
-  const res = [];
-
   if (!stack) {
-    return res;
+    return [];
   }
 
   const isStacktraceALongString = isLongString(stack);
   const stackString = isStacktraceALongString ? stack.initial : stack;
+
+  if (typeof stackString !== "string") {
+    return [];
+  }
+
+  const res = [];
   stackString.split("\n").forEach((frame, index, frames) => {
     if (!frame) {
       // Skip any blank lines
@@ -3106,21 +3293,20 @@ function parseStackString(stack) {
     }
 
     let functionName;
-    let location; // Given the input: "functionName@scriptLocation:2:100"
-    // Result: [
-    //   "functionName@scriptLocation:2:100",
-    //   "functionName",
-    //   "scriptLocation:2:100"
-    // ]
+    let location; // Retrieve the index of the first @ to split the frame string.
 
-    const result = frame.match(/^(.*)@(.*)$/);
+    const atCharIndex = frame.indexOf("@");
 
-    if (result && result.length === 3) {
-      functionName = result[1]; // If the resource was loaded by base-loader.js, the location looks like:
+    if (atCharIndex > -1) {
+      functionName = frame.slice(0, atCharIndex);
+      location = frame.slice(atCharIndex + 1);
+    }
+
+    if (location && location.includes(" -> ")) {
+      // If the resource was loaded by base-loader.js, the location looks like:
       // resource://devtools/shared/base-loader.js -> resource://path/to/file.js .
       // What's needed is only the last part after " -> ".
-
-      location = result[2].split(" -> ").pop();
+      location = location.split(" -> ").pop();
     }
 
     if (!functionName) {
@@ -3173,6 +3359,10 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   lengthBubble
 } = __webpack_require__(193);
 
@@ -3187,12 +3377,6 @@ const {
 const {
   MODE
 } = __webpack_require__(4);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 
 const {
   ModePropType
@@ -3211,13 +3395,15 @@ GripArray.propTypes = {
   provider: PropTypes.object,
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
-  onInspectIconClick: PropTypes.func
+  onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function GripArray(props) {
   const {
     object,
-    mode = MODE.SHORT
+    mode = MODE.SHORT,
+    shouldRenderTooltip
   } = props;
   let brackets;
 
@@ -3233,7 +3419,8 @@ function GripArray(props) {
 
   const config = {
     "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-array"
+    className: "objectBox objectBox-array",
+    title: shouldRenderTooltip ? "Array" : null
   };
   const title = getTitle(props, object);
 
@@ -3255,10 +3442,7 @@ function GripArray(props) {
   const max = maxLengthMap.get(mode);
   const items = arrayIterator(props, object, max);
   brackets = needSpace(items.length > 0);
-  return span({
-    "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-array"
-  }, title, span({
+  return span(config, title, span({
     className: "arrayLeftBracket"
   }, brackets.left), ...interleave(items, ", "), span({
     className: "arrayRightBracket"
@@ -3483,11 +3667,15 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1);
+
 const {
   lengthBubble
 } = __webpack_require__(193);
-
-const PropTypes = __webpack_require__(0);
 
 const {
   interleave,
@@ -3505,10 +3693,6 @@ const {
 const {
   ModePropType
 } = __webpack_require__(38);
-
-const {
-  span
-} = __webpack_require__(1);
 /**
  * Renders an map. A map is represented by a list of its
  * entries enclosed in curly brackets.
@@ -3523,17 +3707,20 @@ GripMap.propTypes = {
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
-  title: PropTypes.string
+  title: PropTypes.string,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function GripMap(props) {
   const {
     mode,
-    object
+    object,
+    shouldRenderTooltip
   } = props;
   const config = {
     "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-object"
+    className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? getTooltip(object, props) : null
   };
   const title = getTitle(props, object);
   const isEmpty = getLength(object) === 0;
@@ -3561,6 +3748,11 @@ function getTitle(props, object) {
     getLength,
     showZeroLength: true
   }));
+}
+
+function getTooltip(object, props) {
+  const tooltip = props.title || (object && object.class ? object.class : "Map");
+  return `${tooltip}(${getLength(object)})`;
 }
 
 function safeEntriesIterator(props, object, max) {
@@ -3624,9 +3816,9 @@ function getEntries(props, entries, indexes) {
     const [key, entryValue] = entries[index];
     const value = entryValue.value !== undefined ? entryValue.value : entryValue;
     return PropRep({
-      name: key,
+      name: key && key.getGrip ? key.getGrip() : key,
       equal: " \u2192 ",
-      object: value,
+      object: value && value.getGrip ? value.getGrip() : value,
       mode: MODE.TINY,
       onDOMNodeMouseOver,
       onDOMNodeMouseOut,
@@ -3693,14 +3885,12 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
-const PropTypes = __webpack_require__(0); // Shortcuts
-
-
-const dom = __webpack_require__(1);
+const PropTypes = __webpack_require__(0);
 
 const {
   span
-} = dom;
+} = __webpack_require__(1); // Utils
+
 
 const {
   wrapRender
@@ -3714,6 +3904,14 @@ const {
 /**
  * Renders an map entry. A map entry is represented by its key,
  * a column and its value.
+ *
+ * tooltipTitle Notes:
+ * ---
+ * 1. Renders a Map Entry.
+ * 2. Implements tooltipTitle: <TODO>
+ * 3. ElementTitle = <TODO>
+ *      POTENTIAL: full key/value pair for display
+ * 4. Chrome: chrome displays full key-value pair
  */
 
 
@@ -3730,10 +3928,19 @@ function GripMapEntry(props) {
   const {
     object
   } = props;
-  const {
+  let {
     key,
     value
   } = object.preview;
+
+  if (key && key.getGrip) {
+    key = key.getGrip();
+  }
+
+  if (value && value.getGrip) {
+    value = value.getGrip();
+  }
+
   return span({
     className: "objectBox objectBox-map-entry"
   }, PropRep({ ...props,
@@ -3791,9 +3998,9 @@ const {
 const {
   getClosestGripNode,
   getClosestNonBucketNode,
+  getFront,
   getValue,
   nodeHasAccessors,
-  nodeHasAllEntriesInPreview,
   nodeHasProperties,
   nodeIsBucket,
   nodeIsDefaultProperties,
@@ -3805,41 +4012,53 @@ const {
   nodeIsLongString
 } = __webpack_require__(114);
 
-function loadItemProperties(item, createObjectClient, createLongStringClient, loadedProperties) {
+function loadItemProperties(item, client, loadedProperties) {
   const gripItem = getClosestGripNode(item);
   const value = getValue(gripItem);
+  let front = getFront(gripItem);
+
+  if (!front && value && client && client.getFrontByID) {
+    front = client.getFrontByID(value.actor);
+  }
+
+  const getObjectFront = function () {
+    if (!front) {
+      front = client.createObjectFront(value);
+    }
+
+    return front;
+  };
+
   const [start, end] = item.meta ? [item.meta.startIndex, item.meta.endIndex] : [];
   const promises = [];
-  let objectClient;
-
-  const getObjectClient = () => objectClient || createObjectClient(value);
 
   if (shouldLoadItemIndexedProperties(item, loadedProperties)) {
-    promises.push(enumIndexedProperties(getObjectClient(), start, end));
+    promises.push(enumIndexedProperties(getObjectFront(), start, end));
   }
 
   if (shouldLoadItemNonIndexedProperties(item, loadedProperties)) {
-    promises.push(enumNonIndexedProperties(getObjectClient(), start, end));
+    promises.push(enumNonIndexedProperties(getObjectFront(), start, end));
   }
 
   if (shouldLoadItemEntries(item, loadedProperties)) {
-    promises.push(enumEntries(getObjectClient(), start, end));
+    promises.push(enumEntries(getObjectFront(), start, end));
   }
 
   if (shouldLoadItemPrototype(item, loadedProperties)) {
-    promises.push(getPrototype(getObjectClient()));
+    promises.push(getPrototype(getObjectFront()));
   }
 
   if (shouldLoadItemSymbols(item, loadedProperties)) {
-    promises.push(enumSymbols(getObjectClient(), start, end));
+    promises.push(enumSymbols(getObjectFront(), start, end));
   }
 
   if (shouldLoadItemFullText(item, loadedProperties)) {
-    promises.push(getFullText(createLongStringClient(value), item));
+    const longStringFront = front || client.createLongStringFront(value);
+    promises.push(getFullText(longStringFront, item));
   }
 
   if (shouldLoadItemProxySlots(item, loadedProperties)) {
-    promises.push(getProxySlots(getObjectClient()));
+    promises.push(getProxySlots(getObjectFront()));
   }
 
   return Promise.all(promises).then(mergeResponses);
@@ -3893,7 +4112,7 @@ function shouldLoadItemNonIndexedProperties(item, loadedProperties = new Map()) 
 function shouldLoadItemEntries(item, loadedProperties = new Map()) {
   const gripItem = getClosestGripNode(item);
   const value = getValue(gripItem);
-  return value && nodeIsEntries(getClosestNonBucketNode(item)) && !nodeHasAllEntriesInPreview(gripItem) && !loadedProperties.has(item.path) && !nodeNeedsNumericalBuckets(item);
+  return value && nodeIsEntries(getClosestNonBucketNode(item)) && !loadedProperties.has(item.path) && !nodeNeedsNumericalBuckets(item);
 }
 
 function shouldLoadItemPrototype(item, loadedProperties = new Map()) {
@@ -3939,11 +4158,9 @@ const {
   nodeHasFullText
 } = __webpack_require__(114);
 
-async function enumIndexedProperties(objectClient, start, end) {
+async function enumIndexedProperties(objectFront, start, end) {
   try {
-    const {
-      iterator
-    } = await objectClient.enumProperties({
+    const iterator = await objectFront.enumProperties({
       ignoreNonIndexedProperties: true
     });
     const response = await iteratorSlice(iterator, start, end);
@@ -3954,11 +4171,9 @@ async function enumIndexedProperties(objectClient, start, end) {
   }
 }
 
-async function enumNonIndexedProperties(objectClient, start, end) {
+async function enumNonIndexedProperties(objectFront, start, end) {
   try {
-    const {
-      iterator
-    } = await objectClient.enumProperties({
+    const iterator = await objectFront.enumProperties({
       ignoreIndexedProperties: true
     });
     const response = await iteratorSlice(iterator, start, end);
@@ -3969,11 +4184,9 @@ async function enumNonIndexedProperties(objectClient, start, end) {
   }
 }
 
-async function enumEntries(objectClient, start, end) {
+async function enumEntries(objectFront, start, end) {
   try {
-    const {
-      iterator
-    } = await objectClient.enumEntries();
+    const iterator = await objectFront.enumEntries();
     const response = await iteratorSlice(iterator, start, end);
     return response;
   } catch (e) {
@@ -3982,11 +4195,9 @@ async function enumEntries(objectClient, start, end) {
   }
 }
 
-async function enumSymbols(objectClient, start, end) {
+async function enumSymbols(objectFront, start, end) {
   try {
-    const {
-      iterator
-    } = await objectClient.enumSymbols();
+    const iterator = await objectFront.enumSymbols();
     const response = await iteratorSlice(iterator, start, end);
     return response;
   } catch (e) {
@@ -3995,16 +4206,16 @@ async function enumSymbols(objectClient, start, end) {
   }
 }
 
-async function getPrototype(objectClient) {
-  if (typeof objectClient.getPrototype !== "function") {
-    console.error("objectClient.getPrototype is not a function");
+async function getPrototype(objectFront) {
+  if (typeof objectFront.getPrototype !== "function") {
+    console.error("objectFront.getPrototype is not a function");
     return Promise.resolve({});
   }
 
-  return objectClient.getPrototype();
+  return objectFront.getPrototype();
 }
 
-async function getFullText(longStringClient, item) {
+async function getFullText(longStringFront, item) {
   const {
     initial,
     fullText,
@@ -4013,28 +4224,24 @@ async function getFullText(longStringClient, item) {
   // loadedProperties map.
 
   if (nodeHasFullText(item)) {
-    return Promise.resolve({
+    return {
       fullText
-    });
+    };
   }
 
-  return new Promise((resolve, reject) => {
-    longStringClient.substring(initial.length, length, response => {
-      if (response.error) {
-        console.error("LongStringClient.substring", `${response.error}: ${response.message}`);
-        reject({});
-        return;
-      }
-
-      resolve({
-        fullText: initial + response.substring
-      });
-    });
-  });
+  try {
+    const substring = await longStringFront.substring(initial.length, length);
+    return {
+      fullText: initial + substring
+    };
+  } catch (e) {
+    console.error("LongStringFront.substring", e);
+    throw e;
+  }
 }
 
-async function getProxySlots(objectClient) {
-  return objectClient.getProxySlots();
+async function getProxySlots(objectFront) {
+  return objectFront.getProxySlots();
 }
 
 function iteratorSlice(iterator, start, end) {
@@ -4733,6 +4940,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
+const {
+  a,
+  span
+} = __webpack_require__(1);
+
 const PropTypes = __webpack_require__(0);
 
 const {
@@ -4742,21 +4954,14 @@ const {
   rawCropString,
   sanitizeString,
   wrapRender,
-  isGrip,
   ELLIPSIS,
   uneatLastUrlCharsRegex,
   urlRegex
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  a,
-  span
-} = dom;
 /**
  * Renders a string. String value is enclosed within quotes.
  */
+
 
 StringRep.propTypes = {
   useQuotes: PropTypes.bool,
@@ -4769,7 +4974,8 @@ StringRep.propTypes = {
   openLink: PropTypes.func,
   className: PropTypes.string,
   title: PropTypes.string,
-  isInContentPage: PropTypes.bool
+  isInContentPage: PropTypes.bool,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function StringRep(props) {
@@ -4784,9 +4990,25 @@ function StringRep(props) {
     member,
     openLink,
     title,
-    isInContentPage
+    isInContentPage,
+    transformEmptyString = false,
+    shouldRenderTooltip
   } = props;
   let text = object;
+  const config = getElementConfig({
+    className,
+    style,
+    actor: object.actor,
+    title
+  });
+
+  if (text == "" && transformEmptyString && !useQuotes) {
+    return span({ ...config,
+      title: "<empty string>",
+      className: `${config.className} objectBox-empty-string`
+    }, "<empty string>");
+  }
+
   const isLong = isLongString(object);
   const isOpen = member && member.open;
   const shouldCrop = !isOpen && cropLimit && text.length > cropLimit;
@@ -4809,12 +5031,10 @@ function StringRep(props) {
     useQuotes,
     escapeWhitespace
   }, text);
-  const config = getElementConfig({
-    className,
-    style,
-    actor: object.actor,
-    title
-  });
+
+  if (shouldRenderTooltip) {
+    config.title = text;
+  }
 
   if (!isLong) {
     if (containsURL(text)) {
@@ -4838,16 +5058,17 @@ function StringRep(props) {
   return span(config, text);
 }
 
-function maybeCropLongString(opts, text) {
+function maybeCropLongString(opts, object) {
   const {
     shouldCrop,
     cropLimit
   } = opts;
+  const grip = object && object.getGrip ? object.getGrip() : object;
   const {
     initial,
     length
-  } = text;
-  text = shouldCrop ? initial.substring(0, cropLimit) : initial;
+  } = grip;
+  let text = shouldCrop ? initial.substring(0, cropLimit) : initial;
 
   if (text.length < length) {
     text += ELLIPSIS;
@@ -4978,6 +5199,7 @@ function getLinkifiedElements({
         // displayed in content page (e.g. in the JSONViewer).
         href: openLink || isInContentPage ? useUrl : null,
         target: "_blank",
+        rel: "noopener noreferrer",
         onClick: openLink ? e => {
           e.preventDefault();
           openLink(useUrl, e);
@@ -5048,15 +5270,22 @@ function getCroppedString(text, offset = 0, startCropIndex, endCropIndex) {
 }
 
 function isLongString(object) {
-  return object && object.type === "longString";
+  const grip = object && object.getGrip ? object.getGrip() : object;
+  return grip && grip.type === "longString";
 }
 
 function supportsObject(object, noGrip = false) {
-  if (noGrip === false && isGrip(object)) {
+  // Accept the object if the grip-type (or type for noGrip objects) is "string"
+  if (getGripType(object, noGrip) == "string") {
+    return true;
+  } // Also accept longString objects if we're expecting grip
+
+
+  if (!noGrip) {
     return isLongString(object);
   }
 
-  return getGripType(object, noGrip) == "string";
+  return false;
 } // Exports from this module
 
 
@@ -5082,7 +5311,9 @@ module.exports = __WEBPACK_EXTERNAL_MODULE_37__;
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
-const dom = __webpack_require__(1);
+const {
+  span
+} = __webpack_require__(1);
 
 const PropTypes = __webpack_require__(0);
 
@@ -5094,9 +5325,6 @@ const {
   MODE
 } = __webpack_require__(4);
 
-const {
-  span
-} = dom;
 const ModePropType = PropTypes.oneOf( // @TODO Change this to Object.values when supported in Node's version of V8
 Object.keys(MODE).map(key => MODE[key]));
 /**
@@ -5106,16 +5334,18 @@ Object.keys(MODE).map(key => MODE[key]));
 
 ArrayRep.propTypes = {
   mode: ModePropType,
-  object: PropTypes.array.isRequired
+  object: PropTypes.array.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function ArrayRep(props) {
   const {
     object,
-    mode = MODE.SHORT
+    mode = MODE.SHORT,
+    shouldRenderTooltip = true
   } = props;
-  let items;
   let brackets;
+  let items;
 
   const needSpace = function (space) {
     return space ? {
@@ -5134,8 +5364,7 @@ function ArrayRep(props) {
       items = [];
     } else {
       items = [span({
-        className: "more-ellipsis",
-        title: "more…"
+        className: "more-ellipsis"
       }, "…")];
     }
 
@@ -5146,7 +5375,8 @@ function ArrayRep(props) {
   }
 
   return span({
-    className: "objectBox objectBox-array"
+    className: "objectBox objectBox-array",
+    title: shouldRenderTooltip ? "Array" : null
   }, span({
     className: "arrayLeftBracket"
   }, brackets.left), ...items, span({
@@ -5181,8 +5411,7 @@ function arrayIterator(props, array, max) {
 
   if (array.length > max) {
     items.push(span({
-      className: "more-ellipsis",
-      title: "more…"
+      className: "more-ellipsis"
     }, "…"));
   }
 
@@ -5247,6 +5476,10 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   maybeEscapePropertyName,
   wrapRender
 } = __webpack_require__(2);
@@ -5254,10 +5487,6 @@ const {
 const {
   MODE
 } = __webpack_require__(4);
-
-const {
-  span
-} = __webpack_require__(1);
 /**
  * Property for Obj (local JS objects), Grip (remote JS objects)
  * and GripMap (remote JS maps and weakmaps) reps.
@@ -5278,7 +5507,8 @@ PropRep.propTypes = {
   // Normally a PropRep will quote a property name that isn't valid
   // when unquoted; but this flag can be used to suppress the
   // quoting.
-  suppressQuotes: PropTypes.bool
+  suppressQuotes: PropTypes.bool,
+  shouldRenderTooltip: PropTypes.bool
 };
 /**
  * Function that given a name, a delimiter and an object returns an array
@@ -5295,6 +5525,7 @@ function PropRep(props) {
     Rep
   } = __webpack_require__(24);
 
+  const shouldRenderTooltip = props.shouldRenderTooltip;
   let {
     name,
     mode,
@@ -5310,7 +5541,8 @@ function PropRep(props) {
     }
 
     key = span({
-      className: "nodeName"
+      className: "nodeName",
+      title: shouldRenderTooltip ? name : null
     }, name);
   } else {
     key = Rep({ ...props,
@@ -5408,24 +5640,36 @@ module.exports = {
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
 const {
+  span
+} = __webpack_require__(1);
+
+const PropTypes = __webpack_require__(0);
+
+const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders undefined value
  */
 
-const Undefined = function () {
-  return span({
-    className: "objectBox objectBox-undefined"
-  }, "undefined");
+
+Undefined.propTypes = {
+  shouldRenderTooltip: PropTypes.bool
 };
+
+function Undefined(props) {
+  const shouldRenderTooltip = props.shouldRenderTooltip;
+  const config = getElementConfig(shouldRenderTooltip);
+  return span(config, "undefined");
+}
+
+function getElementConfig(shouldRenderTooltip) {
+  return {
+    className: "objectBox objectBox-undefined",
+    title: shouldRenderTooltip ? "undefined" : null
+  };
+}
 
 function supportsObject(object, noGrip = false) {
   if (noGrip === true) {
@@ -5451,22 +5695,34 @@ module.exports = {
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
 const {
-  wrapRender
-} = __webpack_require__(2);
+  span
+} = __webpack_require__(1);
 
-const dom = __webpack_require__(1);
+const PropTypes = __webpack_require__(0);
 
 const {
-  span
-} = dom;
+  wrapRender
+} = __webpack_require__(2);
 /**
  * Renders null value
  */
 
+
+Null.PropTypes = {
+  shouldRenderTooltip: PropTypes.bool
+};
+
 function Null(props) {
-  return span({
-    className: "objectBox objectBox-null"
-  }, "null");
+  const shouldRenderTooltip = props.shouldRenderTooltip;
+  const config = getElementConfig(shouldRenderTooltip);
+  return span(config, "null");
+}
+
+function getElementConfig(shouldRenderTooltip) {
+  return {
+    className: "objectBox objectBox-null",
+    title: shouldRenderTooltip ? "null" : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -5499,33 +5755,39 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a number
  */
 
+
 Number.propTypes = {
-  object: PropTypes.oneOfType([PropTypes.object, PropTypes.number, PropTypes.bool]).isRequired
+  object: PropTypes.oneOfType([PropTypes.object, PropTypes.number, PropTypes.bool]).isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function Number(props) {
-  const value = props.object;
-  return span({
-    className: "objectBox objectBox-number"
-  }, stringify(value));
+  const value = stringify(props.object);
+  const config = getElementConfig(props.shouldRenderTooltip, value);
+  return span(config, value);
 }
 
 function stringify(object) {
   const isNegativeZero = Object.is(object, -0) || object.type && object.type == "-0";
   return isNegativeZero ? "-0" : String(object);
+}
+
+function getElementConfig(shouldRenderTooltip, value) {
+  return {
+    className: "objectBox objectBox-number",
+    title: shouldRenderTooltip ? value : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -5550,6 +5812,10 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   wrapRender,
   ellipsisElement
 } = __webpack_require__(2);
@@ -5560,11 +5826,6 @@ const {
   MODE
 } = __webpack_require__(4);
 
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 const DEFAULT_TITLE = "Object";
 /**
  * Renders an object. An object is represented by a list of its
@@ -5575,47 +5836,53 @@ ObjectRep.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
-  title: PropTypes.string
+  title: PropTypes.string,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function ObjectRep(props) {
   const object = props.object;
-  const propsArray = safePropIterator(props, object);
+  const {
+    shouldRenderTooltip = true
+  } = props;
 
   if (props.mode === MODE.TINY) {
     const tinyModeItems = [];
 
-    if (getTitle(props, object) !== DEFAULT_TITLE) {
-      tinyModeItems.push(getTitleElement(props, object));
+    if (getTitle(props) !== DEFAULT_TITLE) {
+      tinyModeItems.push(getTitleElement(props));
     } else {
       tinyModeItems.push(span({
         className: "objectLeftBrace"
-      }, "{"), propsArray.length > 0 ? ellipsisElement : null, span({
+      }, "{"), Object.keys(object).length > 0 ? ellipsisElement : null, span({
         className: "objectRightBrace"
       }, "}"));
     }
 
     return span({
-      className: "objectBox objectBox-object"
+      className: "objectBox objectBox-object",
+      title: shouldRenderTooltip ? getTitle(props) : null
     }, ...tinyModeItems);
   }
 
+  const propsArray = safePropIterator(props, object);
   return span({
-    className: "objectBox objectBox-object"
-  }, getTitleElement(props, object), span({
+    className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? getTitle(props) : null
+  }, getTitleElement(props), span({
     className: "objectLeftBrace"
   }, " { "), ...propsArray, span({
     className: "objectRightBrace"
   }, " }"));
 }
 
-function getTitleElement(props, object) {
+function getTitleElement(props) {
   return span({
     className: "objectTitle"
-  }, getTitle(props, object));
+  }, getTitle(props));
 }
 
-function getTitle(props, object) {
+function getTitle(props) {
   return props.title || DEFAULT_TITLE;
 }
 
@@ -5737,32 +6004,33 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
 
 const {
   rep: StringRep
 } = __webpack_require__(25);
 
-const {
-  span
-} = dom;
 const MAX_STRING_LENGTH = 50;
 /**
  * Renders a symbol.
  */
 
 SymbolRep.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function SymbolRep(props) {
   const {
     className = "objectBox objectBox-symbol",
-    object
+    object,
+    shouldRenderTooltip
   } = props;
   const {
     name
@@ -5778,10 +6046,25 @@ function SymbolRep(props) {
     });
   }
 
-  return span({
+  const config = getElementConfig({
+    shouldRenderTooltip,
     className,
-    "data-link-actor-id": object.actor
-  }, "Symbol(", symbolText, ")");
+    symbolText
+  }, object);
+  return span(config, "Symbol(", symbolText, ")");
+}
+
+function getElementConfig(opts, object) {
+  const {
+    shouldRenderTooltip,
+    className,
+    symbolText
+  } = opts;
+  return {
+    "data-link-actor-id": object.actor,
+    className: className,
+    title: shouldRenderTooltip ? `Symbol(${symbolText})` : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -5806,30 +6089,37 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a Infinity object
  */
 
+
 InfinityRep.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function InfinityRep(props) {
   const {
-    object
+    object,
+    shouldRenderTooltip
   } = props;
-  return span({
-    className: "objectBox objectBox-number"
-  }, object.type);
+  const config = getElementConfig(shouldRenderTooltip, object);
+  return span(config, object.type);
+}
+
+function getElementConfig(shouldRenderTooltip, object) {
+  return {
+    className: "objectBox objectBox-number",
+    title: shouldRenderTooltip ? object.type : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -5853,23 +6143,35 @@ module.exports = {
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
 const {
+  span
+} = __webpack_require__(1);
+
+const PropTypes = __webpack_require__(0);
+
+const {
   getGripType,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a NaN object
  */
 
+
+NaNRep.PropTypes = {
+  shouldRenderTooltip: PropTypes.bool
+};
+
 function NaNRep(props) {
-  return span({
-    className: "objectBox objectBox-nan"
-  }, "NaN");
+  const shouldRenderTooltip = props.shouldRenderTooltip;
+  const config = getElementConfig(shouldRenderTooltip);
+  return span(config, "NaN");
+}
+
+function getElementConfig(shouldRenderTooltip) {
+  return {
+    className: "objectBox objectBox-nan",
+    title: shouldRenderTooltip ? "NaN" : null
+  };
 }
 
 function supportsObject(object, noGrip = false) {
@@ -5891,7 +6193,10 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // Dependencies
-const dom = __webpack_require__(1);
+const {
+  button,
+  span
+} = __webpack_require__(1);
 
 const PropTypes = __webpack_require__(0);
 
@@ -5902,25 +6207,24 @@ const {
 const {
   MODE
 } = __webpack_require__(4);
-
-const {
-  span
-} = dom;
 /**
  * Renders an object. An object is represented by a list of its
  * properties enclosed in curly brackets.
  */
 
+
 Accessor.propTypes = {
   object: PropTypes.object.isRequired,
-  mode: PropTypes.oneOf(Object.values(MODE))
+  mode: PropTypes.oneOf(Object.values(MODE)),
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function Accessor(props) {
   const {
     object,
     evaluation,
-    onInvokeGetterButtonClick
+    onInvokeGetterButtonClick,
+    shouldRenderTooltip
   } = props;
 
   if (evaluation) {
@@ -5939,7 +6243,7 @@ function Accessor(props) {
   }
 
   if (hasGetter(object) && onInvokeGetterButtonClick) {
-    return dom.button({
+    return button({
       className: "invoke-getter",
       title: "Invoke getter",
       onClick: event => {
@@ -5959,9 +6263,11 @@ function Accessor(props) {
     accessors.push("Setter");
   }
 
+  const accessorsString = accessors.join(" & ");
   return span({
-    className: "objectBox objectBox-accessor objectTitle"
-  }, accessors.join(" & "));
+    className: "objectBox objectBox-accessor objectTitle",
+    title: shouldRenderTooltip ? accessorsString : null
+  }, accessorsString);
 }
 
 function hasGetter(object) {
@@ -6025,7 +6331,8 @@ Accessible.propTypes = {
   onAccessibleMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
   roleFirst: PropTypes.bool,
-  separatorText: PropTypes.string
+  separatorText: PropTypes.string,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function Accessible(props) {
@@ -6034,64 +6341,93 @@ function Accessible(props) {
     inspectIconTitle,
     nameMaxLength,
     onAccessibleClick,
-    onAccessibleMouseOver,
-    onAccessibleMouseOut,
     onInspectIconClick,
     roleFirst,
     separatorText
   } = props;
-  const elements = getElements(object, nameMaxLength, roleFirst, separatorText);
   const isInTree = object.preview && object.preview.isConnected === true;
-  const baseConfig = {
+  const config = getElementConfig({ ...props,
+    isInTree
+  });
+  const elements = getElements(object, nameMaxLength, roleFirst, separatorText);
+  const inspectIcon = getInspectIcon({
+    object,
+    onInspectIconClick,
+    inspectIconTitle,
+    onAccessibleClick,
+    isInTree
+  });
+  return span(config, ...elements, inspectIcon);
+} // Get React Config Obj
+
+
+function getElementConfig(opts) {
+  const {
+    object,
+    isInTree,
+    onAccessibleClick,
+    onAccessibleMouseOver,
+    onAccessibleMouseOut,
+    shouldRenderTooltip,
+    roleFirst
+  } = opts;
+  const {
+    name,
+    role
+  } = object.preview; // Initiate config
+
+  const config = {
     "data-link-actor-id": object.actor,
     className: "objectBox objectBox-accessible"
   };
-  let inspectIcon;
 
   if (isInTree) {
     if (onAccessibleClick) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onClick: _ => onAccessibleClick(object),
-        className: `${baseConfig.className} clickable`
+        className: `${config.className} clickable`
       });
     }
 
     if (onAccessibleMouseOver) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onMouseOver: _ => onAccessibleMouseOver(object)
       });
     }
 
     if (onAccessibleMouseOut) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onMouseOut: onAccessibleMouseOut
       });
     }
+  } // If tooltip, build tooltip
 
-    if (onInspectIconClick) {
-      inspectIcon = button({
-        className: "open-accessibility-inspector",
-        title: inspectIconTitle,
-        onClick: e => {
-          if (onAccessibleClick) {
-            e.stopPropagation();
-          }
 
-          onInspectIconClick(object, e);
-        }
-      });
+  if (shouldRenderTooltip) {
+    let tooltip;
+
+    if (!name) {
+      tooltip = role;
+    } else {
+      const quotedName = `"${name}"`;
+      tooltip = `${roleFirst ? role : quotedName}: ${roleFirst ? quotedName : role}`;
     }
-  }
 
-  return span(baseConfig, ...elements, inspectIcon);
-}
+    config.title = tooltip;
+  } // Return config obj
+
+
+  return config;
+} // Get Content Elements
+
 
 function getElements(grip, nameMaxLength, roleFirst = false, separatorText = ": ") {
   const {
     name,
     role
   } = grip.preview;
-  const elements = [];
+  const elements = []; // If there's a `name` value in `grip.preview`, render it with the
+  // StringRep and push element into Elements array
 
   if (name) {
     elements.push(StringRep({
@@ -6107,6 +6443,33 @@ function getElements(grip, nameMaxLength, roleFirst = false, separatorText = ": 
     className: "accessible-role"
   }, role));
   return roleFirst ? elements.reverse() : elements;
+} // Get Icon
+
+
+function getInspectIcon(opts) {
+  const {
+    object,
+    onInspectIconClick,
+    inspectIconTitle,
+    onAccessibleClick,
+    isInTree
+  } = opts;
+
+  if (!isInTree || !onInspectIconClick) {
+    return null;
+  }
+
+  return button({
+    className: "open-accessibility-inspector",
+    title: inspectIconTitle,
+    onClick: e => {
+      if (onAccessibleClick) {
+        e.stopPropagation();
+      }
+
+      onInspectIconClick(object, e);
+    }
+  });
 } // Registration
 
 
@@ -6135,11 +6498,10 @@ module.exports = {
 // ReactJS
 const PropTypes = __webpack_require__(0);
 
-const dom = __webpack_require__(1);
-
 const {
   span
-} = dom; // Reps
+} = __webpack_require__(1); // Reps
+
 
 const {
   getGripType,
@@ -6156,30 +6518,49 @@ const {
 
 
 Attribute.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function Attribute(props) {
   const {
-    object
+    object,
+    shouldRenderTooltip
   } = props;
   const value = object.preview.value;
-  return span({
-    "data-link-actor-id": object.actor,
-    className: "objectBox-Attr"
-  }, span({
+  const attrName = getTitle(object);
+  const config = getElementConfig({
+    attrName,
+    shouldRenderTooltip,
+    value,
+    object
+  });
+  return span(config, span({
     className: "attrName"
-  }, getTitle(object)), span({
+  }, attrName), span({
     className: "attrEqual"
   }, "="), StringRep({
     className: "attrValue",
-    object: value,
-    title: value
+    object: value
   }));
 }
 
 function getTitle(grip) {
   return grip.preview.nodeName;
+}
+
+function getElementConfig(opts) {
+  const {
+    attrName,
+    shouldRenderTooltip,
+    value,
+    object
+  } = opts;
+  return {
+    "data-link-actor-id": object.actor,
+    className: "objectBox-Attr",
+    title: shouldRenderTooltip ? `${attrName}="${value}"` : null
+  };
 } // Registration
 
 
@@ -6205,7 +6586,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -6213,22 +6598,21 @@ const {
   isGrip,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Used to render JS built-in Date() object.
  */
 
+
 DateTime.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function DateTime(props) {
-  const grip = props.object;
+  const {
+    object: grip,
+    shouldRenderTooltip
+  } = props;
   let date;
 
   try {
@@ -6236,20 +6620,39 @@ function DateTime(props) {
     // so we can render an `Invalid Date` element.
 
     dateObject.toISOString();
-    date = span({
-      "data-link-actor-id": grip.actor,
-      className: "objectBox"
-    }, getTitle(grip), span({
+    const dateObjectString = dateObject.toString();
+    const config = getElementConfig({
+      grip,
+      dateObjectString,
+      shouldRenderTooltip
+    });
+    date = span(config, getTitle(grip), span({
       className: "Date"
-    }, dateObject.toString()));
+    }, dateObjectString));
   } catch (e) {
     date = span({
-      className: "objectBox"
+      className: "objectBox",
+      title: shouldRenderTooltip ? "Invalid Date" : null
     }, "Invalid Date");
   }
 
   return date;
 }
+
+function getElementConfig(opts) {
+  const {
+    grip,
+    dateObjectString,
+    shouldRenderTooltip
+  } = opts;
+  return {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox",
+    title: shouldRenderTooltip ? `${grip.class} ${dateObjectString}` : null
+  };
+} // getTitle() is used to render the `Date ` before the stringified date object,
+// not to render the actual span "title".
+
 
 function getTitle(grip) {
   return span({
@@ -6281,7 +6684,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -6290,29 +6697,47 @@ const {
   getURLDisplayString,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders DOM document object.
  */
 
+
 Document.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function Document(props) {
   const grip = props.object;
+  const shouldRenderTooltip = props.shouldRenderTooltip;
   const location = getLocation(grip);
-  return span({
-    "data-link-actor-id": grip.actor,
-    className: "objectBox objectBox-document"
-  }, getTitle(grip), location ? span({
+  const config = getElementConfig({
+    grip,
+    location,
+    shouldRenderTooltip
+  });
+  return span(config, getTitle(grip), location ? span({
     className: "location"
   }, ` ${location}`) : null);
+}
+
+function getElementConfig(opts) {
+  const {
+    grip,
+    location,
+    shouldRenderTooltip
+  } = opts;
+  const config = {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox objectBox-document"
+  };
+
+  if (!shouldRenderTooltip || !location) {
+    return config;
+  }
+
+  config.title = `${grip.class} ${location}`;
+  return config;
 }
 
 function getLocation(grip) {
@@ -6351,7 +6776,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -6359,29 +6788,41 @@ const {
   isGrip,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders DOM documentType object.
  */
 
+
 DocumentType.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function DocumentType(props) {
   const {
-    object
+    object,
+    shouldRenderTooltip
   } = props;
   const name = object && object.preview && object.preview.nodeName ? ` ${object.preview.nodeName}` : "";
-  return span({
-    "data-link-actor-id": props.object.actor,
-    className: "objectBox objectBox-document"
-  }, `<!DOCTYPE${name}>`);
+  const config = getElementConfig({
+    object,
+    shouldRenderTooltip,
+    name
+  });
+  return span(config, `<!DOCTYPE${name}>`);
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    shouldRenderTooltip,
+    name
+  } = opts;
+  return {
+    "data-link-actor-id": object.actor,
+    className: "objectBox objectBox-document",
+    title: shouldRenderTooltip ? `<!DOCTYPE${name}>` : null
+  };
 } // Registration
 
 
@@ -6526,7 +6967,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Dependencies
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Dependencies
 
 
 const {
@@ -6540,15 +6985,10 @@ const PropRep = __webpack_require__(39);
 const {
   MODE
 } = __webpack_require__(4);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a DOM Promise object.
  */
+
 
 PromiseRep.propTypes = {
   object: PropTypes.object.isRequired,
@@ -6556,17 +6996,20 @@ PromiseRep.propTypes = {
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
-  onInspectIconClick: PropTypes.func
+  onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function PromiseRep(props) {
   const object = props.object;
+  const shouldRenderTooltip = props.shouldRenderTooltip;
   const {
     promiseState
   } = object;
   const config = {
     "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-object"
+    className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? "Promise" : null
   };
 
   if (props.mode === MODE.TINY) {
@@ -6609,7 +7052,7 @@ function getProps(props, promiseState) {
     res = res.concat(PropRep({ ...props,
       mode: MODE.TINY,
       name: `<${key}>`,
-      object,
+      object: object.getGrip ? object.getGrip() : object,
       equal: ": ",
       suppressQuotes: true
     })); // Interleave commas between elements
@@ -6646,40 +7089,60 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
   getGripType,
   isGrip,
-  wrapRender
+  wrapRender,
+  ELLIPSIS
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a grip object with regular expression.
  */
 
+
 RegExp.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function RegExp(props) {
   const {
     object
   } = props;
-  return span({
+  const config = getElementConfig(props);
+  return span(config, getSource(object));
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    shouldRenderTooltip
+  } = opts;
+  const text = getSource(object);
+  return {
     "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-regexp regexpSource"
-  }, getSource(object));
+    className: "objectBox objectBox-regexp regexpSource",
+    title: shouldRenderTooltip ? text : null
+  };
 }
 
 function getSource(grip) {
-  return grip.displayString;
+  const {
+    displayString
+  } = grip;
+
+  if ((displayString === null || displayString === void 0 ? void 0 : displayString.type) === "longString") {
+    return `${displayString.initial}${ELLIPSIS}`;
+  }
+
+  return displayString;
 } // Registration
 
 
@@ -6706,7 +7169,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -6715,28 +7182,41 @@ const {
   getURLDisplayString,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a grip representing CSSStyleSheet
  */
 
+
 StyleSheet.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function StyleSheet(props) {
   const grip = props.object;
-  return span({
-    "data-link-actor-id": grip.actor,
-    className: "objectBox objectBox-object"
-  }, getTitle(grip), span({
+  const shouldRenderTooltip = props.shouldRenderTooltip;
+  const location = getLocation(grip);
+  const config = getElementConfig({
+    grip,
+    shouldRenderTooltip,
+    location
+  });
+  return span(config, getTitle(grip), span({
     className: "objectPropValue"
-  }, getLocation(grip)));
+  }, location));
+}
+
+function getElementConfig(opts) {
+  const {
+    grip,
+    shouldRenderTooltip,
+    location
+  } = opts;
+  return {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? `StyleSheet ${location}` : null
+  };
 }
 
 function getTitle(grip) {
@@ -6779,6 +7259,10 @@ module.exports = {
 const PropTypes = __webpack_require__(0);
 
 const {
+  span
+} = __webpack_require__(1);
+
+const {
   isGrip,
   cropString,
   cropMultipleLines,
@@ -6790,26 +7274,23 @@ const {
 } = __webpack_require__(4);
 
 const nodeConstants = __webpack_require__(190);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders DOM comment node.
  */
 
+
 CommentNode.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
-  mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key]))
+  mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function CommentNode(props) {
   const {
     object,
-    mode = MODE.SHORT
+    mode = MODE.SHORT,
+    shouldRenderTooltip
   } = props;
   let {
     textContent
@@ -6821,10 +7302,26 @@ function CommentNode(props) {
     textContent = cropString(textContent, 50);
   }
 
-  return span({
+  const config = getElementConfig({
+    object,
+    textContent,
+    shouldRenderTooltip
+  });
+  return span(config, `<!-- ${textContent} -->`);
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    shouldRenderTooltip
+  } = opts; // Run textContent through cropString to sanitize
+
+  const uncroppedText = shouldRenderTooltip ? cropString(object.preview.textContent) : null;
+  return {
     className: "objectBox theme-comment",
-    "data-link-actor-id": object.actor
-  }, `<!-- ${textContent} -->`);
+    "data-link-actor-id": object.actor,
+    title: shouldRenderTooltip ? `<!-- ${uncroppedText} -->` : null
+  };
 } // Registration
 
 
@@ -6851,6 +7348,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
+const {
+  button,
+  span
+} = __webpack_require__(1);
+
 const PropTypes = __webpack_require__(0); // Utils
 
 
@@ -6868,13 +7370,8 @@ const {
   MODE
 } = __webpack_require__(4);
 
-const nodeConstants = __webpack_require__(190);
+const nodeConstants = __webpack_require__(522);
 
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 const MAX_ATTRIBUTE_LENGTH = 50;
 /**
  * Renders DOM element node.
@@ -6888,111 +7385,130 @@ ElementNode.propTypes = {
   onDOMNodeClick: PropTypes.func,
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
-  onInspectIconClick: PropTypes.func
+  onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function ElementNode(props) {
   const {
     object,
-    inspectIconTitle,
     mode,
+    shouldRenderTooltip
+  } = props;
+  const {
+    isAfterPseudoElement,
+    isBeforePseudoElement,
+    isMarkerPseudoElement
+  } = object.preview;
+  let renderElements = [];
+  const isInTree = object.preview && object.preview.isConnected === true;
+  let config = getElementConfig({ ...props,
+    isInTree
+  });
+  const inspectIcon = getInspectIcon({ ...props,
+    isInTree
+  }); // Elements Case 1: Pseudo Element
+
+  if (isAfterPseudoElement || isBeforePseudoElement || isMarkerPseudoElement) {
+    const pseudoNodeElement = getPseudoNodeElement(object); // Regenerate config if shouldRenderTooltip
+
+    if (shouldRenderTooltip) {
+      const tooltipString = pseudoNodeElement.content;
+      config = getElementConfig({ ...props,
+        tooltipString,
+        isInTree
+      });
+    } // Return ONLY pseudo node element as array[0]
+
+
+    renderElements = [span(pseudoNodeElement.config, pseudoNodeElement.content)];
+  } else if (mode === MODE.TINY) {
+    // Elements Case 2: MODE.TINY
+    const tinyElements = getTinyElements(object); // Regenerate config to include tooltip title
+
+    if (shouldRenderTooltip) {
+      // Reduce for plaintext
+      const tooltipString = tinyElements.reduce(function (acc, cur) {
+        return acc.concat(cur.content);
+      }, "");
+      config = getElementConfig({ ...props,
+        tooltipString,
+        isInTree
+      });
+    } // Reduce for React elements
+
+
+    const tinyElementsRender = tinyElements.reduce(function (acc, cur) {
+      acc.push(span(cur.config, cur.content));
+      return acc;
+    }, []); // Render array of React spans
+
+    renderElements = tinyElementsRender;
+  } else {
+    // Elements Default case
+    renderElements = getElements(props);
+  }
+
+  return span(config, ...renderElements, inspectIcon ? inspectIcon : null);
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    isInTree,
     onDOMNodeClick,
     onDOMNodeMouseOver,
     onDOMNodeMouseOut,
-    onInspectIconClick
-  } = props;
-  const elements = getElements(object, mode);
-  const isInTree = object.preview && object.preview.isConnected === true;
-  const baseConfig = {
+    shouldRenderTooltip,
+    tooltipString
+  } = opts; // Initiate config
+
+  const config = {
     "data-link-actor-id": object.actor,
     className: "objectBox objectBox-node"
-  };
-  let inspectIcon;
+  }; // Triage event handlers
 
   if (isInTree) {
     if (onDOMNodeClick) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onClick: _ => onDOMNodeClick(object),
-        className: `${baseConfig.className} clickable`
+        className: `${config.className} clickable`
       });
     }
 
     if (onDOMNodeMouseOver) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onMouseOver: _ => onDOMNodeMouseOver(object)
       });
     }
 
     if (onDOMNodeMouseOut) {
-      Object.assign(baseConfig, {
+      Object.assign(config, {
         onMouseOut: _ => onDOMNodeMouseOut(object)
       });
     }
+  } // If tooltip, build tooltip
 
-    if (onInspectIconClick) {
-      inspectIcon = dom.button({
-        className: "open-inspector",
-        // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
-        title: inspectIconTitle || "Click to select the node in the inspector",
-        onClick: e => {
-          if (onDOMNodeClick) {
-            e.stopPropagation();
-          }
 
-          onInspectIconClick(object, e);
-        }
-      });
-    }
-  }
+  if (tooltipString && shouldRenderTooltip) {
+    config.title = tooltipString;
+  } // Return config obj
 
-  return span(baseConfig, ...elements, inspectIcon);
+
+  return config;
 }
 
-function getElements(grip, mode) {
+function getElements(opts) {
+  const {
+    object: grip
+  } = opts;
   const {
     attributes,
-    nodeName,
-    isAfterPseudoElement,
-    isBeforePseudoElement,
-    isMarkerPseudoElement
+    nodeName
   } = grip.preview;
   const nodeNameElement = span({
     className: "tag-name"
   }, nodeName);
-  let pseudoNodeName;
-
-  if (isAfterPseudoElement) {
-    pseudoNodeName = "after";
-  } else if (isBeforePseudoElement) {
-    pseudoNodeName = "before";
-  } else if (isMarkerPseudoElement) {
-    pseudoNodeName = "marker";
-  }
-
-  if (pseudoNodeName) {
-    return [span({
-      className: "attrName"
-    }, `::${pseudoNodeName}`)];
-  }
-
-  if (mode === MODE.TINY) {
-    const elements = [nodeNameElement];
-
-    if (attributes.id) {
-      elements.push(span({
-        className: "attrName"
-      }, `#${attributes.id}`));
-    }
-
-    if (attributes.class) {
-      elements.push(span({
-        className: "attrName"
-      }, attributes.class.trim().split(/\s+/).map(cls => `.${cls}`).join("")));
-    }
-
-    return elements;
-  }
-
   const attributeKeys = Object.keys(attributes);
 
   if (attributeKeys.includes("class")) {
@@ -7030,6 +7546,93 @@ function getElements(grip, mode) {
   }, "<"), nodeNameElement, ...attributeElements, span({
     className: "angleBracket"
   }, ">")];
+}
+
+function getTinyElements(grip) {
+  const {
+    attributes,
+    nodeName
+  } = grip.preview; // Initialize elements array
+
+  const elements = [{
+    config: {
+      className: "tag-name"
+    },
+    content: nodeName
+  }]; // Push ID element
+
+  if (attributes.id) {
+    elements.push({
+      config: {
+        className: "attrName"
+      },
+      content: `#${attributes.id}`
+    });
+  } // Push Classes
+
+
+  if (attributes.class) {
+    const elementClasses = attributes.class.trim().split(/\s+/).map(cls => `.${cls}`).join("");
+    elements.push({
+      config: {
+        className: "attrName"
+      },
+      content: elementClasses
+    });
+  }
+
+  return elements;
+}
+
+function getPseudoNodeElement(grip) {
+  const {
+    isAfterPseudoElement,
+    isBeforePseudoElement,
+    isMarkerPseudoElement
+  } = grip.preview;
+  let pseudoNodeName;
+
+  if (isAfterPseudoElement) {
+    pseudoNodeName = "after";
+  } else if (isBeforePseudoElement) {
+    pseudoNodeName = "before";
+  } else if (isMarkerPseudoElement) {
+    pseudoNodeName = "marker";
+  }
+
+  return {
+    config: {
+      className: "attrName"
+    },
+    content: `::${pseudoNodeName}`
+  };
+}
+
+function getInspectIcon(opts) {
+  const {
+    object,
+    isInTree,
+    onInspectIconClick,
+    inspectIconTitle,
+    onDOMNodeClick
+  } = opts;
+
+  if (!isInTree || !onInspectIconClick) {
+    return null;
+  }
+
+  return button({
+    className: "open-inspector",
+    // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
+    title: inspectIconTitle || "Click to select the node in the inspector",
+    onClick: e => {
+      if (onDOMNodeClick) {
+        e.stopPropagation();
+      }
+
+      onInspectIconClick(object, e);
+    }
+  });
 } // Registration
 
 
@@ -7057,6 +7660,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
+const {
+  button,
+  span
+} = __webpack_require__(1);
+
 const PropTypes = __webpack_require__(0); // Reps
 
 
@@ -7069,15 +7677,10 @@ const {
 const {
   MODE
 } = __webpack_require__(4);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders DOM #text node.
  */
+
 
 TextNode.propTypes = {
   object: PropTypes.object.isRequired,
@@ -7085,59 +7688,85 @@ TextNode.propTypes = {
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
-  onInspectIconClick: PropTypes.func
+  onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function TextNode(props) {
   const {
     object: grip,
-    mode = MODE.SHORT,
+    mode = MODE.SHORT
+  } = props;
+  const isInTree = grip.preview && grip.preview.isConnected === true;
+  const config = getElementConfig({ ...props,
+    isInTree
+  });
+  const inspectIcon = getInspectIcon({ ...props,
+    isInTree
+  });
+
+  if (mode === MODE.TINY) {
+    return span(config, getTitle(grip), inspectIcon);
+  }
+
+  return span(config, getTitle(grip), span({
+    className: "nodeValue"
+  }, " ", `"${getTextContent(grip)}"`), inspectIcon ? inspectIcon : null);
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    isInTree,
     onDOMNodeMouseOver,
     onDOMNodeMouseOut,
-    onInspectIconClick
-  } = props;
-  const baseConfig = {
-    "data-link-actor-id": grip.actor,
-    className: "objectBox objectBox-textNode"
+    shouldRenderTooltip
+  } = opts;
+  const config = {
+    "data-link-actor-id": object.actor,
+    className: "objectBox objectBox-textNode",
+    title: shouldRenderTooltip ? `#text "${getTextContent(object)}"` : null
   };
-  let inspectIcon;
-  const isInTree = grip.preview && grip.preview.isConnected === true;
 
   if (isInTree) {
     if (onDOMNodeMouseOver) {
-      Object.assign(baseConfig, {
-        onMouseOver: _ => onDOMNodeMouseOver(grip)
+      Object.assign(config, {
+        onMouseOver: _ => onDOMNodeMouseOver(object)
       });
     }
 
     if (onDOMNodeMouseOut) {
-      Object.assign(baseConfig, {
-        onMouseOut: _ => onDOMNodeMouseOut(grip)
-      });
-    }
-
-    if (onInspectIconClick) {
-      inspectIcon = dom.button({
-        className: "open-inspector",
-        draggable: false,
-        // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
-        title: "Click to select the node in the inspector",
-        onClick: e => onInspectIconClick(grip, e)
+      Object.assign(config, {
+        onMouseOut: _ => onDOMNodeMouseOut(object)
       });
     }
   }
 
-  if (mode === MODE.TINY) {
-    return span(baseConfig, getTitle(grip), inspectIcon);
-  }
-
-  return span(baseConfig, getTitle(grip), span({
-    className: "nodeValue"
-  }, " ", `"${getTextContent(grip)}"`), inspectIcon);
+  return config;
 }
 
 function getTextContent(grip) {
   return cropString(grip.preview.textContent);
+}
+
+function getInspectIcon(opts) {
+  const {
+    object,
+    isInTree,
+    onInspectIconClick
+  } = opts;
+
+  if (!isInTree || !onInspectIconClick) {
+    return null;
+  }
+
+  return button({
+    className: "open-inspector",
+    draggable: false,
+    // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
+    title: "Click to select the node in the inspector",
+    onClick: e => onInspectIconClick(object, e)
+  });
 }
 
 function getTitle(grip) {
@@ -7169,7 +7798,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -7182,20 +7815,16 @@ const {
 const {
   MODE
 } = __webpack_require__(4);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a grip representing a window.
  */
 
+
 WindowRep.propTypes = {
   // @TODO Change this to Object.values when supported in Node's version of V8
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function WindowRep(props) {
@@ -7203,18 +7832,53 @@ function WindowRep(props) {
     mode,
     object
   } = props;
-  const config = {
-    "data-link-actor-id": object.actor,
-    className: "objectBox objectBox-Window"
-  };
 
   if (mode === MODE.TINY) {
-    return span(config, getTitle(object));
+    const tinyTitle = getTitle(object);
+    const title = getTitle(object, true);
+    const location = getLocation(object);
+    const config = getElementConfig({ ...props,
+      title,
+      location
+    });
+    return span(config, span({
+      className: tinyTitle.className
+    }, tinyTitle.content));
   }
 
-  return span(config, getTitle(object, true), span({
+  const title = getTitle(object, true);
+  const location = getLocation(object);
+  const config = getElementConfig({ ...props,
+    title,
+    location
+  });
+  return span(config, span({
+    className: title.className
+  }, title.content), span({
     className: "location"
-  }, getLocation(object)));
+  }, location));
+}
+
+function getElementConfig(opts) {
+  const {
+    object,
+    shouldRenderTooltip,
+    title,
+    location
+  } = opts;
+  let tooltip;
+
+  if (location) {
+    tooltip = `${title.content}${location}`;
+  } else {
+    tooltip = `${title.content}`;
+  }
+
+  return {
+    "data-link-actor-id": object.actor,
+    className: "objectBox objectBox-Window",
+    title: shouldRenderTooltip ? tooltip : null
+  };
 }
 
 function getTitle(object, trailingSpace) {
@@ -7224,9 +7888,10 @@ function getTitle(object, trailingSpace) {
     title = `${title} `;
   }
 
-  return span({
-    className: "objectTitle"
-  }, title);
+  return {
+    className: "objectTitle",
+    content: title
+  };
 }
 
 function getLocation(object) {
@@ -7257,7 +7922,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -7266,26 +7935,30 @@ const {
 } = __webpack_require__(2);
 
 const String = __webpack_require__(25).rep;
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a grip object with textual data.
  */
 
+
 ObjectWithText.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function ObjectWithText(props) {
   const grip = props.object;
-  return span({
+  const config = getElementConfig(props);
+  return span(config, `${getType(grip)} `, getDescription(grip));
+}
+
+function getElementConfig(opts) {
+  const shouldRenderTooltip = opts.shouldRenderTooltip;
+  const grip = opts.object;
+  return {
     "data-link-actor-id": grip.actor,
-    className: `objectTitle objectBox objectBox-${getType(grip)}`
-  }, `${getType(grip)} `, getDescription(grip));
+    className: `objectTitle objectBox objectBox-${getType(grip)}`,
+    title: shouldRenderTooltip ? `${getType(grip)} "${grip.preview.text}"` : null
+  };
 }
 
 function getType(grip) {
@@ -7322,7 +7995,11 @@ module.exports = {
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 // ReactJS
-const PropTypes = __webpack_require__(0); // Reps
+const PropTypes = __webpack_require__(0);
+
+const {
+  span
+} = __webpack_require__(1); // Reps
 
 
 const {
@@ -7330,28 +8007,33 @@ const {
   getURLDisplayString,
   wrapRender
 } = __webpack_require__(2);
-
-const dom = __webpack_require__(1);
-
-const {
-  span
-} = dom;
 /**
  * Renders a grip object with URL data.
  */
 
+
 ObjectWithURL.propTypes = {
-  object: PropTypes.object.isRequired
+  object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool
 };
 
 function ObjectWithURL(props) {
   const grip = props.object;
-  return span({
-    "data-link-actor-id": grip.actor,
-    className: `objectBox objectBox-${getType(grip)}`
-  }, getTitle(grip), span({
+  const config = getElementConfig(props);
+  return span(config, getTitle(grip), span({
     className: "objectPropValue"
   }, getDescription(grip)));
+}
+
+function getElementConfig(opts) {
+  const grip = opts.object;
+  const shouldRenderTooltip = opts.shouldRenderTooltip;
+  const tooltip = `${getType(grip)} ${getDescription(grip)}`;
+  return {
+    "data-link-actor-id": grip.actor,
+    className: `objectBox objectBox-${getType(grip)}`,
+    title: shouldRenderTooltip ? tooltip : null
+  };
 }
 
 function getTitle(grip) {
@@ -7397,9 +8079,12 @@ const utils = __webpack_require__(116);
 
 const reducer = __webpack_require__(115);
 
+const actions = __webpack_require__(485);
+
 module.exports = {
   ObjectInspector,
   utils,
+  actions,
   reducer
 };
 
@@ -7449,6 +8134,7 @@ const {
 const {
   getChildrenWithEvaluations,
   getActor,
+  getEvaluatedItem,
   getParent,
   getValue,
   nodeIsPrimitive,
@@ -7513,7 +8199,7 @@ class ObjectInspector extends Component {
       this.activeItem = nextProps.activeItem;
 
       if (this.props.rootsChanged) {
-        this.props.rootsChanged();
+        this.props.rootsChanged(this.roots);
       }
     }
   }
@@ -7523,6 +8209,12 @@ class ObjectInspector extends Component {
     if (this.roots !== nextProps.roots) {
       this.cachedNodes.clear();
       return;
+    }
+
+    for (const [path, properties] of nextProps.loadedProperties) {
+      if (properties !== this.props.loadedProperties.get(path)) {
+        this.cachedNodes.delete(path);
+      }
     } // If there are new evaluations, we want to remove the existing cached
     // nodes from the cache.
 
@@ -7551,11 +8243,11 @@ class ObjectInspector extends Component {
     // - OR the focused node changed.
     // - OR the active node changed.
 
-    return loadedProperties.size !== nextProps.loadedProperties.size || evaluations.size !== nextProps.evaluations.size || expandedPaths.size !== nextProps.expandedPaths.size && [...nextProps.expandedPaths].every(path => nextProps.loadedProperties.has(path)) || expandedPaths.size === nextProps.expandedPaths.size && [...nextProps.expandedPaths].some(key => !expandedPaths.has(key)) || this.focusedItem !== nextProps.focusedItem || this.activeItem !== nextProps.activeItem || this.roots !== nextProps.roots;
+    return loadedProperties !== nextProps.loadedProperties || loadedProperties.size !== nextProps.loadedProperties.size || evaluations.size !== nextProps.evaluations.size || expandedPaths.size !== nextProps.expandedPaths.size && [...nextProps.expandedPaths].every(path => nextProps.loadedProperties.has(path)) || expandedPaths.size === nextProps.expandedPaths.size && [...nextProps.expandedPaths].some(key => !expandedPaths.has(key)) || this.focusedItem !== nextProps.focusedItem || this.activeItem !== nextProps.activeItem || this.roots !== nextProps.roots;
   }
 
   componentWillUnmount() {
-    this.props.closeObjectInspector();
+    this.props.closeObjectInspector(this.props.roots);
   }
 
   getItemChildren(item) {
@@ -7575,7 +8267,21 @@ class ObjectInspector extends Component {
   }
 
   getRoots() {
-    return this.props.roots;
+    const {
+      evaluations,
+      roots
+    } = this.props;
+    const length = roots.length;
+
+    for (let i = 0; i < length; i++) {
+      let rootItem = roots[i];
+
+      if (evaluations.has(rootItem.path)) {
+        roots[i] = getEvaluatedItem(rootItem, evaluations);
+      }
+    }
+
+    return roots;
   }
 
   getNodeKey(item) {
@@ -7722,7 +8428,11 @@ module.exports = props => {
     roots
   } = props;
 
-  if (shouldRenderRootsInReps(roots)) {
+  if (roots.length == 0) {
+    return null;
+  }
+
+  if (shouldRenderRootsInReps(roots, props)) {
     return renderRep(roots[0], props);
   }
 
@@ -7749,8 +8459,17 @@ const {
 } = __webpack_require__(196);
 
 const {
+  getPathExpression,
+  getParentFront,
+  getParentGripValue,
+  getValue,
+  nodeIsBucket,
+  getFront
+} = __webpack_require__(114);
+
+const {
   getLoadedProperties,
-  getActors
+  getWatchpoints
 } = __webpack_require__(115);
 
 /**
@@ -7759,8 +8478,7 @@ const {
  */
 function nodeExpand(node, actor) {
   return async ({
-    dispatch,
-    getState
+    dispatch
   }) => {
     dispatch({
       type: "NODE_EXPAND",
@@ -7782,7 +8500,7 @@ function nodeCollapse(node) {
 }
 /*
  * This action checks if we need to fetch properties, entries, prototype and
- * symbols for a given node. If we do, it will call the appropriate ObjectClient
+ * symbols for a given node. If we do, it will call the appropriate ObjectFront
  * functions.
  */
 
@@ -7801,7 +8519,13 @@ function nodeLoadProperties(node, actor) {
     }
 
     try {
-      const properties = await loadItemProperties(node, client.createObjectClient, client.createLongStringClient, loadedProperties);
+      const properties = await loadItemProperties(node, client, loadedProperties); // If the client does not have a releaseActor function, it means the actors are
+      // handled directly by the consumer, so we don't need to track them.
+
+      if (!client || !client.releaseActor) {
+        actor = null;
+      }
+
       dispatch(nodePropertiesLoaded(node, actor, properties));
     } catch (e) {
       console.error(e);
@@ -7819,13 +8543,95 @@ function nodePropertiesLoaded(node, actor, properties) {
     }
   };
 }
+/*
+ * This action adds a property watchpoint to an object
+ */
 
-function closeObjectInspector() {
-  return async ({
+
+function addWatchpoint(item, watchpoint) {
+  return async function ({
+    dispatch,
+    client
+  }) {
+    const {
+      parent,
+      name
+    } = item;
+    let object = getValue(parent);
+
+    if (nodeIsBucket(parent)) {
+      object = getValue(parent.parent);
+    }
+
+    if (!object) {
+      return;
+    }
+
+    const path = parent.path;
+    const property = name;
+    const label = getPathExpression(item);
+    const actor = object.actor;
+    await client.addWatchpoint(object, property, label, watchpoint);
+    dispatch({
+      type: "SET_WATCHPOINT",
+      data: {
+        path,
+        watchpoint,
+        property,
+        actor
+      }
+    });
+  };
+}
+/*
+ * This action removes a property watchpoint from an object
+ */
+
+
+function removeWatchpoint(item) {
+  return async function ({
+    dispatch,
+    client
+  }) {
+    const {
+      parent,
+      name
+    } = item;
+    let object = getValue(parent);
+
+    if (nodeIsBucket(parent)) {
+      object = getValue(parent.parent);
+    }
+
+    const property = name;
+    const path = parent.path;
+    const actor = object.actor;
+    await client.removeWatchpoint(object, property);
+    dispatch({
+      type: "REMOVE_WATCHPOINT",
+      data: {
+        path,
+        property,
+        actor
+      }
+    });
+  };
+}
+
+function getActorIDs(roots) {
+  return (roots || []).reduce((ids, root) => {
+    const front = getFront(root);
+    return front ? ids.concat(front.actorID) : ids;
+  }, []);
+}
+
+function closeObjectInspector(roots) {
+  return ({
+    dispatch,
     getState,
     client
   }) => {
-    releaseActors(getState(), client);
+    releaseActors(roots, client, dispatch);
   };
 }
 /*
@@ -7838,37 +8644,39 @@ function closeObjectInspector() {
  */
 
 
-function rootsChanged(props) {
-  return async ({
+function rootsChanged(roots) {
+  return ({
     dispatch,
     client,
     getState
   }) => {
-    releaseActors(getState(), client);
+    releaseActors(roots, client, dispatch);
     dispatch({
       type: "ROOTS_CHANGED",
-      data: props
+      data: roots
     });
   };
 }
 
-function releaseActors(state, client) {
-  const actors = getActors(state);
-
-  for (const actor of actors) {
-    client.releaseActor(actor);
+async function releaseActors(roots, client, dispatch) {
+  if (!client || !client.releaseActor) {
+    return;
   }
+
+  const actors = getActorIDs(roots);
+  await Promise.all(actors.map(client.releaseActor));
 }
 
-function invokeGetter(node, targetGrip, receiverId, getterName) {
+function invokeGetter(node, receiverId) {
   return async ({
     dispatch,
     client,
     getState
   }) => {
     try {
-      const objectClient = client.createObjectClient(targetGrip);
-      const result = await objectClient.getPropertyValue(getterName, receiverId);
+      const objectFront = getParentFront(node) || client.createObjectFront(getParentGripValue(node));
+      const getterName = node.propertyName || node.name;
+      const result = await objectFront.getPropertyValue(getterName, receiverId);
       dispatch({
         type: "GETTER_INVOKED",
         data: {
@@ -7889,7 +8697,9 @@ module.exports = {
   nodeCollapse,
   nodeLoadProperties,
   nodePropertiesLoaded,
-  rootsChanged
+  rootsChanged,
+  addWatchpoint,
+  removeWatchpoint
 };
 
 /***/ }),
@@ -7954,12 +8764,18 @@ const {
   nodeIsLongString,
   nodeHasFullText,
   nodeHasGetter,
-  getNonPrototypeParentGripValue,
-  getParentGripValue
+  getNonPrototypeParentGripValue
 } = Utils.node;
 
 class ObjectInspectorItem extends Component {
-  // eslint-disable-next-line complexity
+  static get defaultProps() {
+    return {
+      onContextMenu: () => {},
+      renderItemActions: () => null
+    };
+  } // eslint-disable-next-line complexity
+
+
   getLabelAndValue() {
     const {
       item,
@@ -8045,12 +8861,11 @@ class ObjectInspectorItem extends Component {
       }
 
       if (nodeHasGetter(item)) {
-        const targetGrip = getParentGripValue(item);
         const receiverGrip = getNonPrototypeParentGripValue(item);
 
-        if (targetGrip && receiverGrip) {
+        if (receiverGrip) {
           Object.assign(repProps, {
-            onInvokeGetterButtonClick: () => this.props.invokeGetter(item, targetGrip, receiverGrip.actor, item.name)
+            onInvokeGetterButtonClick: () => this.props.invokeGetter(item, receiverGrip.actor)
           });
         }
       }
@@ -8074,7 +8889,8 @@ class ObjectInspectorItem extends Component {
       expanded,
       onCmdCtrlClick,
       onDoubleClick,
-      dimTopLevelWindow
+      dimTopLevelWindow,
+      onContextMenu
     } = this.props;
     const parentElementProps = {
       className: classnames("node object-node", {
@@ -8100,10 +8916,11 @@ class ObjectInspectorItem extends Component {
         // So we need to also check if the arrow was clicked.
 
 
-        if (Utils.selection.documentHasSelection() && !(e.target && e.target.matches && e.target.matches(".arrow"))) {
+        if (e.target && Utils.selection.documentHasSelection(e.target.ownerDocument) && !(e.target.matches && e.target.matches(".arrow"))) {
           e.stopPropagation();
         }
-      }
+      },
+      onContextMenu: e => onContextMenu(e, item)
     };
 
     if (onDoubleClick) {
@@ -8137,7 +8954,7 @@ class ObjectInspectorItem extends Component {
       onClick: onLabelClick ? event => {
         event.stopPropagation(); // If the user selected text, bail out.
 
-        if (Utils.selection.documentHasSelection()) {
+        if (Utils.selection.documentHasSelection(event.target.ownerDocument)) {
           return;
         }
 
@@ -8153,7 +8970,9 @@ class ObjectInspectorItem extends Component {
 
   render() {
     const {
-      arrow
+      arrow,
+      renderItemActions,
+      item
     } = this.props;
     const {
       label,
@@ -8163,7 +8982,7 @@ class ObjectInspectorItem extends Component {
     const delimiter = value && labelElement ? dom.span({
       className: "object-delimiter"
     }, ": ") : null;
-    return dom.div(this.getTreeItemProps(), arrow, labelElement, delimiter, value);
+    return dom.div(this.getTreeItemProps(), arrow, labelElement, delimiter, value, renderItemActions(item));
   }
 
 }
@@ -8178,8 +8997,8 @@ module.exports = ObjectInspectorItem;
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
-function documentHasSelection() {
-  const selection = getSelection();
+function documentHasSelection(doc = document) {
+  const selection = doc.defaultView.getSelection();
 
   if (!selection) {
     return false;
@@ -8190,6 +9009,39 @@ function documentHasSelection() {
 
 module.exports = {
   documentHasSelection
+};
+
+/***/ }),
+
+/***/ 522:
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+
+module.exports = {
+  ELEMENT_NODE: 1,
+  ATTRIBUTE_NODE: 2,
+  TEXT_NODE: 3,
+  CDATA_SECTION_NODE: 4,
+  ENTITY_REFERENCE_NODE: 5,
+  ENTITY_NODE: 6,
+  PROCESSING_INSTRUCTION_NODE: 7,
+  COMMENT_NODE: 8,
+  DOCUMENT_NODE: 9,
+  DOCUMENT_TYPE_NODE: 10,
+  DOCUMENT_FRAGMENT_NODE: 11,
+  NOTATION_NODE: 12,
+  // DocumentPosition
+  DOCUMENT_POSITION_DISCONNECTED: 0x01,
+  DOCUMENT_POSITION_PRECEDING: 0x02,
+  DOCUMENT_POSITION_FOLLOWING: 0x04,
+  DOCUMENT_POSITION_CONTAINS: 0x08,
+  DOCUMENT_POSITION_CONTAINED_BY: 0x10,
+  DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 0x20
 };
 
 /***/ }),

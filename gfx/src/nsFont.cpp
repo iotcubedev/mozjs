@@ -8,8 +8,9 @@
 #include "gfxFont.h"          // for gfxFontStyle
 #include "gfxFontFeatures.h"  // for gfxFontFeature, etc
 #include "gfxFontUtils.h"     // for TRUETYPE_TAG
-#include "nsCRT.h"            // for nsCRT
-#include "nsDebug.h"          // for NS_ASSERTION
+#include "mozilla/ServoStyleConstsInlines.h"
+#include "nsCRT.h"    // for nsCRT
+#include "nsDebug.h"  // for NS_ASSERTION
 #include "nsISupports.h"
 #include "nsUnicharUtils.h"
 #include "nscore.h"  // for char16_t
@@ -18,15 +19,15 @@
 
 using namespace mozilla;
 
-nsFont::nsFont(const FontFamilyList& aFontlist, nscoord aSize)
+nsFont::nsFont(const FontFamilyList& aFontlist, mozilla::Length aSize)
     : fontlist(aFontlist), size(aSize) {}
 
-nsFont::nsFont(StyleGenericFontFamily aGenericType, nscoord aSize)
+nsFont::nsFont(StyleGenericFontFamily aGenericType, mozilla::Length aSize)
     : fontlist(aGenericType), size(aSize) {}
 
 nsFont::nsFont(const nsFont& aOther) = default;
 
-nsFont::~nsFont() {}
+nsFont::~nsFont() = default;
 
 bool nsFont::Equals(const nsFont& aOther) const {
   return CalcDifference(aOther) == MaxDifference::eNone;
@@ -247,6 +248,15 @@ void nsFont::AddFontFeaturesToStyle(gfxFontStyle* aStyle,
       (aStyle->variantCaps == NS_FONT_VARIANT_CAPS_NORMAL) &&
       (variantPosition == NS_FONT_VARIANT_POSITION_NORMAL);
 
+  // If the feature list is not empty, we insert a "fake" feature with tag=0
+  // as delimiter between the above "high-level" features from font-variant-*
+  // etc and those coming from the low-level font-feature-settings property.
+  // This will allow us to distinguish high- and low-level settings when it
+  // comes to potentially disabling ligatures because of letter-spacing.
+  if (!aStyle->featureSettings.IsEmpty() || !fontFeatureSettings.IsEmpty()) {
+    aStyle->featureSettings.AppendElement(gfxFontFeature{0, 0});
+  }
+
   // add in features from font-feature-settings
   aStyle->featureSettings.AppendElements(fontFeatureSettings);
 
@@ -270,10 +280,7 @@ void nsFont::AddFontVariationsToStyle(gfxFontStyle* aStyle) const {
   const uint32_t kTagOpsz = TRUETYPE_TAG('o', 'p', 's', 'z');
   if (opticalSizing == NS_FONT_OPTICAL_SIZING_AUTO &&
       !fontVariationSettings.Contains(kTagOpsz, VariationTagComparator())) {
-    gfxFontVariation opsz = {
-        kTagOpsz,
-        // size is in app units, but we want a floating-point px size
-        float(size) / float(AppUnitsPerCSSPixel())};
+    gfxFontVariation opsz = {kTagOpsz, size.ToCSSPixels()};
     aStyle->variationSettings.AppendElement(opsz);
   }
 

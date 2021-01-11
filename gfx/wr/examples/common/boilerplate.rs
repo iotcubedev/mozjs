@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-extern crate env_logger;
-extern crate euclid;
-
 use gleam::gl;
 use glutin;
 use std::env;
@@ -76,7 +73,7 @@ pub trait Example {
 
     fn render(
         &mut self,
-        api: &RenderApi,
+        api: &mut RenderApi,
         builder: &mut DisplayListBuilder,
         txn: &mut Transaction,
         device_size: DeviceIntSize,
@@ -86,7 +83,7 @@ pub trait Example {
     fn on_event(
         &mut self,
         _: winit::WindowEvent,
-        _: &RenderApi,
+        _: &mut RenderApi,
         _: DocumentId,
     ) -> bool {
         false
@@ -94,8 +91,8 @@ pub trait Example {
     fn get_image_handlers(
         &mut self,
         _gl: &dyn gl::Gl,
-    ) -> (Option<Box<dyn webrender::ExternalImageHandler>>,
-          Option<Box<dyn webrender::OutputImageHandler>>) {
+    ) -> (Option<Box<dyn ExternalImageHandler>>,
+          Option<Box<dyn OutputImageHandler>>) {
         (None, None)
     }
     fn draw_custom(&mut self, _gl: &dyn gl::Gl) {
@@ -107,6 +104,17 @@ pub fn main_wrapper<E: Example>(
     options: Option<webrender::RendererOptions>,
 ) {
     env_logger::init();
+
+    #[cfg(target_os = "macos")]
+    {
+        use core_foundation::{self as cf, base::TCFType};
+        let i = cf::bundle::CFBundle::main_bundle().info_dictionary();
+        let mut i = unsafe { i.to_mutable() };
+        i.set(
+            cf::string::CFString::new("NSSupportsAutomaticGraphicsSwitching"),
+            cf::boolean::CFBoolean::true_value().into_CFType(),
+        );
+    }
 
     let args: Vec<String> = env::args().collect();
     let res_path = if args.len() > 1 {
@@ -156,8 +164,8 @@ pub fn main_wrapper<E: Example>(
         precache_flags: E::PRECACHE_SHADER_FLAGS,
         device_pixel_ratio,
         clear_color: Some(ColorF::new(0.3, 0.0, 0.0, 1.0)),
-        //scatter_gpu_cache_updates: false,
         debug_flags,
+        //allow_texture_swizzling: false,
         ..options.unwrap_or(webrender::RendererOptions::default())
     };
 
@@ -177,7 +185,7 @@ pub fn main_wrapper<E: Example>(
         None,
         device_size,
     ).unwrap();
-    let api = sender.create_api();
+    let mut api = sender.create_api();
     let document_id = api.add_document(device_size, 0);
 
     let (external, output) = example.get_image_handlers(&*gl);
@@ -197,7 +205,7 @@ pub fn main_wrapper<E: Example>(
     let mut txn = Transaction::new();
 
     example.render(
-        &api,
+        &mut api,
         &mut builder,
         &mut txn,
         device_size,
@@ -227,9 +235,18 @@ pub fn main_wrapper<E: Example>(
         };
         match win_event {
             winit::WindowEvent::CloseRequested => return winit::ControlFlow::Break,
-            // skip high-frequency events
             winit::WindowEvent::AxisMotion { .. } |
-            winit::WindowEvent::CursorMoved { .. } => return winit::ControlFlow::Continue,
+            winit::WindowEvent::CursorMoved { .. } => {
+                custom_event = example.on_event(
+                        win_event,
+                        &mut api,
+                        document_id,
+                    );
+                // skip high-frequency events from triggering a frame draw.
+                if !custom_event {
+                    return winit::ControlFlow::Continue;
+                }
+            },
             winit::WindowEvent::KeyboardInput {
                 input: winit::KeyboardInput {
                     state: winit::ElementState::Pressed,
@@ -270,14 +287,14 @@ pub fn main_wrapper<E: Example>(
                 _ => {
                     custom_event = example.on_event(
                         win_event,
-                        &api,
+                        &mut api,
                         document_id,
                     )
                 },
             },
             other => custom_event = example.on_event(
                 other,
-                &api,
+                &mut api,
                 document_id,
             ),
         };
@@ -290,7 +307,7 @@ pub fn main_wrapper<E: Example>(
             let mut builder = DisplayListBuilder::new(pipeline_id, layout_size);
 
             example.render(
-                &api,
+                &mut api,
                 &mut builder,
                 &mut txn,
                 device_size,

@@ -1,7 +1,7 @@
 import { _ToolbarBadgeHub } from "lib/ToolbarBadgeHub.jsm";
 import { GlobalOverrider } from "test/unit/utils";
 import { OnboardingMessageProvider } from "lib/OnboardingMessageProvider.jsm";
-import { _ToolbarPanelHub } from "lib/ToolbarPanelHub.jsm";
+import { _ToolbarPanelHub, ToolbarPanelHub } from "lib/ToolbarPanelHub.jsm";
 
 describe("ToolbarBadgeHub", () => {
   let sandbox;
@@ -16,13 +16,13 @@ describe("ToolbarBadgeHub", () => {
   let everyWindowStub;
   let clearTimeoutStub;
   let setTimeoutStub;
-  let setIntervalStub;
   let addObserverStub;
   let removeObserverStub;
   let getStringPrefStub;
   let clearUserPrefStub;
   let setStringPrefStub;
   let requestIdleCallbackStub;
+  let fakeWindow;
   beforeEach(async () => {
     globals = new GlobalOverrider();
     sandbox = sinon.createSandbox();
@@ -32,9 +32,28 @@ describe("ToolbarBadgeHub", () => {
     isBrowserPrivateStub = sandbox.stub();
     const onboardingMsgs = await OnboardingMessageProvider.getUntranslatedMessages();
     fxaMessage = onboardingMsgs.find(({ id }) => id === "FXA_ACCOUNTS_BADGE");
-    whatsnewMessage = onboardingMsgs.find(({ id }) =>
-      id.includes("WHATS_NEW_BADGE_")
-    );
+    whatsnewMessage = {
+      id: `WHATS_NEW_BADGE_71`,
+      template: "toolbar_badge",
+      content: {
+        delay: 1000,
+        target: "whats-new-menu-button",
+        action: { id: "show-whatsnew-button" },
+        badgeDescription: { string_id: "cfr-badge-reader-label-newfeature" },
+      },
+      priority: 1,
+      trigger: { id: "toolbarBadgeUpdate" },
+      frequency: {
+        // Makes it so that we track impressions for this message while at the
+        // same time it can have unlimited impressions
+        lifetime: Infinity,
+      },
+      // Never saw this message or saw it in the past 4 days or more recent
+      targeting: `isWhatsNewPanelEnabled &&
+      (!messageImpressions['WHATS_NEW_BADGE_71'] ||
+        (messageImpressions['WHATS_NEW_BADGE_71']|length >= 1 &&
+          currentDate|date - messageImpressions['WHATS_NEW_BADGE_71'][0] <= 4 * 24 * 3600 * 1000))`,
+    };
     fakeElement = {
       classList: {
         add: sandbox.stub(),
@@ -44,6 +63,8 @@ describe("ToolbarBadgeHub", () => {
       removeAttribute: sandbox.stub(),
       querySelector: sandbox.stub(),
       addEventListener: sandbox.stub(),
+      remove: sandbox.stub(),
+      appendChild: sandbox.stub(),
     };
     // Share the same element when selecting child nodes
     fakeElement.querySelector.returns(fakeElement);
@@ -53,8 +74,8 @@ describe("ToolbarBadgeHub", () => {
     };
     clearTimeoutStub = sandbox.stub();
     setTimeoutStub = sandbox.stub();
-    setIntervalStub = sandbox.stub();
-    const fakeWindow = {
+    fakeWindow = {
+      MozXULElement: { insertFTLIfNeeded: sandbox.stub() },
       ownerGlobal: {
         gBrowser: {
           selectedBrowser: "browser",
@@ -68,12 +89,12 @@ describe("ToolbarBadgeHub", () => {
     setStringPrefStub = sandbox.stub();
     requestIdleCallbackStub = sandbox.stub().callsFake(fn => fn());
     globals.set({
+      ToolbarPanelHub,
       requestIdleCallback: requestIdleCallbackStub,
       EveryWindow: everyWindowStub,
       PrivateBrowsingUtils: { isBrowserPrivate: isBrowserPrivateStub },
       setTimeout: setTimeoutStub,
       clearTimeout: clearTimeoutStub,
-      setInterval: setIntervalStub,
       Services: {
         wm: {
           getMostRecentWindow: () => fakeWindow,
@@ -116,24 +137,6 @@ describe("ToolbarBadgeHub", () => {
         instance.prefs.WHATSNEW_TOOLBAR_PANEL,
         instance
       );
-    });
-    it("should setInterval for `checkHomepageOverridePref`", async () => {
-      await instance.init(sandbox.stub().resolves(), {});
-      sandbox.stub(instance, "checkHomepageOverridePref");
-
-      assert.calledOnce(setIntervalStub);
-      assert.calledWithExactly(
-        setIntervalStub,
-        sinon.match.func,
-        5 * 60 * 1000
-      );
-
-      assert.notCalled(instance.checkHomepageOverridePref);
-      const [cb] = setIntervalStub.firstCall.args;
-
-      cb();
-
-      assert.calledOnce(instance.checkHomepageOverridePref);
     });
   });
   describe("#uninit", () => {
@@ -191,19 +194,56 @@ describe("ToolbarBadgeHub", () => {
         fxaMessage
       );
     });
-    it("shouldn't do anything if no message is provided", () => {
-      handleMessageRequestStub.returns(null);
-      instance.messageRequest("trigger");
+    it("shouldn't do anything if no message is provided", async () => {
+      handleMessageRequestStub.resolves(null);
+      await instance.messageRequest({ triggerId: "trigger" });
 
       assert.notCalled(instance.registerBadgeNotificationListener);
+    });
+    it("should record telemetry events", async () => {
+      const startTelemetryStopwatch = sandbox.stub(
+        global.TelemetryStopwatch,
+        "start"
+      );
+      const finishTelemetryStopwatch = sandbox.stub(
+        global.TelemetryStopwatch,
+        "finish"
+      );
+      handleMessageRequestStub.returns(null);
+
+      await instance.messageRequest({ triggerId: "trigger" });
+
+      assert.calledOnce(startTelemetryStopwatch);
+      assert.calledWithExactly(
+        startTelemetryStopwatch,
+        "MS_MESSAGE_REQUEST_TIME_MS",
+        { triggerId: "trigger" }
+      );
+      assert.calledOnce(finishTelemetryStopwatch);
+      assert.calledWithExactly(
+        finishTelemetryStopwatch,
+        "MS_MESSAGE_REQUEST_TIME_MS",
+        { triggerId: "trigger" }
+      );
     });
   });
   describe("addToolbarNotification", () => {
     let target;
     let fakeDocument;
-    beforeEach(() => {
-      fakeDocument = { getElementById: sandbox.stub().returns(fakeElement) };
-      target = { browser: { ownerDocument: fakeDocument } };
+    beforeEach(async () => {
+      await instance.init(sandbox.stub().resolves(), {
+        addImpression: fakeAddImpression,
+        dispatch: fakeDispatch,
+      });
+      fakeDocument = {
+        getElementById: sandbox.stub().returns(fakeElement),
+        createElement: sandbox.stub().returns(fakeElement),
+        l10n: { setAttributes: sandbox.stub() },
+      };
+      target = { ...fakeWindow, browser: { ownerDocument: fakeDocument } };
+    });
+    afterEach(() => {
+      instance.uninit();
     });
     it("shouldn't do anything if target element is not found", () => {
       fakeDocument.getElementById.returns(null);
@@ -238,7 +278,7 @@ describe("ToolbarBadgeHub", () => {
       );
       assert.calledWithExactly(
         fakeElement.addEventListener,
-        "click",
+        "keypress",
         instance.removeAllNotifications
       );
     });
@@ -251,6 +291,56 @@ describe("ToolbarBadgeHub", () => {
         ...whatsnewMessage.content.action,
         message_id: whatsnewMessage.id,
       });
+    });
+    it("should create a description element", () => {
+      sandbox.stub(instance, "executeAction");
+      instance.addToolbarNotification(target, whatsnewMessage);
+
+      assert.calledOnce(fakeDocument.createElement);
+      assert.calledWithExactly(fakeDocument.createElement, "span");
+    });
+    it("should set description id to element and to button", () => {
+      sandbox.stub(instance, "executeAction");
+      instance.addToolbarNotification(target, whatsnewMessage);
+
+      assert.calledWithExactly(
+        fakeElement.setAttribute,
+        "id",
+        "toolbarbutton-notification-description"
+      );
+      assert.calledWithExactly(
+        fakeElement.setAttribute,
+        "aria-labelledby",
+        `toolbarbutton-notification-description ${whatsnewMessage.content.target}`
+      );
+    });
+    it("should attach fluent id to description", () => {
+      sandbox.stub(instance, "executeAction");
+      instance.addToolbarNotification(target, whatsnewMessage);
+
+      assert.calledOnce(fakeDocument.l10n.setAttributes);
+      assert.calledWithExactly(
+        fakeDocument.l10n.setAttributes,
+        fakeElement,
+        whatsnewMessage.content.badgeDescription.string_id
+      );
+    });
+    it("should add an impression for the message", () => {
+      instance.addToolbarNotification(target, whatsnewMessage);
+
+      assert.calledOnce(instance._addImpression);
+      assert.calledWithExactly(instance._addImpression, whatsnewMessage);
+    });
+    it("should send an impression ping", async () => {
+      sandbox.stub(instance, "sendUserEventTelemetry");
+      instance.addToolbarNotification(target, whatsnewMessage);
+
+      assert.calledOnce(instance.sendUserEventTelemetry);
+      assert.calledWithExactly(
+        instance.sendUserEventTelemetry,
+        "IMPRESSION",
+        whatsnewMessage
+      );
     });
   });
   describe("registerBadgeNotificationListener", () => {
@@ -272,12 +362,6 @@ describe("ToolbarBadgeHub", () => {
     });
     afterEach(() => {
       instance.uninit();
-    });
-    it("should add an impression for the message", () => {
-      instance.registerBadgeNotificationListener(msg_no_delay);
-
-      assert.calledOnce(instance._addImpression);
-      assert.calledWithExactly(instance._addImpression, msg_no_delay);
     });
     it("should register a callback that adds/removes the notification", () => {
       instance.registerBadgeNotificationListener(msg_no_delay);
@@ -311,18 +395,6 @@ describe("ToolbarBadgeHub", () => {
 
       assert.calledOnce(instance.removeToolbarNotification);
       assert.calledWithExactly(instance.removeToolbarNotification, fakeElement);
-    });
-    it("should send an impression", async () => {
-      sandbox.stub(instance, "sendUserEventTelemetry");
-
-      instance.registerBadgeNotificationListener(msg_no_delay);
-
-      assert.calledOnce(instance.sendUserEventTelemetry);
-      assert.calledWithExactly(
-        instance.sendUserEventTelemetry,
-        "IMPRESSION",
-        msg_no_delay
-      );
     });
     it("should unregister notifications when forcing a badge via devtools", () => {
       instance.registerBadgeNotificationListener(msg_no_delay, { force: true });
@@ -368,60 +440,18 @@ describe("ToolbarBadgeHub", () => {
 
       assert.calledOnce(stub);
     });
-    it("should set HOMEPAGE_OVERRIDE_PREF on `moments-wnp` action", () => {
-      instance.executeAction({
-        id: "moments-wnp",
-        data: {
-          url: "foo.com",
-          expire: 1,
-        },
-        message_id: "bar",
-      });
-
-      assert.calledOnce(setStringPrefStub);
-      assert.calledWithExactly(
-        setStringPrefStub,
-        instance.prefs.HOMEPAGE_OVERRIDE_PREF,
-        JSON.stringify({ message_id: "bar", url: "foo.com", expire: 1 })
-      );
-    });
-    it("should block after taking the action", () => {
-      instance.executeAction({
-        id: "moments-wnp",
-        data: {
-          url: "foo.com",
-          expire: 1,
-        },
-        message_id: "bar",
-      });
-
-      assert.calledOnce(blockMessageByIdStub);
-      assert.calledWithExactly(blockMessageByIdStub, "bar");
-    });
-    it("should compute expire based on expireDelta", () => {
-      sandbox.spy(instance, "getExpirationDate");
-
-      instance.executeAction({
-        id: "moments-wnp",
-        data: {
-          url: "foo.com",
-          expireDelta: 10,
-        },
-        message_id: "bar",
-      });
-
-      assert.calledOnce(instance.getExpirationDate);
-      assert.calledWithExactly(instance.getExpirationDate, 10);
-    });
   });
   describe("removeToolbarNotification", () => {
     it("should remove the notification", () => {
       instance.removeToolbarNotification(fakeElement);
 
-      assert.calledOnce(fakeElement.removeAttribute);
+      assert.calledThrice(fakeElement.removeAttribute);
       assert.calledWithExactly(fakeElement.removeAttribute, "badged");
+      assert.calledWithExactly(fakeElement.removeAttribute, "aria-labelledby");
+      assert.calledWithExactly(fakeElement.removeAttribute, "aria-describedby");
       assert.calledOnce(fakeElement.classList.remove);
       assert.calledWithExactly(fakeElement.classList.remove, "feature-callout");
+      assert.calledOnce(fakeElement.remove);
     });
   });
   describe("removeAllNotifications", () => {
@@ -489,7 +519,7 @@ describe("ToolbarBadgeHub", () => {
       );
       assert.calledWithExactly(
         fakeEvent.target.removeEventListener,
-        "click",
+        "keypress",
         instance.removeAllNotifications
       );
     });
@@ -519,7 +549,7 @@ describe("ToolbarBadgeHub", () => {
       );
       assert.calledWithExactly(
         fakeEvent.target.removeEventListener,
-        "click",
+        "keypress",
         instance.removeAllNotifications
       );
     });
@@ -609,54 +639,6 @@ describe("ToolbarBadgeHub", () => {
       instance.observe("", "", "foo");
 
       assert.notCalled(instance.messageRequest);
-    });
-  });
-  describe("#checkHomepageOverridePref", () => {
-    let messageRequestStub;
-    let unblockMessageByIdStub;
-    beforeEach(async () => {
-      unblockMessageByIdStub = sandbox.stub();
-      await instance.init(sandbox.stub().resolves(), {
-        unblockMessageById: unblockMessageByIdStub,
-      });
-      messageRequestStub = sandbox.stub(instance, "messageRequest");
-    });
-    it("should reset HOMEPAGE_OVERRIDE_PREF if set", () => {
-      getStringPrefStub.returns(true);
-
-      instance.checkHomepageOverridePref();
-
-      assert.calledOnce(getStringPrefStub);
-      assert.calledWithExactly(
-        getStringPrefStub,
-        instance.prefs.HOMEPAGE_OVERRIDE_PREF,
-        ""
-      );
-      assert.calledOnce(clearUserPrefStub);
-      assert.calledWithExactly(
-        clearUserPrefStub,
-        instance.prefs.HOMEPAGE_OVERRIDE_PREF
-      );
-    });
-    it("should unblock the message set in the pref", () => {
-      getStringPrefStub.returns(JSON.stringify({ message_id: "foo" }));
-
-      instance.checkHomepageOverridePref();
-
-      assert.calledOnce(unblockMessageByIdStub);
-      assert.calledWithExactly(unblockMessageByIdStub, "foo");
-    });
-    it("should catch parse errors", () => {
-      getStringPrefStub.returns({});
-
-      instance.checkHomepageOverridePref();
-
-      assert.notCalled(unblockMessageByIdStub);
-      assert.calledOnce(messageRequestStub);
-      assert.calledWithExactly(messageRequestStub, {
-        template: "update_action",
-        triggerId: "momentsUpdate",
-      });
     });
   });
 });

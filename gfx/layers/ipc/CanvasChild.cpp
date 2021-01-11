@@ -11,7 +11,9 @@
 #include "mozilla/gfx/Tools.h"
 #include "mozilla/gfx/Rect.h"
 #include "mozilla/gfx/Point.h"
+#include "mozilla/ipc/ProcessChild.h"
 #include "mozilla/layers/CanvasDrawEventRecorder.h"
+#include "nsIObserverService.h"
 #include "RecordedCanvasEventImpl.h"
 
 namespace mozilla {
@@ -26,7 +28,8 @@ class RingBufferWriterServices final
   ~RingBufferWriterServices() final = default;
 
   bool ReaderClosed() final {
-    return mCanvasChild->GetIPCChannel()->Unsound_IsClosed();
+    return !mCanvasChild->GetIPCChannel()->CanSend() ||
+           ipc::ProcessChild::ExpectingShutdown();
   }
 
   void ResumeReader() final { mCanvasChild->ResumeTranslation(); }
@@ -51,8 +54,8 @@ class SourceSurfaceCanvasRecording final : public gfx::SourceSurface {
   }
 
   ~SourceSurfaceCanvasRecording() {
-    mRecorder->RemoveStoredObject(this);
-    mRecorder->RecordEvent(RecordedRemoveSurfaceAlias(this));
+    ReleaseOnMainThread(std::move(mRecorder), this, std::move(mRecordedSurface),
+                        std::move(mCanvasChild));
   }
 
   gfx::SurfaceType GetType() const final { return mRecordedSurface->GetType(); }
@@ -64,11 +67,40 @@ class SourceSurfaceCanvasRecording final : public gfx::SourceSurface {
   }
 
   already_AddRefed<gfx::DataSourceSurface> GetDataSurface() final {
-    if (!mDataSourceSurface) {
+    EnsureDataSurfaceOnMainThread();
+    return do_AddRef(mDataSourceSurface);
+  }
+
+ protected:
+  void GuaranteePersistance() final { EnsureDataSurfaceOnMainThread(); }
+
+ private:
+  void EnsureDataSurfaceOnMainThread() {
+    // The data can only be retrieved on the main thread.
+    if (!mDataSourceSurface && NS_IsMainThread()) {
       mDataSourceSurface = mCanvasChild->GetDataSurface(mRecordedSurface);
     }
+  }
 
-    return do_AddRef(mDataSourceSurface);
+  // Used to ensure that clean-up that requires it is done on the main thread.
+  static void ReleaseOnMainThread(RefPtr<CanvasDrawEventRecorder> aRecorder,
+                                  ReferencePtr aSurfaceAlias,
+                                  RefPtr<gfx::SourceSurface> aAliasedSurface,
+                                  RefPtr<CanvasChild> aCanvasChild) {
+    if (!NS_IsMainThread()) {
+      NS_DispatchToMainThread(NewRunnableFunction(
+          "SourceSurfaceCanvasRecording::ReleaseOnMainThread",
+          SourceSurfaceCanvasRecording::ReleaseOnMainThread,
+          std::move(aRecorder), aSurfaceAlias, std::move(aAliasedSurface),
+          std::move(aCanvasChild)));
+      return;
+    }
+
+    aRecorder->RemoveStoredObject(aSurfaceAlias);
+    aRecorder->RecordEvent(RecordedRemoveSurfaceAlias(aSurfaceAlias));
+    aAliasedSurface = nullptr;
+    aCanvasChild = nullptr;
+    aRecorder = nullptr;
   }
 
   RefPtr<gfx::SourceSurface> mRecordedSurface;
@@ -79,10 +111,30 @@ class SourceSurfaceCanvasRecording final : public gfx::SourceSurface {
 
 CanvasChild::CanvasChild(Endpoint<PCanvasChild>&& aEndpoint) {
   aEndpoint.Bind(this);
-  mCanSend = true;
 }
 
-CanvasChild::~CanvasChild() {}
+CanvasChild::~CanvasChild() = default;
+
+static void NotifyCanvasDeviceReset() {
+  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+  if (obs) {
+    obs->NotifyObservers(nullptr, "canvas-device-reset", nullptr);
+  }
+}
+
+ipc::IPCResult CanvasChild::RecvNotifyDeviceChanged() {
+  NotifyCanvasDeviceReset();
+  mRecorder->RecordEvent(RecordedDeviceChangeAcknowledged());
+  return IPC_OK();
+}
+
+/* static */ bool CanvasChild::mDeactivated = false;
+
+ipc::IPCResult CanvasChild::RecvDeactivate() {
+  mDeactivated = true;
+  NotifyCanvasDeviceReset();
+  return IPC_OK();
+}
 
 void CanvasChild::EnsureRecorder(TextureType aTextureType) {
   if (!mRecorder) {
@@ -95,9 +147,8 @@ void CanvasChild::EnsureRecorder(TextureType aTextureType) {
     mRecorder->Init(OtherPid(), &handle, &readerSem, &writerSem,
                     MakeUnique<RingBufferWriterServices>(this));
 
-    if (mCanSend) {
-      Unused << SendCreateTranslator(mTextureType, handle, readerSem,
-                                     writerSem);
+    if (CanSend()) {
+      Unused << SendInitTranslator(mTextureType, handle, readerSem, writerSem);
     }
   }
 
@@ -106,27 +157,37 @@ void CanvasChild::EnsureRecorder(TextureType aTextureType) {
 }
 
 void CanvasChild::ActorDestroy(ActorDestroyReason aWhy) {
-  mCanSend = false;
-
   // Explicitly drop our reference to the recorder, because it holds a reference
   // to us via the ResumeTranslation callback.
   mRecorder = nullptr;
 }
 
 void CanvasChild::ResumeTranslation() {
-  if (mCanSend) {
+  if (CanSend()) {
     SendResumeTranslation();
   }
 }
 
-void CanvasChild::Destroy() { Close(); }
+void CanvasChild::Destroy() {
+  if (CanSend()) {
+    Close();
+  }
+}
 
 void CanvasChild::OnTextureWriteLock() {
+  if (!mRecorder) {
+    return;
+  }
+
   mHasOutstandingWriteLock = true;
   mLastWriteLockCheckpoint = mRecorder->CreateCheckpoint();
 }
 
 void CanvasChild::OnTextureForwarded() {
+  if (!mRecorder) {
+    return;
+  }
+
   if (mHasOutstandingWriteLock) {
     mRecorder->RecordEvent(RecordedCanvasFlush());
     if (!mRecorder->WaitForCheckpoint(mLastWriteLockCheckpoint)) {
@@ -138,6 +199,10 @@ void CanvasChild::OnTextureForwarded() {
 }
 
 void CanvasChild::EnsureBeginTransaction() {
+  if (!mRecorder) {
+    return;
+  }
+
   if (!mIsInTransaction) {
     mRecorder->RecordEvent(RecordedCanvasBeginTransaction());
     mIsInTransaction = true;
@@ -145,12 +210,34 @@ void CanvasChild::EnsureBeginTransaction() {
 }
 
 void CanvasChild::EndTransaction() {
+  if (!mRecorder) {
+    return;
+  }
+
   if (mIsInTransaction) {
     mRecorder->RecordEvent(RecordedCanvasEndTransaction());
     mIsInTransaction = false;
+    mLastNonEmptyTransaction = TimeStamp::NowLoRes();
   }
 
   ++mTransactionsSinceGetDataSurface;
+}
+
+bool CanvasChild::ShouldBeCleanedUp() const {
+  // Always return true if we've been deactivated.
+  if (Deactivated()) {
+    return true;
+  }
+
+  // We can only be cleaned up if nothing else references our recorder.
+  if (mRecorder && !mRecorder->hasOneRef()) {
+    return false;
+  }
+
+  static const TimeDuration kCleanUpCanvasThreshold =
+      TimeDuration::FromSeconds(10);
+  return TimeStamp::NowLoRes() - mLastNonEmptyTransaction >
+         kCleanUpCanvasThreshold;
 }
 
 already_AddRefed<gfx::DrawTarget> CanvasChild::CreateDrawTarget(
@@ -165,13 +252,21 @@ already_AddRefed<gfx::DrawTarget> CanvasChild::CreateDrawTarget(
 }
 
 void CanvasChild::RecordEvent(const gfx::RecordedEvent& aEvent) {
+  if (!mRecorder) {
+    return;
+  }
+
   mRecorder->RecordEvent(aEvent);
 }
 
 already_AddRefed<gfx::DataSourceSurface> CanvasChild::GetDataSurface(
     const gfx::SourceSurface* aSurface) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aSurface);
+
+  if (!mRecorder) {
+    return nullptr;
+  }
 
   mTransactionsSinceGetDataSurface = 0;
   EnsureBeginTransaction();
@@ -205,6 +300,10 @@ already_AddRefed<gfx::DataSourceSurface> CanvasChild::GetDataSurface(
 already_AddRefed<gfx::SourceSurface> CanvasChild::WrapSurface(
     const RefPtr<gfx::SourceSurface>& aSurface) {
   MOZ_ASSERT(aSurface);
+  if (!mRecorder) {
+    return nullptr;
+  }
+
   return MakeAndAddRef<SourceSurfaceCanvasRecording>(aSurface, this, mRecorder);
 }
 

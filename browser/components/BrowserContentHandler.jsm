@@ -25,8 +25,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   SessionStartup: "resource:///modules/sessionstore/SessionStartup.jsm",
   ShellService: "resource:///modules/ShellService.jsm",
   UpdatePing: "resource://gre/modules/UpdatePing.jsm",
-  RemotePages:
-    "resource://gre/modules/remotepagemanager/RemotePageManagerParent.jsm",
 });
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -93,15 +91,7 @@ function resolveURIInternal(aCmdLine, aArgument) {
   return uri;
 }
 
-let gRemoteInstallPage = null;
-
-function getNewInstallPage() {
-  if (!gRemoteInstallPage) {
-    gRemoteInstallPage = new RemotePages(NEWINSTALL_PAGE);
-  }
-
-  return NEWINSTALL_PAGE;
-}
+let gKiosk = false;
 
 var gFirstWindow = false;
 
@@ -248,7 +238,7 @@ function openBrowserWindow(
       Ci.nsIToolkitProfileService
     );
     if (isStartup && pService.createdAlternateProfile) {
-      let url = getNewInstallPage();
+      let url = NEWINSTALL_PAGE;
       if (Array.isArray(urlOrUrlList)) {
         urlOrUrlList.unshift(url);
       } else {
@@ -363,17 +353,25 @@ async function doSearch(searchTerm, cmdLine) {
   // be handled synchronously. Then load the search URI when the
   // SearchService has loaded.
   let win = openBrowserWindow(cmdLine, gSystemPrincipal, "about:blank");
-  var engine = await Services.search.getDefault();
-  var countId = (engine.identifier || "other-" + engine.name) + ".system";
-  var count = Services.telemetry.getKeyedHistogramById("SEARCH_COUNTS");
-  count.add(countId);
-
-  var submission = engine.getSubmission(searchTerm, null, "system");
-
-  win.gBrowser.selectedBrowser.loadURI(submission.uri.spec, {
-    triggeringPrincipal: gSystemPrincipal,
-    postData: submission.postData,
+  await new Promise(resolve => {
+    Services.obs.addObserver(function observe(subject) {
+      if (subject == win) {
+        Services.obs.removeObserver(
+          observe,
+          "browser-delayed-startup-finished"
+        );
+        resolve();
+      }
+    }, "browser-delayed-startup-finished");
   });
+
+  win.BrowserSearch.loadSearchFromCommandLine(
+    searchTerm,
+    PrivateBrowsingUtils.isInTemporaryAutoStartMode ||
+      PrivateBrowsingUtils.isWindowPrivate(win),
+    gSystemPrincipal,
+    win.gBrowser.selectedBrowser.csp
+  ).catch(Cu.reportError);
 }
 
 function nsBrowserContentHandler() {
@@ -385,14 +383,17 @@ function nsBrowserContentHandler() {
 nsBrowserContentHandler.prototype = {
   /* nsISupports */
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsICommandLineHandler,
-    Ci.nsIBrowserHandler,
-    Ci.nsIContentHandler,
-    Ci.nsICommandLineValidator,
+    "nsICommandLineHandler",
+    "nsIBrowserHandler",
+    "nsIContentHandler",
+    "nsICommandLineValidator",
   ]),
 
   /* nsICommandLineHandler */
   handle: function bch_handle(cmdLine) {
+    if (cmdLine.handleFlag("kiosk", false)) {
+      gKiosk = true;
+    }
     if (cmdLine.handleFlag("browser", false)) {
       openBrowserWindow(cmdLine, gSystemPrincipal);
       cmdLine.preventDefault = true;
@@ -406,7 +407,7 @@ nsBrowserContentHandler.prototype = {
     // scripts or applications handle the situation as if Firefox was not
     // already running.
     if (cmdLine.handleFlag("remote", true)) {
-      throw Cr.NS_ERROR_ABORT;
+      throw Components.Exception("", Cr.NS_ERROR_ABORT);
     }
 
     var uriparam;
@@ -606,6 +607,7 @@ nsBrowserContentHandler.prototype = {
     info += "  --setDefaultBrowser Set this app as the default browser.\n";
     info +=
       "  --first-startup    Run post-install actions before opening a new window.\n";
+    info += "  --kiosk Start the browser in kiosk mode.\n";
     return info;
   },
 
@@ -650,7 +652,7 @@ nsBrowserContentHandler.prototype = {
             // Override the welcome page to explain why the user has a new
             // profile. nsBrowserGlue.css will be responsible for showing the
             // modal dialog.
-            overridePage = getNewInstallPage();
+            overridePage = NEWINSTALL_PAGE;
             break;
           case OVERRIDE_NEW_PROFILE:
             // New profile.
@@ -794,12 +796,20 @@ nsBrowserContentHandler.prototype = {
         try {
           var width = cmdLine.handleFlagWithParam("width", false);
           var height = cmdLine.handleFlagWithParam("height", false);
+          var left = cmdLine.handleFlagWithParam("left", false);
+          var top = cmdLine.handleFlagWithParam("top", false);
 
           if (width) {
             this.mFeatures += ",width=" + width;
           }
           if (height) {
             this.mFeatures += ",height=" + height;
+          }
+          if (left) {
+            this.mFeatures += ",left=" + left;
+          }
+          if (top) {
+            this.mFeatures += ",top=" + top;
           }
         } catch (e) {}
       }
@@ -819,6 +829,10 @@ nsBrowserContentHandler.prototype = {
     }
 
     return this.mFeatures;
+  },
+
+  get kiosk() {
+    return gKiosk;
   },
 
   /* nsIContentHandler */
@@ -860,7 +874,7 @@ nsBrowserContentHandler.prototype = {
         cmdLine.length != urlFlagIdx + 2 ||
         /firefoxurl(-[a-f0-9]+)?:/i.test(urlParam)
       ) {
-        throw Cr.NS_ERROR_ABORT;
+        throw Components.Exception("", Cr.NS_ERROR_ABORT);
       }
       var isDefault = false;
       try {
@@ -874,7 +888,7 @@ nsBrowserContentHandler.prototype = {
       if (isDefault) {
         // Firefox is already the default HTTP handler.
         // We don't have to show the instruction page.
-        throw Cr.NS_ERROR_ABORT;
+        throw Components.Exception("", Cr.NS_ERROR_ABORT);
       }
     }
   },
@@ -1039,19 +1053,6 @@ nsDefaultCommandLineHandler.prototype = {
       if (win) {
         win.close();
       }
-      // If this is a silent run where we do not open any window, we must
-      // notify shutdown so that the quit-application-granted notification
-      // will happen.  This is required in the AddonManager to properly
-      // handle shutdown blockers for Telemetry and XPIDatabase.
-      // Some command handlers open a window asynchronously, so lets give
-      // that time and then verify that a window was not opened before
-      // quiting.
-      Services.tm.idleDispatchToMainThread(() => {
-        win = Services.wm.getMostRecentWindow(null);
-        if (!win) {
-          Services.startup.quit(Services.startup.eForceQuit);
-        }
-      }, 1);
     }
   },
 

@@ -7,8 +7,8 @@
 #include "LSObject.h"
 
 #include "ActorsChild.h"
-#include "IPCBlobInputStreamThread.h"
 #include "LocalStorageCommon.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/ThreadEventQueue.h"
 #include "mozilla/dom/quota/QuotaManager.h"
@@ -18,6 +18,7 @@
 #include "nsContentUtils.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsThread.h"
+#include "RemoteLazyInputStreamThread.h"
 
 /**
  * Automatically cancel and abort synchronous LocalStorage requests (for example
@@ -63,7 +64,7 @@ class NestedEventTargetWrapper final : public nsISerialEventTarget {
       : mNestedEventTarget(aNestedEventTarget), mDisconnected(false) {}
 
  private:
-  ~NestedEventTargetWrapper() {}
+  ~NestedEventTargetWrapper() = default;
 
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -82,15 +83,16 @@ class NestedEventTargetWrapper final : public nsISerialEventTarget {
  * The normal life-cycle of this method looks like:
  * - Main Thread: LSObject::DoRequestSynchronously creates a RequestHelper and
  *   invokes StartAndReturnResponse().  It pushes the event queue and Dispatches
- *   the RequestHelper to the DOM File Thread.
- * - DOM File Thread: RequestHelper::Run is called, invoking Start() which
- *   invokes LSObject::StartRequest, which gets-or-creates the PBackground actor
- *   if necessary (which may dispatch a runnable to the nested event queue on
- *   the main thread), sends LSRequest constructor which is provided with a
- *   callback reference to the RequestHelper. State advances to ResponsePending.
- * - DOM File Thread:: LSRequestChild::Recv__delete__ is received, which invokes
- *   RequestHelepr::OnResponse, advancing the state to Finishing and dispatching
- *   RequestHelper to its own nested event target.
+ *   the RequestHelper to the RemoteLazyInputStream thread.
+ * - RemoteLazyInputStream Thread: RequestHelper::Run is called, invoking
+ *   Start() which invokes LSObject::StartRequest, which gets-or-creates the
+ *   PBackground actor if necessary (which may dispatch a runnable to the nested
+ *   event queue on the main thread), sends LSRequest constructor which is
+ *   provided with a callback reference to the RequestHelper. State advances to
+ *   ResponsePending.
+ * - RemoteLazyInputStreamThread: LSRequestChild::Recv__delete__ is received,
+ *   which invokes RequestHelepr::OnResponse, advancing the state to Finishing
+ *   and dispatching RequestHelper to its own nested event target.
  * - Main Thread: RequestHelper::Run is called, invoking Finish() which advances
  *   the state to Complete and sets mWaiting to false, allowing the nested event
  *   loop being spun by StartAndReturnResponse to cease spinning and return the
@@ -102,11 +104,12 @@ class NestedEventTargetWrapper final : public nsISerialEventTarget {
 class RequestHelper final : public Runnable, public LSRequestChildCallback {
   enum class State {
     /**
-     * The RequestHelper has been created and dispatched to the DOM File Thread.
+     * The RequestHelper has been created and dispatched to the
+     * RemoteLazyInputStream Thread.
      */
     Initial,
     /**
-     * Start() has been invoked on the DOM File Thread and
+     * Start() has been invoked on the RemoteLazyInputStream Thread and
      * LSObject::StartRequest has been invoked from there, sending an IPC
      * message to PBackground to service the request.  We stay in this state
      * until a response is received.
@@ -156,7 +159,7 @@ class RequestHelper final : public Runnable, public LSRequestChildCallback {
   RequestHelper(LSObject* aObject, const LSRequestParams& aParams)
       : Runnable("dom::RequestHelper"),
         mObject(aObject),
-        mOwningEventTarget(GetCurrentThreadEventTarget()),
+        mOwningEventTarget(GetCurrentEventTarget()),
         mActor(nullptr),
         mParams(aParams),
         mResultCode(NS_OK),
@@ -180,7 +183,7 @@ class RequestHelper final : public Runnable, public LSRequestChildCallback {
   nsresult StartAndReturnResponse(LSRequestResponse& aResponse);
 
  private:
-  ~RequestHelper() {}
+  ~RequestHelper() = default;
 
   nsresult Start();
 
@@ -216,7 +219,7 @@ void LSObject::Initialize() {
   MOZ_ASSERT(NS_IsMainThread());
 
   nsCOMPtr<nsIEventTarget> domFileThread =
-      IPCBlobInputStreamThread::GetOrCreate();
+      RemoteLazyInputStreamThread::GetOrCreate();
   if (NS_WARN_IF(!domFileThread)) {
     return;
   }
@@ -261,7 +264,7 @@ nsresult LSObject::CreateForWindow(nsPIDOMWindowInner* aWindow,
     return NS_ERROR_FAILURE;
   }
 
-  if (nsContentUtils::IsSystemPrincipal(principal)) {
+  if (principal->IsSystemPrincipal()) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
@@ -270,22 +273,23 @@ nsresult LSObject::CreateForWindow(nsPIDOMWindowInner* aWindow,
   // for the check.
   nsCString originAttrSuffix;
   nsCString originKey;
-  nsresult rv =
-      GenerateOriginKey(storagePrincipal, originAttrSuffix, originKey);
+  nsresult rv = storagePrincipal->GetStorageOriginKey(originKey);
+  storagePrincipal->OriginAttributesRef().CreateSuffix(originAttrSuffix);
+
   if (NS_FAILED(rv)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  nsAutoPtr<PrincipalInfo> principalInfo(new PrincipalInfo());
-  rv = PrincipalToPrincipalInfo(principal, principalInfo);
+  auto principalInfo = MakeUnique<PrincipalInfo>();
+  rv = PrincipalToPrincipalInfo(principal, principalInfo.get());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
   MOZ_ASSERT(principalInfo->type() == PrincipalInfo::TContentPrincipalInfo);
 
-  nsAutoPtr<PrincipalInfo> storagePrincipalInfo(new PrincipalInfo());
-  rv = PrincipalToPrincipalInfo(storagePrincipal, storagePrincipalInfo);
+  auto storagePrincipalInfo = MakeUnique<PrincipalInfo>();
+  rv = PrincipalToPrincipalInfo(storagePrincipal, storagePrincipalInfo.get());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -299,8 +303,8 @@ nsresult LSObject::CreateForWindow(nsPIDOMWindowInner* aWindow,
 
   nsCString suffix;
   nsCString origin;
-  rv = QuotaManager::GetInfoFromPrincipal(storagePrincipal, &suffix, nullptr,
-                                          &origin);
+  rv = QuotaManager::GetInfoFromPrincipal(storagePrincipal.get(), &suffix,
+                                          nullptr, &origin);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -354,14 +358,14 @@ nsresult LSObject::CreateForPrincipal(nsPIDOMWindowInner* aWindow,
 
   nsCString originAttrSuffix;
   nsCString originKey;
-  nsresult rv =
-      GenerateOriginKey(aStoragePrincipal, originAttrSuffix, originKey);
+  nsresult rv = aStoragePrincipal->GetStorageOriginKey(originKey);
+  aStoragePrincipal->OriginAttributesRef().CreateSuffix(originAttrSuffix);
   if (NS_FAILED(rv)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  nsAutoPtr<PrincipalInfo> principalInfo(new PrincipalInfo());
-  rv = PrincipalToPrincipalInfo(aPrincipal, principalInfo);
+  auto principalInfo = MakeUnique<PrincipalInfo>();
+  rv = PrincipalToPrincipalInfo(aPrincipal, principalInfo.get());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -369,8 +373,8 @@ nsresult LSObject::CreateForPrincipal(nsPIDOMWindowInner* aWindow,
   MOZ_ASSERT(principalInfo->type() == PrincipalInfo::TContentPrincipalInfo ||
              principalInfo->type() == PrincipalInfo::TSystemPrincipalInfo);
 
-  nsAutoPtr<PrincipalInfo> storagePrincipalInfo(new PrincipalInfo());
-  rv = PrincipalToPrincipalInfo(aStoragePrincipal, storagePrincipalInfo);
+  auto storagePrincipalInfo = MakeUnique<PrincipalInfo>();
+  rv = PrincipalToPrincipalInfo(aStoragePrincipal, storagePrincipalInfo.get());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -825,9 +829,9 @@ nsresult LSObject::DoRequestSynchronously(const LSRequestParams& aParams,
 
   RefPtr<RequestHelper> helper = new RequestHelper(this, aParams);
 
-  // This will start and finish the request on the DOM File thread.
+  // This will start and finish the request on the RemoteLazyInputStream thread.
   // The owning thread is synchronously blocked while the request is
-  // asynchronously processed on the DOM File thread.
+  // asynchronously processed on the RemoteLazyInputStream thread.
   nsresult rv = helper->StartAndReturnResponse(aResponse);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -894,7 +898,7 @@ nsresult LSObject::EnsureDatabase() {
   uint64_t datastoreId = prepareDatastoreResponse.datastoreId();
 
   // The datastore is now ready on the parent side (prepared by the asynchronous
-  // request on the DOM File thread).
+  // request on the RemoteLazyInputStream thread).
   // Let's create a direct connection to the datastore (through a database
   // actor) from the owning thread.
   // Note that we now can't error out, otherwise parent will keep an extra
@@ -959,7 +963,7 @@ nsresult LSObject::EnsureObserver() {
   uint64_t observerId = prepareObserverResponse.observerId();
 
   // The obsserver is now ready on the parent side (prepared by the asynchronous
-  // request on the DOM File thread).
+  // request on the RemoteLazyInputStream thread).
   // Let's create a direct connection to the observer (through an observer
   // actor) from the owning thread.
   // Note that we now can't error out, otherwise parent will keep an extra
@@ -1103,8 +1107,8 @@ nsresult RequestHelper::StartAndReturnResponse(LSRequestResponse& aResponse) {
   // Normally, we would use the standard way of blocking the thread using
   // a monitor.
   // The problem is that BackgroundChild::GetOrCreateForCurrentThread()
-  // called on the DOM File thread may dispatch a runnable to the main
-  // thread to finish initialization of PBackground. A monitor would block
+  // called on the RemoteLazyInputStream thread may dispatch a runnable to the
+  // main thread to finish initialization of PBackground. A monitor would block
   // the main thread and the runnable would never get executed causing the
   // helper to be stuck in a wait loop.
   // However, BackgroundChild::GetOrCreateForCurrentThread() supports passing
@@ -1125,8 +1129,8 @@ nsresult RequestHelper::StartAndReturnResponse(LSRequestResponse& aResponse) {
         new NestedEventTargetWrapper(mNestedEventTarget);
 
     nsCOMPtr<nsIEventTarget> domFileThread =
-        XRE_IsParentProcess() ? IPCBlobInputStreamThread::GetOrCreate()
-                              : IPCBlobInputStreamThread::Get();
+        XRE_IsParentProcess() ? RemoteLazyInputStreamThread::GetOrCreate()
+                              : RemoteLazyInputStreamThread::Get();
     if (NS_WARN_IF(!domFileThread)) {
       return NS_ERROR_FAILURE;
     }
@@ -1200,8 +1204,8 @@ nsresult RequestHelper::StartAndReturnResponse(LSRequestResponse& aResponse) {
     // We can check mWaiting here because it's only ever touched on the main
     // thread.
     if (NS_WARN_IF(mWaiting)) {
-      // Don't touch mResponse, mResultCode or mState here! The DOM File Thread
-      // may be accessing them at the same moment.
+      // Don't touch mResponse, mResultCode or mState here! The
+      // RemoteLazyInputStream Thread may be accessing them at the same moment.
 
       RefPtr<RequestHelper> self = this;
 

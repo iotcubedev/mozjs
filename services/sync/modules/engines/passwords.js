@@ -14,7 +14,7 @@ const { SCORE_INCREMENT_XLARGE } = ChromeUtils.import(
 const { CollectionValidator } = ChromeUtils.import(
   "resource://services-sync/collection_validator.js"
 );
-const { Store, SyncEngine, Tracker } = ChromeUtils.import(
+const { Store, SyncEngine, LegacyTracker } = ChromeUtils.import(
   "resource://services-sync/engines.js"
 );
 const { Svc, Utils } = ChromeUtils.import("resource://services-sync/util.js");
@@ -190,6 +190,10 @@ PasswordStore.prototype = {
       return x == undefined ? null : x;
     }
 
+    function stringifyNullUndefined(x) {
+      return x == undefined || x == null ? "" : x;
+    }
+
     if (record.formSubmitURL && record.httpRealm) {
       this._log.warn(
         "Record " +
@@ -206,7 +210,7 @@ PasswordStore.prototype = {
       record.hostname,
       nullUndefined(record.formSubmitURL),
       nullUndefined(record.httpRealm),
-      record.username,
+      stringifyNullUndefined(record.username),
       record.password,
       record.usernameField,
       record.passwordField
@@ -214,10 +218,13 @@ PasswordStore.prototype = {
 
     info.QueryInterface(Ci.nsILoginMetaInfo);
     info.guid = record.id;
-    if (record.timeCreated) {
+    if (record.timeCreated && !isNaN(new Date(record.timeCreated).getTime())) {
       info.timeCreated = record.timeCreated;
     }
-    if (record.timePasswordChanged) {
+    if (
+      record.timePasswordChanged &&
+      !isNaN(new Date(record.timePasswordChanged).getTime())
+    ) {
       info.timePasswordChanged = record.timePasswordChanged;
     }
 
@@ -356,10 +363,10 @@ PasswordStore.prototype = {
 };
 
 function PasswordTracker(name, engine) {
-  Tracker.call(this, name, engine);
+  LegacyTracker.call(this, name, engine);
 }
 PasswordTracker.prototype = {
-  __proto__: Tracker.prototype,
+  __proto__: LegacyTracker.prototype,
 
   onStart() {
     Svc.Obs.add("passwordmgr-storage-changed", this.asyncObserver);

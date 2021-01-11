@@ -9,6 +9,7 @@ import copy
 import logging
 import re
 import shlex
+import six
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,6 @@ UNITTEST_ALIASES = {
     'crashtest-e10s': alias_prefix('crashtest-e10s'),
     'e10s': alias_contains('e10s'),
     'firefox-ui-functional': alias_prefix('firefox-ui-functional'),
-    'firefox-ui-functional-e10s': alias_prefix('firefox-ui-functional-e10s'),
     'gaia-js-integration': alias_contains('gaia-js-integration'),
     'gtest': alias_prefix('gtest'),
     'jittest': alias_prefix('jittest'),
@@ -69,7 +69,6 @@ UNITTEST_ALIASES = {
     'jsreftest': alias_prefix('jsreftest'),
     'jsreftest-e10s': alias_prefix('jsreftest-e10s'),
     'marionette': alias_prefix('marionette'),
-    'marionette-e10s': alias_prefix('marionette-e10s'),
     'mochitest': alias_prefix('mochitest'),
     'mochitests': alias_prefix('mochitest'),
     'mochitest-e10s': alias_prefix('mochitest-e10s'),
@@ -99,8 +98,10 @@ UNITTEST_ALIASES = {
     'web-platform-test': alias_prefix('web-platform-tests'),
     'web-platform-tests': alias_prefix('web-platform-tests'),
     'web-platform-tests-e10s': alias_prefix('web-platform-tests-e10s'),
-    'web-platform-tests-reftests': alias_prefix('web-platform-tests-reftests'),
-    'web-platform-tests-reftests-e10s': alias_prefix('web-platform-tests-reftests-e10s'),
+    'web-platform-tests-crashtests': alias_prefix('web-platform-tests-crashtest'),
+    'web-platform-tests-print-reftest': alias_prefix('web-platform-tests-print-reftest'),
+    'web-platform-tests-reftests': alias_prefix('web-platform-tests-reftest'),
+    'web-platform-tests-reftests-e10s': alias_prefix('web-platform-tests-reftest-e10s'),
     'web-platform-tests-wdspec': alias_prefix('web-platform-tests-wdspec'),
     'web-platform-tests-wdspec-e10s': alias_prefix('web-platform-tests-wdspec-e10s'),
     'xpcshell': alias_prefix('xpcshell'),
@@ -121,32 +122,22 @@ UNITTEST_PLATFORM_PRETTY_NAMES = {
         'linux32',
         'linux64',
         'linux64-asan',
-        'linux64-stylo-sequential'
+        'linux1804-64',
+        'linux1804-64-asan'
     ],
     'x64': [
         'linux64',
         'linux64-asan',
-        'linux64-stylo-sequential'
+        'linux1804-64',
+        'linux1804-64-asan'
     ],
-    'Android 4.3 Emulator': ['android-em-4.3-arm7-api-16'],
-    'Android 4.3 Emulator PGO': ['android-em-4-3-armv7-api16-pgo'],
     'Android 7.0 Moto G5 32bit': ['android-hw-g5-7.0-arm7-api-16'],
     'Android 8.0 Google Pixel 2 32bit': ['android-hw-p2-8.0-arm7-api-16'],
     'Android 8.0 Google Pixel 2 64bit': ['android-hw-p2-8.0-android-aarch64'],
     '10.14': ['macosx1014-64'],
-    # other commonly-used substrings for platforms not yet supported with
-    # in-tree taskgraphs:
-    # '10.10.5': [..TODO..],
-    # '10.6': [..TODO..],
-    # '10.8': [..TODO..],
-    # 'Android 2.3 API9': [..TODO..],
     'Windows 7':  ['windows7-32'],
     'Windows 7 VM':  ['windows7-32-vm'],
-    'Windows 8':  ['windows8-64'],
     'Windows 10':  ['windows10-64'],
-    # 'Windows XP': [..TODO..],
-    # 'win32': [..TODO..],
-    # 'win64': [..TODO..],
 }
 
 TEST_CHUNK_SUFFIX = re.compile('(.*)-([0-9]+)$')
@@ -214,7 +205,7 @@ def parse_message(message):
     parser.add_argument('--rebuild-raptor', dest='raptor_trigger_tests', action='store',
                         type=int, default=1)
     parser.add_argument('--setenv', dest='env', action='append')
-    parser.add_argument('--geckoProfile', dest='profile', action='store_true')
+    parser.add_argument('--gecko-profile', dest='profile', action='store_true')
     parser.add_argument('--tag', dest='tag', action='store', default=None)
     parser.add_argument('--no-retry', dest='no_retry', action='store_true')
     parser.add_argument('--include-nightly', dest='include_nightly', action='store_true')
@@ -229,7 +220,17 @@ def parse_message(message):
     # In order to run test jobs multiple times
     parser.add_argument('--rebuild', dest='trigger_tests', type=int, default=1)
     args, _ = parser.parse_known_args(parts)
-    return vars(args)
+
+    try_options = vars(args)
+    try_task_config = {
+        "use-artifact-builds": try_options.pop("artifact"),
+        "gecko-profile": try_options.pop("profile"),
+        "env": dict(arg.split("=") for arg in try_options.pop("env") or [])
+    }
+    return {
+        "try_options": try_options,
+        "try_task_config": try_task_config,
+    }
 
 
 class TryOptionSyntax(object):
@@ -248,8 +249,6 @@ class TryOptionSyntax(object):
         - interactive: true if --interactive
         - notifications: either None if no notifications or one of 'all' or 'failure'
         - talos_trigger_tests: the number of time talos tests should be triggered (--rebuild-talos)
-        - env: additional environment variables (ENV=value)
-        - profile: run talos in profile mode
         - tag: restrict tests to the specified tag
         - no_retry: do not retry failed jobs
 
@@ -274,18 +273,15 @@ class TryOptionSyntax(object):
         self.notifications = None
         self.talos_trigger_tests = 0
         self.raptor_trigger_tests = 0
-        self.env = []
-        self.profile = False
         self.tag = None
         self.no_retry = False
-        self.artifact = False
 
         options = parameters['try_options']
         if not options:
             return None
         self.jobs = self.parse_jobs(options['jobs'])
         self.build_types = self.parse_build_types(options['build_types'], full_task_graph)
-        self.platforms = self.parse_platforms(options['platforms'], full_task_graph)
+        self.platforms = self.parse_platforms(options, full_task_graph)
         self.unittests = self.parse_test_option(
             "unittest_try_name", options['unittests'], full_task_graph)
         self.talos = self.parse_test_option("talos_try_name", options['talos'], full_task_graph)
@@ -295,18 +291,15 @@ class TryOptionSyntax(object):
         self.notifications = options['notifications']
         self.talos_trigger_tests = options['talos_trigger_tests']
         self.raptor_trigger_tests = options['raptor_trigger_tests']
-        self.env = options['env']
-        self.profile = options['profile']
         self.tag = options['tag']
         self.no_retry = options['no_retry']
-        self.artifact = options['artifact']
         self.include_nightly = options['include_nightly']
 
         self.test_tiers = self.generate_test_tiers(full_task_graph)
 
     def generate_test_tiers(self, full_task_graph):
         retval = defaultdict(set)
-        for t in full_task_graph.tasks.itervalues():
+        for t in six.itervalues(full_task_graph.tasks):
             if t.attributes.get('kind') == 'test':
                 try:
                     tier = t.task['extra']['treeherder']['tier']
@@ -331,11 +324,11 @@ class TryOptionSyntax(object):
         if build_types_arg is None:
             build_types_arg = []
 
-        build_types = filter(None, [BUILD_TYPE_ALIASES.get(build_type) for
-                             build_type in build_types_arg])
+        build_types = [_f for _f in (BUILD_TYPE_ALIASES.get(build_type) for
+                       build_type in build_types_arg) if _f]
 
         all_types = set(t.attributes['build_type']
-                        for t in full_task_graph.tasks.itervalues()
+                        for t in six.itervalues(full_task_graph.tasks)
                         if 'build_type' in t.attributes)
         bad_types = set(build_types) - all_types
         if bad_types:
@@ -343,27 +336,38 @@ class TryOptionSyntax(object):
 
         return build_types
 
-    def parse_platforms(self, platform_arg, full_task_graph):
+    def parse_platforms(self, options, full_task_graph):
+        platform_arg = options['platforms']
         if platform_arg == 'all':
             return None
 
         RIDEALONG_BUILDS = self.graph_config['try']['ridealong-builds']
         results = []
         for build in platform_arg.split(','):
-            results.append(build)
             if build in ('macosx64',):
-                results.append('macosx64-shippable')
-                logger.info("adding macosx64-shippable for try syntax using macosx64.")
+                # Regular opt builds are faster than shippable ones, but we don't run
+                # tests against them.
+                # We want to choose them (and only them) if no tests were requested.
+                if options['unittests'] == 'none' and options['talos'] == 'none' and \
+                  options['raptor'] == 'none':
+                    results.append('macosx64')
+                    logger.info("adding macosx64 for try syntax using macosx64.")
+                # Otherwise, use _just_ the shippable builds.
+                else:
+                    results.append('macosx64-shippable')
+                    logger.info("adding macosx64-shippable for try syntax using macosx64.")
+            else:
+                results.append(build)
             if build in RIDEALONG_BUILDS:
                 results.extend(RIDEALONG_BUILDS[build])
                 logger.info("platform %s triggers ridealong builds %s" %
                             (build, ', '.join(RIDEALONG_BUILDS[build])))
 
         test_platforms = set(t.attributes['test_platform']
-                             for t in full_task_graph.tasks.itervalues()
+                             for t in six.itervalues(full_task_graph.tasks)
                              if 'test_platform' in t.attributes)
         build_platforms = set(t.attributes['build_platform']
-                              for t in full_task_graph.tasks.itervalues()
+                              for t in six.itervalues(full_task_graph.tasks)
                               if 'build_platform' in t.attributes)
         all_platforms = test_platforms | build_platforms
         bad_platforms = set(results) - all_platforms
@@ -389,7 +393,7 @@ class TryOptionSyntax(object):
             return []
 
         all_platforms = set(t.attributes['test_platform'].split('/')[0]
-                            for t in full_task_graph.tasks.itervalues()
+                            for t in six.itervalues(full_task_graph.tasks)
                             if 'test_platform' in t.attributes)
 
         tests = self.parse_test_opts(test_arg, all_platforms)
@@ -398,7 +402,7 @@ class TryOptionSyntax(object):
             return []
 
         all_tests = set(t.attributes[attr_name]
-                        for t in full_task_graph.tasks.itervalues()
+                        for t in six.itervalues(full_task_graph.tasks)
                         if attr_name in t.attributes)
 
         # Special case where tests is 'all' and must be expanded
@@ -550,12 +554,15 @@ class TryOptionSyntax(object):
                 results.extend(self.handle_alias(test, all_tests))
 
         # uniquify the results over the test names
-        results = {test['test']: test for test in results}.values()
+        results = sorted(
+            {test["test"]: test for test in results}.values(),
+            key=lambda test: test["test"],
+        )
         return results
 
     def find_all_attribute_suffixes(self, graph, prefix):
         rv = set()
-        for t in graph.tasks.itervalues():
+        for t in six.itervalues(graph.tasks):
             for a in t.attributes:
                 if a.startswith(prefix):
                     rv.add(a[len(prefix):])
@@ -565,21 +572,7 @@ class TryOptionSyntax(object):
         attr = task.attributes.get
 
         def check_run_on_projects():
-            if attr('nightly') and not self.include_nightly:
-                return False
-            return set(['try', 'all']) & set(attr('run_on_projects', []))
-
-        # Don't schedule code coverage when try option syntax is used
-        if 'ccov' in attr('build_platform', []):
-            return False
-
-        # Don't schedule tasks for windows10-aarch64 unless try fuzzy is used
-        if 'windows10-aarch64' in attr("test_platform", ""):
-            return False
-
-        # Don't schedule android-hw tests when try option syntax is used
-        if 'android-hw' in task.label:
-            return False
+            return {'all'} & set(attr('run_on_projects', []))
 
         # Don't schedule fission tests when try option syntax is used
         if attr('unittest_variant') == 'fission':
@@ -692,9 +685,6 @@ class TryOptionSyntax(object):
             "notifications: " + str(self.notifications),
             "talos_trigger_tests: " + str(self.talos_trigger_tests),
             "raptor_trigger_tests: " + str(self.raptor_trigger_tests),
-            "env: " + str(self.env),
-            "profile: " + str(self.profile),
             "tag: " + str(self.tag),
             "no_retry: " + str(self.no_retry),
-            "artifact: " + str(self.artifact),
         ])

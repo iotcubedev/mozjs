@@ -269,7 +269,7 @@ var State = {
    */
   async update() {
     // If the buffer is empty, add one value for bootstraping purposes.
-    if (this._buffer.length == 0) {
+    if (!this._buffer.length) {
       this._latest = await this._promiseSnapshot();
       this._buffer.push(this._latest);
       await wait(BUFFER_SAMPLING_RATE_MS * 1.1);
@@ -316,7 +316,7 @@ var State = {
       classifier.asyncClassifyLocalWithFeatures(
         uri,
         [feature],
-        Ci.nsIUrlClassifierFeature.blacklist,
+        Ci.nsIUrlClassifierFeature.blocklist,
         list => {
           if (list.length) {
             this._trackingState.set(host, true);
@@ -373,7 +373,7 @@ var State = {
           continue;
         }
         name = `${addon.name} (${addon.id})`;
-        image = "chrome://mozapps/skin/extensions/extensionGeneric-16.svg";
+        image = "chrome://mozapps/skin/extensions/extension.svg";
         type = gSystemAddonIds.has(addon.id) ? "system-addon" : "addon";
       } else if (id == 0 && !tab.isWorker) {
         name = { id: "ghost-windows" };
@@ -585,10 +585,8 @@ var View = {
     row.appendChild(elt);
 
     elt = document.createElement("td");
-    if (type == "system-addon") {
-      type = "addon";
-    }
-    document.l10n.setAttributes(elt, "type-" + type);
+    let typeLabelType = type == "system-addon" ? "addon" : type;
+    document.l10n.setAttributes(elt, "type-" + typeLabelType);
     row.appendChild(elt);
 
     elt = document.createElement("td");
@@ -692,7 +690,8 @@ var Control = {
       if (target.classList.contains("addon-icon")) {
         let row = target.parentNode.parentNode;
         let id = row.windowId;
-        let parentWin = window.docShell.rootTreeItem.domWindow;
+        let parentWin =
+          window.docShell.browsingContext.embedderElement.ownerGlobal;
         parentWin.BrowserOpenAddonsMgr(
           "addons://detail/" + encodeURIComponent(id)
         );

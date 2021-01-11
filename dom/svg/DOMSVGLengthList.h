@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGLENGTHLIST_H__
-#define MOZILLA_DOMSVGLENGTHLIST_H__
+#ifndef DOM_SVG_DOMSVGLENGTHLIST_H_
+#define DOM_SVG_DOMSVGLENGTHLIST_H_
 
 #include "DOMSVGAnimatedLengthList.h"
 #include "nsCycleCollectionParticipant.h"
@@ -14,6 +14,7 @@
 #include "SVGLengthList.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/Unused.h"
 
 namespace mozilla {
 
@@ -120,6 +121,8 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
                                             ErrorResult& error) {
     return InsertItemBefore(newItem, LengthNoFlush(), error);
   }
+  void IndexedSetter(uint32_t index, DOMSVGLength& newValue,
+                     ErrorResult& error);
   uint32_t Length() const { return NumberOfItems(); }
 
  private:
@@ -162,4 +165,4 @@ class DOMSVGLengthList final : public nsISupports, public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGLENGTHLIST_H__
+#endif  // DOM_SVG_DOMSVGLENGTHLIST_H_

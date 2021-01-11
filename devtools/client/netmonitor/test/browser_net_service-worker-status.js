@@ -13,7 +13,10 @@ const URL = EXAMPLE_URL.replace("http:", "https:");
 const TEST_URL = URL + "service-workers/status-codes.html";
 
 add_task(async function() {
-  const { tab, monitor } = await initNetMonitor(TEST_URL, true);
+  const { tab, monitor } = await initNetMonitor(TEST_URL, {
+    enableCache: true,
+    requestCount: 1,
+  });
   info("Starting test... ");
 
   const { document, store, windowRequire, connector } = monitor.panelWin;
@@ -40,7 +43,7 @@ add_task(async function() {
   ];
 
   info("Registering the service worker...");
-  await ContentTask.spawn(tab.linkedBrowser, {}, async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     await content.wrappedJSObject.registerServiceWorker();
   });
 
@@ -63,11 +66,12 @@ add_task(async function() {
     const requestsListStatus = requestItem.querySelector(".status-code");
     EventUtils.sendMouseEvent({ type: "mouseover" }, requestsListStatus);
     await waitUntil(() => requestsListStatus.title);
+    await waitForDOMIfNeeded(requestItem, ".requests-list-timings-total");
   }
 
   let index = 0;
   for (const request of REQUEST_DATA) {
-    const item = getSortedRequests(store.getState()).get(index);
+    const item = getSortedRequests(store.getState())[index];
 
     info(`Verifying request #${index}`);
     await verifyRequestItemTarget(
@@ -100,7 +104,7 @@ add_task(async function() {
   }
 
   info("Unregistering the service worker...");
-  await ContentTask.spawn(tab.linkedBrowser, {}, async function() {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async function() {
     await content.wrappedJSObject.unregisterServiceWorker();
   });
 

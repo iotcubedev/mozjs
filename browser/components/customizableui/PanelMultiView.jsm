@@ -328,6 +328,19 @@ var PanelMultiView = class extends AssociatedToNode {
       panelNode.remove();
     }
   }
+  /**
+   * Returns the element with the given id.
+   * For nodes that are lazily loaded and not yet in the DOM, the node should
+   * be retrieved from the view cache template.
+   */
+  static getViewNode(doc, id) {
+    let viewCacheTemplate = doc.getElementById("appMenu-viewCache");
+
+    return (
+      doc.getElementById(id) ||
+      viewCacheTemplate.content.querySelector("#" + id)
+    );
+  }
 
   /**
    * Ensures that when the specified window is closed all the <panelmultiview>
@@ -434,7 +447,7 @@ var PanelMultiView = class extends AssociatedToNode {
     this._panel.removeEventListener("popuppositioned", this);
     this._panel.removeEventListener("popupshown", this);
     this._panel.removeEventListener("popuphidden", this);
-    this.window.removeEventListener("keydown", this, true);
+    this.document.documentElement.removeEventListener("keydown", this, true);
     this.node = this._openPopupPromise = this._openPopupCancelCallback = this._viewContainer = this._viewStack = this._transitionDetails = null;
   }
 
@@ -616,7 +629,7 @@ var PanelMultiView = class extends AssociatedToNode {
     // Node.children and Node.children is live to DOM changes like the
     // ones we're about to do, so iterate over a static copy:
     let subviews = Array.from(this._viewStack.children);
-    let viewCache = this.document.getElementById(viewCacheId);
+    let viewCache = this.document.getElementById("appMenu-viewCache");
     for (let subview of subviews) {
       viewCache.appendChild(subview);
     }
@@ -649,7 +662,7 @@ var PanelMultiView = class extends AssociatedToNode {
   async _showSubView(viewIdOrNode, anchor) {
     let viewNode =
       typeof viewIdOrNode == "string"
-        ? this.document.getElementById(viewIdOrNode)
+        ? PanelMultiView.getViewNode(this.document, viewIdOrNode)
         : viewIdOrNode;
     if (!viewNode) {
       Cu.reportError(new Error(`Subview ${viewIdOrNode} doesn't exist.`));
@@ -952,6 +965,10 @@ var PanelMultiView = class extends AssociatedToNode {
         });
       }
       await nextPanelView.descriptionHeightWorkaround();
+      // Bail out if the panel was closed in the meantime.
+      if (!nextPanelView.isOpenIn(this)) {
+        return;
+      }
     } else {
       this._offscreenViewStack.style.minHeight = olderView.knownHeight + "px";
       this._offscreenViewStack.appendChild(viewNode);
@@ -1195,14 +1212,14 @@ var PanelMultiView = class extends AssociatedToNode {
       case "popupshowing": {
         this._viewContainer.setAttribute("panelopen", "true");
         if (!this.node.hasAttribute("disablekeynav")) {
-          // We add the keydown handler on the window so that it handles key
+          // We add the keydown handler on the root so that it handles key
           // presses when a panel appears but doesn't get focus, as happens
           // when a button to open a panel is clicked with the mouse.
           // However, this means the listener is on an ancestor of the panel,
           // which means that handlers such as ToolbarKeyboardNavigator are
           // deeper in the tree. Therefore, this must be a capturing listener
           // so we get the event first.
-          this.window.addEventListener("keydown", this, true);
+          this.document.documentElement.addEventListener("keydown", this, true);
           this._panel.addEventListener("mousemove", this);
         }
         break;
@@ -1231,7 +1248,11 @@ var PanelMultiView = class extends AssociatedToNode {
         this._transitioning = false;
         this._viewContainer.removeAttribute("panelopen");
         this._cleanupTransitionPhase();
-        this.window.removeEventListener("keydown", this, true);
+        this.document.documentElement.removeEventListener(
+          "keydown",
+          this,
+          true
+        );
         this._panel.removeEventListener("mousemove", this);
         this.closeAllViews();
 
@@ -1511,7 +1532,7 @@ var PanelView = class extends AssociatedToNode {
     let tag = element.localName;
     return (
       tag == "menulist" ||
-      tag == "textbox" ||
+      tag == "radiogroup" ||
       tag == "input" ||
       tag == "textarea" ||
       // Allow tab to reach embedded documents.
@@ -1727,8 +1748,8 @@ var PanelView = class extends AssociatedToNode {
     };
 
     // If a context menu is open, we must let it handle all keys.
-    // Normally, this just happens, but because we have a capturing window
-    // keydown listener, our listener takes precedence.
+    // Normally, this just happens, but because we have a capturing root
+    // element keydown listener, our listener takes precedence.
     // Again, we only want to do this check on demand for performance.
     let isContextMenuOpen = () => {
       if (!focus) {
@@ -1822,7 +1843,24 @@ var PanelView = class extends AssociatedToNode {
         // closes the menu. However, in some cases (e.g. the Library button),
         // there is no command event handler and the mousedown event executes the
         // action instead.
-        button.doCommand();
+        let commandEvent = event.target.ownerDocument.createEvent(
+          "xulcommandevent"
+        );
+        commandEvent.initCommandEvent(
+          "command",
+          true,
+          true,
+          event.target.ownerGlobal,
+          0,
+          event.ctrlKey,
+          event.altKey,
+          event.shiftKey,
+          event.metaKey,
+          null,
+          0
+        );
+        button.dispatchEvent(commandEvent);
+
         let dispEvent = new event.target.ownerGlobal.MouseEvent("mousedown", {
           bubbles: true,
         });
@@ -1846,8 +1884,8 @@ var PanelView = class extends AssociatedToNode {
   focusSelectedElement(byKey = false) {
     let selected = this.selectedElement;
     if (selected) {
-      let flag = byKey ? "FLAG_BYKEY" : "FLAG_BYELEMENTFOCUS";
-      Services.focus.setFocus(selected, Services.focus[flag]);
+      let flag = byKey ? Services.focus.FLAG_BYKEY : 0;
+      Services.focus.setFocus(selected, flag);
     }
   }
 

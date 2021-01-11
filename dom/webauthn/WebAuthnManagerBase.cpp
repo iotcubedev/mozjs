@@ -13,8 +13,8 @@
 namespace mozilla {
 namespace dom {
 
-NS_NAMED_LITERAL_STRING(kDeactivateEvent, "deactivate");
-NS_NAMED_LITERAL_STRING(kVisibilityChange, "visibilitychange");
+constexpr auto kDeactivateEvent = u"deactivate"_ns;
+constexpr auto kVisibilityChange = u"visibilitychange"_ns;
 
 WebAuthnManagerBase::WebAuthnManagerBase(nsPIDOMWindowInner* aParent)
     : mParent(aParent) {
@@ -59,7 +59,7 @@ bool WebAuthnManagerBase::MaybeCreateBackgroundActor() {
   }
 
   MOZ_ASSERT(constructedMgr == mgr);
-  mChild = mgr.forget();
+  mChild = std::move(mgr);
 
   return true;
 }

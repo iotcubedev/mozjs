@@ -7,19 +7,24 @@ const Services = require("Services");
 
 const {
   ENABLE,
-  DISABLE,
   RESET,
   UPDATE_CAN_BE_DISABLED,
   UPDATE_CAN_BE_ENABLED,
   UPDATE_PREF,
   PREF_KEYS,
-} = require("../constants");
+} = require("devtools/client/accessibility/constants");
 
 /**
  * Reset accessibility panel UI.
  */
-exports.reset = (accessibility, supports) => dispatch =>
-  dispatch({ accessibility, supports, type: RESET });
+exports.reset = (resetAccessiblity, supports) => async dispatch => {
+  try {
+    const { enabled, canBeDisabled, canBeEnabled } = await resetAccessiblity();
+    dispatch({ enabled, canBeDisabled, canBeEnabled, supports, type: RESET });
+  } catch (error) {
+    dispatch({ type: RESET, error });
+  }
+};
 
 /**
  * Update a "canBeDisabled" flag for accessibility service.
@@ -41,17 +46,11 @@ exports.updatePref = (name, value) => dispatch => {
 /**
  * Enable accessibility services in order to view accessible tree.
  */
-exports.enable = accessibility => dispatch =>
-  accessibility
-    .enable()
-    .then(() => dispatch({ type: ENABLE }))
-    .catch(error => dispatch({ error, type: ENABLE }));
-
-/**
- * Enable accessibility services in order to view accessible tree.
- */
-exports.disable = accessibility => dispatch =>
-  accessibility
-    .disable()
-    .then(() => dispatch({ type: DISABLE }))
-    .catch(error => dispatch({ type: DISABLE, error }));
+exports.enable = enableAccessibility => async dispatch => {
+  try {
+    await enableAccessibility();
+    dispatch({ type: ENABLE });
+  } catch (error) {
+    dispatch({ error, type: ENABLE });
+  }
+};

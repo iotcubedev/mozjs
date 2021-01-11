@@ -8,7 +8,7 @@ function URI(str) {
 }
 
 add_task(async function test_setup_preexisting_permissions() {
-  // Pre-existing ALLOW permissions that should be overriden
+  // Pre-existing ALLOW permissions that should be overridden
   // with DENY.
 
   // No ALLOW -> DENY override for popup and install permissions,
@@ -38,8 +38,20 @@ add_task(async function test_setup_preexisting_permissions() {
     Ci.nsIPermissionManager.ALLOW_ACTION,
     Ci.nsIPermissionManager.EXPIRE_SESSION
   );
+  PermissionTestUtils.add(
+    "https://www.pre-existing-allow.com",
+    "autoplay-media",
+    Ci.nsIPermissionManager.ALLOW_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+  PermissionTestUtils.add(
+    "https://www.pre-existing-allow.com",
+    "xr",
+    Ci.nsIPermissionManager.ALLOW_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
 
-  // Pre-existing DENY permissions that should be overriden
+  // Pre-existing DENY permissions that should be overridden
   // with ALLOW.
 
   PermissionTestUtils.add(
@@ -66,6 +78,18 @@ add_task(async function test_setup_preexisting_permissions() {
     Ci.nsIPermissionManager.DENY_ACTION,
     Ci.nsIPermissionManager.EXPIRE_SESSION
   );
+  PermissionTestUtils.add(
+    "https://www.pre-existing-deny.com",
+    "autoplay-media",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+  PermissionTestUtils.add(
+    "https://www.pre-existing-deny.com",
+    "xr",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
 });
 
 add_task(async function test_setup_activate_policies() {
@@ -85,6 +109,14 @@ add_task(async function test_setup_activate_policies() {
           Block: ["https://www.deny.com", "https://www.pre-existing-allow.com"],
         },
         Notifications: {
+          Allow: ["https://www.allow.com", "https://www.pre-existing-deny.com"],
+          Block: ["https://www.deny.com", "https://www.pre-existing-allow.com"],
+        },
+        Autoplay: {
+          Allow: ["https://www.allow.com", "https://www.pre-existing-deny.com"],
+          Block: ["https://www.deny.com", "https://www.pre-existing-allow.com"],
+        },
+        VirtualReality: {
           Allow: ["https://www.allow.com", "https://www.pre-existing-deny.com"],
           Block: ["https://www.deny.com", "https://www.pre-existing-allow.com"],
         },
@@ -150,6 +182,14 @@ add_task(async function test_notifications_policy() {
   checkAllPermissionsForType("desktop-notification");
 });
 
+add_task(async function test_autoplay_policy() {
+  checkAllPermissionsForType("autoplay-media");
+});
+
+add_task(async function test_xr_policy() {
+  checkAllPermissionsForType("xr");
+});
+
 add_task(async function test_change_permission() {
   // Checks that changing a permission will still retain the
   // value set through the engine.
@@ -177,11 +217,25 @@ add_task(async function test_change_permission() {
     Ci.nsIPermissionManager.DENY_ACTION,
     Ci.nsIPermissionManager.EXPIRE_SESSION
   );
+  PermissionTestUtils.add(
+    "https://www.allow.com",
+    "autoplay-media",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+  PermissionTestUtils.add(
+    "https://www.allow.com",
+    "xr",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
 
   checkPermission("allow.com", "ALLOW", "camera");
   checkPermission("allow.com", "ALLOW", "microphone");
   checkPermission("allow.com", "ALLOW", "geo");
   checkPermission("allow.com", "ALLOW", "desktop-notification");
+  checkPermission("allow.com", "ALLOW", "autoplay-media");
+  checkPermission("allow.com", "ALLOW", "xr");
 
   // Also change one un-managed permission to make sure it doesn't
   // cause any problems to the policy engine or the permission manager.
@@ -208,5 +262,55 @@ add_task(async function test_change_permission() {
     "desktop-notification",
     Ci.nsIPermissionManager.DENY_ACTION,
     Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+  PermissionTestUtils.add(
+    "https://www.unmanaged.com",
+    "autoplay-media",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+  PermissionTestUtils.add(
+    "https://www.unmanaged.com",
+    "xr",
+    Ci.nsIPermissionManager.DENY_ACTION,
+    Ci.nsIPermissionManager.EXPIRE_SESSION
+  );
+});
+
+add_task(async function test_setup_trackingprotection() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      EnableTrackingProtection: {
+        Exceptions: ["https://www.allow.com"],
+      },
+    },
+  });
+  equal(
+    Services.policies.status,
+    Ci.nsIEnterprisePolicies.ACTIVE,
+    "Engine is active"
+  );
+});
+
+add_task(async function test_trackingprotection() {
+  checkPermission("allow.com", "ALLOW", "trackingprotection");
+});
+
+// This seems a little out of place, but it's really a cookie
+// permission, not cookies per say.
+add_task(async function test_cookie_allow_session() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      Cookies: {
+        AllowSession: ["https://allowsession.example.com"],
+      },
+    },
+  });
+  equal(
+    PermissionTestUtils.testPermission(
+      URI("https://allowsession.example.com"),
+      "cookie"
+    ),
+    Ci.nsICookiePermission.ACCESS_SESSION
   );
 });

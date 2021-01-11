@@ -10,7 +10,6 @@
 #  include "mozilla/Span.h"
 
 #  include <stdint.h>
-#  define VPX_DONT_DEFINE_STDINT_TYPES
 #  include "mozilla/gfx/Types.h"
 #  include "vpx/vp8dx.h"
 #  include "vpx/vpx_codec.h"
@@ -31,7 +30,7 @@ class VPXDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("libvpx video decoder");
+    return "libvpx video decoder"_ns;
   }
 
   enum Codec : uint8_t {

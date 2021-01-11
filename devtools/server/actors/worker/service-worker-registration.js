@@ -4,7 +4,6 @@
 
 "use strict";
 
-const { Ci } = require("chrome");
 const ChromeUtils = require("ChromeUtils");
 const Services = require("Services");
 const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.jsm");
@@ -41,7 +40,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
   {
     /**
      * Create the ServiceWorkerRegistrationActor
-     * @param DebuggerServerConnection conn
+     * @param DevToolsServerConnection conn
      *   The server connection.
      * @param ServiceWorkerRegistrationInfo registration
      *   The registration's information.
@@ -51,6 +50,11 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
       this._conn = conn;
       this._registration = registration;
       this._pushSubscriptionActor = null;
+
+      // A flag to know if preventShutdown has been called and we should
+      // try to allow the shutdown of the SW when the actor is destroyed
+      this._preventedShutdown = false;
+
       this._registration.addListener(this);
 
       this._createServiceWorkerActors();
@@ -66,36 +70,46 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
 
     form() {
       const registration = this._registration;
+      const evaluatingWorker = this._evaluatingWorker.form();
       const installingWorker = this._installingWorker.form();
       const waitingWorker = this._waitingWorker.form();
       const activeWorker = this._activeWorker.form();
 
-      const newestWorker = activeWorker || waitingWorker || installingWorker;
+      const newestWorker =
+        activeWorker || waitingWorker || installingWorker || evaluatingWorker;
 
-      const isParentInterceptEnabled = swm.isParentInterceptEnabled();
       const isMultiE10sWithOldImplementation =
         Services.appinfo.browserTabsRemoteAutostart &&
-        !isParentInterceptEnabled;
+        !swm.isParentInterceptEnabled();
       return {
         actor: this.actorID,
         scope: registration.scope,
         url: registration.scriptSpec,
+        evaluatingWorker,
         installingWorker,
         waitingWorker,
         activeWorker,
-        fetch: newestWorker && newestWorker.fetch,
+        fetch: newestWorker?.fetch,
         // - In old multi e10s: only active registrations are available.
         // - In non-e10s or new implementaion: check if we have an active worker
         active: isMultiE10sWithOldImplementation ? true : !!activeWorker,
         lastUpdateTime: registration.lastUpdateTime,
-        traits: {
-          isParentInterceptEnabled,
-        },
+        traits: {},
       };
     },
 
     destroy() {
       protocol.Actor.prototype.destroy.call(this);
+
+      // Ensure resuming the service worker in case the connection drops
+      if (
+        swm.isParentInterceptEnabled() &&
+        this._registration.activeWorker &&
+        this._preventedShutdown
+      ) {
+        this.allowShutdown();
+      }
+
       Services.obs.removeObserver(this, PushService.subscriptionModifiedTopic);
       this._registration.removeListener(this);
       this._registration = null;
@@ -106,6 +120,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
 
       this._destroyServiceWorkerActors();
 
+      this._evaluatingWorker = null;
       this._installingWorker = null;
       this._waitingWorker = null;
       this._activeWorker = null;
@@ -185,7 +200,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
           console.error("Failed to unregister the service worker for " + scope);
         },
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIServiceWorkerUnregisterCallback,
+          "nsIServiceWorkerUnregisterCallback",
         ]),
       };
       swm.propagateUnregister(principal, unregisterCallback, scope);
@@ -213,7 +228,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
      */
     preventShutdown() {
       if (!swm.isParentInterceptEnabled()) {
-        // In non parent-intercept mode, this is handled by the WorkerTargetFront attach().
+        // In non parent-intercept mode, this is handled by the WorkerTargetActor attach().
         throw new Error(
           "ServiceWorkerRegistrationActor.preventShutdown can only be used " +
             "in parent-intercept mode"
@@ -229,6 +244,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
 
       // attachDebugger has to be called from the parent process in parent-intercept mode.
       this._registration.activeWorker.attachDebugger();
+      this._preventedShutdown = true;
     },
 
     /**
@@ -236,7 +252,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
      */
     allowShutdown() {
       if (!swm.isParentInterceptEnabled()) {
-        // In non parent-intercept mode, this is handled by the WorkerTargetFront detach().
+        // In non parent-intercept mode, this is handled by the WorkerTargetActor detach().
         throw new Error(
           "ServiceWorkerRegistrationActor.allowShutdown can only be used " +
             "in parent-intercept mode"
@@ -251,6 +267,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
       }
 
       this._registration.activeWorker.detachDebugger();
+      this._preventedShutdown = false;
     },
 
     getPushSubscription() {
@@ -280,6 +297,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
     },
 
     _destroyServiceWorkerActors() {
+      this._evaluatingWorker.destroy();
       this._installingWorker.destroy();
       this._waitingWorker.destroy();
       this._activeWorker.destroy();
@@ -287,11 +305,16 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
 
     _createServiceWorkerActors() {
       const {
+        evaluatingWorker,
         installingWorker,
         waitingWorker,
         activeWorker,
       } = this._registration;
 
+      this._evaluatingWorker = new ServiceWorkerActor(
+        this._conn,
+        evaluatingWorker
+      );
       this._installingWorker = new ServiceWorkerActor(
         this._conn,
         installingWorker
@@ -301,6 +324,7 @@ const ServiceWorkerRegistrationActor = protocol.ActorClassWithSpec(
 
       // Add the ServiceWorker actors as children of this ServiceWorkerRegistration actor,
       // assigning them valid actorIDs.
+      this.manage(this._evaluatingWorker);
       this.manage(this._installingWorker);
       this.manage(this._waitingWorker);
       this.manage(this._activeWorker);

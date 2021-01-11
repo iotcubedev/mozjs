@@ -16,13 +16,7 @@ job-defaults:
     description: Release Promotion version bump/tag
     run-on-projects: []
     shipping-phase: ship
-    worker-type:
-        by-project:
-            mozilla-(beta|release|esr.*): scriptworker-prov-v1/treescript-v1
-            maple: scriptworker-prov-v1/treescript-v1
-            birch: scriptworker-prov-v1/treescript-v1
-            jamun: scriptworker-prov-v1/treescript-v1
-            default: scriptworker-prov-v1/treescript-dev
+    worker-type: tree
     worker:
         implementation: treescript
         dontbuild: true
@@ -35,7 +29,7 @@ job-defaults:
                     - "browser/config/version.txt"
                     - "browser/config/version_display.txt"
                     - "config/milestone.txt"
-                jamun:
+                maple:
                     - "browser/config/version.txt"
                     - "browser/config/version_display.txt"
                     - "config/milestone.txt"
@@ -43,19 +37,23 @@ job-defaults:
             by-project:
                 mozilla-(beta|release|esr.*): true
                 maple: true
-                birch: true
-                jamun: true
                 default: false
 
 jobs:
-    fennec:
-        name: fennec-version-bump
-        shipping-product: fennec
-
     firefox:
         name: firefox-version-bump
         shipping-product: firefox
+        treeherder:
+            platform: firefox-release/opt
+            symbol: Rel(VerBump)
+            tier: 1
+            kind: build
 
     devedition:
         name: devedition-version-bump
         shipping-product: devedition
+        treeherder:
+            platform: devedition-release/opt
+            symbol: Rel(VerBump)
+            tier: 1
+            kind: build

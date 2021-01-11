@@ -4,38 +4,67 @@
 
 // @flow
 
-import { differenceBy } from "lodash";
+import type { Target } from "../client/firefox/types";
 import type { Action, ThunkArgs } from "./types";
-import type { ThreadType } from "../types";
 import { removeSourceActors } from "./source-actors";
+import { newGeneratedSources } from "./sources";
+import { validateContext } from "../utils/context";
 
-import { getContext, getThreads, getSourceActorsForThread } from "../selectors";
+import { getContext, getThread, getSourceActorsForThread } from "../selectors";
 
-export function updateThreads(type: ?ThreadType) {
-  return async function({ dispatch, getState, client }: ThunkArgs) {
+export function addTarget(targetFront: Target) {
+  return async function(args: ThunkArgs) {
+    const { client, getState, dispatch } = args;
     const cx = getContext(getState());
-    const threads = await client.fetchThreads(type);
+    const thread = await client.attachThread(targetFront);
+    validateContext(getState(), cx);
 
-    const currentThreads = getThreads(getState());
+    dispatch(({ type: "INSERT_THREAD", cx, newThread: thread }: Action));
 
-    const addedThreads = differenceBy(threads, currentThreads, t => t.actor);
-    const removedThreads = differenceBy(currentThreads, threads, t => t.actor);
-    if (removedThreads.length > 0) {
-      const sourceActors = getSourceActorsForThread(
-        getState(),
-        removedThreads.map(t => t.actor)
-      );
-      dispatch(removeSourceActors(sourceActors));
-      dispatch(
-        ({
-          type: "REMOVE_THREADS",
-          cx,
-          threads: removedThreads.map(t => t.actor),
-        }: Action)
-      );
+    // Fetch the sources and install breakpoints on any new workers.
+    try {
+      const sources = await client.fetchThreadSources(thread.actor);
+      validateContext(getState(), cx);
+
+      await dispatch(newGeneratedSources(sources));
+    } catch (e) {
+      // NOTE: This fails quietly because it is pretty easy for sources to
+      // throw during the fetch if their thread shuts down,
+      // which would cause test failures.
+      console.error(e);
     }
-    if (addedThreads.length > 0) {
-      dispatch(({ type: "INSERT_THREADS", cx, threads: addedThreads }: Action));
+  };
+}
+
+export function removeTarget(targetFront: Target) {
+  return async function(args: ThunkArgs) {
+    const { getState, client, dispatch } = args;
+    const cx = getContext(getState());
+    const thread = getThread(getState(), targetFront.targetForm.threadActor);
+
+    if (!thread) {
+      return;
     }
+
+    client.removeThread(thread);
+    const sourceActors = getSourceActorsForThread(getState(), thread.actor);
+    dispatch(removeSourceActors(sourceActors));
+    dispatch(
+      ({
+        type: "REMOVE_THREAD",
+        cx,
+        oldThread: thread,
+      }: Action)
+    );
+  };
+}
+
+export function toggleJavaScriptEnabled(enabled: Boolean) {
+  return async ({ panel, dispatch, client }: ThunkArgs) => {
+    await client.toggleJavaScriptEnabled(enabled);
+    dispatch({
+      type: "TOGGLE_JAVASCRIPT_ENABLED",
+      value: enabled,
+    });
   };
 }

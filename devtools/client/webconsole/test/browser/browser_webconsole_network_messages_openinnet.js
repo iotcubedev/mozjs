@@ -10,19 +10,28 @@ const TEST_URI =
 const TEST_FILE = "test-network-request.html";
 const JSON_TEST_URL = "test-network-request.html";
 const TEST_PATH =
-  "http://example.com/browser/devtools/client/webconsole/" + "test/browser/";
+  "http://example.com/browser/devtools/client/webconsole/test/browser/";
 
 const NET_PREF = "devtools.webconsole.filter.net";
 const XHR_PREF = "devtools.webconsole.filter.netxhr";
 
 Services.prefs.setBoolPref(NET_PREF, true);
 Services.prefs.setBoolPref(XHR_PREF, true);
-registerCleanupFunction(() => {
+
+registerCleanupFunction(async () => {
   Services.prefs.clearUserPref(NET_PREF);
   Services.prefs.clearUserPref(XHR_PREF);
+
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      resolve()
+    );
+  });
 });
 
 add_task(async function task() {
+  await pushPref("devtools.target-switching.enabled", true);
+
   const hud = await openNewTabAndConsole(TEST_URI);
 
   const currentTab = gBrowser.selectedTab;
@@ -30,7 +39,7 @@ add_task(async function task() {
   const toolbox = gDevTools.getToolbox(target);
 
   const documentUrl = TEST_PATH + TEST_FILE;
-  await loadDocument(documentUrl);
+  await navigateTo(documentUrl);
   info("Document loaded.");
 
   await openMessageInNetmonitor(toolbox, hud, documentUrl);
@@ -55,8 +64,9 @@ add_task(async function task() {
   info("console panel open again.");
 
   // Fire an XHR request.
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
-    content.wrappedJSObject.testXhrGet();
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
+    // Ensure XHR request is completed
+    await new Promise(resolve => content.wrappedJSObject.testXhrGet(resolve));
   });
 
   const jsonUrl = TEST_PATH + JSON_TEST_URL;
@@ -74,6 +84,13 @@ add_task(async function task() {
   info(
     "Wait for the event timings request which do not necessarily update the UI as timings may be undefined for cached requests"
   );
+
+  // Hide the header panel to get the eventTimings
+  const { windowRequire } = netmonitor.panelWin;
+  const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
+  info("Closing the header panel");
+  await netmonitor.panelWin.store.dispatch(Actions.toggleNetworkDetails());
+
   await waitForRequestData(netmonitor.panelWin.store, ["eventTimings"], 1);
 });
 
@@ -83,7 +100,7 @@ const {
 
 function waitForRequestData(store, fields, i) {
   return waitUntil(() => {
-    const item = getSortedRequests(store.getState()).get(i);
+    const item = getSortedRequests(store.getState())[i];
     if (!item) {
       return false;
     }

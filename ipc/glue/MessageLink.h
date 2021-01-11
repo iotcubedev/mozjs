@@ -12,6 +12,7 @@
 #include "base/message_loop.h"
 
 #include "mozilla/WeakPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/ipc/Transport.h"
 
 namespace mozilla {
@@ -41,10 +42,13 @@ class MessageLink {
   explicit MessageLink(MessageChannel* aChan);
   virtual ~MessageLink();
 
+  // This is called immediately before the MessageChannel destroys its
+  // MessageLink. See the implementation in ThreadLink for details.
+  virtual void PrepareToDestroy(){};
+
   // n.b.: These methods all require that the channel monitor is
   // held when they are invoked.
-  virtual void EchoMessage(Message* msg) = 0;
-  virtual void SendMessage(Message* msg) = 0;
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) = 0;
   virtual void SendClose() = 0;
 
   virtual bool Unsound_IsClosed() const = 0;
@@ -58,7 +62,6 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   void OnCloseChannel();
   void OnChannelOpened();
   void OnTakeConnectedChannel();
-  void OnEchoMessage(Message* msg);
 
   void AssertIOThread() const {
     MOZ_ASSERT(mIOLoop == MessageLoop::current(), "not on I/O thread!");
@@ -75,7 +78,7 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   // listener as well). Once the channel is closed (either via normal shutdown
   // or a pipe error) the chain will be destroyed and the original listener
   // will again be registered.
-  void Open(Transport* aTransport, MessageLoop* aIOLoop, Side aSide);
+  void Open(UniquePtr<Transport> aTransport, MessageLoop* aIOLoop, Side aSide);
 
   // Run on the I/O thread, only when using inter-process link.
   // These methods acquire the monitor and forward to the
@@ -85,8 +88,7 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   virtual void OnChannelConnected(int32_t peer_pid) override;
   virtual void OnChannelError() override;
 
-  virtual void EchoMessage(Message* msg) override;
-  virtual void SendMessage(Message* msg) override;
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) override;
   virtual void SendClose() override;
 
   virtual bool Unsound_IsClosed() const override;
@@ -96,7 +98,7 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   void OnChannelConnectError();
 
  protected:
-  Transport* mTransport;
+  UniquePtr<Transport> mTransport;
   MessageLoop* mIOLoop;                    // thread where IO happens
   Transport::Listener* mExistingListener;  // channel's previous listener
 };
@@ -104,10 +106,11 @@ class ProcessLink : public MessageLink, public Transport::Listener {
 class ThreadLink : public MessageLink {
  public:
   ThreadLink(MessageChannel* aChan, MessageChannel* aTargetChan);
-  virtual ~ThreadLink();
+  virtual ~ThreadLink() = default;
 
-  virtual void EchoMessage(Message* msg) override;
-  virtual void SendMessage(Message* msg) override;
+  virtual void PrepareToDestroy() override;
+
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) override;
   virtual void SendClose() override;
 
   virtual bool Unsound_IsClosed() const override;

@@ -24,8 +24,7 @@ namespace dom {
 
 class RemoteOuterWindowProxy
     : public RemoteObjectProxy<BrowsingContext,
-                               Window_Binding::sCrossOriginAttributes,
-                               Window_Binding::sCrossOriginMethods> {
+                               Window_Binding::sCrossOriginProperties> {
  public:
   typedef RemoteObjectProxy Base;
 
@@ -95,12 +94,12 @@ bool RemoteOuterWindowProxy::getOwnPropertyDescriptor(
   BrowsingContext* bc = GetBrowsingContext(aProxy);
   uint32_t index = GetArrayIndexFromId(aId);
   if (IsArrayIndex(index)) {
-    const BrowsingContext::Children& children = bc->GetChildren();
+    Span<RefPtr<BrowsingContext>> children = bc->Children();
     if (index < children.Length()) {
       return WrapResult(aCx, aProxy, children[index],
                         JSPROP_READONLY | JSPROP_ENUMERATE, aDesc);
     }
-    return ReportCrossOriginDenial(aCx, aId, NS_LITERAL_CSTRING("access"));
+    return ReportCrossOriginDenial(aCx, aId, "access"_ns);
   }
 
   bool ok = CrossOriginGetOwnPropertyHelper(aCx, aProxy, aId, aDesc);
@@ -108,13 +107,19 @@ bool RemoteOuterWindowProxy::getOwnPropertyDescriptor(
     return ok;
   }
 
+  // We don't need the "print" hack that nsOuterWindowProxy has, because pdf
+  // documents are placed in a process based on their principal before the PDF
+  // viewer changes principals around, so are always same-process with things
+  // that are same-origin with their original principal and won't reach this
+  // code in the cases when "print" should be accessible.
+
   if (JSID_IS_STRING(aId)) {
     nsAutoJSString str;
     if (!str.init(aCx, JSID_TO_STRING(aId))) {
       return false;
     }
 
-    for (BrowsingContext* child : bc->GetChildren()) {
+    for (BrowsingContext* child : bc->Children()) {
       if (child->NameEquals(str)) {
         return WrapResult(aCx, aProxy, child, JSPROP_READONLY, aDesc);
       }
@@ -126,7 +131,7 @@ bool RemoteOuterWindowProxy::getOwnPropertyDescriptor(
 
 bool AppendIndexedPropertyNames(JSContext* aCx, BrowsingContext* aContext,
                                 JS::MutableHandleVector<jsid> aIndexedProps) {
-  int32_t length = aContext->GetChildren().Length();
+  int32_t length = aContext->Children().Length();
   if (!aIndexedProps.reserve(aIndexedProps.length() + length)) {
     return false;
   }

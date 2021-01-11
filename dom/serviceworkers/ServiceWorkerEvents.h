@@ -7,6 +7,7 @@
 #ifndef mozilla_dom_serviceworkerevents_h__
 #define mozilla_dom_serviceworkerevents_h__
 
+#include "mozilla/Attributes.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/ExtendableEventBinding.h"
 #include "mozilla/dom/ExtendableMessageEventBinding.h"
@@ -63,20 +64,41 @@ class ExtendableEventCallback {
 class ExtendableEvent : public Event {
  public:
   class ExtensionsHandler {
+    friend class ExtendableEvent;
+
    public:
     virtual bool WaitOnPromise(Promise& aPromise) = 0;
 
     NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
+
+   protected:
+    virtual ~ExtensionsHandler();
+
+    // Also returns false if the owning ExtendableEvent is destroyed.
+    bool GetDispatchFlag() const;
+
+   private:
+    // Only the owning ExtendableEvent is allowed to set this data.
+    void SetExtendableEvent(const ExtendableEvent* const aExtendableEvent);
+
+    MOZ_NON_OWNING_REF const ExtendableEvent* mExtendableEvent = nullptr;
   };
 
  private:
   RefPtr<ExtensionsHandler> mExtensionsHandler;
 
  protected:
+  bool GetDispatchFlag() const { return mEvent->mFlags.mIsBeingDispatched; }
+
   bool WaitOnPromise(Promise& aPromise);
 
   explicit ExtendableEvent(mozilla::dom::EventTarget* aOwner);
-  ~ExtendableEvent() = default;
+
+  ~ExtendableEvent() {
+    if (mExtensionsHandler) {
+      mExtensionsHandler->SetExtendableEvent(nullptr);
+    }
+  };
 
  public:
   NS_DECL_ISUPPORTS_INHERITED
@@ -101,7 +123,7 @@ class ExtendableEvent : public Event {
 
   static already_AddRefed<ExtendableEvent> Constructor(
       const GlobalObject& aGlobal, const nsAString& aType,
-      const EventInit& aOptions, ErrorResult& aRv) {
+      const EventInit& aOptions) {
     nsCOMPtr<EventTarget> target = do_QueryInterface(aGlobal.GetAsSupports());
     return Constructor(target, aType, aOptions);
   }
@@ -122,7 +144,6 @@ class FetchEvent final : public ExtendableEvent {
   nsString mResultingClientId;
   uint32_t mPreventDefaultLineNumber;
   uint32_t mPreventDefaultColumnNumber;
-  bool mIsReload;
   bool mWaitToRespond;
 
  protected:
@@ -148,7 +169,7 @@ class FetchEvent final : public ExtendableEvent {
 
   static already_AddRefed<FetchEvent> Constructor(
       const GlobalObject& aGlobal, const nsAString& aType,
-      const FetchEventInit& aOptions, ErrorResult& aRv);
+      const FetchEventInit& aOptions);
 
   bool WaitToRespond() const { return mWaitToRespond; }
 
@@ -162,8 +183,6 @@ class FetchEvent final : public ExtendableEvent {
   void GetResultingClientId(nsAString& aResultingClientId) const {
     aResultingClientId = mResultingClientId;
   }
-
-  bool IsReload() const { return mIsReload; }
 
   void RespondWith(JSContext* aCx, Promise& aArg, ErrorResult& aRv);
 
@@ -183,7 +202,7 @@ class PushMessageData final : public nsISupports, public nsWrapperCache {
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
-  nsISupports* GetParentObject() const { return mOwner; }
+  nsIGlobalObject* GetParentObject() const { return mOwner; }
 
   void Json(JSContext* cx, JS::MutableHandle<JS::Value> aRetval,
             ErrorResult& aRv);
@@ -192,10 +211,10 @@ class PushMessageData final : public nsISupports, public nsWrapperCache {
                    ErrorResult& aRv);
   already_AddRefed<mozilla::dom::Blob> Blob(ErrorResult& aRv);
 
-  PushMessageData(nsISupports* aOwner, nsTArray<uint8_t>&& aBytes);
+  PushMessageData(nsIGlobalObject* aOwner, nsTArray<uint8_t>&& aBytes);
 
  private:
-  nsCOMPtr<nsISupports> mOwner;
+  nsCOMPtr<nsIGlobalObject> mOwner;
   nsTArray<uint8_t> mBytes;
   nsString mDecodedText;
   ~PushMessageData();
@@ -259,11 +278,11 @@ class ExtendableMessageEvent final : public ExtendableEvent {
 
   static already_AddRefed<ExtendableMessageEvent> Constructor(
       mozilla::dom::EventTarget* aOwner, const nsAString& aType,
-      const ExtendableMessageEventInit& aOptions, ErrorResult& aRv);
+      const ExtendableMessageEventInit& aOptions);
 
   static already_AddRefed<ExtendableMessageEvent> Constructor(
       const GlobalObject& aGlobal, const nsAString& aType,
-      const ExtendableMessageEventInit& aOptions, ErrorResult& aRv);
+      const ExtendableMessageEventInit& aOptions);
 
   void GetData(JSContext* aCx, JS::MutableHandle<JS::Value> aData,
                ErrorResult& aRv);

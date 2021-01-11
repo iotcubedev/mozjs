@@ -14,35 +14,16 @@ namespace net {
 
 NS_IMPL_ISUPPORTS(SimpleChannelParent, nsIParentChannel, nsIStreamListener)
 
-bool SimpleChannelParent::Init(const uint32_t& channelId) {
+bool SimpleChannelParent::Init(const uint64_t& aChannelId) {
   nsCOMPtr<nsIChannel> channel;
   MOZ_ALWAYS_SUCCEEDS(
-      NS_LinkRedirectChannels(channelId, this, getter_AddRefs(channel)));
+      NS_LinkRedirectChannels(aChannelId, this, getter_AddRefs(channel)));
 
   return true;
 }
 
 NS_IMETHODIMP
 SimpleChannelParent::SetParentListener(ParentChannelListener* aListener) {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-SimpleChannelParent::NotifyChannelClassifierProtectionDisabled(
-    uint32_t aAcceptedReason) {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-SimpleChannelParent::NotifyCookieAllowed() {
-  // Nothing to do.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-SimpleChannelParent::NotifyCookieBlocked(uint32_t aRejectedReason) {
   // Nothing to do.
   return NS_OK;
 }
@@ -80,6 +61,11 @@ NS_IMETHODIMP
 SimpleChannelParent::Delete() {
   // Nothing to do.
   return NS_OK;
+}
+
+NS_IMETHODIMP
+SimpleChannelParent::GetRemoteType(nsACString& aRemoteType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 void SimpleChannelParent::ActorDestroy(ActorDestroyReason aWhy) {}

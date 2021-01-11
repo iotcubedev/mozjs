@@ -1,38 +1,21 @@
 import { CONTENT_MESSAGE_TYPE } from "common/Actions.jsm";
-import injector from "inject!lib/ActivityStream.jsm";
+import { ActivityStream, PREFS_CONFIG } from "lib/ActivityStream.jsm";
 
 describe("ActivityStream", () => {
   let sandbox;
   let as;
-  let ActivityStream;
-  let PREFS_CONFIG;
-  function Fake() {}
   function FakeStore() {
     return { init: () => {}, uninit: () => {}, feeds: { get: () => {} } };
   }
 
   beforeEach(() => {
-    sandbox = sinon.createSandbox();
-    ({ ActivityStream, PREFS_CONFIG } = injector({
-      "lib/Store.jsm": { Store: FakeStore },
-      "lib/AboutPreferences.jsm": { AboutPreferences: Fake },
-      "lib/NewTabInit.jsm": { NewTabInit: Fake },
-      "lib/PlacesFeed.jsm": { PlacesFeed: Fake },
-      "lib/PrefsFeed.jsm": { PrefsFeed: Fake },
-      "lib/SectionsManager.jsm": { SectionsFeed: Fake },
-      "lib/SystemTickFeed.jsm": { SystemTickFeed: Fake },
-      "lib/TelemetryFeed.jsm": { TelemetryFeed: Fake },
-      "lib/FaviconFeed.jsm": { FaviconFeed: Fake },
-      "lib/TopSitesFeed.jsm": { TopSitesFeed: Fake },
-      "lib/TopStoriesFeed.jsm": { TopStoriesFeed: Fake },
-      "lib/HighlightsFeed.jsm": { HighlightsFeed: Fake },
-      "lib/ASRouterFeed.jsm": { ASRouterFeed: Fake },
-      "lib/DiscoveryStreamFeed.jsm": { DiscoveryStreamFeed: Fake },
-    }));
     as = new ActivityStream();
+    as.store = new FakeStore();
+    sandbox = sinon.createSandbox();
     sandbox.stub(as.store, "init");
     sandbox.stub(as.store, "uninit");
     sandbox.stub(as._defaultPrefs, "init");
+    PREFS_CONFIG.get("feeds.system.topstories").value = undefined;
   });
 
   afterEach(() => sandbox.restore());
@@ -68,6 +51,22 @@ describe("ActivityStream", () => {
       const [, , action] = as.store.init.firstCall.args;
       assert.equal(action.type, "UNINIT");
     });
+    it("should clear old default discoverystream config pref", () => {
+      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
+      sandbox
+        .stub(global.Services.prefs, "getStringPref")
+        .returns(
+          `{"api_key_pref":"extensions.pocket.oAuthConsumerKey","enabled":false,"show_spocs":true,"layout_endpoint":"https://getpocket.cdn.mozilla.net/v3/newtab/layout?version=1&consumer_key=$apiKey&layout_variant=basic"}`
+        );
+      sandbox.stub(global.Services.prefs, "clearUserPref");
+
+      as.init();
+
+      assert.calledWith(
+        global.Services.prefs.clearUserPref,
+        "browser.newtabpage.activity-stream.discoverystream.config"
+      );
+    });
   });
   describe("#uninit", () => {
     beforeEach(() => {
@@ -80,64 +79,84 @@ describe("ActivityStream", () => {
     it("should call .store.uninit", () => {
       assert.calledOnce(as.store.uninit);
     });
+    it("should call removeObserver", () => {
+      sandbox.stub(global.Services.obs, "removeObserver");
+      as.geo = "";
+      as.uninit();
+      assert.calledWith(
+        global.Services.obs.removeObserver,
+        as,
+        global.Region.REGION_TOPIC
+      );
+    });
+  });
+  describe("#observe", () => {
+    it("should call _updateDynamicPrefs from observe", () => {
+      sandbox.stub(as, "_updateDynamicPrefs");
+      as.observe(
+        undefined,
+        global.Region.REGION_TOPIC,
+        global.Region.REGION_UPDATED
+      );
+      assert.calledOnce(as._updateDynamicPrefs);
+    });
   });
   describe("feeds", () => {
     it("should create a NewTabInit feed", () => {
       const feed = as.feeds.get("feeds.newtabinit")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a Places feed", () => {
       const feed = as.feeds.get("feeds.places")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a TopSites feed", () => {
-      const feed = as.feeds.get("feeds.topsites")();
-      assert.instanceOf(feed, Fake);
+      const feed = as.feeds.get("feeds.system.topsites")();
+      assert.ok(feed, "feed should exist");
     });
     it("should create a Telemetry feed", () => {
       const feed = as.feeds.get("feeds.telemetry")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a Prefs feed", () => {
       const feed = as.feeds.get("feeds.prefs")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
-    it("should create a section feed for each section in PREFS_CONFIG", () => {
-      // If new sections are added, their feeds will have to be added to the
-      // list of injected feeds above for this test to pass
-      let feedCount = 0;
-      for (const pref of PREFS_CONFIG.keys()) {
-        if (pref.search(/^feeds\.section\.[^.]+$/) === 0) {
-          const feed = as.feeds.get(pref)();
-          assert.instanceOf(feed, Fake);
-          feedCount++;
-        }
-      }
-      assert.isAbove(feedCount, 0);
+    it("should create a HighlightsFeed feed", () => {
+      const feed = as.feeds.get("feeds.section.highlights")();
+      assert.ok(feed, "feed should exist");
+    });
+    it("should create a TopStoriesFeed feed", () => {
+      const feed = as.feeds.get("feeds.system.topstories")();
+      assert.ok(feed, "feed should exist");
     });
     it("should create a AboutPreferences feed", () => {
       const feed = as.feeds.get("feeds.aboutpreferences")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a SectionsFeed", () => {
       const feed = as.feeds.get("feeds.sections")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a SystemTick feed", () => {
       const feed = as.feeds.get("feeds.systemtick")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a Favicon feed", () => {
       const feed = as.feeds.get("feeds.favicon")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
     it("should create a ASRouter feed", () => {
       const feed = as.feeds.get("feeds.asrouterfeed")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
+    });
+    it("should create a RecommendationProviderSwitcher feed", () => {
+      const feed = as.feeds.get("feeds.recommendationproviderswitcher")();
+      assert.ok(feed, "feed should exist");
     });
     it("should create a DiscoveryStreamFeed feed", () => {
       const feed = as.feeds.get("feeds.discoverystreamfeed")();
-      assert.instanceOf(feed, Fake);
+      assert.ok(feed, "feed should exist");
     });
   });
   describe("_migratePref", () => {
@@ -183,58 +202,179 @@ describe("ActivityStream", () => {
       assert.calledWith(global.Services.prefs.clearUserPref, "oldPrefName");
     });
   });
-  describe("_updateDynamicPrefs topstories default value", () => {
-    it("should be false with no geo/locale", () => {
+  describe("_updateDynamicPrefs Discovery Stream", () => {
+    it("should be true with expected en-US geo and locale", () => {
+      sandbox.stub(global.Region, "home").returns("US");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-US");
+
       as._updateDynamicPrefs();
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isTrue(
+        JSON.parse(PREFS_CONFIG.get("discoverystream.config").value).enabled
+      );
+    });
+    it("should be true with expected en-CA geo and locale", () => {
+      sandbox.stub(global.Region, "home").returns("CA");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-CA");
+
+      as._updateDynamicPrefs();
+
+      assert.isTrue(
+        JSON.parse(PREFS_CONFIG.get("discoverystream.config").value).enabled
+      );
+    });
+    it("should be true with expected de geo and locale", () => {
+      sandbox.stub(global.Region, "home").returns("DE");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "de-DE");
+
+      as._updateDynamicPrefs();
+
+      assert.isTrue(
+        JSON.parse(PREFS_CONFIG.get("discoverystream.config").value).enabled
+      );
+    });
+    it("should enable spocs based on region based pref", () => {
+      const getStringPrefStub = sandbox.stub(
+        global.Services.prefs,
+        "getStringPref"
+      );
+      sandbox.stub(global.Region, "home").returns("CA");
+      getStringPrefStub
+        .withArgs(
+          "browser.newtabpage.activity-stream.discoverystream.region-spocs-config"
+        )
+        .returns("US,CA");
+
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-CA");
+
+      as._updateDynamicPrefs();
+
+      assert.isTrue(
+        JSON.parse(PREFS_CONFIG.get("discoverystream.config").value).show_spocs
+      );
+    });
+  });
+  describe("discoverystream.region-basic-layout config", () => {
+    let getStringPrefStub;
+    beforeEach(() => {
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+      sandbox.stub(global.Region, "home").get(() => "CA");
+      sandbox
+        .stub(global.Services.locale, "appLocaleAsBCP47")
+        .get(() => "en-CA");
+    });
+    it("should enable 1 row layout pref based on region layout pref", () => {
+      getStringPrefStub
+        .withArgs(
+          "browser.newtabpage.activity-stream.discoverystream.region-layout-config"
+        )
+        .returns("US");
+
+      as._updateDynamicPrefs();
+
+      assert.isTrue(
+        PREFS_CONFIG.get("discoverystream.region-basic-layout").value
+      );
+    });
+    it("should enable 7 row layout pref based on region layout pref", () => {
+      getStringPrefStub
+        .withArgs(
+          "browser.newtabpage.activity-stream.discoverystream.region-layout-config"
+        )
+        .returns("US,CA");
+
+      as._updateDynamicPrefs();
+
+      assert.isFalse(
+        PREFS_CONFIG.get("discoverystream.region-basic-layout").value
+      );
+    });
+  });
+  describe("_updateDynamicPrefs topstories default value", () => {
+    let getStringPrefStub;
+    let getBoolPrefStub;
+    let appLocaleAsBCP47Stub;
+    beforeEach(() => {
+      getStringPrefStub = sandbox.stub(global.Services.prefs, "getStringPref");
+      appLocaleAsBCP47Stub = sandbox.stub(
+        global.Services.locale,
+        "appLocaleAsBCP47"
+      );
+
+      getBoolPrefStub = sandbox.stub(global.Services.prefs, "getBoolPref");
+      getBoolPrefStub
+        .withArgs("browser.newtabpage.activity-stream.feeds.section.topstories")
+        .returns(true);
+
+      appLocaleAsBCP47Stub.get(() => "en-US");
+
+      sandbox.stub(global.Region, "home").returns("US");
+
+      getStringPrefStub
+        .withArgs(
+          "browser.newtabpage.activity-stream.discoverystream.region-stories-config"
+        )
+        .returns("US,CA");
+    });
+    it("should be false with no geo/locale", () => {
+      appLocaleAsBCP47Stub.get(() => "");
+      sandbox.stub(global.Region, "home").returns("");
+
+      as._updateDynamicPrefs();
+
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should be false with unexpected geo", () => {
-      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
-      sandbox.stub(global.Services.prefs, "getStringPref").returns("NOGEO");
+      sandbox.stub(global.Region, "home").get(() => "NOGEO");
 
       as._updateDynamicPrefs();
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should be false with expected geo and unexpected locale", () => {
-      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
-      sandbox.stub(global.Services.prefs, "getStringPref").returns("US");
-      sandbox
-        .stub(global.Services.locale, "appLocaleAsLangTag")
-        .get(() => "no-LOCALE");
+      appLocaleAsBCP47Stub.get(() => "no-LOCALE");
 
       as._updateDynamicPrefs();
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should be true with expected geo and locale", () => {
-      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
-      sandbox.stub(global.Services.prefs, "getStringPref").returns("US");
-      sandbox
-        .stub(global.Services.locale, "appLocaleAsLangTag")
-        .get(() => "en-US");
-
       as._updateDynamicPrefs();
-
-      assert.isTrue(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isTrue(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should be false after expected geo and locale then unexpected", () => {
-      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
       sandbox
-        .stub(global.Services.prefs, "getStringPref")
+        .stub(global.Region, "home")
         .onFirstCall()
-        .returns("US")
+        .get(() => "US")
         .onSecondCall()
-        .returns("NOGEO");
-      sandbox
-        .stub(global.Services.locale, "appLocaleAsLangTag")
-        .get(() => "en-US");
+        .get(() => "NOGEO");
 
       as._updateDynamicPrefs();
       as._updateDynamicPrefs();
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
+    });
+    it("should be true with updated pref change", () => {
+      appLocaleAsBCP47Stub.get(() => "en-GB");
+      sandbox.stub(global.Region, "home").returns("GB");
+      getStringPrefStub
+        .withArgs(
+          "browser.newtabpage.activity-stream.discoverystream.region-stories-config"
+        )
+        .returns("US,CA,GB");
+
+      as._updateDynamicPrefs();
+
+      assert.isTrue(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
   });
   describe("_updateDynamicPrefs topstories delayed default value", () => {
@@ -244,10 +384,16 @@ describe("ActivityStream", () => {
 
       // Have addObserver cause prefHasUserValue to now return true then observe
       sandbox
-        .stub(global.Services.prefs, "addObserver")
+        .stub(global.Services.obs, "addObserver")
         .callsFake((pref, obs) => {
-          sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
-          setTimeout(() => obs.observe(null, "nsPref:changed", pref)); // eslint-disable-line max-nested-callbacks
+          setTimeout(() => {
+            Services.obs.notifyObservers(
+              null,
+              "browser-region",
+              "region-updated",
+              "US"
+            );
+          });
         });
     });
     afterEach(() => clock.restore());
@@ -258,30 +404,31 @@ describe("ActivityStream", () => {
       as._updateDynamicPrefs();
       clock.tick(1);
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should set true with expected geo and locale", () => {
       sandbox.stub(global.Services.prefs, "getStringPref").returns("US");
+      sandbox.stub(global.Services.prefs, "getBoolPref").returns(true);
       sandbox
-        .stub(global.Services.locale, "appLocaleAsLangTag")
+        .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
 
       as._updateDynamicPrefs();
       clock.tick(1);
 
-      assert.isTrue(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isTrue(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
     it("should not change default even with expected geo and locale", () => {
-      as._defaultPrefs.set("feeds.section.topstories", false);
+      as._defaultPrefs.set("feeds.system.topstories", false);
       sandbox.stub(global.Services.prefs, "getStringPref").returns("US");
       sandbox
-        .stub(global.Services.locale, "appLocaleAsLangTag")
+        .stub(global.Services.locale, "appLocaleAsBCP47")
         .get(() => "en-US");
 
       as._updateDynamicPrefs();
       clock.tick(1);
 
-      assert.isFalse(PREFS_CONFIG.get("feeds.section.topstories").value);
+      assert.isFalse(PREFS_CONFIG.get("feeds.system.topstories").value);
     });
   });
   describe("telemetry reporting on init failure", () => {
@@ -303,11 +450,11 @@ describe("ActivityStream", () => {
     let stub;
 
     beforeEach(() => {
-      sandbox.stub(global.Services.prefs, "prefHasUserValue").returns(true);
-      stub = sandbox.stub(global.Services.prefs, "getStringPref");
+      stub = sandbox.stub(global.Region, "home");
     });
 
     it("should be an empty string when no geo is available", () => {
+      stub.get(() => "");
       as._updateDynamicPrefs();
       assert.equal(
         PREFS_CONFIG.get(SEARCH_SHORTCUTS_SEARCH_ENGINES_PREF).value,
@@ -316,7 +463,7 @@ describe("ActivityStream", () => {
     });
 
     it("should be 'baidu' in China", () => {
-      stub.returns("CN");
+      stub.get(() => "CN");
       as._updateDynamicPrefs();
       assert.equal(
         PREFS_CONFIG.get(SEARCH_SHORTCUTS_SEARCH_ENGINES_PREF).value,
@@ -327,7 +474,7 @@ describe("ActivityStream", () => {
     it("should be 'yandex' in Russia, Belarus, Kazakhstan, and Turkey", () => {
       const geos = ["BY", "KZ", "RU", "TR"];
       for (const geo of geos) {
-        stub.returns(geo);
+        stub.get(() => geo);
         as._updateDynamicPrefs();
         assert.equal(
           PREFS_CONFIG.get(SEARCH_SHORTCUTS_SEARCH_ENGINES_PREF).value,
@@ -352,7 +499,7 @@ describe("ActivityStream", () => {
       // A selection of other geos
       const geos = ["BR", "CA", "ES", "ID", "IN"];
       for (const geo of geos) {
-        stub.returns(geo);
+        stub.get(() => geo);
         as._updateDynamicPrefs();
         assert.equal(
           PREFS_CONFIG.get(SEARCH_SHORTCUTS_SEARCH_ENGINES_PREF).value,

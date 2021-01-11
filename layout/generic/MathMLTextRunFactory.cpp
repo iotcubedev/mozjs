@@ -541,8 +541,7 @@ void MathMLTextRunFactory::RebuildTextRun(
     }
 
     uint32_t ch = str[i];
-    if (NS_IS_HIGH_SURROGATE(ch) && i < length - 1 &&
-        NS_IS_LOW_SURROGATE(str[i + 1])) {
+    if (i < length - 1 && NS_IS_SURROGATE_PAIR(ch, str[i + 1])) {
       ch = SURROGATE_TO_UCS4(ch, str[i + 1]);
     }
     uint32_t ch2 = MathVariant(ch, mathVar);
@@ -633,13 +632,14 @@ void MathMLTextRunFactory::RebuildTextRun(
 
   // Get the correct gfxFontGroup that corresponds to the earlier font changes.
   if (length) {
-    font.size = NSToCoordRound(font.size * mFontInflation);
+    font.size = font.size.ScaledBy(mFontInflation);
     nsPresContext* pc = styles[0]->mPresContext;
     nsFontMetrics::Params params;
     params.language = styles[0]->mLanguage;
     params.explicitLanguage = styles[0]->mExplicitLanguage;
     params.userFontSet = pc->GetUserFontSet();
     params.textPerf = pc->GetTextPerfMetrics();
+    params.fontStats = pc->GetFontMatchingStats();
     params.featureValueLookup = pc->GetFontFeatureValuesLookup();
     RefPtr<nsFontMetrics> metrics =
         pc->DeviceContext()->GetMetricsFor(font, params);

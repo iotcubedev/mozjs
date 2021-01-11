@@ -13,12 +13,17 @@ const {
   OPEN_STATISTICS,
   RESET_COLUMNS,
   SELECT_DETAILS_PANEL_TAB,
+  SELECT_ACTION_BAR_TAB,
   TOGGLE_COLUMN,
   WATERFALL_RESIZE,
   SET_COLUMNS_WIDTH,
-} = require("../constants");
+  SET_HEADERS_URL_PREVIEW_EXPANDED,
+  OPEN_ACTION_BAR,
+} = require("devtools/client/netmonitor/src/constants");
 
-const { getDisplayedRequests } = require("../selectors/index");
+const {
+  getDisplayedRequests,
+} = require("devtools/client/netmonitor/src/selectors/index");
 
 const DEVTOOLS_DISABLE_CACHE_PREF = "devtools.cache.disabled";
 
@@ -28,7 +33,7 @@ const DEVTOOLS_DISABLE_CACHE_PREF = "devtools.cache.disabled";
  * @param {boolean} open - expected network details panel open state
  */
 function openNetworkDetails(open) {
-  return (dispatch, getState) => {
+  return ({ dispatch, getState }) => {
     const visibleRequestItems = getDisplayedRequests(getState());
     const defaultSelectedId = visibleRequestItems.length
       ? visibleRequestItems[0].id
@@ -39,6 +44,18 @@ function openNetworkDetails(open) {
       open,
       defaultSelectedId,
     });
+  };
+}
+
+/**
+ * Change network action bar open state.
+ *
+ * @param {boolean} open - expected network action bar open state
+ */
+function openNetworkActionBar(open) {
+  return {
+    type: OPEN_ACTION_BAR,
+    open,
   };
 }
 
@@ -137,6 +154,18 @@ function selectDetailsPanelTab(id) {
 }
 
 /**
+ * Change the selected tab for network action bar.
+ *
+ * @param {string} id - tab id to be selected
+ */
+function selectActionBarTab(id) {
+  return {
+    type: SELECT_ACTION_BAR_TAB,
+    id,
+  };
+}
+
+/**
  * Toggles a column
  *
  * @param {string} column - The column that is going to be toggled
@@ -164,15 +193,23 @@ function setColumnsWidth(widths) {
  * Toggle network details panel.
  */
 function toggleNetworkDetails() {
-  return (dispatch, getState) =>
+  return ({ dispatch, getState }) =>
     dispatch(openNetworkDetails(!getState().ui.networkDetailsOpen));
+}
+
+/**
+ * Toggle network action panel.
+ */
+function toggleNetworkActionBar() {
+  return ({ dispatch, getState }) =>
+    dispatch(openNetworkActionBar(!getState().ui.networkActionOpen));
 }
 
 /**
  * Toggle persistent logs status.
  */
 function togglePersistentLogs() {
-  return (dispatch, getState) =>
+  return ({ dispatch, getState }) =>
     dispatch(enablePersistentLogs(!getState().ui.persistentLogsEnabled));
 }
 
@@ -180,7 +217,7 @@ function togglePersistentLogs() {
  * Toggle browser cache status.
  */
 function toggleBrowserCache() {
-  return (dispatch, getState) =>
+  return ({ dispatch, getState }) =>
     dispatch(disableBrowserCache(!getState().ui.browserCacheDisabled));
 }
 
@@ -188,12 +225,20 @@ function toggleBrowserCache() {
  * Toggle performance statistics panel.
  */
 function toggleStatistics(connector) {
-  return (dispatch, getState) =>
+  return ({ dispatch, getState }) =>
     dispatch(openStatistics(connector, !getState().ui.statisticsOpen));
+}
+
+function setHeadersUrlPreviewExpanded(expanded) {
+  return {
+    type: SET_HEADERS_URL_PREVIEW_EXPANDED,
+    expanded,
+  };
 }
 
 module.exports = {
   openNetworkDetails,
+  openNetworkActionBar,
   resizeNetworkDetails,
   enablePersistentLogs,
   disableBrowserCache,
@@ -201,10 +246,13 @@ module.exports = {
   resetColumns,
   resizeWaterfall,
   selectDetailsPanelTab,
+  selectActionBarTab,
   toggleColumn,
   setColumnsWidth,
   toggleNetworkDetails,
+  toggleNetworkActionBar,
   togglePersistentLogs,
   toggleBrowserCache,
   toggleStatistics,
+  setHeadersUrlPreviewExpanded,
 };

@@ -269,6 +269,32 @@ add_task(async function test_categorical_histogram() {
   Assert.deepEqual(snapshot.values, { 0: 1, 1: 1, 2: 1, 3: 0 });
 });
 
+add_task(async function test_getCategoricalLabels() {
+  let h = Telemetry.getCategoricalLabels();
+
+  Assert.deepEqual(h.TELEMETRY_TEST_CATEGORICAL, [
+    "CommonLabel",
+    "Label2",
+    "Label3",
+  ]);
+  Assert.deepEqual(h.TELEMETRY_TEST_CATEGORICAL_OPTOUT, [
+    "CommonLabel",
+    "Label4",
+    "Label5",
+    "Label6",
+  ]);
+  Assert.deepEqual(h.TELEMETRY_TEST_CATEGORICAL_NVALUES, [
+    "CommonLabel",
+    "Label7",
+    "Label8",
+  ]);
+  Assert.deepEqual(h.TELEMETRY_TEST_KEYED_CATEGORICAL, [
+    "CommonLabel",
+    "Label2",
+    "Label3",
+  ]);
+});
+
 add_task(async function test_add_error_behaviour() {
   const PLAIN_HISTOGRAMS_TO_TEST = [
     "TELEMETRY_TEST_FLAG",
@@ -346,13 +372,6 @@ add_task(async function test_getHistogramById() {
 add_task(async function test_getSlowSQL() {
   var slow = Telemetry.slowSQL;
   Assert.ok("mainThread" in slow && "otherThreads" in slow);
-});
-
-add_task(async function test_getWebrtc() {
-  var webrtc = Telemetry.webrtcStats;
-  Assert.ok("IceCandidatesStats" in webrtc);
-  var icestats = webrtc.IceCandidatesStats;
-  Assert.ok("webrtc" in icestats);
 });
 
 // Check that telemetry doesn't record in private mode
@@ -1314,6 +1333,55 @@ add_task(
   }
 );
 
+add_task(async function test_productsOverride() {
+  Services.prefs.setBoolPref(
+    "toolkit.telemetry.testing.overrideProductsCheck",
+    true
+  );
+  const DEFAULT_PRODUCTS_HISTOGRAM = "TELEMETRY_TEST_DEFAULT_PRODUCTS";
+  const DESKTOP_ONLY_HISTOGRAM = "TELEMETRY_TEST_DESKTOP_ONLY";
+  const MULTIPRODUCT_HISTOGRAM = "TELEMETRY_TEST_MULTIPRODUCT";
+  const MOBILE_ONLY_HISTOGRAM = "TELEMETRY_TEST_MOBILE_ONLY";
+
+  var default_histo = Telemetry.getHistogramById(DEFAULT_PRODUCTS_HISTOGRAM);
+  var desktop_histo = Telemetry.getHistogramById(DESKTOP_ONLY_HISTOGRAM);
+  var multiproduct_histo = Telemetry.getHistogramById(MULTIPRODUCT_HISTOGRAM);
+  var mobile_histo = Telemetry.getHistogramById(MOBILE_ONLY_HISTOGRAM);
+  default_histo.clear();
+  desktop_histo.clear();
+  multiproduct_histo.clear();
+  mobile_histo.clear();
+
+  default_histo.add(1);
+  desktop_histo.add(1);
+  multiproduct_histo.add(1);
+  mobile_histo.add(1);
+
+  let histograms = Telemetry.getSnapshotForHistograms("main", false /* clear */)
+    .parent;
+
+  Assert.ok(
+    DEFAULT_PRODUCTS_HISTOGRAM in histograms,
+    "Should have recorded default products histogram"
+  );
+  Assert.ok(
+    MOBILE_ONLY_HISTOGRAM in histograms,
+    "Should have recorded mobile-only histogram"
+  );
+  Assert.ok(
+    MULTIPRODUCT_HISTOGRAM in histograms,
+    "Should have recorded multiproduct histogram"
+  );
+
+  Assert.ok(
+    DESKTOP_ONLY_HISTOGRAM in histograms,
+    "Should not have recorded desktop-only histogram"
+  );
+  Services.prefs.clearUserPref(
+    "toolkit.telemetry.testing.overrideProductsCheck"
+  );
+});
+
 add_task(
   {
     skip_if: () => gIsAndroid,
@@ -1385,9 +1453,7 @@ add_task(async function test_valid_os_smoketest() {
   Assert.throws(
     () => Telemetry.getHistogramById(nonExistingProbe),
     /NS_ERROR_FAILURE/,
-    `Should throw on ${nonExistingProbe} probe that's not available on ${
-      AppConstants.platform
-    }`
+    `Should throw on ${nonExistingProbe} probe that's not available on ${AppConstants.platform}`
   );
 
   let h = Telemetry.getHistogramById(existingProbe);

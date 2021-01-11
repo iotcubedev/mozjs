@@ -3,12 +3,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::units::*;
-use crate::clip_scroll_tree::SpatialNodeIndex;
+use crate::spatial_tree::SpatialNodeIndex;
 use crate::intern::{Internable, InternDebug, Handle as InternHandle};
 use crate::internal_types::LayoutPrimitiveInfo;
 use crate::prim_store::{
-    InternablePrimitive, PictureIndex, PrimitiveInstanceKind, PrimKey, PrimKeyCommonData, PrimTemplate,
-    PrimTemplateCommonData, PrimitiveStore, PrimitiveSceneData, RectangleKey,
+    InternablePrimitive, PictureIndex, PrimitiveInstanceKind, PrimKey, PrimTemplate,
+    PrimTemplateCommonData, PrimitiveStore, RectangleKey,
 };
 
 #[cfg_attr(feature = "capture", derive(Serialize))]
@@ -34,15 +34,11 @@ pub type BackdropKey = PrimKey<Backdrop>;
 
 impl BackdropKey {
     pub fn new(
-        is_backface_visible: bool,
-        prim_size: LayoutSize,
+        info: &LayoutPrimitiveInfo,
         backdrop: Backdrop,
     ) -> Self {
         BackdropKey {
-            common: PrimKeyCommonData {
-                is_backface_visible,
-                prim_size: prim_size.into(),
-            },
+            common: info.into(),
             kind: backdrop,
         }
     }
@@ -77,7 +73,7 @@ pub type BackdropDataHandle = InternHandle<Backdrop>;
 impl Internable for Backdrop {
     type Key = BackdropKey;
     type StoreData = BackdropTemplate;
-    type InternData = PrimitiveSceneData;
+    type InternData = ();
 }
 
 impl InternablePrimitive for Backdrop {
@@ -85,11 +81,7 @@ impl InternablePrimitive for Backdrop {
         self,
         info: &LayoutPrimitiveInfo,
     ) -> BackdropKey {
-        BackdropKey::new(
-            info.is_backface_visible,
-            info.rect.size,
-            self
-        )
+        BackdropKey::new(info, self)
     }
 
     fn make_instance_kind(

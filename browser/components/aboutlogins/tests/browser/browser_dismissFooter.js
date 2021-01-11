@@ -71,7 +71,10 @@ add_task(async function test_open_links() {
     });
 
     await SpecialPowers.pushPrefEnv({
-      set: [[pref, urlBase], ["services.sync.engine.passwords", true]],
+      set: [
+        [pref, urlBase],
+        ["services.sync.engine.passwords", true],
+      ],
     });
 
     Services.obs.notifyObservers(null, UIState.ON_UPDATE);
@@ -79,7 +82,7 @@ add_task(async function test_open_links() {
     let promiseNewTab = BrowserTestUtils.waitForNewTab(gBrowser, urlFinal);
     let browser = gBrowser.selectedBrowser;
 
-    await ContentTask.spawn(browser, selector, async buttonClass => {
+    await SpecialPowers.spawn(browser, [selector], async buttonClass => {
       let footer = Cu.waiveXrays(
         content.document
           .querySelector("login-item")
@@ -115,7 +118,7 @@ add_task(async function dismissFooter() {
 
   let browser = gBrowser.selectedBrowser;
 
-  await ContentTask.spawn(browser, null, async () => {
+  await SpecialPowers.spawn(browser, [], async () => {
     let footer = Cu.waiveXrays(
       content.document
         .querySelector("login-item")

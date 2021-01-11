@@ -95,13 +95,15 @@ void profiler_get_profile_json_into_lazily_allocated_buffer(
 // Flags to conveniently track various JS instrumentations.
 enum class JSInstrumentationFlags {
   StackSampling = 0x1,
-  TrackOptimizations = 0x2,
-  TraceLogging = 0x4,
-  Allocations = 0x8
+  TraceLogging = 0x2,
+  Allocations = 0x4,
 };
 
 // Record an exit profile from a child process.
 void profiler_received_exit_profile(const nsCString& aExitProfile);
+
+// Write out the information of the active profiling configuration.
+void profiler_write_active_configuration(mozilla::JSONWriter& aWriter);
 
 // Extract all received exit profiles that have not yet expired (i.e., they
 // still intersect with this process' buffer range).

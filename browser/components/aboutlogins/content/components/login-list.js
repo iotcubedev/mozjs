@@ -8,21 +8,25 @@ import { recordTelemetryEvent } from "../aboutLoginsUtils.js";
 const collator = new Intl.Collator();
 const sortFnOptions = {
   name: (a, b) => collator.compare(a.title, b.title),
+  "name-reverse": (a, b) => collator.compare(b.title, a.title),
   "last-used": (a, b) => a.timeLastUsed < b.timeLastUsed,
   "last-changed": (a, b) => a.timePasswordChanged < b.timePasswordChanged,
-  breached: (a, b, breachesByLoginGUID) => {
-    if (!breachesByLoginGUID) {
-      return 0;
-    }
-    const aIsBreached = breachesByLoginGUID.has(a.guid);
-    const bIsBreached = breachesByLoginGUID.has(b.guid);
-    if (aIsBreached && !bIsBreached) {
+  alerts: (a, b, breachesByLoginGUID, vulnerableLoginsByLoginGUID) => {
+    const aIsBreached = breachesByLoginGUID && breachesByLoginGUID.has(a.guid);
+    const bIsBreached = breachesByLoginGUID && breachesByLoginGUID.has(b.guid);
+    const aIsVulnerable =
+      vulnerableLoginsByLoginGUID && vulnerableLoginsByLoginGUID.has(a.guid);
+    const bIsVulnerable =
+      vulnerableLoginsByLoginGUID && vulnerableLoginsByLoginGUID.has(b.guid);
+
+    if ((aIsBreached && !bIsBreached) || (aIsVulnerable && !bIsVulnerable)) {
       return -1;
     }
-    if (!aIsBreached && bIsBreached) {
+
+    if ((!aIsBreached && bIsBreached) || (!aIsVulnerable && bIsVulnerable)) {
       return 1;
     }
-    return collator.compare(a.title, b.title);
+    return sortFnOptions.name(a, b);
   },
 };
 
@@ -36,6 +40,7 @@ export default class LoginList extends HTMLElement {
     this._filter = "";
     this._selectedGuid = null;
     this._blankLoginListItem = LoginListItemFactory.create({});
+    this._blankLoginListItem.hidden = true;
   }
 
   connectedCallback() {
@@ -96,7 +101,7 @@ export default class LoginList extends HTMLElement {
 
     // Show, hide, and update state of the list items per the applied search filter.
     for (let guid of this._loginGuidsSortedOrder) {
-      let { listItem } = this._logins[guid];
+      let { listItem, login } = this._logins[guid];
 
       if (guid == this._selectedGuid) {
         this._setListItemAsSelected(listItem);
@@ -106,6 +111,18 @@ export default class LoginList extends HTMLElement {
         !!this._breachesByLoginGUID &&
           this._breachesByLoginGUID.has(listItem.dataset.guid)
       );
+      listItem.classList.toggle(
+        "vulnerable",
+        !!this._vulnerableLoginsByLoginGUID &&
+          this._vulnerableLoginsByLoginGUID.has(listItem.dataset.guid) &&
+          !listItem.classList.contains("breached")
+      );
+      if (
+        listItem.classList.contains("breached") ||
+        listItem.classList.contains("vulnerable")
+      ) {
+        LoginListItemFactory.update(listItem, login);
+      }
       listItem.hidden = !visibleLoginGuids.has(listItem.dataset.guid);
     }
 
@@ -129,6 +146,22 @@ export default class LoginList extends HTMLElement {
       if (visibleListItem) {
         this._list.setAttribute("aria-activedescendant", visibleListItem.id);
       }
+    }
+
+    if (
+      this._sortSelect.namedItem("alerts").hidden &&
+      ((this._breachesByLoginGUID &&
+        this._loginGuidsSortedOrder.some(loginGuid =>
+          this._breachesByLoginGUID.has(loginGuid)
+        )) ||
+        (this._vulnerableLoginsByLoginGUID &&
+          this._loginGuidsSortedOrder.some(loginGuid =>
+            this._vulnerableLoginsByLoginGUID.has(loginGuid)
+          )))
+    ) {
+      // Make available the "alerts" option but don't change the
+      // selected sort so the user's current task isn't interrupted.
+      this._sortSelect.namedItem("alerts").hidden = false;
     }
   }
 
@@ -160,9 +193,12 @@ export default class LoginList extends HTMLElement {
           })
         );
 
-        const extra = listItem.classList.contains("breached")
-          ? { breached: "true" }
-          : {};
+        let extra = {};
+        if (listItem.classList.contains("breached")) {
+          extra = { breached: "true" };
+        } else if (listItem.classList.contains("vulnerable")) {
+          extra = { vulnerable: "true" };
+        }
         recordTelemetryEvent({
           object: "existing_login",
           method: "select",
@@ -174,6 +210,12 @@ export default class LoginList extends HTMLElement {
         this._applySortAndScrollToTop();
         const extra = { sort_key: this._sortSelect.value };
         recordTelemetryEvent({ object: "list", method: "sort", extra });
+        document.dispatchEvent(
+          new CustomEvent("AboutLoginsSortChanged", {
+            bubbles: true,
+            detail: this._sortSelect.value,
+          })
+        );
         break;
       }
       case "AboutLoginsClearSelection": {
@@ -254,21 +296,24 @@ export default class LoginList extends HTMLElement {
         }
         break;
       }
+      case "keyup":
       case "keydown": {
-        this._handleTabbingToExternalElements(event);
+        if (event.type == "keydown") {
+          this._handleTabbingToExternalElements(event);
 
-        // Since Space will select a login in the list, prevent it from
-        // also scrolling the list.
-        if (
-          this.shadowRoot.activeElement &&
-          this.shadowRoot.activeElement.closest("ol") &&
-          event.key == " "
-        ) {
-          event.preventDefault();
+          if (
+            this.shadowRoot.activeElement &&
+            this.shadowRoot.activeElement.closest("ol") &&
+            (event.key == " " ||
+              event.key == "ArrowUp" ||
+              event.key == "ArrowDown")
+          ) {
+            // Since Space, ArrowUp and ArrowDown will perform actions, prevent
+            // them from also scrolling the list.
+            event.preventDefault();
+          }
         }
-        break;
-      }
-      case "keyup": {
+
         this._handleKeyboardNavWithinList(event);
         break;
       }
@@ -291,18 +336,7 @@ export default class LoginList extends HTMLElement {
     this.render();
 
     if (!this._selectedGuid || !this._logins[this._selectedGuid]) {
-      // Select the first visible login after any possible filter is applied.
-      let firstVisibleListItem = this._list.querySelector(
-        ".login-list-item[data-guid]:not([hidden])"
-      );
-      if (firstVisibleListItem) {
-        let { login } = this._logins[firstVisibleListItem.dataset.guid];
-        window.dispatchEvent(
-          new CustomEvent("AboutLoginsInitialLoginSelected", {
-            detail: login,
-          })
-        );
-      }
+      this._selectFirstVisibleLogin();
     }
   }
 
@@ -338,15 +372,7 @@ export default class LoginList extends HTMLElement {
    *                                  for displaying breached login indicators.
    */
   setBreaches(breachesByLoginGUID) {
-    this._breachesByLoginGUID = breachesByLoginGUID;
-    if (this._breachesByLoginGUID.size === 0) {
-      this.render();
-      return;
-    }
-    const breachedSortOptionElement = this._sortSelect.namedItem("breached");
-    breachedSortOptionElement.hidden = false;
-    this._sortSelect.selectedIndex = breachedSortOptionElement.index;
-    this._applySortAndScrollToTop();
+    this._internalSetMonitorData("_breachesByLoginGUID", breachesByLoginGUID);
   }
 
   /**
@@ -355,13 +381,80 @@ export default class LoginList extends HTMLElement {
    *                                  breaches.
    */
   updateBreaches(breachesByLoginGUID) {
-    if (!this._breachesByLoginGUID) {
-      this._breachesByLoginGUID = new Map();
+    this._internalUpdateMonitorData(
+      "_breachesByLoginGUID",
+      breachesByLoginGUID
+    );
+  }
+
+  setVulnerableLogins(vulnerableLoginsByLoginGUID) {
+    this._internalSetMonitorData(
+      "_vulnerableLoginsByLoginGUID",
+      vulnerableLoginsByLoginGUID
+    );
+  }
+
+  updateVulnerableLogins(vulnerableLoginsByLoginGUID) {
+    this._internalUpdateMonitorData(
+      "_vulnerableLoginsByLoginGUID",
+      vulnerableLoginsByLoginGUID
+    );
+  }
+
+  _internalSetMonitorData(
+    internalMemberName,
+    mapByLoginGUID,
+    updateSortAndSelectedLogin = true
+  ) {
+    this[internalMemberName] = mapByLoginGUID;
+    if (this[internalMemberName].size) {
+      for (let [loginGuid] of mapByLoginGUID) {
+        if (this._logins[loginGuid]) {
+          let { login, listItem } = this._logins[loginGuid];
+          LoginListItemFactory.update(listItem, login);
+        }
+      }
+      if (updateSortAndSelectedLogin) {
+        const alertsSortOptionElement = this._sortSelect.namedItem("alerts");
+        alertsSortOptionElement.hidden = false;
+        this._sortSelect.selectedIndex = alertsSortOptionElement.index;
+        this._applySortAndScrollToTop();
+        this._selectFirstVisibleLogin();
+      }
     }
-    for (const [guid, breach] of [...breachesByLoginGUID]) {
-      this._breachesByLoginGUID.set(guid, breach);
+    this.render();
+  }
+
+  _internalUpdateMonitorData(internalMemberName, mapByLoginGUID) {
+    if (!this[internalMemberName]) {
+      this[internalMemberName] = new Map();
     }
-    this.setBreaches(this._breachesByLoginGUID);
+    for (const [guid, data] of [...mapByLoginGUID]) {
+      if (data) {
+        this[internalMemberName].set(guid, data);
+      } else {
+        this[internalMemberName].delete(guid);
+      }
+    }
+    this._internalSetMonitorData(
+      internalMemberName,
+      this[internalMemberName],
+      false
+    );
+  }
+
+  setSortDirection(sortDirection) {
+    // The 'alerts' sort becomes visible when there are known alerts.
+    // Don't restore to the 'alerts' sort if there are no alerts to show.
+    if (
+      sortDirection == "alerts" &&
+      this._sortSelect.namedItem("alerts").hidden
+    ) {
+      return;
+    }
+    this._sortSelect.value = sortDirection;
+    this._applySortAndScrollToTop();
+    this._selectFirstVisibleLogin();
   }
 
   /**
@@ -375,6 +468,13 @@ export default class LoginList extends HTMLElement {
     // Add the list item and update any other related state that may pertain
     // to the list item such as breach alerts.
     this.render();
+
+    if (
+      this.classList.contains("no-logins") &&
+      !this.classList.contains("create-login-selected")
+    ) {
+      this._selectFirstVisibleLogin();
+    }
   }
 
   /**
@@ -467,7 +567,12 @@ export default class LoginList extends HTMLElement {
     this._loginGuidsSortedOrder = this._loginGuidsSortedOrder.sort((a, b) => {
       let loginA = this._logins[a].login;
       let loginB = this._logins[b].login;
-      return sortFnOptions[sort](loginA, loginB, this._breachesByLoginGUID);
+      return sortFnOptions[sort](
+        loginA,
+        loginB,
+        this._breachesByLoginGUID,
+        this._vulnerableLoginsByLoginGUID
+      );
     });
   }
 
@@ -539,51 +644,77 @@ export default class LoginList extends HTMLElement {
     while (nextItem && nextItem.hidden) {
       nextItem = nextItem.nextElementSibling;
     }
-    switch (event.key) {
-      case "ArrowDown": {
-        if (!nextItem) {
+    if (event.type == "keydown") {
+      switch (event.key) {
+        case "ArrowDown": {
+          if (!nextItem) {
+            return;
+          }
+          newlyFocusedItem = nextItem;
+          break;
+        }
+        case "ArrowLeft": {
+          let item = isLTR ? previousItem : nextItem;
+          if (!item) {
+            return;
+          }
+          newlyFocusedItem = item;
+          break;
+        }
+        case "ArrowRight": {
+          let item = isLTR ? nextItem : previousItem;
+          if (!item) {
+            return;
+          }
+          newlyFocusedItem = item;
+          break;
+        }
+        case "ArrowUp": {
+          if (!previousItem) {
+            return;
+          }
+          newlyFocusedItem = previousItem;
+          break;
+        }
+        default:
+          return;
+      }
+    } else if (event.type == "keyup") {
+      switch (event.key) {
+        case " ":
+        case "Enter": {
+          event.preventDefault();
+          activeDescendant.click();
           return;
         }
-        newlyFocusedItem = nextItem;
-        break;
-      }
-      case "ArrowLeft": {
-        let item = isLTR ? previousItem : nextItem;
-        if (!item) {
+        default:
           return;
-        }
-        newlyFocusedItem = item;
-        break;
       }
-      case "ArrowRight": {
-        let item = isLTR ? nextItem : previousItem;
-        if (!item) {
-          return;
-        }
-        newlyFocusedItem = item;
-        break;
-      }
-      case "ArrowUp": {
-        if (!previousItem) {
-          return;
-        }
-        newlyFocusedItem = previousItem;
-        break;
-      }
-      case " ":
-      case "Enter": {
-        event.preventDefault();
-        activeDescendant.click();
-        return;
-      }
-      default:
-        return;
     }
     event.preventDefault();
     this._list.setAttribute("aria-activedescendant", newlyFocusedItem.id);
     activeDescendant.classList.remove("keyboard-selected");
     newlyFocusedItem.classList.add("keyboard-selected");
     newlyFocusedItem.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * Selects the first visible login as part of the initial load of the page,
+   * which will bypass any focus changes that occur during manual login
+   * selection.
+   */
+  _selectFirstVisibleLogin() {
+    let firstVisibleListItem = this._list.querySelector(
+      ".login-list-item[data-guid]:not([hidden])"
+    );
+    if (firstVisibleListItem) {
+      let { login } = this._logins[firstVisibleListItem.dataset.guid];
+      window.dispatchEvent(
+        new CustomEvent("AboutLoginsInitialLoginSelected", {
+          detail: login,
+        })
+      );
+    }
   }
 
   _setListItemAsSelected(listItem) {

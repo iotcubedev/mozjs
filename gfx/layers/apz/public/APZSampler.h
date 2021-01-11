@@ -14,7 +14,6 @@
 #include "mozilla/layers/APZUtils.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
-#include "nsTArray.h"
 #include "Units.h"
 
 namespace mozilla {
@@ -24,7 +23,6 @@ class TimeStamp;
 namespace wr {
 struct Transaction;
 class TransactionWrapper;
-struct WrTransformProperty;
 struct WrWindowId;
 }  // namespace wr
 
@@ -58,16 +56,15 @@ class APZSampler {
    * which thread it is.
    */
   static void SetSamplerThread(const wr::WrWindowId& aWindowId);
-  static void SampleForWebRender(const wr::WrWindowId& aWindowId,
-                                 wr::Transaction* aTxn,
-                                 const wr::DocumentId& aRenderRootId);
+  static void SampleForWebRender(
+      const wr::WrWindowId& aWindowId, wr::Transaction* aTxn,
+      const wr::WrPipelineIdEpochs* aEpochsBeingRendered);
 
   void SetSampleTime(const TimeStamp& aSampleTime);
   void SampleForWebRender(wr::TransactionWrapper& aTxn,
-                          wr::RenderRoot aRenderRoot);
+                          const wr::WrPipelineIdEpochs* aEpochsBeingRendered);
 
-  bool SampleAnimations(const LayerMetricsWrapper& aLayer,
-                        const TimeStamp& aSampleTime);
+  bool AdvanceAnimations(const TimeStamp& aSampleTime);
 
   /**
    * Compute the updated shadow transform for a scroll thumb layer that
@@ -91,17 +88,36 @@ class APZSampler {
       const LayerMetricsWrapper& aLayer);
   AsyncTransform GetCurrentAsyncTransform(const LayerMetricsWrapper& aLayer,
                                           AsyncTransformComponents aComponents);
-  AsyncTransform GetCurrentAsyncTransformForFixedAdjustment(
-      const LayerMetricsWrapper& aLayer);
   AsyncTransformComponentMatrix GetOverscrollTransform(
       const LayerMetricsWrapper& aLayer);
   AsyncTransformComponentMatrix GetCurrentAsyncTransformWithOverscroll(
+      const LayerMetricsWrapper& aLayer);
+  Maybe<CompositionPayload> NotifyScrollSampling(
       const LayerMetricsWrapper& aLayer);
 
   void MarkAsyncTransformAppliedToContent(const LayerMetricsWrapper& aLayer);
   bool HasUnusedAsyncTransform(const LayerMetricsWrapper& aLayer);
 
+  /**
+   * Similar to above GetCurrentAsyncTransform, but get the current transform
+   * with LayersId and ViewID.
+   * NOTE: This function should NOT be called on the compositor thread.
+   */
+  AsyncTransform GetCurrentAsyncTransform(
+      const LayersId& aLayersId, const ScrollableLayerGuid::ViewID& aScrollId,
+      AsyncTransformComponents aComponents) const;
+
+  /**
+   * Returns the composition bounds of the APZC correspoinding to the pair of
+   * |aLayersId| and |aScrollId|.
+   */
+  ParentLayerRect GetCompositionBounds(
+      const LayersId& aLayersId,
+      const ScrollableLayerGuid::ViewID& aScrollId) const;
+
   ScrollableLayerGuid GetGuid(const LayerMetricsWrapper& aLayer);
+
+  ScreenMargin GetGeckoFixedLayerMargins() const;
 
   /**
    * This can be used to assert that the current thread is the

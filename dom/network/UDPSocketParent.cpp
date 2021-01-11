@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsIServiceManager.h"
 #include "UDPSocketParent.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIUDPSocket.h"
@@ -16,7 +15,6 @@
 #include "mozilla/net/NeckoCommon.h"
 #include "mozilla/net/PNeckoParent.h"
 #include "nsIPermissionManager.h"
-#include "nsIScriptSecurityManager.h"
 #include "mozilla/ipc/PBackgroundParent.h"
 #include "mtransport/runnable_utils.h"
 
@@ -34,7 +32,7 @@ UDPSocketParent::UDPSocketParent(PBackgroundParent* aManager)
 UDPSocketParent::UDPSocketParent(PNeckoParent* aManager)
     : mBackgroundManager(nullptr), mIPCOpen(true) {}
 
-UDPSocketParent::~UDPSocketParent() {}
+UDPSocketParent::~UDPSocketParent() = default;
 
 bool UDPSocketParent::Init(nsIPrincipal* aPrincipal,
                            const nsACString& aFilter) {
@@ -44,21 +42,6 @@ bool UDPSocketParent::Init(nsIPrincipal* aPrincipal,
   Unused << mBackgroundManager;
 
   mPrincipal = aPrincipal;
-  if (net::UsingNeckoIPCSecurity() && mPrincipal &&
-      !ContentParent::IgnoreIPCPrincipal()) {
-    nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
-    if (!permMgr) {
-      NS_WARNING("No PermissionManager available!");
-      return false;
-    }
-
-    uint32_t permission = nsIPermissionManager::DENY_ACTION;
-    permMgr->TestExactPermissionFromPrincipal(
-        mPrincipal, NS_LITERAL_CSTRING("udp-socket"), &permission);
-    if (permission != nsIPermissionManager::ALLOW_ACTION) {
-      return false;
-    }
-  }
 
   if (!aFilter.IsEmpty()) {
     nsAutoCString contractId(NS_NETWORK_UDP_SOCKET_FILTER_HANDLER_PREFIX);
@@ -82,12 +65,7 @@ bool UDPSocketParent::Init(nsIPrincipal* aPrincipal,
       return false;
     }
   }
-  // We don't have browser actors in xpcshell, and hence can't run automated
-  // tests without this loophole.
-  if (net::UsingNeckoIPCSecurity() && !mFilter &&
-      (!mPrincipal || ContentParent::IgnoreIPCPrincipal())) {
-    return false;
-  }
+
   return true;
 }
 
@@ -237,7 +215,7 @@ static void CheckSTSThread() {
 // should be done there.
 mozilla::ipc::IPCResult UDPSocketParent::RecvConnect(
     const UDPAddressInfo& aAddressInfo) {
-  nsCOMPtr<nsIEventTarget> target = GetCurrentThreadEventTarget();
+  nsCOMPtr<nsIEventTarget> target = GetCurrentEventTarget();
   Unused << NS_WARN_IF(NS_FAILED(GetSTSThread()->Dispatch(
       WrapRunnable(RefPtr<UDPSocketParent>(this), &UDPSocketParent::DoConnect,
                    mSocket, target, aAddressInfo),
@@ -251,8 +229,9 @@ void UDPSocketParent::DoSendConnectResponse(
   mozilla::Unused << SendCallbackConnected(aAddressInfo);
 }
 
-void UDPSocketParent::SendConnectResponse(nsIEventTarget* aThread,
-                                          const UDPAddressInfo& aAddressInfo) {
+void UDPSocketParent::SendConnectResponse(
+    const nsCOMPtr<nsIEventTarget>& aThread,
+    const UDPAddressInfo& aAddressInfo) {
   Unused << NS_WARN_IF(NS_FAILED(aThread->Dispatch(
       WrapRunnable(RefPtr<UDPSocketParent>(this),
                    &UDPSocketParent::DoSendConnectResponse, aAddressInfo),
@@ -260,8 +239,8 @@ void UDPSocketParent::SendConnectResponse(nsIEventTarget* aThread,
 }
 
 // Runs on STS thread
-void UDPSocketParent::DoConnect(nsCOMPtr<nsIUDPSocket>& aSocket,
-                                nsCOMPtr<nsIEventTarget>& aReturnThread,
+void UDPSocketParent::DoConnect(const nsCOMPtr<nsIUDPSocket>& aSocket,
+                                const nsCOMPtr<nsIEventTarget>& aReturnThread,
                                 const UDPAddressInfo& aAddressInfo) {
   UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, aAddressInfo.addr().get(),
                  aAddressInfo.port()));
@@ -551,11 +530,11 @@ void UDPSocketParent::FireInternalError(uint32_t aLineNo) {
     return;
   }
 
-  mozilla::Unused << SendCallbackError(NS_LITERAL_CSTRING("Internal error"),
-                                       NS_LITERAL_CSTRING(__FILE__), aLineNo);
+  mozilla::Unused << SendCallbackError("Internal error"_ns,
+                                       nsLiteralCString(__FILE__), aLineNo);
 }
 
-void UDPSocketParent::SendInternalError(nsIEventTarget* aThread,
+void UDPSocketParent::SendInternalError(const nsCOMPtr<nsIEventTarget>& aThread,
                                         uint32_t aLineNo) {
   UDPSOCKET_LOG(("SendInternalError: %u", aLineNo));
   Unused << NS_WARN_IF(NS_FAILED(aThread->Dispatch(

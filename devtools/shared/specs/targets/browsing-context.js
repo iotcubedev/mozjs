@@ -8,32 +8,22 @@ const {
   generateActorSpec,
   RetVal,
   Option,
+  Arg,
 } = require("devtools/shared/protocol");
 
 types.addDictType("browsingContextTarget.attach", {
-  type: "string",
   threadActor: "number",
   cacheDisabled: "boolean",
   javascriptEnabled: "boolean",
   traits: "json",
 });
 
-types.addDictType("browsingContextTarget.detach", {
-  error: "nullable:string",
-  type: "nullable:string",
-});
-
 types.addDictType("browsingContextTarget.switchtoframe", {
-  error: "nullable:string",
-  message: "nullable:string",
+  message: "string",
 });
 
 types.addDictType("browsingContextTarget.listframes", {
   frames: "array:browsingContextTarget.window",
-});
-
-types.addDictType("browsingContextTarget.listRemoteFrames", {
-  frames: "array:frameDescriptor",
 });
 
 types.addDictType("browsingContextTarget.window", {
@@ -45,8 +35,7 @@ types.addDictType("browsingContextTarget.window", {
 });
 
 types.addDictType("browsingContextTarget.workers", {
-  error: "nullable:string",
-  workers: "nullable:array:workerTarget",
+  workers: "array:workerTarget",
 });
 
 types.addDictType("browsingContextTarget.reload", {
@@ -70,13 +59,21 @@ const browsingContextTargetSpecPrototype = {
     },
     detach: {
       request: {},
-      response: RetVal("browsingContextTarget.detach"),
+      response: {},
     },
     ensureCSSErrorReportingEnabled: {
       request: {},
       response: {},
     },
     focus: {
+      request: {},
+      response: {},
+    },
+    goForward: {
+      request: {},
+      response: {},
+    },
+    goBack: {
       request: {},
       response: {},
     },
@@ -107,10 +104,6 @@ const browsingContextTargetSpecPrototype = {
     listFrames: {
       request: {},
       response: RetVal("browsingContextTarget.listframes"),
-    },
-    listRemoteFrames: {
-      request: {},
-      response: RetVal("browsingContextTarget.listRemoteFrames"),
     },
     listWorkers: {
       request: {},
@@ -157,6 +150,15 @@ const browsingContextTargetSpecPrototype = {
     // We can remove that once FF66 is no longer supported.
     newSource: {
       type: "newSource",
+    },
+
+    "resource-available-form": {
+      type: "resource-available-form",
+      resources: Arg(0, "array:json"),
+    },
+    "resource-destroyed-form": {
+      type: "resource-destroyed-form",
+      resources: Arg(0, "array:json"),
     },
   },
 };

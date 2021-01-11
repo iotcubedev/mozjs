@@ -126,7 +126,8 @@ def get_debugger_path(debugger):
 
         # Attempt to use the xcrun util to find the path.
         try:
-            path = check_output(['xcrun', '--find', 'lldb']).strip()
+            path = check_output(['xcrun', '--find', 'lldb'],
+                                universal_newlines=True).strip()
             if path:
                 return path
         except Exception:
@@ -324,4 +325,5 @@ def get_default_valgrind_tool_specific_args():
     return ['--partial-loads-ok=yes',
             '--leak-check=summary',
             '--show-possibly-lost=no',
+            '--show-mismatched-frees=no',
             ]

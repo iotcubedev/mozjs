@@ -111,6 +111,10 @@ bool SharedMemory::CreateInternal(size_t size, bool freezeable) {
   DCHECK(mapped_file_ == NULL);
   read_only_ = false;
 
+  // If the shared memory object has no DACL, any process can
+  // duplicate its handles with any access rights; e.g., re-add write
+  // access to a read-only handle.  To prevent that, we give it an
+  // empty DACL, so that no process can do that.
   SECURITY_ATTRIBUTES sa, *psa = nullptr;
   SECURITY_DESCRIPTOR sd;
   ACL dacl;
@@ -129,6 +133,8 @@ bool SharedMemory::CreateInternal(size_t size, bool freezeable) {
       return false;
     }
 
+    // Older versions of Windows will silently ignore the security
+    // attributes unless the object has a name.
     if (!mozilla::IsWin8Point1OrLater()) {
       name.AssignLiteral("MozSharedMem_");
       for (size_t i = 0; i < 4; ++i) {
@@ -151,19 +157,33 @@ bool SharedMemory::CreateInternal(size_t size, bool freezeable) {
   return true;
 }
 
-bool SharedMemory::Freeze() {
+bool SharedMemory::ReadOnlyCopy(SharedMemory* ro_out) {
   DCHECK(!read_only_);
   CHECK(freezeable_);
-  Unmap();
 
+  if (ro_out == this) {
+    DCHECK(!memory_);
+  }
+
+  HANDLE ro_handle;
   if (!::DuplicateHandle(GetCurrentProcess(), mapped_file_, GetCurrentProcess(),
-                         &mapped_file_, GENERIC_READ | FILE_MAP_READ, false,
+                         &ro_handle, GENERIC_READ | FILE_MAP_READ, false,
                          DUPLICATE_CLOSE_SOURCE)) {
+    // DUPLICATE_CLOSE_SOURCE applies even if there is an error.
+    mapped_file_ = nullptr;
     return false;
   }
 
-  read_only_ = true;
+  mapped_file_ = nullptr;
   freezeable_ = false;
+
+  ro_out->Close();
+  ro_out->mapped_file_ = ro_handle;
+  ro_out->max_size_ = max_size_;
+  ro_out->read_only_ = true;
+  ro_out->freezeable_ = false;
+  ro_out->external_section_ = external_section_;
+
   return true;
 }
 

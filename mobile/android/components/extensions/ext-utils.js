@@ -14,7 +14,12 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/GeckoViewTab.jsm"
 );
 
-/* globals EventDispatcher */
+ChromeUtils.defineModuleGetter(
+  this,
+  "mobileWindowTracker",
+  "resource://gre/modules/GeckoViewWebExtension.jsm"
+);
+
 var { EventDispatcher } = ChromeUtils.import(
   "resource://gre/modules/Messaging.jsm"
 );
@@ -38,11 +43,10 @@ const BrowserStatusFilter = Components.Constructor(
   "addProgressListener"
 );
 
-const WINDOW_TYPE = Services.androidBridge.isFennec
-  ? "navigator:browser"
-  : "navigator:geckoview";
+const WINDOW_TYPE = "navigator:geckoview";
 
-let tabTracker;
+// We need let to break cyclic dependency
+/* eslint-disable-next-line prefer-const */
 let windowTracker;
 
 /**
@@ -92,6 +96,13 @@ class BrowserProgressListener {
   }
 
   onLocationChange(webProgress, request, locationURI, flags) {
+    const window = this.browser.ownerGlobal;
+    // GeckoView windows can become popups at any moment, so we need to check
+    // here
+    if (!windowTracker.isBrowserWindow(window)) {
+      return;
+    }
+
     this.delegate("onLocationChange", webProgress, request, locationURI, flags);
   }
   onStateChange(webProgress, request, stateFlags, status) {
@@ -102,10 +113,10 @@ class BrowserProgressListener {
 const PROGRESS_LISTENER_FLAGS =
   Ci.nsIWebProgress.NOTIFY_STATE_ALL | Ci.nsIWebProgress.NOTIFY_LOCATION;
 
-class GeckoViewProgressListenerWrapper {
+class ProgressListenerWrapper {
   constructor(window, listener) {
     this.listener = new BrowserProgressListener(
-      window.BrowserApp.selectedBrowser,
+      window.browser,
       listener,
       PROGRESS_LISTENER_FLAGS
     );
@@ -116,92 +127,6 @@ class GeckoViewProgressListenerWrapper {
   }
 }
 
-/**
- * Handles wrapping a tab progress listener in browser-specific
- * BrowserProgressListener instances, an attaching them to each tab in a given
- * browser window.
- *
- * @param {DOMWindow} window
- *        The browser window to which to attach the listeners.
- * @param {object} listener
- *        The tab progress listener to wrap.
- */
-class FennecProgressListenerWrapper {
-  constructor(window, listener) {
-    this.window = window;
-    this.listener = listener;
-    this.listeners = new WeakMap();
-
-    for (let nativeTab of this.window.BrowserApp.tabs) {
-      this.addBrowserProgressListener(nativeTab.browser);
-    }
-
-    this.window.BrowserApp.deck.addEventListener("TabOpen", this);
-  }
-
-  /**
-   * Destroy the wrapper, removing any remaining listeners it has added.
-   */
-  destroy() {
-    this.window.BrowserApp.deck.removeEventListener("TabOpen", this);
-
-    for (let nativeTab of this.window.BrowserApp.tabs) {
-      this.removeProgressListener(nativeTab.browser);
-    }
-  }
-
-  /**
-   * Adds a progress listener to the given XUL browser element.
-   *
-   * @param {XULElement} browser
-   *        The XUL browser to add the listener to.
-   * @private
-   */
-  addBrowserProgressListener(browser) {
-    this.removeProgressListener(browser);
-
-    let listener = new BrowserProgressListener(
-      browser,
-      this.listener,
-      this.flags
-    );
-    this.listeners.set(browser, listener);
-  }
-
-  /**
-   * Removes a progress listener from the given XUL browser element.
-   *
-   * @param {XULElement} browser
-   *        The XUL browser to remove the listener from.
-   * @private
-   */
-  removeProgressListener(browser) {
-    let listener = this.listeners.get(browser);
-    if (listener) {
-      listener.destroy();
-      this.listeners.delete(browser);
-    }
-  }
-
-  /**
-   * Handles tab open events, and adds the necessary progress listeners to the
-   * new tabs.
-   *
-   * @param {Event} event
-   *        The DOM event to handle.
-   * @private
-   */
-  handleEvent(event) {
-    if (event.type === "TabOpen") {
-      this.addBrowserProgressListener(event.originalTarget);
-    }
-  }
-}
-
-const ProgressListenerWrapper = Services.androidBridge.isFennec
-  ? FennecProgressListenerWrapper
-  : GeckoViewProgressListenerWrapper;
-
 class WindowTracker extends WindowTrackerBase {
   constructor(...args) {
     super(...args);
@@ -209,30 +134,40 @@ class WindowTracker extends WindowTrackerBase {
     this.progressListeners = new DefaultWeakMap(() => new WeakMap());
   }
 
+  getCurrentWindow(context) {
+    // In GeckoView the popup is on a separate window so getCurrentWindow for
+    // the popup should return whatever is the topWindow.
+    // TODO: Bug 1651506 use context?.viewType === "popup" instead
+    if (context?.currentWindow?.moduleManager.settings.isPopup) {
+      return this.topWindow;
+    }
+    return super.getCurrentWindow(context);
+  }
+
   get topWindow() {
-    return Services.wm.getMostRecentWindow(WINDOW_TYPE);
+    return mobileWindowTracker.topWindow;
   }
 
   get topNonPBWindow() {
-    return Services.wm.getMostRecentNonPBWindow(WINDOW_TYPE);
+    return mobileWindowTracker.topNonPBWindow;
   }
 
   isBrowserWindow(window) {
-    let { documentElement } = window.document;
+    const { documentElement } = window.document;
     return documentElement.getAttribute("windowtype") === WINDOW_TYPE;
   }
 
   addProgressListener(window, listener) {
-    let listeners = this.progressListeners.get(window);
+    const listeners = this.progressListeners.get(window);
     if (!listeners.has(listener)) {
-      let wrapper = new ProgressListenerWrapper(window, listener);
+      const wrapper = new ProgressListenerWrapper(window, listener);
       listeners.set(listener, wrapper);
     }
   }
 
   removeProgressListener(window, listener) {
-    let listeners = this.progressListeners.get(window);
-    let wrapper = listeners.get(listener);
+    const listeners = this.progressListeners.get(window);
+    const wrapper = listeners.get(listener);
     if (wrapper) {
       wrapper.destroy();
       listeners.delete(listener);
@@ -269,7 +204,7 @@ global.makeGlobalEvent = function makeGlobalEvent(
     context,
     name,
     register: fire => {
-      let listener2 = {
+      const listener2 = {
         onEvent(event, data, callback) {
           listener(fire, data);
         },
@@ -283,7 +218,7 @@ global.makeGlobalEvent = function makeGlobalEvent(
   }).api();
 };
 
-class GeckoViewTabTracker extends TabTrackerBase {
+class TabTracker extends TabTrackerBase {
   init() {
     if (this.initialized) {
       return;
@@ -291,17 +226,15 @@ class GeckoViewTabTracker extends TabTrackerBase {
     this.initialized = true;
 
     windowTracker.addOpenListener(window => {
-      const nativeTab = window.BrowserApp.selectedTab;
+      const nativeTab = window.tab;
       this.emit("tab-created", { nativeTab });
     });
 
     windowTracker.addCloseListener(window => {
-      const nativeTab = window.BrowserApp.selectedTab;
-      const { windowId, tabId } = this.getBrowserData(
-        window.BrowserApp.selectedBrowser
-      );
+      const { tab, browser } = window;
+      const { windowId, tabId } = this.getBrowserData(browser);
       this.emit("tab-removed", {
-        nativeTab,
+        tab,
         tabId,
         windowId,
         // In GeckoView, it is not meaningful to speak of "window closed", because a tab is a window.
@@ -318,12 +251,12 @@ class GeckoViewTabTracker extends TabTrackerBase {
 
   getTab(id, default_ = undefined) {
     const windowId = GeckoViewTabBridge.tabIdToWindowId(id);
-    const win = windowTracker.getWindow(windowId, null, false);
+    const window = windowTracker.getWindow(windowId, null, false);
 
-    if (win && win.BrowserApp) {
-      let nativeTab = win.BrowserApp.selectedTab;
-      if (nativeTab) {
-        return nativeTab;
+    if (window) {
+      const { tab } = window;
+      if (tab) {
+        return tab;
       }
     }
 
@@ -335,263 +268,40 @@ class GeckoViewTabTracker extends TabTrackerBase {
 
   getBrowserData(browser) {
     const window = browser.ownerGlobal;
-    if (!window.BrowserApp) {
+    const { tab } = window;
+    if (!tab) {
       return {
         tabId: -1,
         windowId: -1,
       };
     }
+
+    const windowId = windowTracker.getId(window);
+
+    if (!windowTracker.isBrowserWindow(window)) {
+      return {
+        windowId,
+        tabId: -1,
+      };
+    }
+
     return {
-      tabId: this.getId(window.BrowserApp.selectedTab),
-      windowId: windowTracker.getId(window),
+      windowId,
+      tabId: this.getId(tab),
     };
   }
 
   get activeTab() {
-    let win = windowTracker.topWindow;
-    if (win && win.BrowserApp) {
-      return win.BrowserApp.selectedTab;
+    const window = windowTracker.topWindow;
+    if (window) {
+      return window.tab;
     }
-    return null;
-  }
-}
-
-class FennecTabTracker extends TabTrackerBase {
-  constructor() {
-    super();
-
-    // Keep track of the extension popup tab.
-    this._extensionPopupTabWeak = null;
-    // Keep track of the selected tabId
-    this._selectedTabId = null;
-  }
-
-  init() {
-    if (this.initialized) {
-      return;
-    }
-    this.initialized = true;
-
-    windowTracker.addListener("TabClose", this);
-    windowTracker.addListener("TabOpen", this);
-
-    // Register a listener for the Tab:Selected global event,
-    // so that we can close the popup when a popup tab has been
-    // unselected.
-    GlobalEventDispatcher.registerListener(this, ["Tab:Selected"]);
-  }
-
-  /**
-   * Returns the currently opened popup tab if any
-   */
-  get extensionPopupTab() {
-    if (this._extensionPopupTabWeak) {
-      const tab = this._extensionPopupTabWeak.get();
-
-      // Return the native tab only if the tab has not been removed in the meantime.
-      if (tab.browser) {
-        return tab;
-      }
-
-      // Clear the tracked popup tab if it has been closed in the meantime.
-      this._extensionPopupTabWeak = null;
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Open a pageAction/browserAction popup url in a tab and keep track of
-   * its weak reference (to be able to customize the activedTab using the tab parentId,
-   * to skip it in the tabs.query and to set the parent tab as active when the popup
-   * tab is currently selected).
-   *
-   * @param {string} popup
-   *   The popup url to open in a tab.
-   */
-  openExtensionPopupTab(popup) {
-    let win = windowTracker.topWindow;
-    if (!win) {
-      throw new ExtensionError(
-        `Unable to open a popup without an active window`
-      );
-    }
-
-    if (this.extensionPopupTab) {
-      win.BrowserApp.closeTab(this.extensionPopupTab);
-    }
-
-    this.init();
-
-    let { browser, id } = win.BrowserApp.selectedTab;
-    let isPrivate = PrivateBrowsingUtils.isBrowserPrivate(browser);
-    this._extensionPopupTabWeak = Cu.getWeakReference(
-      win.BrowserApp.addTab(popup, {
-        selected: true,
-        parentId: id,
-        isPrivate,
-      })
-    );
-  }
-
-  getId(nativeTab) {
-    return nativeTab.id;
-  }
-
-  getTab(id, default_ = undefined) {
-    let win = windowTracker.topWindow;
-    if (win) {
-      let nativeTab = win.BrowserApp.getTabForId(id);
-      if (nativeTab) {
-        return nativeTab;
-      }
-    }
-    if (default_ !== undefined) {
-      return default_;
-    }
-    throw new ExtensionError(`Invalid tab ID: ${id}`);
-  }
-
-  /**
-   * Handles tab open and close events, and emits the appropriate internal
-   * events for them.
-   *
-   * @param {Event} event
-   *        A DOM event to handle.
-   * @private
-   */
-  handleEvent(event) {
-    const { BrowserApp } = event.target.ownerGlobal;
-    const nativeTab = BrowserApp.getTabForBrowser(event.target);
-
-    switch (event.type) {
-      case "TabOpen":
-        this.emitCreated(nativeTab);
-        break;
-
-      case "TabClose":
-        this.emitRemoved(nativeTab, false);
-        break;
-    }
-  }
-
-  /**
-   * Required by the GlobalEventDispatcher module. This event will get
-   * called whenever one of the registered listeners fires.
-   * @param {string} event The event which fired.
-   * @param {object} data Information about the event which fired.
-   */
-  onEvent(event, data) {
-    const { BrowserApp } = windowTracker.topWindow;
-
-    switch (event) {
-      case "Tab:Selected": {
-        this._selectedTabId = data.id;
-
-        // If a new tab has been selected while an extension popup tab is still open,
-        // close it immediately.
-        const nativeTab = BrowserApp.getTabForId(data.id);
-
-        const popupTab = tabTracker.extensionPopupTab;
-        if (popupTab && popupTab !== nativeTab) {
-          BrowserApp.closeTab(popupTab);
-        }
-
-        break;
-      }
-    }
-  }
-
-  /**
-   * Emits a "tab-created" event for the given tab element.
-   *
-   * @param {NativeTab} nativeTab
-   *        The tab element which is being created.
-   * @private
-   */
-  emitCreated(nativeTab) {
-    this.emit("tab-created", { nativeTab });
-  }
-
-  /**
-   * Emits a "tab-removed" event for the given tab element.
-   *
-   * @param {NativeTab} nativeTab
-   *        The tab element which is being removed.
-   * @param {boolean} isWindowClosing
-   *        True if the tab is being removed because the browser window is
-   *        closing.
-   * @private
-   */
-  emitRemoved(nativeTab, isWindowClosing) {
-    let windowId = windowTracker.getId(nativeTab.browser.ownerGlobal);
-    let tabId = this.getId(nativeTab);
-
-    if (this.extensionPopupTab && this.extensionPopupTab === nativeTab) {
-      this._extensionPopupTabWeak = null;
-
-      // Do not switch to the parent tab of the extension popup tab
-      // if the popup tab is not the selected tab.
-      if (this._selectedTabId !== tabId) {
-        return;
-      }
-
-      // Select the parent tab when the closed tab was an extension popup tab.
-      const { BrowserApp } = windowTracker.topWindow;
-      const popupParentTab = BrowserApp.getTabForId(nativeTab.parentId);
-      if (popupParentTab) {
-        BrowserApp.selectTab(popupParentTab);
-      }
-    }
-
-    Services.tm.dispatchToMainThread(() => {
-      this.emit("tab-removed", { nativeTab, tabId, windowId, isWindowClosing });
-    });
-  }
-
-  getBrowserData(browser) {
-    let result = {
-      tabId: -1,
-      windowId: -1,
-    };
-
-    let { BrowserApp } = browser.ownerGlobal;
-    if (BrowserApp) {
-      result.windowId = windowTracker.getId(browser.ownerGlobal);
-
-      let nativeTab = BrowserApp.getTabForBrowser(browser);
-      if (nativeTab) {
-        result.tabId = this.getId(nativeTab);
-      }
-    }
-
-    return result;
-  }
-
-  get activeTab() {
-    let win = windowTracker.topWindow;
-    if (win && win.BrowserApp) {
-      const selectedTab = win.BrowserApp.selectedTab;
-
-      // If the current tab is an extension popup tab, we use the parentId to retrieve
-      // and return the tab that was selected when the popup tab has been opened.
-      if (selectedTab === this.extensionPopupTab) {
-        return win.BrowserApp.getTabForId(selectedTab.parentId);
-      }
-
-      return selectedTab;
-    }
-
     return null;
   }
 }
 
 windowTracker = new WindowTracker();
-if (Services.androidBridge.isFennec) {
-  tabTracker = new FennecTabTracker();
-} else {
-  tabTracker = new GeckoViewTabTracker();
-}
+const tabTracker = new TabTracker();
 
 Object.assign(global, { tabTracker, windowTracker });
 
@@ -617,7 +327,8 @@ class Tab extends TabBase {
   }
 
   get cookieStoreId() {
-    return getCookieStoreIdForTab(this, this.nativeTab);
+    // Expose the same session context ID that the GeckoView app is sending to us.
+    return this.window.moduleManager.settings.unsafeSessionContextId;
   }
 
   get height() {
@@ -629,7 +340,7 @@ class Tab extends TabBase {
   }
 
   get index() {
-    return this.window.BrowserApp.tabs.indexOf(this.nativeTab);
+    return 0;
   }
 
   get mutedInfo() {
@@ -645,25 +356,6 @@ class Tab extends TabBase {
   }
 
   get active() {
-    // If there is an extension popup tab and it is active,
-    // then the parent tab of the extension popup tab is active
-    // (while the extension popup tab will not be included in the
-    // tabs.query results).
-    if (tabTracker.extensionPopupTab) {
-      if (
-        tabTracker.extensionPopupTab.getActive() &&
-        this.nativeTab.id === tabTracker.extensionPopupTab.parentId
-      ) {
-        return true;
-      }
-
-      // Never return true for an active extension popup, e.g. so that
-      // the popup tab will not be part of the results of querying
-      // all the active tabs.
-      if (tabTracker.extensionPopupTab === this.nativeTab) {
-        return false;
-      }
-    }
     return this.nativeTab.getActive();
   }
 
@@ -726,18 +418,39 @@ class TabContext extends EventEmitter {
   constructor(getDefaultPrototype) {
     super();
 
+    windowTracker.addListener("progress", this);
+
     this.getDefaultPrototype = getDefaultPrototype;
     this.tabData = new Map();
+  }
 
-    GlobalEventDispatcher.registerListener(this, [
-      "Tab:Selected",
-      "Tab:Closed",
-    ]);
+  onLocationChange(browser, webProgress, request, locationURI, flags) {
+    if (!webProgress.isTopLevel) {
+      // Only pageAction and browserAction are consuming the "location-change" event
+      // to update their per-tab status, and they should only do so in response of
+      // location changes related to the top level frame (See Bug 1493470 for a rationale).
+      return;
+    }
+    const { tab } = browser.ownerGlobal;
+    // fromBrowse will be false in case of e.g. a hash change or history.pushState
+    const fromBrowse = !(
+      flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT
+    );
+    this.emit(
+      "location-change",
+      {
+        id: tab.id,
+        linkedBrowser: browser,
+        // TODO: we don't support selected so we just alway say we are
+        selected: true,
+      },
+      fromBrowse
+    );
   }
 
   get(tabId) {
     if (!this.tabData.has(tabId)) {
-      let data = Object.create(this.getDefaultPrototype(tabId));
+      const data = Object.create(this.getDefaultPrototype(tabId));
       this.tabData.set(tabId, data);
     }
 
@@ -748,34 +461,24 @@ class TabContext extends EventEmitter {
     this.tabData.delete(tabId);
   }
 
-  /**
-   * Required by the GlobalEventDispatcher module. This event will get
-   * called whenever one of the registered listeners fires.
-   * @param {string} event The event which fired.
-   * @param {object} data Information about the event which fired.
-   */
-  onEvent(event, data) {
-    switch (event) {
-      case "Tab:Selected":
-        this.emit("tab-selected", data.id);
-        break;
-      case "Tab:Closed":
-        this.emit("tab-closed", data.tabId);
-        break;
-    }
-  }
-
   shutdown() {
-    GlobalEventDispatcher.unregisterListener(this, [
-      "Tab:Selected",
-      "Tab:Closed",
-    ]);
+    windowTracker.removeListener("progress", this);
   }
 }
 
 class Window extends WindowBase {
   get focused() {
     return this.window.document.hasFocus();
+  }
+
+  isCurrentFor(context) {
+    // In GeckoView the popup is on a separate window so the current window for
+    // the popup is whatever is the topWindow.
+    // TODO: Bug 1651506 use context?.viewType === "popup" instead
+    if (context?.currentWindow?.moduleManager.settings.isPopup) {
+      return mobileWindowTracker.topWindow == this.window;
+    }
+    return super.isCurrentFor(context);
   }
 
   get top() {
@@ -811,11 +514,7 @@ class Window extends WindowBase {
   }
 
   *getTabs() {
-    let { tabManager } = this.extension;
-
-    for (let nativeTab of this.window.BrowserApp.tabs) {
-      yield tabManager.getWrapper(nativeTab);
-    }
+    yield this.activeTab;
   }
 
   *getHighlightedTabs() {
@@ -823,23 +522,13 @@ class Window extends WindowBase {
   }
 
   get activeTab() {
-    let { BrowserApp } = this.window;
-    let { selectedTab } = BrowserApp;
-
-    // If the current tab is an extension popup tab, we use the parentId to retrieve
-    // and return the tab that was selected when the popup tab has been opened.
-    if (selectedTab === tabTracker.extensionPopupTab) {
-      selectedTab = BrowserApp.getTabForId(selectedTab.parentId);
-    }
-
-    let { tabManager } = this.extension;
-    return tabManager.getWrapper(selectedTab);
+    const { tabManager } = this.extension;
+    return tabManager.getWrapper(this.window.tab);
   }
 
   getTabAtIndex(index) {
-    let nativeTab = this.window.BrowserApp.tabs[index];
-    if (nativeTab) {
-      return this.extension.tabManager.getWrapper(nativeTab);
+    if (index == 0) {
+      return this.activeTab;
     }
   }
 }
@@ -848,7 +537,7 @@ Object.assign(global, { Tab, TabContext, Window });
 
 class TabManager extends TabManagerBase {
   get(tabId, default_ = undefined) {
-    let nativeTab = tabTracker.getTab(tabId, default_);
+    const nativeTab = tabTracker.getTab(tabId, default_);
 
     if (nativeTab) {
       return this.getWrapper(nativeTab);
@@ -878,14 +567,20 @@ class TabManager extends TabManagerBase {
 
 class WindowManager extends WindowManagerBase {
   get(windowId, context) {
-    let window = windowTracker.getWindow(windowId, context);
+    const window = windowTracker.getWindow(windowId, context);
 
     return this.getWrapper(window);
   }
 
-  *getAll() {
-    for (let window of windowTracker.browserWindows()) {
-      yield this.getWrapper(window);
+  *getAll(context) {
+    for (const window of windowTracker.browserWindows()) {
+      if (!this.canAccessWindow(window, context)) {
+        continue;
+      }
+      const wrapped = this.getWrapper(window);
+      if (wrapped) {
+        yield wrapped;
+      }
     }
   }
 

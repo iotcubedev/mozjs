@@ -5,30 +5,29 @@
 #ifndef CanvasRenderingContext2D_h
 #define CanvasRenderingContext2D_h
 
-#include "mozilla/Attributes.h"
 #include <vector>
-#include "nsICanvasRenderingContextInternal.h"
-#include "mozilla/RefPtr.h"
-#include "nsColor.h"
-#include "mozilla/dom/HTMLCanvasElement.h"
-#include "mozilla/dom/HTMLVideoElement.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BasicRenderingContext2D.h"
 #include "mozilla/dom/CanvasGradient.h"
-#include "mozilla/dom/CanvasRenderingContext2DBinding.h"
 #include "mozilla/dom/CanvasPattern.h"
+#include "mozilla/dom/CanvasRenderingContext2DBinding.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/HTMLVideoElement.h"
 #include "mozilla/gfx/Rect.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/PresShell.h"
-#include "mozilla/UniquePtr.h"
-#include "gfx2DGlue.h"
-#include "imgIEncoder.h"
-#include "nsLayoutUtils.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/EnumeratedArray.h"
-#include "FilterSupport.h"
-#include "SVGObserverUtils.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/UniquePtr.h"
+#include "FilterDescription.h"
+#include "gfx2DGlue.h"
 #include "Layers.h"
+#include "nsICanvasRenderingContextInternal.h"
 #include "nsBidi.h"
+#include "nsColor.h"
+#include "nsLayoutUtils.h"
 
 class gfxFontGroup;
 class nsGlobalWindowInner;
@@ -57,7 +56,6 @@ template <typename T>
 class Optional;
 
 struct CanvasBidiProcessor;
-class CanvasRenderingContext2DUserData;
 class CanvasDrawObserver;
 class CanvasShutdownObserver;
 
@@ -86,6 +84,12 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
 
     // corresponds to changes to the old bindings made in bug 745025
     return mCanvasElement->GetOriginalCanvas();
+  }
+
+  void OnBeforePaintTransaction() override;
+  void OnDidPaintTransaction() override;
+  layers::PersistentBufferProvider* GetBufferProvider() override {
+    return mBufferProvider;
   }
 
   void Save() override;
@@ -382,7 +386,7 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   }
 
   void DrawWindow(nsGlobalWindowInner& aWindow, double aX, double aY, double aW,
-                  double aH, const nsAString& aBgColor, uint32_t aFlags,
+                  double aH, const nsACString& aBgColor, uint32_t aFlags,
                   mozilla::ErrorResult& aError);
 
   // Eventually this should be deprecated. Keeping for now to keep the binding
@@ -492,8 +496,6 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
     }
   }
 
-  friend class CanvasRenderingContext2DUserData;
-
   virtual UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aFormat) override;
 
   // Given a point, return hit region ID if it exists
@@ -562,7 +564,7 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
                        Style aWhichStyle);
 
   // Returns whether a color was successfully parsed.
-  bool ParseColor(const nsAString& aString, nscolor* aColor);
+  bool ParseColor(const nsACString& aString, nscolor* aColor);
 
   static void StyleColorToString(const nscolor& aColor, nsAString& aStr);
 
@@ -721,8 +723,6 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
 
   bool mHasPendingStableStateCallback;
 
-  nsTArray<CanvasRenderingContext2DUserData*> mUserDatas;
-
   // If mCanvasElement is not provided, then a docshell is
   nsCOMPtr<nsIDocShell> mDocShell;
 
@@ -879,10 +879,12 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   /**
    * Implementation of the fillText, strokeText, and measure functions with
    * the operation abstracted to a flag.
+   * Returns a TextMetrics object _only_ if the operation is measure;
+   * drawing operations (fill or stroke) always return nullptr.
    */
-  nsresult DrawOrMeasureText(const nsAString& aText, float aX, float aY,
-                             const Optional<double>& aMaxWidth,
-                             TextDrawOperation aOp, float* aWidth);
+  TextMetrics* DrawOrMeasureText(const nsAString& aText, float aX, float aY,
+                                 const Optional<double>& aMaxWidth,
+                                 TextDrawOperation aOp, ErrorResult& aError);
 
   // A clip or a transform, recorded and restored in order.
   struct ClipState {
@@ -1042,6 +1044,7 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   bool IsWriteOnly() const { return mWriteOnly; }
 
   bool mWriteOnly;
+  bool mClipsNeedConverting = false;
 };
 
 size_t BindingJSObjectMallocBytes(CanvasRenderingContext2D* aContext);

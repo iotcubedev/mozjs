@@ -49,48 +49,33 @@ const TEST_URL =
   '<body><div style="background:orange; width:1000px; height:1000px"></div></body>';
 
 addRDMTask(TEST_URL, async function({ ui, manager }) {
-  // Turn on the prefs that allow meta viewport support, and force overlay
-  // scrollbars to always be visible, and to allow data URIs to be considered
-  // as same-origin.
+  // Turn on the prefs that force overlay scrollbars to always be visible, and to allow
+  // data URIs to be considered as same-origin.
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["devtools.responsive.metaViewport.enabled", true],
       ["layout.testing.overlay-scrollbars.always-visible", true],
       ["security.data_uri.unique_opaque_origin", false],
     ],
   });
 
-  const store = ui.toolWindow.store;
-
-  // Wait until the viewport has been added.
-  await waitUntilState(store, state => state.viewports.length == 1);
-
   info("--- Starting viewport test output ---");
 
   const browser = ui.getViewportBrowser();
 
-  const expected = [
-    {
-      metaSupport: false,
-    },
-    {
-      metaSupport: true,
-    },
-  ];
-
+  const expected = [false, true];
   for (const e of expected) {
-    const message = "Meta Viewport " + (e.metaSupport ? "ON" : "OFF");
+    const message = "Meta Viewport " + (e ? "ON" : "OFF");
 
     // Ensure meta viewport is set.
     info(message + " setting meta viewport support.");
     await setTouchAndMetaViewportSupport(ui, e.metaSupport);
 
     // Get to the initial size and snapshot the window.
-    await setViewportSize(ui, manager, 300, 600);
-    const initialSnapshot = snapshotWindow(browser.contentWindow);
+    await setViewportSizeAndAwaitReflow(ui, manager, 300, 600);
+    const initialSnapshot = await snapshotWindow(browser);
 
     // Move to the rotated size.
-    await setViewportSize(ui, manager, 600, 300);
+    await setViewportSizeAndAwaitReflow(ui, manager, 600, 300);
 
     // Reload the window.
     const reload = waitForViewportLoad(ui);
@@ -98,8 +83,8 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
     await reload;
 
     // Go back to the initial size and take another snapshot.
-    await setViewportSize(ui, manager, 300, 600);
-    const finalSnapshot = snapshotWindow(browser.contentWindow);
+    await setViewportSizeAndAwaitReflow(ui, manager, 300, 600);
+    const finalSnapshot = await snapshotWindow(browser);
 
     const result = compareSnapshots(initialSnapshot, finalSnapshot, true);
     is(result[2], result[1], "Window snapshots should match.");

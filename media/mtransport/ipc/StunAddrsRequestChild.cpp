@@ -5,7 +5,7 @@
 #include "StunAddrsRequestChild.h"
 
 #include "mozilla/net/NeckoChild.h"
-#include "nsIEventTarget.h"
+#include "nsISerialEventTarget.h"
 
 using namespace mozilla::ipc;
 
@@ -13,7 +13,7 @@ namespace mozilla {
 namespace net {
 
 StunAddrsRequestChild::StunAddrsRequestChild(
-    StunAddrsListener* listener, nsIEventTarget* mainThreadEventTarget)
+    StunAddrsListener* listener, nsISerialEventTarget* mainThreadEventTarget)
     : mListener(listener) {
   if (mainThreadEventTarget) {
     gNeckoChild->SetEventTargetForActor(this, mainThreadEventTarget);
@@ -22,6 +22,14 @@ StunAddrsRequestChild::StunAddrsRequestChild(
   gNeckoChild->SendPStunAddrsRequestConstructor(this);
   // IPDL holds a reference until IPDL channel gets destroyed
   AddIPDLReference();
+}
+
+mozilla::ipc::IPCResult StunAddrsRequestChild::RecvOnMDNSQueryComplete(
+    const nsCString& hostname, const Maybe<nsCString>& address) {
+  if (mListener) {
+    mListener->OnMDNSQueryComplete(hostname, address);
+  }
+  return IPC_OK();
 }
 
 mozilla::ipc::IPCResult StunAddrsRequestChild::RecvOnStunAddrsAvailable(

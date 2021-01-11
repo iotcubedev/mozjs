@@ -15,7 +15,7 @@ var gUpdateHistory = {
     var um = Cc["@mozilla.org/updates/update-manager;1"].getService(
       Ci.nsIUpdateManager
     );
-    var uc = um.updateCount;
+    var uc = um.getUpdateCount();
     if (uc) {
       while (this._view.hasChildNodes()) {
         this._view.firstChild.remove();
@@ -71,7 +71,7 @@ var gUpdateHistory = {
         this._view.appendChild(element);
       }
     }
-    var cancelbutton = document.documentElement.getButton("cancel");
+    var cancelbutton = document.getElementById("history").getButton("cancel");
     cancelbutton.focus();
   },
 

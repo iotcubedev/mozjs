@@ -28,6 +28,7 @@ feature_schema = Schema({
         Optional('preference'): Text,
         Optional('default-value'): Any(bool, dict), # the types of the keys here should match the value of `type`
         Optional('is-public'): Any(bool, dict),
+        Optional('description-links'): dict,
     },
 })
 
@@ -40,7 +41,7 @@ def main(output, *filenames):
     errors = False
     try:
         features = process_files(filenames)
-        json.dump(features, output)
+        json.dump(features, output, sort_keys=True)
     except ExceptionGroup as error_group:
         print(str(error_group))
         return EXIT_ERROR

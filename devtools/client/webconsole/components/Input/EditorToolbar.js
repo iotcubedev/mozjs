@@ -5,9 +5,16 @@
 "use strict";
 
 // React & Redux
-const { Component } = require("devtools/client/shared/vendor/react");
+const {
+  Component,
+  createFactory,
+} = require("devtools/client/shared/vendor/react");
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+
+const EvaluationContextSelector = createFactory(
+  require("devtools/client/webconsole/components/Input/EvaluationContextSelector")
+);
 
 const actions = require("devtools/client/webconsole/actions/index");
 const { l10n } = require("devtools/client/webconsole/utils/messages");
@@ -25,12 +32,53 @@ class EditorToolbar extends Component {
     return {
       editorMode: PropTypes.bool,
       dispatch: PropTypes.func.isRequired,
+      reverseSearchInputVisible: PropTypes.bool.isRequired,
+      serviceContainer: PropTypes.object.isRequired,
       webConsoleUI: PropTypes.object.isRequired,
+      showEvaluationContextSelector: PropTypes.bool,
     };
   }
 
+  constructor(props) {
+    super(props);
+
+    this.onReverseSearchButtonClick = this.onReverseSearchButtonClick.bind(
+      this
+    );
+  }
+
+  onReverseSearchButtonClick(event) {
+    const { dispatch, serviceContainer } = this.props;
+
+    event.stopPropagation();
+    dispatch(
+      actions.reverseSearchInputToggle({
+        initialValue: serviceContainer.getInputSelection(),
+        access: "editor-toolbar-icon",
+      })
+    );
+  }
+
+  renderEvaluationContextSelector() {
+    if (
+      !this.props.webConsoleUI.wrapper.toolbox ||
+      !this.props.showEvaluationContextSelector
+    ) {
+      return null;
+    }
+
+    return EvaluationContextSelector({
+      webConsoleUI: this.props.webConsoleUI,
+    });
+  }
+
   render() {
-    const { editorMode, dispatch, webConsoleUI } = this.props;
+    const {
+      editorMode,
+      dispatch,
+      reverseSearchInputVisible,
+      webConsoleUI,
+    } = this.props;
 
     if (!editorMode) {
       return null;
@@ -54,6 +102,7 @@ class EditorToolbar extends Component {
         },
         l10n.getStr("webconsole.editor.toolbar.executeButton.label")
       ),
+      this.renderEvaluationContextSelector(),
       dom.button({
         className:
           "devtools-button webconsole-editor-toolbar-history-prevExpressionButton",
@@ -73,6 +122,25 @@ class EditorToolbar extends Component {
         onClick: () => {
           webConsoleUI.jsterm.historyPeruse(HISTORY_FORWARD);
         },
+      }),
+      dom.button({
+        className: `devtools-button webconsole-editor-toolbar-reverseSearchButton ${
+          reverseSearchInputVisible ? "checked" : ""
+        }`,
+        title: reverseSearchInputVisible
+          ? l10n.getFormatStr(
+              "webconsole.editor.toolbar.reverseSearchButton.closeReverseSearch.tooltip",
+              ["Esc" + (isMacOS ? " | Ctrl + C" : "")]
+            )
+          : l10n.getFormatStr(
+              "webconsole.editor.toolbar.reverseSearchButton.openReverseSearch.tooltip",
+              [isMacOS ? "Ctrl + R" : "F9"]
+            ),
+        onClick: this.onReverseSearchButtonClick,
+      }),
+      dom.div({
+        className:
+          "devtools-separator webconsole-editor-toolbar-historyNavSeparator",
       }),
       dom.button({
         className: "devtools-button webconsole-editor-toolbar-closeButton",

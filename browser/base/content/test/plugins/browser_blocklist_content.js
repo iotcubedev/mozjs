@@ -18,7 +18,6 @@ add_task(async function() {
       gTestRoot + "blockNoPlugins",
       gTestBrowser
     );
-    resetBlocklist();
     gBrowser.removeCurrentTab();
     window.focus();
     gTestBrowser = null;
@@ -55,7 +54,7 @@ add_task(async function() {
   // Work around for delayed PluginBindingAttached
   await promiseUpdatePluginBindings(gTestBrowser);
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let test = content.document.getElementById("test");
     Assert.ok(test.activated, "task 1a: test plugin should be activated!");
   });
@@ -76,7 +75,7 @@ add_task(async function() {
   // Work around for delayed PluginBindingAttached
   await promiseUpdatePluginBindings(gTestBrowser);
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let test = content.document.getElementById("test");
     ok(!test.activated, "task 2a: test plugin shouldn't activate!");
   });
@@ -106,7 +105,7 @@ add_task(async function() {
   // Work around for delayed PluginBindingAttached
   await promiseUpdatePluginBindings(gTestBrowser);
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let test = content.document.getElementById("test");
     Assert.ok(test.activated, "task 3a: test plugin should be activated!");
   });
@@ -127,7 +126,7 @@ add_task(async function() {
   // Work around for delayed PluginBindingAttached
   await promiseUpdatePluginBindings(gTestBrowser);
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let test = content.document.getElementById("test");
     Assert.ok(!test.activated, "task 4a: test plugin shouldn't activate!");
   });

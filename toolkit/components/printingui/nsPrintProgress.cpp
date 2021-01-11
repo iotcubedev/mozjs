@@ -7,16 +7,18 @@
 
 #include "mozilla/dom/BrowsingContext.h"
 #include "nsArray.h"
-#include "nsIBaseWindow.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeOwner.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsIXULWindow.h"
+#include "nsIPrintSettings.h"
+#include "nsIAppWindow.h"
 #include "nsXPCOM.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIComponentManager.h"
 #include "nsPIDOMWindow.h"
 #include "nsXULAppAPI.h"
+
+using mozilla::dom::BrowsingContext;
 
 NS_IMPL_ADDREF(nsPrintProgress)
 NS_IMPL_RELEASE(nsPrintProgress)
@@ -75,20 +77,20 @@ NS_IMETHODIMP nsPrintProgress::OpenProgressDialog(
     nsCOMPtr<nsIDocShellTreeOwner> owner;
     docShell->GetTreeOwner(getter_AddRefs(owner));
 
-    nsCOMPtr<nsIXULWindow> ownerXULWindow = do_GetInterface(owner);
-    nsCOMPtr<mozIDOMWindowProxy> ownerWindow = do_GetInterface(ownerXULWindow);
+    nsCOMPtr<nsIAppWindow> ownerAppWindow = do_GetInterface(owner);
+    nsCOMPtr<mozIDOMWindowProxy> ownerWindow = do_GetInterface(ownerAppWindow);
     NS_ENSURE_STATE(ownerWindow);
 
     nsCOMPtr<nsPIDOMWindowOuter> piOwnerWindow =
         nsPIDOMWindowOuter::From(ownerWindow);
 
     // Open the dialog.
-    RefPtr<mozilla::dom::BrowsingContext> newBC;
+    RefPtr<BrowsingContext> newBC;
 
-    rv = piOwnerWindow->OpenDialog(
-        NS_ConvertASCIItoUTF16(dialogURL), NS_LITERAL_STRING("_blank"),
-        NS_LITERAL_STRING("chrome,titlebar,dependent,centerscreen"), array,
-        getter_AddRefs(newBC));
+    rv = piOwnerWindow->OpenDialog(NS_ConvertASCIItoUTF16(dialogURL),
+                                   u"_blank"_ns,
+                                   u"chrome,titlebar,dependent,centerscreen"_ns,
+                                   array, getter_AddRefs(newBC));
   }
 
   return rv;

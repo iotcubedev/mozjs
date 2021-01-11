@@ -37,33 +37,16 @@ ChromeUtils.defineModuleGetter(
   "TelemetryEnvironment",
   "resource://gre/modules/TelemetryEnvironment.jsm"
 );
-
-// ASRouterTargeting.isMatch
-add_task(async function should_do_correct_targeting() {
-  is(
-    await ASRouterTargeting.isMatch("FOO", { FOO: true }),
-    true,
-    "should return true for a matching value"
-  );
-  is(
-    await ASRouterTargeting.isMatch("!FOO", { FOO: true }),
-    false,
-    "should return false for a non-matching value"
-  );
-});
-
-add_task(async function should_handle_async_getters() {
-  const context = {
-    get FOO() {
-      return Promise.resolve(true);
-    },
-  };
-  is(
-    await ASRouterTargeting.isMatch("FOO", context),
-    true,
-    "should return true for a matching async value"
-  );
-});
+ChromeUtils.defineModuleGetter(
+  this,
+  "AppConstants",
+  "resource://gre/modules/AppConstants.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "Region",
+  "resource://gre/modules/Region.jsm"
+);
 
 // ASRouterTargeting.findMatchingMessage
 add_task(async function find_matching_message() {
@@ -97,38 +80,10 @@ add_task(async function return_nothing_for_no_matching_message() {
   );
 });
 
-add_task(async function check_syntax_error_handling() {
-  let result;
-  function onError(...args) {
-    result = args;
-  }
-
-  const messages = [{ id: "foo", targeting: "foo === 0" }];
-  const match = await ASRouterTargeting.findMatchingMessage({
-    messages,
-    onError,
-  });
-
-  is(
-    match,
-    undefined,
-    "should return nothing since no valid matching message exists"
-  );
-  // Note that in order for the following test to pass, we are expecting a particular filepath for mozjexl.
-  // If the location of this file has changed, the MOZ_JEXL_FILEPATH constant should be updated om ASRouterTargeting.jsm
-  is(
-    result[0],
-    ASRouterTargeting.ERROR_TYPES.MALFORMED_EXPRESSION,
-    "should recognize the error as coming from mozjexl and call onError with the MALFORMED_EXPRESSION error type"
-  );
-  ok(result[1].message, "should call onError with the error from mozjexl");
-  is(result[2], messages[0], "should call onError with the invalid message");
-});
-
 add_task(async function check_other_error_handling() {
-  let result;
+  let called = false;
   function onError(...args) {
-    result = args;
+    called = true;
   }
 
   const messages = [{ id: "foo", targeting: "foo" }];
@@ -148,30 +103,19 @@ add_task(async function check_other_error_handling() {
     undefined,
     "should return nothing since no valid matching message exists"
   );
-  // Note that in order for the following test to pass, we are expecting a particular filepath for mozjexl.
-  // If the location of this file has changed, the MOZ_JEXL_FILEPATH constant should be updated om ASRouterTargeting.jsm
-  is(
-    result[0],
-    ASRouterTargeting.ERROR_TYPES.OTHER_ERROR,
-    "should not recognize the error as being an other error, not a mozjexl one"
-  );
-  is(
-    result[1].message,
-    "test error",
-    "should call onError with the error thrown in the context"
-  );
-  is(result[2], messages[0], "should call onError with the invalid message");
+
+  Assert.ok(called, "Attribute error caught");
 });
 
 // ASRouterTargeting.Environment
 add_task(async function check_locale() {
   ok(
-    Services.locale.appLocaleAsLangTag,
-    "Services.locale.appLocaleAsLangTag exists"
+    Services.locale.appLocaleAsBCP47,
+    "Services.locale.appLocaleAsBCP47 exists"
   );
   const message = {
     id: "foo",
-    targeting: `locale == "${Services.locale.appLocaleAsLangTag}"`,
+    targeting: `locale == "${Services.locale.appLocaleAsBCP47}"`,
   };
   is(
     await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
@@ -180,13 +124,13 @@ add_task(async function check_locale() {
   );
 });
 add_task(async function check_localeLanguageCode() {
-  const currentLanguageCode = Services.locale.appLocaleAsLangTag.substr(0, 2);
+  const currentLanguageCode = Services.locale.appLocaleAsBCP47.substr(0, 2);
   is(
     Services.locale.negotiateLanguages(
       [currentLanguageCode],
-      [Services.locale.appLocaleAsLangTag]
+      [Services.locale.appLocaleAsBCP47]
     )[0],
-    Services.locale.appLocaleAsLangTag,
+    Services.locale.appLocaleAsBCP47,
     "currentLanguageCode should resolve to the current locale (e.g en => en-US)"
   );
   const message = {
@@ -362,7 +306,7 @@ add_task(async function check_needsUpdate() {
 
 add_task(async function checksearchEngines() {
   const result = await ASRouterTargeting.Environment.searchEngines;
-  const expectedInstalled = (await Services.search.getVisibleEngines())
+  const expectedInstalled = (await Services.search.getDefaultEngines())
     .map(engine => engine.identifier)
     .sort()
     .join(",");
@@ -400,7 +344,7 @@ add_task(async function checksearchEngines() {
   const message2 = {
     id: "foo",
     targeting: `searchEngines[${
-      (await Services.search.getVisibleEngines())[0].identifier
+      (await Services.search.getDefaultEngines())[0].identifier
     } in .installed]`,
   };
   is(
@@ -442,6 +386,18 @@ add_task(async function checkdevToolsOpenedCount() {
     await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
     message,
     "should select correct item by devToolsOpenedCount"
+  );
+});
+
+add_task(async function check_platformName() {
+  const message = {
+    id: "foo",
+    targeting: `platformName == "${AppConstants.platform}"`,
+  };
+  is(
+    await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
+    message,
+    "should select correct item by platformName"
   );
 });
 
@@ -639,6 +595,12 @@ add_task(async function checkFrecentSites() {
 });
 
 add_task(async function check_pinned_sites() {
+  // Fresh profiles come with an empty set of pinned websites (pref doesn't
+  // exist). Search shortcut topsites make this test more complicated because
+  // the feature pins a new website on startup. Behaviour can vary when running
+  // with --verify so it's more predictable to clear pins entirely.
+  Services.prefs.clearUserPref("browser.newtabpage.pinned");
+  NewTabUtils.pinnedLinks.resetCache();
   const originalPin = JSON.stringify(NewTabUtils.pinnedLinks.links);
   const sitesToPin = [
     { url: "https://foo.com" },
@@ -693,6 +655,8 @@ add_task(async function check_pinned_sites() {
   sitesToPin.forEach(site => NewTabUtils.pinnedLinks.unpin(site));
 
   await clearHistoryAndBookmarks();
+  Services.prefs.clearUserPref("browser.newtabpage.pinned");
+  NewTabUtils.pinnedLinks.resetCache();
   is(
     JSON.stringify(NewTabUtils.pinnedLinks.links),
     originalPin,
@@ -710,8 +674,7 @@ add_task(async function check_firefox_version() {
 });
 
 add_task(async function check_region() {
-  await SpecialPowers.pushPrefEnv({ set: [["browser.search.region", "DE"]] });
-
+  Region._setHomeRegion("DE", false);
   const message = { id: "foo", targeting: "region in ['DE']" };
   is(
     await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
@@ -823,38 +786,6 @@ add_task(async function check_hasAccessedFxAPanel() {
   );
 });
 
-add_task(async function check_isFxABadgeEnabled() {
-  is(
-    await ASRouterTargeting.Environment.isFxABadgeEnabled,
-    true,
-    "Default pref value is true"
-  );
-
-  await pushPrefs(["browser.messaging-system.fxatoolbarbadge.enabled", false]);
-
-  is(
-    await ASRouterTargeting.Environment.isFxABadgeEnabled,
-    false,
-    "Value should be false according to pref"
-  );
-});
-
-add_task(async function check_isWhatsNewPanelEnabled() {
-  is(
-    await ASRouterTargeting.Environment.isWhatsNewPanelEnabled,
-    true,
-    "Enabled by default"
-  );
-
-  await pushPrefs(["browser.messaging-system.whatsNewPanel.enabled", false]);
-
-  is(
-    await ASRouterTargeting.Environment.isWhatsNewPanelEnabled,
-    false,
-    "Should update based on pref, e.g., for holdback"
-  );
-});
-
 add_task(async function checkCFRFeaturesUserPref() {
   await pushPrefs([
     "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features",
@@ -888,6 +819,20 @@ add_task(async function checkCFRAddonsUserPref() {
     await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
     message,
     "should select correct item by cfrAddons"
+  );
+});
+
+add_task(async function check_blockedCountByType() {
+  const message = {
+    id: "foo",
+    targeting:
+      "blockedCountByType.cryptominerCount == 0 && blockedCountByType.socialCount == 0",
+  };
+
+  is(
+    await ASRouterTargeting.findMatchingMessage({ messages: [message] }),
+    message,
+    "should select correct item"
   );
 });
 
@@ -979,4 +924,62 @@ add_task(async function checkPatternsValid() {
   for (const message of messages) {
     Assert.ok(new MatchPatternSet(message.trigger.patterns));
   }
+});
+
+add_task(async function check_isChinaRepack() {
+  const prefDefaultBranch = Services.prefs.getDefaultBranch("distribution.");
+  const messages = [
+    { id: "msg_for_china_repack", targeting: "isChinaRepack == true" },
+    { id: "msg_for_everyone_else", targeting: "isChinaRepack == false" },
+  ];
+
+  is(
+    await ASRouterTargeting.Environment.isChinaRepack,
+    false,
+    "Fx w/o partner repack info set is not China repack"
+  );
+  is(
+    (await ASRouterTargeting.findMatchingMessage({ messages })).id,
+    "msg_for_everyone_else",
+    "should select the message for non China repack users"
+  );
+
+  prefDefaultBranch.setCharPref("id", "MozillaOnline");
+
+  is(
+    await ASRouterTargeting.Environment.isChinaRepack,
+    true,
+    "Fx with `distribution.id` set to `MozillaOnline` is China repack"
+  );
+  is(
+    (await ASRouterTargeting.findMatchingMessage({ messages })).id,
+    "msg_for_china_repack",
+    "should select the message for China repack users"
+  );
+
+  prefDefaultBranch.setCharPref("id", "Example");
+
+  is(
+    await ASRouterTargeting.Environment.isChinaRepack,
+    false,
+    "Fx with `distribution.id` set to other string is not China repack"
+  );
+  is(
+    (await ASRouterTargeting.findMatchingMessage({ messages })).id,
+    "msg_for_everyone_else",
+    "should select the message for non China repack users"
+  );
+
+  prefDefaultBranch.deleteBranch("");
+});
+
+add_task(async function check_userId() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["app.normandy.user_id", "foo123"]],
+  });
+  is(
+    await ASRouterTargeting.Environment.userId,
+    "foo123",
+    "should read userID from normandy user id pref"
+  );
 });

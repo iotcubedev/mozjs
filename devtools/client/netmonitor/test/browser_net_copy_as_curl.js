@@ -10,7 +10,7 @@
 const POST_PAYLOAD = "Plaintext value as a payload";
 
 add_task(async function() {
-  const { tab, monitor } = await initNetMonitor(CURL_URL);
+  const { tab, monitor } = await initNetMonitor(CURL_URL, { requestCount: 1 });
   info("Starting test... ");
 
   // Different quote chars are used for Windows and POSIX
@@ -72,7 +72,7 @@ function buildTestData(QUOTE) {
   const COOKIE_PARTIAL_RESULT = [header("Cookie: bob=true; tom=cool")];
 
   const POST_PARTIAL_RESULT = [
-    "--data " + quote(POST_PAYLOAD),
+    "--data-raw " + quote(POST_PAYLOAD),
     header("Content-Type: text/plain;charset=UTF-8"),
   ];
   const ORIGIN_RESULT = [header("Origin: http://example.com")];
@@ -121,7 +121,7 @@ async function testForPlatform(tab, monitor, testData) {
 
   // Unfinished request (bug#1378464, bug#1420513)
   const waitSlow = waitForNetworkEvents(monitor, 0);
-  await ContentTask.spawn(tab.linkedBrowser, SLOW_SJS, async function(url) {
+  await SpecialPowers.spawn(tab.linkedBrowser, [SLOW_SJS], async function(url) {
     content.wrappedJSObject.performRequest(url, "GET", null);
   });
   await waitSlow;
@@ -158,13 +158,15 @@ async function testForPlatform(tab, monitor, testData) {
 
   async function performRequest(method, payload) {
     const waitRequest = waitForNetworkEvents(monitor, 1);
-    await ContentTask.spawn(
+    await SpecialPowers.spawn(
       tab.linkedBrowser,
-      {
-        url: SIMPLE_SJS,
-        method_: method,
-        payload_: payload,
-      },
+      [
+        {
+          url: SIMPLE_SJS,
+          method_: method,
+          payload_: payload,
+        },
+      ],
       async function({ url, method_, payload_ }) {
         content.wrappedJSObject.performRequest(url, method_, payload_);
       }

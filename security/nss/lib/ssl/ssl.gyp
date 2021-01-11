@@ -48,6 +48,7 @@
         'tls13exthandle.c',
         'tls13hashstate.c',
         'tls13hkdf.c',
+        'tls13psk.c',
         'tls13replay.c',
         'tls13subcerts.c',
       ],
@@ -68,11 +69,6 @@
         [ 'fuzz_tls==1', {
           'defines': [
             'UNSAFE_FUZZER_MODE',
-          ],
-        }],
-        [ 'OS=="dragonfly" or OS=="freebsd" or OS=="netbsd" or OS=="openbsd" or OS=="linux"', {
-          'cflags': [
-            '-std=gnu99',
           ],
         }],
         [ 'enable_sslkeylogfile==1', {

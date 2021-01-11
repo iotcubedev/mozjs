@@ -7,6 +7,7 @@ Support for running mach python-test tasks (via run-task)
 
 from __future__ import absolute_import, print_function, unicode_literals
 
+from six import text_type
 from taskgraph.transforms.job import run_job_using, configure_taskdesc_for_run
 from taskgraph.util.schema import Schema
 from voluptuous import Required
@@ -18,10 +19,10 @@ python_test_schema = Schema({
     Required('python-version'): int,
 
     # The subsuite to run
-    Required('subsuite'): basestring,
+    Required('subsuite'): text_type,
 
     # Base work directory used to set up the task.
-    Required('workdir'): basestring,
+    Required('workdir'): text_type,
 })
 
 
@@ -44,7 +45,8 @@ def configure_python_test(config, job, taskdesc):
             run['python-version'] = '/usr/local/bin/python3'
 
     # defer to the mach implementation
-    run['mach'] = 'python-test --python {python-version} --subsuite {subsuite}'.format(**run)
+    run['mach'] = ("python-test --python {python-version} --subsuite {subsuite} "
+                   "--run-slow").format(**run)
     run['using'] = 'mach'
     del run['python-version']
     del run['subsuite']

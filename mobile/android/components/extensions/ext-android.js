@@ -1,10 +1,16 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 "use strict";
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "Services",
-  "resource://gre/modules/Services.jsm"
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
 );
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  mobileWindowTracker: "resource://gre/modules/GeckoViewWebExtension.jsm",
+});
 
 // This function is pretty tightly tied to Extension.jsm.
 // Its job is to fill in the |tab| property of the sender.
@@ -21,7 +27,7 @@ const getSender = (extension, target, sender) => {
   }
 
   if (tabId != null && tabId >= 0) {
-    let tab = extension.tabManager.get(tabId, null);
+    const tab = extension.tabManager.get(tabId, null);
     if (tab) {
       sender.tab = tab.convert();
     }
@@ -34,61 +40,57 @@ global.tabGetSender = getSender;
 /* eslint-disable mozilla/balanced-listeners */
 extensions.on("page-shutdown", (type, context) => {
   if (context.viewType == "tab") {
-    if (context.extension.id !== context.xulBrowser.contentPrincipal.addonId) {
-      // Only close extension tabs.
-      // This check prevents about:addons from closing when it contains a
-      // WebExtension as an embedded inline options page.
-      return;
-    }
-    let { BrowserApp } = context.xulBrowser.ownerGlobal;
-    if (BrowserApp) {
-      let nativeTab = BrowserApp.getTabForBrowser(context.xulBrowser);
-      if (nativeTab) {
-        BrowserApp.closeTab(nativeTab);
-      }
-    }
+    const window = context.xulBrowser.ownerGlobal;
+    GeckoViewTabBridge.closeTab({
+      window,
+      extensionId: context.extension.id,
+    });
   }
 });
 /* eslint-enable mozilla/balanced-listeners */
 
-global.openOptionsPage = extension => {
-  let window = windowTracker.topWindow;
-  if (!window) {
-    return Promise.reject({ message: "No browser window available" });
-  }
+global.openOptionsPage = async extension => {
+  const { options_ui } = extension.manifest;
+  const extensionId = extension.id;
 
-  let { BrowserApp } = window;
-
-  if (extension.manifest.options_ui.open_in_tab) {
-    BrowserApp.selectOrAddTab(extension.manifest.options_ui.page, {
-      selected: true,
-      parentId: BrowserApp.selectedTab.id,
+  if (options_ui.open_in_tab) {
+    // Delegate new tab creation and open the options page in the new tab.
+    const tab = await GeckoViewTabBridge.createNewTab({
+      extensionId,
+      createProperties: {
+        url: options_ui.page,
+        active: true,
+      },
     });
-  } else {
-    BrowserApp.openAddonManager({ addonId: extension.id });
+
+    const { browser } = tab;
+    const flags = Ci.nsIWebNavigation.LOAD_FLAGS_NONE;
+
+    browser.loadURI(options_ui.page, {
+      flags,
+      triggeringPrincipal: extension.principal,
+    });
+
+    const newWindow = browser.ownerGlobal;
+    mobileWindowTracker.setTabActive(newWindow, true);
+    return;
   }
 
-  return Promise.resolve();
+  // Delegate option page handling to the app.
+  return GeckoViewTabBridge.openOptionsPage(extensionId);
 };
 
 extensions.registerModules({
   browserAction: {
     url: "chrome://geckoview/content/ext-browserAction.js",
-    schema: "chrome://geckoview/content/schemas/browser_action.json",
+    schema: "chrome://extensions/content/schemas/browser_action.json",
     scopes: ["addon_parent"],
     manifest: ["browser_action"],
     paths: [["browserAction"]],
   },
-  browsingData: {
-    url: "chrome://geckoview/content/ext-browsingData.js",
-    schema: "chrome://geckoview/content/schemas/browsing_data.json",
-    scopes: ["addon_parent"],
-    manifest: ["browsing_data"],
-    paths: [["browsingData"]],
-  },
   pageAction: {
     url: "chrome://geckoview/content/ext-pageAction.js",
-    schema: "chrome://geckoview/content/schemas/page_action.json",
+    schema: "chrome://extensions/content/schemas/page_action.json",
     scopes: ["addon_parent"],
     manifest: ["page_action"],
     paths: [["pageAction"]],
@@ -99,12 +101,7 @@ extensions.registerModules({
     scopes: ["addon_parent"],
     paths: [["tabs"]],
   },
+  geckoViewAddons: {
+    schema: "chrome://geckoview/content/schemas/gecko_view_addons.json",
+  },
 });
-
-if (!Services.androidBridge.isFennec) {
-  extensions.registerModules({
-    geckoViewAddons: {
-      schema: "chrome://geckoview/content/schemas/gecko_view_addons.json",
-    },
-  });
-}

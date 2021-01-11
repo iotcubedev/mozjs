@@ -20,23 +20,8 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/BrowserUtils.jsm"
 );
 
-var { ActorManagerChild } = ChromeUtils.import(
-  "resource://gre/modules/ActorManagerChild.jsm"
-);
-
-ActorManagerChild.attach(this, "browsers");
-
 // BrowserChildGlobal
 var global = this;
-
-// Keep a reference to the translation content handler to avoid it it being GC'ed.
-var trHandler = null;
-if (Services.prefs.getBoolPref("browser.translation.detectLanguage")) {
-  var { TranslationContentHandler } = ChromeUtils.import(
-    "resource:///modules/translation/TranslationContentHandler.jsm"
-  );
-  trHandler = new TranslationContentHandler(global, docShell);
-}
 
 var WebBrowserChrome = {
   onBeforeLinkTraversal(originalTarget, linkURI, linkNode, isAppTab) {
@@ -63,7 +48,6 @@ var WebBrowserChrome = {
         aURI,
         aReferrerInfo,
         aTriggeringPrincipal,
-        false,
         null,
         aCsp
       );
@@ -78,27 +62,6 @@ var WebBrowserChrome = {
       .useRemoteSubframes;
     return E10SUtils.shouldLoadURIInThisProcess(aURI, remoteSubframes);
   },
-
-  // Try to reload the currently active or currently loading page in a new process.
-  reloadInFreshProcess(
-    aDocShell,
-    aURI,
-    aReferrerInfo,
-    aTriggeringPrincipal,
-    aLoadFlags,
-    aCsp
-  ) {
-    E10SUtils.redirectLoad(
-      aDocShell,
-      aURI,
-      aReferrerInfo,
-      aTriggeringPrincipal,
-      true,
-      aLoadFlags,
-      aCsp
-    );
-    return true;
-  },
 };
 
 if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
@@ -110,11 +73,5 @@ if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
 
 Services.obs.notifyObservers(this, "tab-content-frameloader-created");
 
-// Remove this once bug 1397365 is fixed.
-addEventListener("MozAfterPaint", function onFirstNonBlankPaint() {
-  if (content.document.documentURI == "about:blank" && !content.opener) {
-    return;
-  }
-  removeEventListener("MozAfterPaint", onFirstNonBlankPaint);
-  sendAsyncMessage("Browser:FirstNonBlankPaint");
-});
+// This is a temporary hack to prevent regressions (bug 1471327).
+void content;

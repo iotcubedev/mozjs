@@ -11,6 +11,7 @@
 
 #include "mozilla/Attributes.h"  // MOZ_MUST_USE
 
+#include "jstypes.h"          // JS_PUBLIC_API
 #include "js/Class.h"         // JSClass, js::ClassSpec
 #include "js/RootingAPI.h"    // JS::Handle
 #include "js/Value.h"         // JS::{,Boolean,Object,Undefined}Value
@@ -18,10 +19,11 @@
 #include "vm/List.h"          // js::ListObject
 #include "vm/NativeObject.h"  // js::NativeObject
 
-struct JSContext;
+struct JS_PUBLIC_API JSContext;
 
 namespace js {
 
+class PromiseObject;
 class ReadableStream;
 
 /**
@@ -116,10 +118,10 @@ class ReadableStreamDefaultReader : public ReadableStreamReader {
 };
 
 extern MOZ_MUST_USE ReadableStreamDefaultReader*
-CreateReadableStreamDefaultReader(
-    JSContext* cx, JS::Handle<ReadableStream*> unwrappedStream,
-    ForAuthorCodeBool forAuthorCode = ForAuthorCodeBool::No,
-    JS::Handle<JSObject*> proto = nullptr);
+CreateReadableStreamDefaultReader(JSContext* cx,
+                                  JS::Handle<ReadableStream*> unwrappedStream,
+                                  ForAuthorCodeBool forAuthorCode,
+                                  JS::Handle<JSObject*> proto = nullptr);
 
 extern MOZ_MUST_USE JSObject* ReadableStreamReaderGenericCancel(
     JSContext* cx, JS::Handle<ReadableStreamReader*> unwrappedReader,
@@ -133,7 +135,7 @@ extern MOZ_MUST_USE bool ReadableStreamReaderGenericInitialize(
 extern MOZ_MUST_USE bool ReadableStreamReaderGenericRelease(
     JSContext* cx, JS::Handle<ReadableStreamReader*> unwrappedReader);
 
-extern MOZ_MUST_USE JSObject* ReadableStreamDefaultReaderRead(
+extern MOZ_MUST_USE PromiseObject* ReadableStreamDefaultReaderRead(
     JSContext* cx, JS::Handle<ReadableStreamDefaultReader*> unwrappedReader);
 
 }  // namespace js
@@ -142,5 +144,13 @@ template <>
 inline bool JSObject::is<js::ReadableStreamReader>() const {
   return is<js::ReadableStreamDefaultReader>();
 }
+
+namespace js {
+
+extern MOZ_MUST_USE JSObject* CreateReadableStreamBYOBReader(
+    JSContext* cx, JS::Handle<ReadableStream*> unwrappedStream,
+    ForAuthorCodeBool forAuthorCode, JS::Handle<JSObject*> proto = nullptr);
+
+}  // namespace js
 
 #endif  // builtin_streams_ReadableStreamReader_h

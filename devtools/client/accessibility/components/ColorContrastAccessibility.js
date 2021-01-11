@@ -14,10 +14,14 @@ const {
   span,
   h3,
 } = require("devtools/client/shared/vendor/react-dom-factories");
-const LearnMoreLink = createFactory(require("./LearnMoreLink"));
+const LearnMoreLink = createFactory(
+  require("devtools/client/accessibility/components/LearnMoreLink")
+);
 
-const { A11Y_CONTRAST_LEARN_MORE_LINK } = require("../constants");
-const { L10N } = require("../utils/l10n");
+const {
+  A11Y_CONTRAST_LEARN_MORE_LINK,
+} = require("devtools/client/accessibility/constants");
+const { L10N } = require("devtools/client/accessibility/utils/l10n");
 
 /**
  * Component that renders a colour contrast value along with a swatch preview of what the
@@ -108,6 +112,7 @@ class ColorContrastAccessibilityClass extends Component {
       return div(
         {
           role: "presentation",
+          tabIndex: "-1",
           className: "accessibility-color-contrast",
         },
         ...children
@@ -126,6 +131,7 @@ class ColorContrastAccessibilityClass extends Component {
         }),
         div({
           role: "presentation",
+          tabIndex: "-1",
           className: "accessibility-color-contrast-separator",
         }),
         ContrastValue({
@@ -153,6 +159,7 @@ class ColorContrastAccessibilityClass extends Component {
     return div(
       {
         role: "presentation",
+        tabIndex: "-1",
         className: "accessibility-color-contrast",
       },
       ...children
@@ -199,6 +206,7 @@ class ColorContrastCheck extends Component {
     return div(
       {
         role: "presentation",
+        tabIndex: "-1",
         className: "accessibility-check",
       },
       h3(

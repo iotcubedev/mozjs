@@ -10,32 +10,32 @@
 #include "SurfaceCache.h"
 
 #include <algorithm>
+#include <utility>
+
+#include "ISurfaceProvider.h"
+#include "Image.h"
+#include "LookupResult.h"
+#include "ShutdownTracker.h"
+#include "gfx2DGlue.h"
+#include "gfxPlatform.h"
+#include "imgFrame.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Likely.h"
-#include "mozilla/Move.h"
-#include "mozilla/Pair.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_image.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Tuple.h"
-#include "nsIMemoryReporter.h"
-#include "gfx2DGlue.h"
-#include "gfxPlatform.h"
-#include "imgFrame.h"
-#include "Image.h"
-#include "ISurfaceProvider.h"
-#include "LookupResult.h"
 #include "nsExpirationTracker.h"
 #include "nsHashKeys.h"
+#include "nsIMemoryReporter.h"
 #include "nsRefPtrHashtable.h"
 #include "nsSize.h"
 #include "nsTArray.h"
 #include "prsystem.h"
-#include "ShutdownTracker.h"
 
 using std::max;
 using std::min;
@@ -45,6 +45,8 @@ namespace mozilla {
 using namespace gfx;
 
 namespace image {
+
+MOZ_DEFINE_MALLOC_SIZE_OF(SurfaceCacheMallocSizeOf)
 
 class CachedSurface;
 class SurfaceCacheImpl;
@@ -101,8 +103,7 @@ class CostEntry {
 
   bool operator<(const CostEntry& aOther) const {
     return mCost < aOther.mCost ||
-           (mCost == aOther.mCost &&
-            recordreplay::RecordReplayValue(mSurface < aOther.mSurface));
+           (mCost == aOther.mCost && mSurface < aOther.mSurface);
   }
 
  private:
@@ -170,6 +171,10 @@ class CachedSurface {
     return image::CostEntry(WrapNotNull(this), mProvider->LogicalSizeInBytes());
   }
 
+  size_t ShallowSizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
+    return aMallocSizeOf(this) + aMallocSizeOf(mProvider.get());
+  }
+
   // A helper type used by SurfaceCacheImpl::CollectSizeOfSurfaces.
   struct MOZ_STACK_CLASS SurfaceMemoryReport {
     SurfaceMemoryReport(nsTArray<SurfaceMemoryCounter>& aCounters,
@@ -187,15 +192,18 @@ class CachedSurface {
       // for surfaces with PlaybackType::eAnimated.)
       aCachedSurface->mProvider->AddSizeOfExcludingThis(
           mMallocSizeOf, [&](ISurfaceProvider::AddSizeOfCbData& aMetadata) {
-            SurfaceMemoryCounter counter(
-                aCachedSurface->GetSurfaceKey(), aCachedSurface->IsLocked(),
-                aCachedSurface->CannotSubstitute(), aIsFactor2);
+            SurfaceMemoryCounter counter(aCachedSurface->GetSurfaceKey(),
+                                         aCachedSurface->IsLocked(),
+                                         aCachedSurface->CannotSubstitute(),
+                                         aIsFactor2, aMetadata.mFinished);
 
-            counter.Values().SetDecodedHeap(aMetadata.heap);
-            counter.Values().SetDecodedNonHeap(aMetadata.nonHeap);
-            counter.Values().SetExternalHandles(aMetadata.handles);
-            counter.Values().SetFrameIndex(aMetadata.index);
-            counter.Values().SetExternalId(aMetadata.externalId);
+            counter.Values().SetDecodedHeap(aMetadata.mHeapBytes);
+            counter.Values().SetDecodedNonHeap(aMetadata.mNonHeapBytes);
+            counter.Values().SetDecodedUnknown(aMetadata.mUnknownBytes);
+            counter.Values().SetExternalHandles(aMetadata.mExternalHandles);
+            counter.Values().SetFrameIndex(aMetadata.mIndex);
+            counter.Values().SetExternalId(aMetadata.mExternalId);
+            counter.Values().SetSurfaceTypes(aMetadata.mTypes);
 
             mCounters.AppendElement(counter);
           });
@@ -231,9 +239,9 @@ static int64_t AreaOfIntSize(const IntSize& aSize) {
  * mode, the cache will strongly favour sizes which are a factor of 2 of the
  * largest native size. It accomplishes this by suggesting a factor of 2 size
  * when lookups fail and substituting the nearest factor of 2 surface to the
- * ideal size as the "best" available (as opposed to subsitution but not found).
- * This allows us to minimize memory consumption and CPU time spent decoding
- * when a website requires many variants of the same surface.
+ * ideal size as the "best" available (as opposed to substitution but not
+ * found). This allows us to minimize memory consumption and CPU time spent
+ * decoding when a website requires many variants of the same surface.
  */
 class ImageSurfaceCache {
   ~ImageSurfaceCache() {}
@@ -253,10 +261,20 @@ class ImageSurfaceCache {
 
   bool IsEmpty() const { return mSurfaces.Count() == 0; }
 
-  MOZ_MUST_USE bool Insert(NotNull<CachedSurface*> aSurface) {
+  size_t ShallowSizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
+    size_t bytes = aMallocSizeOf(this) +
+                   mSurfaces.ShallowSizeOfExcludingThis(aMallocSizeOf);
+    for (auto iter = ConstIter(); !iter.Done(); iter.Next()) {
+      bytes += iter.UserData()->ShallowSizeOfIncludingThis(aMallocSizeOf);
+    }
+    return bytes;
+  }
+
+  [[nodiscard]] bool Insert(NotNull<CachedSurface*> aSurface) {
     MOZ_ASSERT(!mLocked || aSurface->IsPlaceholder() || aSurface->IsLocked(),
                "Inserting an unlocked surface for a locked image");
-    return mSurfaces.Put(aSurface->GetSurfaceKey(), aSurface, fallible);
+    return mSurfaces.Put(aSurface->GetSurfaceKey(),
+                         RefPtr<CachedSurface>{aSurface}, fallible);
   }
 
   already_AddRefed<CachedSurface> Remove(NotNull<CachedSurface*> aSurface) {
@@ -544,6 +562,10 @@ class ImageSurfaceCache {
       MOZ_ASSERT_UNREACHABLE("Expected valid native size!");
       return aSize;
     }
+    if (image->GetOrientation().SwapsWidthAndHeight() &&
+        image->HandledOrientation()) {
+      std::swap(factorSize.width, factorSize.height);
+    }
 
     if (mIsVectorImage) {
       // Ensure the aspect ratio matches the native size before forcing the
@@ -664,6 +686,7 @@ class ImageSurfaceCache {
   }
 
   SurfaceTable::Iterator ConstIter() const { return mSurfaces.ConstIter(); }
+  uint32_t Count() const { return mSurfaces.Count(); }
 
   void SetLocked(bool aLocked) { mLocked = aLocked; }
   bool IsLocked() const { return mLocked; }
@@ -718,7 +741,10 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
         mMaxCost(aSurfaceCacheSize),
         mAvailableCost(aSurfaceCacheSize),
         mLockedCost(0),
-        mOverflowCount(0) {
+        mOverflowCount(0),
+        mAlreadyPresentCount(0),
+        mTableFailureCount(0),
+        mTrackingFailureCount(0) {
     nsCOMPtr<nsIObserverService> os = services::GetObserverService();
     if (os) {
       os->AddObserver(mMemoryPressureObserver, "memory-pressure", false);
@@ -747,6 +773,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
         Lookup(aProvider->GetImageKey(), aProvider->GetSurfaceKey(), aAutoLock,
                /* aMarkUsed = */ false);
     if (MOZ_UNLIKELY(result)) {
+      mAlreadyPresentCount++;
       return InsertOutcome::FAILURE_ALREADY_PRESENT;
     }
 
@@ -782,7 +809,11 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
     RefPtr<ImageSurfaceCache> cache = GetImageCache(imageKey);
     if (!cache) {
       cache = new ImageSurfaceCache(imageKey);
-      mImageCaches.Put(aProvider->GetImageKey(), cache);
+      if (!mImageCaches.Put(aProvider->GetImageKey(), RefPtr{cache},
+                            fallible)) {
+        mTableFailureCount++;
+        return InsertOutcome::FAILURE;
+      }
     }
 
     // If we were asked to mark the cache entry available, do so.
@@ -806,6 +837,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
     // Insert.
     MOZ_ASSERT(cost <= mAvailableCost, "Inserting despite too large a cost");
     if (!cache->Insert(surface)) {
+      mTableFailureCount++;
       if (mustLock) {
         surface->SetLocked(false);
       }
@@ -857,6 +889,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
       MOZ_ASSERT(mLockedCost <= mMaxCost, "Locked more than we can hold?");
     } else {
       if (NS_WARN_IF(!mCosts.InsertElementSorted(costEntry, fallible))) {
+        mTrackingFailureCount++;
         return false;
       }
 
@@ -866,6 +899,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
       if (NS_WARN_IF(NS_FAILED(rv))) {
         DebugOnly<bool> foundInCosts = mCosts.RemoveElementSorted(costEntry);
         MOZ_ASSERT(foundInCosts, "Lost track of costs for this surface");
+        mTrackingFailureCount++;
         return false;
       }
     }
@@ -1025,7 +1059,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
     RefPtr<ImageSurfaceCache> cache = GetImageCache(aImageKey);
     if (!cache) {
       cache = new ImageSurfaceCache(aImageKey);
-      mImageCaches.Put(aImageKey, cache);
+      mImageCaches.Put(aImageKey, RefPtr{cache});
     }
 
     cache->SetLocked(true);
@@ -1154,8 +1188,21 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
 
     // Lock the surface. This can fail.
     aSurface->SetLocked(true);
-    DebugOnly<bool> tracking = StartTracking(aSurface, aAutoLock);
-    MOZ_ASSERT(tracking);
+    DebugOnly<bool> tracked = StartTracking(aSurface, aAutoLock);
+    MOZ_ASSERT(tracked);
+  }
+
+  size_t ShallowSizeOfIncludingThis(
+      MallocSizeOf aMallocSizeOf, const StaticMutexAutoLock& aAutoLock) const {
+    size_t bytes =
+        aMallocSizeOf(this) + mCosts.ShallowSizeOfExcludingThis(aMallocSizeOf) +
+        mImageCaches.ShallowSizeOfExcludingThis(aMallocSizeOf) +
+        mCachedSurfacesDiscard.ShallowSizeOfExcludingThis(aMallocSizeOf) +
+        mExpirationTracker.ShallowSizeOfExcludingThis(aMallocSizeOf);
+    for (auto iter = mImageCaches.ConstIter(); !iter.Done(); iter.Next()) {
+      bytes += iter.UserData()->ShallowSizeOfIncludingThis(aMallocSizeOf);
+    }
+    return bytes;
   }
 
   NS_IMETHOD
@@ -1163,10 +1210,31 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
                  bool aAnonymize) override {
     StaticMutexAutoLock lock(sInstanceMutex);
 
+    uint32_t lockedImageCount = 0;
+    uint32_t totalSurfaceCount = 0;
+    uint32_t lockedSurfaceCount = 0;
+    for (auto iter = mImageCaches.ConstIter(); !iter.Done(); iter.Next()) {
+      totalSurfaceCount += iter.UserData()->Count();
+      if (iter.UserData()->IsLocked()) {
+        ++lockedImageCount;
+      }
+      for (auto surfIter = iter.UserData()->ConstIter(); !surfIter.Done();
+           surfIter.Next()) {
+        if (surfIter.UserData()->IsLocked()) {
+          ++lockedSurfaceCount;
+        }
+      }
+    }
+
     // clang-format off
     // We have explicit memory reporting for the surface cache which is more
     // accurate than the cost metrics we report here, but these metrics are
     // still useful to report, since they control the cache's behavior.
+    MOZ_COLLECT_REPORT(
+      "explicit/images/cache/overhead", KIND_HEAP, UNITS_BYTES,
+      ShallowSizeOfIncludingThis(SurfaceCacheMallocSizeOf, lock),
+"Memory used by the surface cache data structures, excluding surface data.");
+
     MOZ_COLLECT_REPORT(
       "imagelib-surface-cache-estimated-total",
       KIND_OTHER, UNITS_BYTES, (mMaxCost - mAvailableCost),
@@ -1178,10 +1246,58 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
 "Estimated memory used by locked surfaces in the imagelib surface cache.");
 
     MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-tracked-cost-count",
+      KIND_OTHER, UNITS_COUNT, mCosts.Length(),
+"Total number of surfaces tracked for cost (and expiry) in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-tracked-expiry-count",
+      KIND_OTHER, UNITS_COUNT, mExpirationTracker.Length(lock),
+"Total number of surfaces tracked for expiry (and cost) in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-image-count",
+      KIND_OTHER, UNITS_COUNT, mImageCaches.Count(),
+"Total number of images in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-locked-image-count",
+      KIND_OTHER, UNITS_COUNT, lockedImageCount,
+"Total number of locked images in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-image-surface-count",
+      KIND_OTHER, UNITS_COUNT, totalSurfaceCount,
+"Total number of surfaces in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-locked-surfaces-count",
+      KIND_OTHER, UNITS_COUNT, lockedSurfaceCount,
+"Total number of locked surfaces in the imagelib surface cache.");
+
+    MOZ_COLLECT_REPORT(
       "imagelib-surface-cache-overflow-count",
       KIND_OTHER, UNITS_COUNT, mOverflowCount,
 "Count of how many times the surface cache has hit its capacity and been "
 "unable to insert a new surface.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-tracking-failure-count",
+      KIND_OTHER, UNITS_COUNT, mTrackingFailureCount,
+"Count of how many times the surface cache has failed to begin tracking a "
+"given surface.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-already-present-count",
+      KIND_OTHER, UNITS_COUNT, mAlreadyPresentCount,
+"Count of how many times the surface cache has failed to insert a surface "
+"because it is already present.");
+
+    MOZ_COLLECT_REPORT(
+      "imagelib-surface-cache-table-failure-count",
+      KIND_OTHER, UNITS_COUNT, mTableFailureCount,
+"Count of how many times the surface cache has failed to insert a surface "
+"because a hash table could not accept an entry.");
     // clang-format on
 
     return NS_OK;
@@ -1206,6 +1322,32 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
         });
 
     MaybeRemoveEmptyCache(aImageKey, cache);
+  }
+
+  void ReleaseImageOnMainThread(already_AddRefed<image::Image>&& aImage,
+                                const StaticMutexAutoLock& aAutoLock) {
+    RefPtr<image::Image> image = aImage;
+    if (!image) {
+      return;
+    }
+
+    bool needsDispatch = mReleasingImagesOnMainThread.IsEmpty();
+    mReleasingImagesOnMainThread.AppendElement(image);
+
+    if (!needsDispatch) {
+      // There is already a ongoing task for ClearReleasingImages().
+      return;
+    }
+
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "SurfaceCacheImpl::ReleaseImageOnMainThread",
+        []() -> void { SurfaceCache::ClearReleasingImages(); }));
+  }
+
+  void TakeReleasingImages(nsTArray<RefPtr<image::Image>>& aImage,
+                           const StaticMutexAutoLock& aAutoLock) {
+    MOZ_ASSERT(NS_IsMainThread());
+    aImage.SwapElements(mReleasingImagesOnMainThread);
   }
 
  private:
@@ -1304,8 +1446,7 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
     explicit SurfaceTracker(uint32_t aSurfaceCacheExpirationTimeMS)
         : ExpirationTrackerImpl<CachedSurface, 2, StaticMutex,
                                 StaticMutexAutoLock>(
-              aSurfaceCacheExpirationTimeMS, "SurfaceTracker",
-              SystemGroup::EventTargetFor(TaskCategory::Other)) {}
+              aSurfaceCacheExpirationTimeMS, "SurfaceTracker") {}
 
    protected:
     void NotifyExpiredLocked(CachedSurface* aSurface,
@@ -1353,11 +1494,15 @@ class SurfaceCacheImpl final : public nsIMemoryReporter {
   nsTArray<RefPtr<CachedSurface>> mCachedSurfacesDiscard;
   SurfaceTracker mExpirationTracker;
   RefPtr<MemoryPressureObserver> mMemoryPressureObserver;
+  nsTArray<RefPtr<image::Image>> mReleasingImagesOnMainThread;
   const uint32_t mDiscardFactor;
   const Cost mMaxCost;
   Cost mAvailableCost;
   Cost mLockedCost;
   size_t mOverflowCount;
+  size_t mAlreadyPresentCount;
+  size_t mTableFailureCount;
+  size_t mTrackingFailureCount;
 };
 
 NS_IMPL_ISUPPORTS(SurfaceCacheImpl, nsIMemoryReporter)
@@ -1390,6 +1535,11 @@ void SurfaceCache::Initialize() {
   // Maximum size of the surface cache, in kilobytes.
   uint64_t surfaceCacheMaxSizeKB =
       StaticPrefs::image_mem_surfacecache_max_size_kb_AtStartup();
+
+  if (sizeof(uintptr_t) <= 4) {
+    // Limit surface cache to 1 GB if our address space is 32 bit.
+    surfaceCacheMaxSizeKB = 1024 * 1024;
+  }
 
   // A knob determining the actual size of the surface cache. Currently the
   // cache is (size of main memory) / (surface cache size factor) KB
@@ -1644,7 +1794,7 @@ IntSize SurfaceCache::ClampVectorSize(const IntSize& aSize) {
     return aSize;
   }
 
-  int32_t proposedKB = int32_t(int64_t(aSize.width) * aSize.height / 256);
+  int64_t proposedKB = int64_t(aSize.width) * aSize.height / 256;
   if (maxSizeKB >= proposedKB) {
     return aSize;
   }
@@ -1659,6 +1809,36 @@ IntSize SurfaceCache::ClampSize(ImageKey aImageKey, const IntSize& aSize) {
   }
 
   return ClampVectorSize(aSize);
+}
+
+/* static */
+void SurfaceCache::ReleaseImageOnMainThread(
+    already_AddRefed<image::Image> aImage, bool aAlwaysProxy) {
+  if (NS_IsMainThread() && !aAlwaysProxy) {
+    RefPtr<image::Image> image = std::move(aImage);
+    return;
+  }
+
+  StaticMutexAutoLock lock(sInstanceMutex);
+  if (sInstance) {
+    sInstance->ReleaseImageOnMainThread(std::move(aImage), lock);
+  } else {
+    NS_ReleaseOnMainThread("SurfaceCache::ReleaseImageOnMainThread",
+                           std::move(aImage), /* aAlwaysProxy */ true);
+  }
+}
+
+/* static */
+void SurfaceCache::ClearReleasingImages() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  nsTArray<RefPtr<image::Image>> images;
+  {
+    StaticMutexAutoLock lock(sInstanceMutex);
+    if (sInstance) {
+      sInstance->TakeReleasingImages(images, lock);
+    }
+  }
 }
 
 }  // namespace image

@@ -2,11 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import {
-  actionCreators as ac,
-  actionTypes as at,
-  ASRouterActions as ra,
-} from "common/Actions.jsm";
+import { actionCreators as ac, actionTypes as at } from "common/Actions.jsm";
 import { OUTGOING_MESSAGE_NAME as AS_GENERAL_OUTGOING_MESSAGE_NAME } from "content-src/lib/init-store";
 import { generateBundles } from "./rich-text-strings";
 import { ImpressionsWrapper } from "./components/ImpressionsWrapper/ImpressionsWrapper";
@@ -21,7 +17,7 @@ const INCOMING_MESSAGE_NAME = "ASRouter:parent-to-child";
 const OUTGOING_MESSAGE_NAME = "ASRouter:child-to-parent";
 const TEMPLATES_ABOVE_PAGE = [
   "trailhead",
-  "fxa_overlay",
+  "full_page_interrupt",
   "return_to_amo_overlay",
   "extended_triplets",
 ];
@@ -50,6 +46,12 @@ export const ASRouterUtils = {
       data: { id, ...options },
     });
   },
+  modifyMessageJson(content) {
+    ASRouterUtils.sendMessage({
+      type: "MODIFY_MESSAGE_JSON",
+      data: { content },
+    });
+  },
   dismissById(id) {
     ASRouterUtils.sendMessage({ type: "DISMISS_MESSAGE_BY_ID", data: { id } });
   },
@@ -61,6 +63,9 @@ export const ASRouterUtils = {
   },
   unblockById(id) {
     ASRouterUtils.sendMessage({ type: "UNBLOCK_MESSAGE_BY_ID", data: { id } });
+  },
+  blockBundle(bundle) {
+    ASRouterUtils.sendMessage({ type: "BLOCK_BUNDLE", data: { bundle } });
   },
   unblockBundle(bundle) {
     ASRouterUtils.sendMessage({ type: "UNBLOCK_BUNDLE", data: { bundle } });
@@ -85,6 +90,7 @@ export const ASRouterUtils = {
           url: endpoint.href,
           snippetId: params.get("snippetId"),
           theme: this.getPreviewTheme(),
+          dir: this.getPreviewDir(),
         };
       } catch (e) {}
     }
@@ -95,6 +101,11 @@ export const ASRouterUtils = {
     return new URLSearchParams(
       global.location.href.slice(global.location.href.indexOf("theme"))
     ).get("theme");
+  },
+  getPreviewDir() {
+    return new URLSearchParams(
+      global.location.href.slice(global.location.href.indexOf("dir"))
+    ).get("dir");
   },
 };
 
@@ -190,26 +201,35 @@ export class ASRouterUISurface extends React.PureComponent {
     this.sendUserActionTelemetry({ event: "IMPRESSION", ...extraProps });
   }
 
-  // If link has a `metric` data attribute send it as part of the `value`
+  // If link has a `metric` data attribute send it as part of the `event_context`
   // telemetry field which can have arbitrary values.
   // Used for router messages with links as part of the content.
   sendClick(event) {
+    const { dataset } = event.target;
     const metric = {
-      value: event.target.dataset.metric,
+      event_context: dataset.metric,
       // Used for the `source` of the event. Needed to differentiate
       // from other snippet or onboarding events that may occur.
       id: "NEWTAB_FOOTER_BAR_CONTENT",
     };
+    const { entrypoint_name, entrypoint_value } = dataset;
+    // Assign the snippet referral for the action
+    const entrypoint = entrypoint_name
+      ? new URLSearchParams([[entrypoint_name, entrypoint_value]]).toString()
+      : entrypoint_value;
     const action = {
-      type: event.target.dataset.action,
-      data: { args: event.target.dataset.args },
+      type: dataset.action,
+      data: {
+        args: dataset.args,
+        ...(entrypoint && { entrypoint }),
+      },
     };
     if (action.type) {
       ASRouterUtils.executeAction(action);
     }
     if (
       !this.state.message.content.do_not_autoblock &&
-      !event.target.dataset.do_not_autoblock
+      !dataset.do_not_autoblock
     ) {
       ASRouterUtils.blockById(this.state.message.id);
     }
@@ -227,6 +247,16 @@ export class ASRouterUISurface extends React.PureComponent {
   }
 
   clearMessage(id) {
+    // Request new set of dynamic triplet cards when click on a card CTA clear
+    // message and 'id' matches one of the cards in message bundle
+    if (
+      this.state.message &&
+      this.state.message.bundle &&
+      this.state.message.bundle.find(card => card.id === id)
+    ) {
+      this.requestMessage();
+    }
+
     if (id === this.state.message.id) {
       this.setState({ message: {} });
       // Remove any styles related to the RTAMO message
@@ -259,17 +289,7 @@ export class ASRouterUISurface extends React.PureComponent {
     }
   }
 
-  componentWillMount() {
-    const endpoint = ASRouterUtils.getPreviewEndpoint();
-    if (endpoint && endpoint.theme === "dark") {
-      global.window.dispatchEvent(
-        new CustomEvent("LightweightTheme:Set", {
-          detail: { data: NEWTAB_DARK_THEME },
-        })
-      );
-    }
-    ASRouterUtils.addListener(this.onMessageFromParent);
-
+  requestMessage(endpoint) {
     // If we are loading about:welcome we want to trigger the onboarding messages
     if (
       this.props.document &&
@@ -285,6 +305,23 @@ export class ASRouterUISurface extends React.PureComponent {
         data: { endpoint },
       });
     }
+  }
+
+  componentWillMount() {
+    const endpoint = ASRouterUtils.getPreviewEndpoint();
+    if (endpoint && endpoint.theme === "dark") {
+      global.window.dispatchEvent(
+        new CustomEvent("LightweightTheme:Set", {
+          detail: { data: NEWTAB_DARK_THEME },
+        })
+      );
+    }
+    if (endpoint && endpoint.dir === "rtl") {
+      //Set `dir = rtl` on the HTML
+      this.props.document.dir = "rtl";
+    }
+    ASRouterUtils.addListener(this.onMessageFromParent);
+    this.requestMessage(endpoint);
   }
 
   componentWillUnmount() {
@@ -308,9 +345,9 @@ export class ASRouterUISurface extends React.PureComponent {
   async onUserAction(action) {
     switch (action.type) {
       // This needs to be handled locally because its
-      case ra.ENABLE_FIREFOX_MONITOR:
+      case "ENABLE_FIREFOX_MONITOR":
         const url = await this.getMonitorUrl(action.data.args);
-        ASRouterUtils.executeAction({ type: ra.OPEN_URL, data: { args: url } });
+        ASRouterUtils.executeAction({ type: "OPEN_URL", data: { args: url } });
         break;
       default:
         ASRouterUtils.executeAction(action);
@@ -384,6 +421,7 @@ export class ASRouterUISurface extends React.PureComponent {
             onBlockById={ASRouterUtils.blockById}
             onDismiss={this.onDismissById(this.state.message.id)}
             fxaEndpoint={this.props.fxaEndpoint}
+            appUpdateChannel={this.props.appUpdateChannel}
             fetchFlowParams={this.fetchFlowParams}
           />
         </ImpressionsWrapper>

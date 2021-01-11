@@ -5,11 +5,12 @@ const { AddonTestUtils } = ChromeUtils.import(
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
-  UrlbarController: "resource:///modules/UrlbarController.jsm",
+  ExtensionParent: "resource://gre/modules/ExtensionParent.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarProviderExtension: "resource:///modules/UrlbarProviderExtension.jsm",
   UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
   UrlbarQueryContext: "resource:///modules/UrlbarUtils.jsm",
+  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
 });
 
@@ -21,6 +22,20 @@ AddonTestUtils.createAppInfo(
   "1",
   "42"
 );
+// Override ExtensionXPCShellUtils.jsm's overriding of the pref as the
+// search service needs it.
+Services.prefs.clearUserPref("services.settings.default_bucket");
+
+function promiseUninstallCompleted(extensionId) {
+  return new Promise(resolve => {
+    // eslint-disable-next-line mozilla/balanced-listeners
+    ExtensionParent.apiManager.on("uninstall-complete", (type, { id }) => {
+      if (id === extensionId) {
+        executeSoon(resolve);
+      }
+    });
+  });
+}
 
 const ORIGINAL_NOTIFICATION_TIMEOUT =
   UrlbarProviderExtension.notificationTimeout;
@@ -29,7 +44,12 @@ add_task(async function startup() {
   Services.prefs.setCharPref("browser.search.region", "US");
   Services.prefs.setBoolPref("browser.search.geoSpecificDefaults", false);
   Services.prefs.setIntPref("browser.search.addonLoadTimeout", 0);
+  Services.prefs.setBoolPref(
+    "browser.search.separatePrivateDefault.ui.enabled",
+    false
+  );
   await AddonTestUtils.promiseStartupManager();
+  await UrlbarTestUtils.initXPCShellDependencies();
 
   // Add a test engine and make it default so that when we do searches below,
   // Firefox doesn't try to include search suggestions from the actual default
@@ -101,8 +121,8 @@ add_task(async function test_registerProvider() {
             "SearchString is non empty"
           );
           browser.test.assertTrue(
-            Array.isArray(query.acceptableSources),
-            "acceptableSources is an array"
+            Array.isArray(query.sources),
+            "sources is an array"
           );
           return state;
         }, name);
@@ -119,20 +139,14 @@ add_task(async function test_registerProvider() {
   );
 
   // Run a query, this should execute the above listeners and checks, plus it
-  // will set the provider's isActive and isRestricting.
+  // will set the provider's isActive and priority.
   let queryContext = new UrlbarQueryContext({
     allowAutofill: false,
     isPrivate: false,
     maxResults: 10,
     searchString: "*",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(queryContext);
 
   // Check the providers behavior has been setup properly.
@@ -148,11 +162,19 @@ add_task(async function test_registerProvider() {
       provider.isActive(queryContext),
       "Check active callback"
     );
-    Assert.equal(
-      restricting,
-      provider.isRestricting(queryContext),
-      "Check restrict callback"
-    );
+    if (restricting) {
+      Assert.notEqual(
+        provider.getPriority(queryContext),
+        0,
+        "Check provider priority"
+      );
+    } else {
+      Assert.equal(
+        provider.getPriority(queryContext),
+        0,
+        "Check provider priority"
+      );
+    }
   }
 
   await ext.unload();
@@ -166,7 +188,7 @@ add_task(async function test_registerProvider() {
 });
 
 // Adds a single active provider that returns many kinds of results.  This also
-// checks that the heuristic result from the built-in UnifiedComplete provider
+// checks that the heuristic result from the built-in HeuristicFallback provider
 // is included.
 add_task(async function test_onProviderResultsRequested() {
   let ext = ExtensionTestUtils.loadExtension({
@@ -183,7 +205,7 @@ add_task(async function test_onProviderResultsRequested() {
         browser.test.assertFalse(query.isPrivate);
         browser.test.assertEq(query.maxResults, 10);
         browser.test.assertEq(query.searchString, "test");
-        browser.test.assertTrue(Array.isArray(query.acceptableSources));
+        browser.test.assertTrue(Array.isArray(query.sources));
         return [
           {
             type: "remote_tab",
@@ -191,6 +213,7 @@ add_task(async function test_onProviderResultsRequested() {
             payload: {
               title: "Test remote_tab-tabs result",
               url: "http://example.com/remote_tab-tabs",
+              device: "device",
             },
           },
           {
@@ -207,6 +230,16 @@ add_task(async function test_onProviderResultsRequested() {
             payload: {
               title: "Test tab-tabs result",
               url: "http://example.com/tab-tabs",
+            },
+          },
+          {
+            type: "tip",
+            source: "local",
+            payload: {
+              text: "Test tip-local result text",
+              buttonText: "Test tip-local result button text",
+              buttonUrl: "http://example.com/tip-button",
+              helpUrl: "http://example.com/tip-help",
             },
           },
           {
@@ -234,28 +267,33 @@ add_task(async function test_onProviderResultsRequested() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // Check the results.
   let expectedResults = [
-    // The first result should be a search result returned by the
-    // UnifiedComplete provider.
+    // The first result should be a search result returned by HeuristicFallback.
     {
       type: UrlbarUtils.RESULT_TYPE.SEARCH,
       source: UrlbarUtils.RESULT_SOURCE.SEARCH,
       title: "test",
       heuristic: true,
+      payload: {
+        query: "test",
+        engine: "Test engine",
+        suggestion: undefined,
+        tailPrefix: undefined,
+        tail: undefined,
+        tailOffsetIndex: -1,
+        keyword: undefined,
+        isSearchHistory: false,
+        icon: "",
+        keywordOffer: false,
+      },
     },
     // The second result should be our search suggestion result since the
     // default muxer sorts search suggestion results before other types.
@@ -264,6 +302,10 @@ add_task(async function test_onProviderResultsRequested() {
       source: UrlbarUtils.RESULT_SOURCE.SEARCH,
       title: "Test search-search result",
       heuristic: false,
+      payload: {
+        engine: "Test engine",
+        suggestion: "Test search-search result",
+      },
     },
     // The rest of the results should appear in the order we returned them
     // above.
@@ -272,26 +314,57 @@ add_task(async function test_onProviderResultsRequested() {
       source: UrlbarUtils.RESULT_SOURCE.TABS,
       title: "Test remote_tab-tabs result",
       heuristic: false,
+      payload: {
+        title: "Test remote_tab-tabs result",
+        url: "http://example.com/remote_tab-tabs",
+        displayUrl: "http://example.com/remote_tab-tabs",
+        device: "device",
+      },
     },
     {
       type: UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
       source: UrlbarUtils.RESULT_SOURCE.TABS,
       title: "Test tab-tabs result",
       heuristic: false,
+      payload: {
+        title: "Test tab-tabs result",
+        url: "http://example.com/tab-tabs",
+        displayUrl: "http://example.com/tab-tabs",
+      },
+    },
+    {
+      type: UrlbarUtils.RESULT_TYPE.TIP,
+      source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
+      title: "",
+      heuristic: false,
+      payload: {
+        text: "Test tip-local result text",
+        buttonText: "Test tip-local result button text",
+        buttonUrl: "http://example.com/tip-button",
+        helpUrl: "http://example.com/tip-help",
+        type: "extension",
+      },
     },
     {
       type: UrlbarUtils.RESULT_TYPE.URL,
       source: UrlbarUtils.RESULT_SOURCE.HISTORY,
       title: "Test url-history result",
       heuristic: false,
+      payload: {
+        title: "Test url-history result",
+        url: "http://example.com/url-history",
+        displayUrl: "http://example.com/url-history",
+      },
     },
   ];
 
+  Assert.ok(context.results.every(r => r.suggestedIndex == -1));
   let actualResults = context.results.map(r => ({
     type: r.type,
     source: r.source,
     title: r.title,
     heuristic: r.heuristic,
+    payload: r.payload,
   }));
 
   Assert.deepEqual(actualResults, expectedResults);
@@ -416,13 +489,7 @@ add_task(async function test_onProviderResultsRequested_searchEngines() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
   // Check the results.  The first several are valid and should include "Test
@@ -528,20 +595,14 @@ add_task(async function test_activeAndInactiveProviders() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(active.isActive(context));
   Assert.ok(!inactive.isActive(context));
-  Assert.ok(!active.isRestricting(context));
-  Assert.ok(!inactive.isRestricting(context));
+  Assert.equal(active.getPriority(context), 0);
+  Assert.equal(inactive.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 2);
@@ -598,19 +659,13 @@ add_task(async function test_threeActiveProviders() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   for (let provider of providers) {
     Assert.ok(provider.isActive(context));
-    Assert.ok(!provider.isRestricting(context));
+    Assert.equal(provider.getPriority(context), 0);
   }
 
   // Check the results.
@@ -662,19 +717,13 @@ add_task(async function test_threeInactiveProviders() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   for (let provider of providers) {
     Assert.ok(!provider.isActive(context));
-    Assert.ok(!provider.isRestricting(context));
+    Assert.equal(provider.getPriority(context), 0);
   }
 
   // Check the results.
@@ -735,26 +784,131 @@ add_task(async function test_activeInactiveAndRestrictingProviders() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
   // Check isActive and isRestricting.
   Assert.ok(providers.active.isActive(context));
-  Assert.ok(!providers.active.isRestricting(context));
+  Assert.equal(providers.active.getPriority(context), 0);
   Assert.ok(!providers.inactive.isActive(context));
-  Assert.ok(!providers.inactive.isRestricting(context));
+  Assert.equal(providers.inactive.getPriority(context), 0);
   Assert.ok(providers.restricting.isActive(context));
-  Assert.ok(providers.restricting.isRestricting(context));
+  Assert.notEqual(providers.restricting.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 1);
   Assert.equal(context.results[0].title, "Test result restricting");
+
+  await ext.unload();
+});
+
+// Adds a restricting provider that returns a heuristic result.  The actual
+// result created from the extension's result should be a heuristic.
+add_task(async function test_heuristicRestricting() {
+  let ext = ExtensionTestUtils.loadExtension({
+    manifest: {
+      permissions: ["urlbar"],
+    },
+    isPrivileged: true,
+    incognitoOverride: "spanning",
+    background() {
+      browser.urlbar.onBehaviorRequested.addListener(query => {
+        return "restricting";
+      }, "test");
+      browser.urlbar.onResultsRequested.addListener(query => {
+        return [
+          {
+            type: "url",
+            source: "history",
+            heuristic: true,
+            payload: {
+              title: "Test result",
+              url: "http://example.com/",
+            },
+          },
+        ];
+      }, "test");
+    },
+  });
+  await ext.startup();
+
+  // Check the provider.
+  let provider = UrlbarProvidersManager.getProvider("test");
+  Assert.ok(provider);
+
+  // Run a query.
+  let context = new UrlbarQueryContext({
+    allowAutofill: false,
+    isPrivate: false,
+    maxResults: 10,
+    searchString: "test",
+  });
+  let controller = UrlbarTestUtils.newMockController();
+  await controller.startQuery(context);
+
+  // Check the results.
+  Assert.equal(context.results.length, 1);
+  Assert.ok(context.results[0].heuristic);
+
+  await ext.unload();
+});
+
+// Adds a non-restricting provider that returns a heuristic result.  The actual
+// result created from the extension's result should *not* be a heuristic, and
+// the usual UnifiedComplete heuristic should be present.
+add_task(async function test_heuristicNonRestricting() {
+  let ext = ExtensionTestUtils.loadExtension({
+    manifest: {
+      permissions: ["urlbar"],
+    },
+    isPrivileged: true,
+    incognitoOverride: "spanning",
+    background() {
+      browser.urlbar.onBehaviorRequested.addListener(query => {
+        return "active";
+      }, "test");
+      browser.urlbar.onResultsRequested.addListener(query => {
+        return [
+          {
+            type: "url",
+            source: "history",
+            heuristic: true,
+            payload: {
+              title: "Test result",
+              url: "http://example.com/",
+            },
+          },
+        ];
+      }, "test");
+    },
+  });
+  await ext.startup();
+
+  // Check the provider.
+  let provider = UrlbarProvidersManager.getProvider("test");
+  Assert.ok(provider);
+
+  // Run a query.
+  let context = new UrlbarQueryContext({
+    allowAutofill: false,
+    isPrivate: false,
+    maxResults: 10,
+    searchString: "test",
+  });
+  let controller = UrlbarTestUtils.newMockController();
+  await controller.startQuery(context);
+
+  // Check the results.  The first result should be UnifiedComplete's heuristic.
+  let firstResult = context.results[0];
+  Assert.ok(firstResult.heuristic);
+  Assert.equal(firstResult.type, UrlbarUtils.RESULT_TYPE.SEARCH);
+  Assert.equal(firstResult.source, UrlbarUtils.RESULT_SOURCE.SEARCH);
+  Assert.equal(firstResult.payload.engine, "Test engine");
+
+  // The extension result should be present but not the heuristic.
+  let result = context.results.find(r => r.title == "Test result");
+  Assert.ok(result);
+  Assert.ok(!result.heuristic);
 
   await ext.unload();
 });
@@ -787,18 +941,12 @@ add_task(async function test_onResultsRequestedNotImplemented() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
   // Check isActive and isRestricting.
   Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 1);
@@ -852,13 +1000,7 @@ add_task(async function test_badPayload() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
   // Check the results.
@@ -899,13 +1041,7 @@ add_task(async function test_onQueryCanceled() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
 
   let startPromise = controller.startQuery(context);
   controller.cancelQuery();
@@ -951,22 +1087,16 @@ add_task(async function test_onBehaviorRequestedTimeout() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
 
   let currentTimeout = UrlbarProviderExtension.notificationTimeout;
   UrlbarProviderExtension.notificationTimeout = 0;
   await controller.startQuery(context);
   UrlbarProviderExtension.notificationTimeout = currentTimeout;
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(!provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 1);
@@ -1017,13 +1147,7 @@ add_task(async function test_onResultsRequestedTimeout() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
 
   // Set the notification timeout.  In test_onBehaviorRequestedTimeout above, we
   // could set it to 0 because we were testing onBehaviorRequested, which is
@@ -1035,9 +1159,9 @@ add_task(async function test_onResultsRequestedTimeout() {
   await controller.startQuery(context);
   UrlbarProviderExtension.notificationTimeout = currentTimeout;
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 1);
@@ -1074,20 +1198,14 @@ add_task(async function test_privateBrowsing_not_allowed() {
   await ext.startup();
 
   // Run a query, this should execute the above listeners and checks, plus it
-  // will set the provider's isActive and isRestricting.
+  // will set the provider's isActive and priority.
   let queryContext = new UrlbarQueryContext({
     allowAutofill: false,
     isPrivate: true,
     maxResults: 10,
     searchString: "*",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(queryContext);
   // Check the providers behavior has been setup properly.
   let provider = UrlbarProvidersManager.getProvider("Test-private");
@@ -1130,21 +1248,15 @@ add_task(async function test_privateBrowsing_not_allowed_onQueryCanceled() {
     maxResults: 10,
     searchString: "*",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
 
   let startPromise = controller.startQuery(context);
   controller.cancelQuery();
   await startPromise;
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(!provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   await ext.unload();
 });
@@ -1186,18 +1298,12 @@ add_task(async function test_privateBrowsing_allowed() {
     maxResults: 10,
     searchString: "*",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // The events should have been fired.
   await Promise.all(
@@ -1244,26 +1350,14 @@ add_task(async function test_privateBrowsing_allowed_onQueryCanceled() {
     maxResults: 10,
     searchString: "*",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
 
   let startPromise = controller.startQuery(context);
   controller.cancelQuery();
   await startPromise;
 
-  // Check isActive and isRestricting.
-  Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
-
-  // The events should have been fired.
-  await Promise.all(
-    ["onBehaviorRequested", "onQueryCanceled"].map(msg => ext.awaitMessage(msg))
-  );
+  // onQueryCanceled should have been fired.
+  await ext.awaitMessage("onQueryCanceled");
 
   await ext.unload();
 });
@@ -1291,6 +1385,7 @@ add_task(async function test_nonPrivateBrowsing() {
               title: "Test result",
               url: "http://example.com/",
             },
+            suggestedIndex: 1,
           },
         ];
       }, "test");
@@ -1309,65 +1404,20 @@ add_task(async function test_nonPrivateBrowsing() {
     maxResults: 10,
     searchString: "test",
   });
-  let controller = new UrlbarController({
-    browserWindow: {
-      location: {
-        href: AppConstants.BROWSER_CHROME_URL,
-      },
-    },
-  });
+  let controller = UrlbarTestUtils.newMockController();
   await controller.startQuery(context);
 
-  // Check isActive and isRestricting.
+  // Check isActive and priority.
   Assert.ok(provider.isActive(context));
-  Assert.ok(!provider.isRestricting(context));
+  Assert.equal(provider.getPriority(context), 0);
 
   // Check the results.
   Assert.equal(context.results.length, 2);
   Assert.ok(context.results[0].heuristic);
   Assert.equal(context.results[1].title, "Test result");
+  Assert.equal(context.results[1].suggestedIndex, 1);
 
   await ext.unload();
-});
-
-// Tests the openViewOnFocus property.
-add_task(async function test_setOpenViewOnFocus() {
-  let getPrefValue = () => UrlbarPrefs.get("openViewOnFocus");
-
-  Assert.equal(
-    getPrefValue(),
-    false,
-    "Open-view-on-focus mode should be disabled by default"
-  );
-
-  let ext = ExtensionTestUtils.loadExtension({
-    manifest: {
-      permissions: ["urlbar"],
-    },
-    isPrivileged: true,
-    incognitoOverride: "spanning",
-    useAddonManager: "temporary",
-    async background() {
-      await browser.urlbar.openViewOnFocus.set({ value: true });
-      browser.test.sendMessage("ready");
-    },
-  });
-  await ext.startup();
-  await ext.awaitMessage("ready");
-
-  Assert.equal(
-    getPrefValue(),
-    true,
-    "Successfully enabled the open-view-on-focus mode"
-  );
-
-  await ext.unload();
-
-  Assert.equal(
-    getPrefValue(),
-    false,
-    "Open-view-on-focus mode should be reset after unloading the add-on"
-  );
 });
 
 // Tests the engagementTelemetry property.
@@ -1387,11 +1437,13 @@ add_task(async function test_engagementTelemetry() {
     isPrivileged: true,
     incognitoOverride: "spanning",
     useAddonManager: "temporary",
-    background() {
-      browser.urlbar.engagementTelemetry.set({ value: true });
+    async background() {
+      await browser.urlbar.engagementTelemetry.set({ value: true });
+      browser.test.sendMessage("ready");
     },
   });
   await ext.startup();
+  await ext.awaitMessage("ready");
 
   Assert.equal(
     getPrefValue(),
@@ -1399,7 +1451,9 @@ add_task(async function test_engagementTelemetry() {
     "Successfully enabled the engagement telemetry"
   );
 
+  let completed = promiseUninstallCompleted(ext.id);
   await ext.unload();
+  await completed;
 
   Assert.equal(
     getPrefValue(),

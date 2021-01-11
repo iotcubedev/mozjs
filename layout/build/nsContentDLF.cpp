@@ -11,15 +11,10 @@
 #include "nsDocShell.h"
 #include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
-#include "nsIComponentManager.h"
-#include "nsIComponentRegistrar.h"
 #include "nsIContentViewer.h"
-#include "nsICategoryManager.h"
 #include "nsIDocumentLoaderFactory.h"
 #include "mozilla/dom/Document.h"
-#include "nsIURL.h"
 #include "nsNodeInfoManager.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsString.h"
 #include "nsContentCID.h"
 #include "nsNetUtil.h"
@@ -32,7 +27,6 @@
 #include "DecoderTraits.h"
 
 // plugins
-#include "nsIPluginHost.h"
 #include "nsPluginHost.h"
 
 // Factory code for creating variations on html documents
@@ -43,13 +37,9 @@ using mozilla::dom::Document;
 
 already_AddRefed<nsIContentViewer> NS_NewContentViewer();
 
-static const char* const gHTMLTypes[] = {TEXT_HTML,
-                                         VIEWSOURCE_CONTENT_TYPE,
+static const char* const gHTMLTypes[] = {TEXT_HTML, VIEWSOURCE_CONTENT_TYPE,
                                          APPLICATION_XHTML_XML,
-                                         APPLICATION_WAPXHTML_XML,
-                                         TEXT_XUL,
-                                         APPLICATION_CACHED_XUL,
-                                         0};
+                                         APPLICATION_WAPXHTML_XML, 0};
 
 static const char* const gXMLTypes[] = {TEXT_XML,
                                         APPLICATION_XML,
@@ -82,9 +72,9 @@ nsresult NS_NewContentDocumentLoaderFactory(
   return NS_OK;
 }
 
-nsContentDLF::nsContentDLF() {}
+nsContentDLF::nsContentDLF() = default;
 
-nsContentDLF::~nsContentDLF() {}
+nsContentDLF::~nsContentDLF() = default;
 
 NS_IMPL_ISUPPORTS(nsContentDLF, nsIDocumentLoaderFactory)
 
@@ -124,10 +114,10 @@ nsContentDLF::CreateInstance(const char* aCommand, nsIChannel* aChannel,
       // Also note the lifetime of "type" allows us to safely use "get()" here.
       contentType = type;
     } else {
-      viewSourceChannel->SetContentType(NS_LITERAL_CSTRING(TEXT_PLAIN));
+      viewSourceChannel->SetContentType(nsLiteralCString(TEXT_PLAIN));
     }
   } else if (aContentType.EqualsLiteral(VIEWSOURCE_CONTENT_TYPE)) {
-    aChannel->SetContentType(NS_LITERAL_CSTRING(TEXT_PLAIN));
+    aChannel->SetContentType(nsLiteralCString(TEXT_PLAIN));
     contentType = TEXT_PLAIN;
   }
 
@@ -236,7 +226,7 @@ nsContentDLF::CreateInstanceForDocument(nsISupports* aContainer,
 /* static */
 already_AddRefed<Document> nsContentDLF::CreateBlankDocument(
     nsILoadGroup* aLoadGroup, nsIPrincipal* aPrincipal,
-    nsIPrincipal* aStoragePrincipal, nsDocShell* aContainer) {
+    nsIPrincipal* aPartitionedPrincipal, nsDocShell* aContainer) {
   // create a new blank HTML document
   RefPtr<Document> blankDoc;
   mozilla::Unused << NS_NewHTMLDocument(getter_AddRefs(blankDoc));
@@ -247,11 +237,11 @@ already_AddRefed<Document> nsContentDLF::CreateBlankDocument(
 
   // initialize
   nsCOMPtr<nsIURI> uri;
-  NS_NewURI(getter_AddRefs(uri), NS_LITERAL_CSTRING("about:blank"));
+  NS_NewURI(getter_AddRefs(uri), "about:blank"_ns);
   if (!uri) {
     return nullptr;
   }
-  blankDoc->ResetToURI(uri, aLoadGroup, aPrincipal, aStoragePrincipal);
+  blankDoc->ResetToURI(uri, aLoadGroup, aPrincipal, aPartitionedPrincipal);
   blankDoc->SetContainer(aContainer);
 
   // add some simple content structure

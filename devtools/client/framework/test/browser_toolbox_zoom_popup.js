@@ -42,7 +42,7 @@ add_task(async function() {
   );
   // If the window is displayed bottom of screen, the menu might be displayed
   // above the button so move it to the top of the screen first.
-  hostWindow.moveTo(0, 0);
+  await moveWindowTo(hostWindow, 0, 0);
 
   // Shrink the width of the window such that the inspector's tab menu button
   // and chevron button are visible.
@@ -50,8 +50,6 @@ add_task(async function() {
   hostWindow.resizeTo(400, hostWindow.outerHeight);
   await waitUntil(() => {
     return (
-      hostWindow.screen.top === 0 &&
-      hostWindow.screen.left === 0 &&
       hostWindow.outerWidth === 400 &&
       toolbox.doc.getElementById("tools-chevron-menu-button") &&
       inspector.panelDoc.querySelector(".all-tabs-menu") &&
@@ -78,9 +76,9 @@ add_task(async function() {
       case "native":
         {
           // Allow rounded error and platform offset value.
-          // horizontal : eIntID_ContextMenuOffsetHorizontal of GTK and Windows
+          // horizontal : IntID::ContextMenuOffsetHorizontal of GTK and Windows
           //              uses 2.
-          // vertical: eIntID_ContextMenuOffsetVertical of macOS uses -6.
+          // vertical: IntID::ContextMenuOffsetVertical of macOS uses -6.
           const xDelta = Math.abs(menuBounds.left - buttonBounds.left);
           const yDelta = Math.abs(menuBounds.top - buttonBounds.bottom);
           ok(xDelta < 2, "xDelta is lower than 2: " + xDelta + ". #" + menu.id);
@@ -96,7 +94,7 @@ add_task(async function() {
           const arrowCenter = arrowBounds.left + arrowBounds.width / 2;
           const delta = Math.abs(arrowCenter - buttonCenter);
           ok(
-            delta < 1,
+            Math.round(delta) <= 1,
             "Center of arrow is within 1px of button center" +
               ` (delta: ${delta})`
           );
@@ -151,10 +149,10 @@ async function getButtonAndMenuInfo(toolbox, menuButton) {
     await waitUntil(() => menuPopup.classList.contains("tooltip-visible"));
   } else {
     menuType = "native";
-    const popupset = topDoc.querySelector("popupset");
     await waitUntil(() => {
-      menuPopup = popupset.querySelector('menupopup[menu-api="true"]');
-      return !!menuPopup && menuPopup.state === "open";
+      const popupset = topDoc.querySelector("popupset");
+      menuPopup = popupset?.querySelector('menupopup[menu-api="true"]');
+      return menuPopup?.state === "open";
     });
   }
   ok(menuPopup, "Menu popup is displayed.");

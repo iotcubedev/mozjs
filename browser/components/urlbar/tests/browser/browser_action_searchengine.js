@@ -8,7 +8,10 @@
 
 add_task(async function setup() {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.search.separatePrivateDefault", false]],
+    set: [
+      ["browser.search.separatePrivateDefault.ui.enabled", true],
+      ["browser.search.separatePrivateDefault", false],
+    ],
   });
 
   const engine = await Services.search.addEngineWithDetails("MozSearch", {
@@ -30,11 +33,15 @@ add_task(async function setup() {
     await Services.search.removeEngine(engine);
     await Services.search.removeEngine(engine2);
     await PlacesUtils.history.clear();
+    await UrlbarTestUtils.formHistory.clear();
   });
 });
 
 async function testSearch(win, expectedName, expectedBaseUrl) {
-  await promiseAutocompleteResultPopup("open a search", win);
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window: win,
+    value: "open a search",
+  });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(win, 0);
 
   Assert.equal(
@@ -49,6 +56,9 @@ async function testSearch(win, expectedName, expectedBaseUrl) {
       keyword: undefined,
       query: "open a search",
       suggestion: undefined,
+      isSearchHistory: false,
+      inPrivateWindow: undefined,
+      isPrivateEngine: undefined,
     },
     "Should have the correct result parameters."
   );

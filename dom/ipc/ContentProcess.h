@@ -28,7 +28,7 @@ class ContentProcess : public mozilla::ipc::ProcessChild {
  public:
   explicit ContentProcess(ProcessId aParentPid) : ProcessChild(aParentPid) {}
 
-  ~ContentProcess() {}
+  ~ContentProcess() = default;
 
   virtual bool Init(int aArgc, char* aArgv[]) override;
   virtual void CleanUp() override;
@@ -42,7 +42,9 @@ class ContentProcess : public mozilla::ipc::ProcessChild {
   mozilla::mscom::ProcessRuntime mCOMRuntime;
 #endif
 
-  DISALLOW_EVIL_CONSTRUCTORS(ContentProcess);
+  ContentProcess(const ContentProcess&) = delete;
+
+  const ContentProcess& operator=(const ContentProcess&) = delete;
 };
 
 }  // namespace dom

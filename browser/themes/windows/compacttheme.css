@@ -10,7 +10,7 @@
    broken. So instead just show the normal titlebar in that case, and override
    the window color as transparent when the compositor is available. */
 @media (-moz-windows-compositor: 0) {
-  :root[tabsintitlebar]:not([inDOMFullscreen]) > #navigator-toolbox > #titlebar:-moz-lwtheme {
+  :root[tabsintitlebar]:not([inDOMFullscreen]) #titlebar:-moz-lwtheme {
     visibility: visible;
   }
 
@@ -73,8 +73,7 @@
     /* Remove lwtheme borders from toolbars in non-maximized windows. */
     #toolbar-menubar,
     #TabsToolbar {
-      border-left-style: none !important;
-      border-right-style: none !important;
+      border-inline-style: none !important;
     }
   }
 

@@ -109,7 +109,10 @@ fn add_headers_recursively(path: PathBuf, added_paths: &mut HashSet<PathBuf>) {
 
 fn add_include(name: &str) -> String {
     let mut added_paths = ADDED_PATHS.lock().unwrap();
-    let file = search_include(name).expect("Include not found!");
+    let file = match search_include(name) {
+        Some(file) => file,
+        None => panic!("Include not found: {}", name),
+    };
     let result = String::from(file.to_str().unwrap());
     add_headers_recursively(file, &mut *added_paths);
     result
@@ -128,6 +131,7 @@ impl BuilderExt for Builder {
         // them.
         let mut builder = Builder::default()
             .rust_target(RustTarget::Stable_1_25)
+            .size_t_is_usize(true)
             .disable_untagged_union();
 
         let rustfmt_path = env::var_os("RUSTFMT")
@@ -314,7 +318,7 @@ fn generate_structs() {
 
             fixups.push(Fixup {
                 pat: format!("\\broot\\s*::\\s*{}\\b", gecko),
-                rep: format!("::gecko_bindings::structs::{}", gecko_name),
+                rep: format!("crate::gecko_bindings::structs::{}", gecko_name),
             });
             builder.blacklist_type(gecko).raw_line(format!(
                 "pub type {0}{2} = {1}{2};",

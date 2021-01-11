@@ -13,17 +13,23 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const FluentReact = require("devtools/client/shared/vendor/fluent-react");
 const Localized = createFactory(FluentReact.Localized);
 
-const Message = createFactory(require("./shared/Message"));
+const Message = createFactory(
+  require("devtools/client/aboutdebugging/src/components/shared/Message")
+);
 
-const { MESSAGE_LEVEL } = require("../constants");
+const {
+  MESSAGE_LEVEL,
+} = require("devtools/client/aboutdebugging/src/constants");
 const {
   COMPATIBILITY_STATUS,
 } = require("devtools/client/shared/remote-debugging/version-checker");
 
 const TROUBLESHOOTING_URL =
   "https://developer.mozilla.org/docs/Tools/about:debugging#Troubleshooting";
+const FENNEC_TROUBLESHOOTING_URL =
+  "https://developer.mozilla.org/docs/Tools/about:debugging#Connection_to_Firefox_for_Android_68";
 
-const Types = require("../types/index");
+const Types = require("devtools/client/aboutdebugging/src/types/index");
 
 class CompatibilityWarning extends PureComponent {
   static get propTypes() {
@@ -56,22 +62,32 @@ class CompatibilityWarning extends PureComponent {
         statusClassName = "qa-compatibility-warning-too-recent";
         localizationId = "about-debugging-browser-version-too-recent";
         break;
-      case COMPATIBILITY_STATUS.TOO_OLD_67_DEBUGGER:
-        statusClassName = "qa-compatibility-warning-too-old-67-debugger";
-        localizationId = "about-debugging-browser-version-too-old-67-debugger";
+      case COMPATIBILITY_STATUS.TOO_OLD_FENNEC:
+        statusClassName = "qa-compatibility-warning-too-old-fennec";
+        localizationId = "about-debugging-browser-version-too-old-fennec";
         break;
     }
 
+    const troubleshootingUrl =
+      status === COMPATIBILITY_STATUS.TOO_OLD_FENNEC
+        ? FENNEC_TROUBLESHOOTING_URL
+        : TROUBLESHOOTING_URL;
+
+    const messageLevel =
+      status === COMPATIBILITY_STATUS.TOO_OLD_FENNEC
+        ? MESSAGE_LEVEL.ERROR
+        : MESSAGE_LEVEL.WARNING;
+
     return Message(
       {
-        level: MESSAGE_LEVEL.WARNING,
+        level: messageLevel,
         isCloseable: true,
       },
       Localized(
         {
           id: localizationId,
           a: dom.a({
-            href: TROUBLESHOOTING_URL,
+            href: troubleshootingUrl,
             target: "_blank",
           }),
           $localID: localID,

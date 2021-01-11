@@ -15,9 +15,36 @@ types.addDictType("available-breakpoint-group", {
   name: "string",
   events: "array:available-breakpoint-event",
 });
+
 types.addDictType("available-breakpoint-event", {
   id: "string",
   name: "string",
+});
+
+types.addDictType("thread.frames", {
+  frames: "array:frame",
+});
+
+types.addDictType("paused-reason", {
+  type: "string",
+
+  // Used for any pause type that wants to describe why the pause happened.
+  message: "nullable:string",
+
+  // Used for the stepping pause types.
+  frameFinished: "nullable:json",
+
+  // Used for the "exception" pause type.
+  exception: "nullable:json",
+
+  // Used for the "interrupted" pause type.
+  onNext: "nullable:boolean",
+
+  // Used for the "eventBreakpoint" pause type.
+  breakpoint: "nullable:json",
+
+  // Used for the "mutationBreakpoint" pause type.
+  mutationType: "nullable:string",
 });
 
 const threadSpec = generateActorSpec({
@@ -26,24 +53,16 @@ const threadSpec = generateActorSpec({
   events: {
     paused: {
       actor: Option(0, "nullable:string"),
-      frame: Option(0, "nullable:json"),
-      why: Option(0, "nullable:json"),
+      frame: Option(0, "frame"),
+      why: Option(0, "paused-reason"),
       poppedFrames: Option(0, "nullable:json"),
       error: Option(0, "nullable:json"),
-      recordingEndpoint: Option(0, "nullable:json"),
-      executionPoint: Option(0, "nullable:json"),
     },
     resumed: {},
     detached: {},
     willInterrupt: {},
     newSource: {
       source: Option(0, "json"),
-    },
-    progress: {
-      recording: Option(0, "json"),
-      executionPoint: Option(0, "json"),
-      unscannedRegions: Option(0, "json"),
-      cachedPoints: Option(0, "json"),
     },
   },
 
@@ -52,7 +71,7 @@ const threadSpec = generateActorSpec({
       request: {
         options: Arg(0, "json"),
       },
-      response: RetVal("nullable:json"),
+      response: {},
     },
     detach: {
       request: {},
@@ -67,7 +86,7 @@ const threadSpec = generateActorSpec({
     resume: {
       request: {
         resumeLimit: Arg(0, "nullable:json"),
-        rewind: Arg(1, "boolean"),
+        frameActorID: Arg(1, "nullable:string"),
       },
       response: RetVal("nullable:json"),
     },
@@ -76,7 +95,7 @@ const threadSpec = generateActorSpec({
         start: Arg(0, "number"),
         count: Arg(1, "number"),
       },
-      response: RetVal("json"),
+      response: RetVal("thread.frames"),
     },
     interrupt: {
       request: {
@@ -94,13 +113,11 @@ const threadSpec = generateActorSpec({
         skip: Arg(0, "json"),
       },
     },
-    threadGrips: {
-      request: {
-        actors: Arg(0, "array:string"),
-      },
+    dumpThread: {
+      request: {},
       response: RetVal("json"),
     },
-    dumpThread: {
+    dumpPools: {
       request: {},
       response: RetVal("json"),
     },
@@ -155,10 +172,9 @@ const threadSpec = generateActorSpec({
       },
     },
 
-    // For testing.
-    debuggerRequests: {
-      response: {
-        value: RetVal("array:json"),
+    toggleEventLogging: {
+      request: {
+        logEventBreakpoints: Arg(0, "string"),
       },
     },
   },

@@ -8,7 +8,9 @@
 
 #include "mozilla/Base64.h"
 #include "mozilla/SyncRunnable.h"
+#include "nsNSSComponent.h"
 #include "nsPK11TokenDB.h"
+#include "nsXULAppAPI.h"
 
 /* Implementing OSKeyStore when there is no platform specific one.
  * This key store instead puts the keys into the NSS DB.
@@ -29,7 +31,7 @@ NSSKeyStore::NSSKeyStore() {
   Unused << EnsureNSSInitializedChromeOrContent();
   Unused << InitToken();
 }
-NSSKeyStore::~NSSKeyStore() {}
+NSSKeyStore::~NSSKeyStore() = default;
 
 nsresult NSSKeyStore::InitToken() {
   if (!mSlot) {
@@ -111,9 +113,7 @@ nsresult NSSKeyStore::StoreSecret(const nsACString& aSecret,
 
   // It is possible for multiple keys to have the same nickname in NSS. To
   // prevent the problem of not knowing which key to use in the future, simply
-  // delete all keys with this nickname before storing a new one (if something
-  // else is using our prefix ("org.mozilla.nss.keystore") with the given label,
-  // it may result in breakage).
+  // delete all keys with this nickname before storing a new one.
   nsresult rv = DeleteSecret(aLabel);
   if (NS_FAILED(rv)) {
     MOZ_LOG(gNSSKeyStoreLog, LogLevel::Debug,

@@ -6,7 +6,13 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { Preferences } = ChromeUtils.import(
+  "resource://gre/modules/Preferences.jsm"
+);
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
+const { LogManager } = ChromeUtils.import(
+  "resource://services-common/logmanager.js"
+);
 
 // loglevel should be one of "Fatal", "Error", "Warn", "Info", "Config",
 // "Debug", "Trace" or "All". If none is specified, "Debug" will be used by
@@ -24,6 +30,21 @@ XPCOMUtils.defineLazyGetter(exports, "log", function() {
   let log = Log.repository.getLogger("FirefoxAccounts");
   log.manageLevelFromPref(PREF_LOG_LEVEL);
   return log;
+});
+
+XPCOMUtils.defineLazyGetter(exports, "logManager", function() {
+  let logs = [
+    "Sync",
+    "Services.Common",
+    "FirefoxAccounts",
+    "Hawk",
+    "browserwindow.syncui",
+    "BookmarkSyncUtils",
+    "addons.xpi",
+  ];
+
+  // for legacy reasons, the log manager still thinks it's part of sync
+  return new LogManager(new Preferences("services.sync."), logs, "sync");
 });
 
 // A boolean to indicate if personally identifiable information (or anything
@@ -51,6 +72,7 @@ exports.ASSERTION_LIFETIME = 1000 * 3600 * 24 * 365 * 25; // 25 years
 // period).
 exports.ASSERTION_USE_PERIOD = 1000 * 60 * 5; // 5 minutes
 exports.CERT_LIFETIME = 1000 * 3600 * 6; // 6 hours
+exports.OAUTH_TOKEN_FOR_SYNC_LIFETIME_SECONDS = 3600 * 6; // 6 hours
 exports.KEY_LIFETIME = 1000 * 3600 * 12; // 12 hours
 
 // After we start polling for account verification, we stop polling when this
@@ -78,12 +100,21 @@ exports.ON_PROFILE_CHANGE_NOTIFICATION = "fxaccounts:profilechange"; // WebChann
 exports.ON_ACCOUNT_STATE_CHANGE_NOTIFICATION = "fxaccounts:statechange";
 exports.ON_NEW_DEVICE_ID = "fxaccounts:new_device_id";
 
-exports.COMMAND_SENDTAB = "https://identity.mozilla.com/cmd/open-uri";
+// The common prefix for all commands.
+exports.COMMAND_PREFIX = "https://identity.mozilla.com/cmd/";
+
+// The commands we support - only the _TAIL values are recorded in telemetry.
+exports.COMMAND_SENDTAB_TAIL = "open-uri";
+exports.COMMAND_SENDTAB = exports.COMMAND_PREFIX + exports.COMMAND_SENDTAB_TAIL;
 
 // OAuth
 exports.FX_OAUTH_CLIENT_ID = "5882386c6d801776";
 exports.SCOPE_PROFILE = "profile";
 exports.SCOPE_OLD_SYNC = "https://identity.mozilla.com/apps/oldsync";
+
+// OAuth metadata for other Firefox-related services that we might need to know about
+// in order to provide an enhanced user experience.
+exports.FX_MONITOR_OAUTH_CLIENT_ID = "802d56ef2a9af9fa";
 
 // UI Requests.
 exports.UI_REQUEST_SIGN_IN_FLOW = "signInFlow";
@@ -108,6 +139,10 @@ exports.COMMAND_SYNC_PREFERENCES = "fxaccounts:sync_preferences";
 exports.COMMAND_CHANGE_PASSWORD = "fxaccounts:change_password";
 exports.COMMAND_FXA_STATUS = "fxaccounts:fxa_status";
 exports.COMMAND_PAIR_PREFERENCES = "fxaccounts:pair_preferences";
+
+// The pref branch where any prefs which relate to a specific account should
+// be stored. This branch will be reset on account signout and signin.
+exports.PREF_ACCOUNT_ROOT = "identity.fxaccounts.account.";
 
 exports.PREF_LAST_FXA_USER = "identity.fxaccounts.lastSignedInUserHash";
 exports.PREF_REMOTE_PAIRING_URI = "identity.fxaccounts.remote.pairing.uri";
@@ -243,6 +278,7 @@ exports.FXA_PWDMGR_PLAINTEXT_FIELDS = new Set([
   "authAt",
   "sessionToken",
   "uid",
+  "ecosystemUserId",
   "oauthTokens",
   "profile",
   "device",
@@ -255,6 +291,7 @@ exports.FXA_PWDMGR_SECURE_FIELDS = new Set([
   "keyFetchToken",
   "unwrapBKey",
   "assertion",
+  "scopedKeys",
 ]);
 
 // Fields we keep in memory and don't persist anywhere.

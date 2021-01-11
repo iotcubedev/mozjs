@@ -8,9 +8,9 @@ ChromeUtils.import("resource://gre/modules/osfile.jsm", this);
 // Changes, then verifies the value of app.update.auto via the about:preferences
 // UI. Requires a tab with about:preferences open to be passed in.
 async function changeAndVerifyPref(tab, newConfigValue) {
-  await ContentTask.spawn(
+  await SpecialPowers.spawn(
     tab.linkedBrowser,
-    { newConfigValue },
+    [{ newConfigValue }],
     async function({ newConfigValue }) {
       let radioId = newConfigValue ? "autoDesktop" : "manualDesktop";
       let radioElement = content.document.getElementById(radioId);
@@ -46,9 +46,9 @@ async function changeAndVerifyPref(tab, newConfigValue) {
     );
   }
 
-  await ContentTask.spawn(
+  await SpecialPowers.spawn(
     tab.linkedBrowser,
-    { newConfigValue },
+    [{ newConfigValue }],
     async function({ newConfigValue }) {
       let updateRadioGroup = content.document.getElementById(
         "updateRadioGroup"
@@ -89,7 +89,7 @@ add_task(async function testUpdateAutoPrefUI() {
   let discardUpdate = 0;
   let { prompt } = Services;
   let promptService = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIPromptService]),
+    QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
     confirmEx(...args) {
       promptService._confirmExArgs = args;
       return discardUpdate;

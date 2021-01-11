@@ -25,14 +25,12 @@
 #include "mozilla/dom/PFileSystemRequestChild.h"
 #include "mozilla/dom/EndpointForReportChild.h"
 #include "mozilla/dom/FileSystemTaskBase.h"
-#include "mozilla/dom/IPCBlobInputStreamChild.h"
 #include "mozilla/dom/PMediaTransportChild.h"
-#include "mozilla/dom/PendingIPCBlobChild.h"
 #include "mozilla/dom/TemporaryIPCBlobChild.h"
 #include "mozilla/dom/cache/ActorUtils.h"
 #include "mozilla/dom/indexedDB/PBackgroundIDBFactoryChild.h"
 #include "mozilla/dom/indexedDB/PBackgroundIndexedDBUtilsChild.h"
-#include "mozilla/dom/IPCBlobUtils.h"
+#include "mozilla/dom/indexedDB/ThreadLocal.h"
 #include "mozilla/dom/quota/PQuotaChild.h"
 #include "mozilla/dom/RemoteWorkerChild.h"
 #include "mozilla/dom/RemoteWorkerControllerChild.h"
@@ -46,7 +44,6 @@
 #include "mozilla/dom/ServiceWorkerActors.h"
 #include "mozilla/dom/ServiceWorkerManagerChild.h"
 #include "mozilla/dom/BrowserChild.h"
-#include "mozilla/dom/TabGroup.h"
 #include "mozilla/ipc/IPCStreamAlloc.h"
 #include "mozilla/ipc/PBackgroundTestChild.h"
 #include "mozilla/ipc/PChildToParentStreamChild.h"
@@ -58,6 +55,7 @@
 #include "mozilla/dom/WebAuthnTransactionChild.h"
 #include "mozilla/dom/MIDIPortChild.h"
 #include "mozilla/dom/MIDIManagerChild.h"
+#include "mozilla/RemoteLazyInputStreamChild.h"
 #include "nsID.h"
 #include "nsTraceRefcnt.h"
 
@@ -81,13 +79,11 @@ class TestChild final : public mozilla::ipc::PBackgroundTestChild {
 
 }  // namespace
 
-namespace mozilla {
-namespace ipc {
+namespace mozilla::ipc {
 
 using mozilla::dom::UDPSocketChild;
 using mozilla::net::PUDPSocketChild;
 
-using mozilla::dom::LocalStorage;
 using mozilla::dom::PServiceWorkerChild;
 using mozilla::dom::PServiceWorkerContainerChild;
 using mozilla::dom::PServiceWorkerRegistrationChild;
@@ -135,12 +131,14 @@ void BackgroundChildImpl::ProcessingError(Result aCode, const char* aReason) {
   nsAutoCString abortMessage;
 
   switch (aCode) {
+    case MsgDropped:
+      return;
+
 #define HANDLE_CASE(_result)              \
   case _result:                           \
     abortMessage.AssignLiteral(#_result); \
     break
 
-    HANDLE_CASE(MsgDropped);
     HANDLE_CASE(MsgNotKnown);
     HANDLE_CASE(MsgNotAllowed);
     HANDLE_CASE(MsgPayloadError);
@@ -174,22 +172,6 @@ bool BackgroundChildImpl::DeallocPBackgroundTestChild(
   return true;
 }
 
-BackgroundChildImpl::PBackgroundIDBFactoryChild*
-BackgroundChildImpl::AllocPBackgroundIDBFactoryChild(
-    const LoggingInfo& aLoggingInfo) {
-  MOZ_CRASH(
-      "PBackgroundIDBFactoryChild actors should be manually "
-      "constructed!");
-}
-
-bool BackgroundChildImpl::DeallocPBackgroundIDBFactoryChild(
-    PBackgroundIDBFactoryChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  delete aActor;
-  return true;
-}
-
 BackgroundChildImpl::PBackgroundIndexedDBUtilsChild*
 BackgroundChildImpl::AllocPBackgroundIndexedDBUtilsChild() {
   MOZ_CRASH(
@@ -207,6 +189,7 @@ bool BackgroundChildImpl::DeallocPBackgroundIndexedDBUtilsChild(
 
 BackgroundChildImpl::PBackgroundSDBConnectionChild*
 BackgroundChildImpl::AllocPBackgroundSDBConnectionChild(
+    const PersistenceType& aPersistenceType,
     const PrincipalInfo& aPrincipalInfo) {
   MOZ_CRASH(
       "PBackgroundSDBConnectionChild actor should be manually "
@@ -312,17 +295,6 @@ bool BackgroundChildImpl::DeallocPBackgroundStorageChild(
   return true;
 }
 
-dom::PPendingIPCBlobChild* BackgroundChildImpl::AllocPPendingIPCBlobChild(
-    const IPCBlob& aBlob) {
-  return new dom::PendingIPCBlobChild(aBlob);
-}
-
-bool BackgroundChildImpl::DeallocPPendingIPCBlobChild(
-    dom::PPendingIPCBlobChild* aActor) {
-  delete aActor;
-  return true;
-}
-
 dom::PRemoteWorkerChild* BackgroundChildImpl::AllocPRemoteWorkerChild(
     const RemoteWorkerData& aData) {
   RefPtr<dom::RemoteWorkerChild> agent = new dom::RemoteWorkerChild(aData);
@@ -413,11 +385,11 @@ bool BackgroundChildImpl::DeallocPFileCreatorChild(PFileCreatorChild* aActor) {
   return true;
 }
 
-already_AddRefed<dom::PIPCBlobInputStreamChild>
-BackgroundChildImpl::AllocPIPCBlobInputStreamChild(const nsID& aID,
-                                                   const uint64_t& aSize) {
-  RefPtr<dom::IPCBlobInputStreamChild> actor =
-      new dom::IPCBlobInputStreamChild(aID, aSize);
+already_AddRefed<PRemoteLazyInputStreamChild>
+BackgroundChildImpl::AllocPRemoteLazyInputStreamChild(const nsID& aID,
+                                                      const uint64_t& aSize) {
+  RefPtr<RemoteLazyInputStreamChild> actor =
+      new RemoteLazyInputStreamChild(aID, aSize);
   return actor.forget();
 }
 
@@ -469,8 +441,7 @@ bool BackgroundChildImpl::DeallocPUDPSocketChild(PUDPSocketChild* child) {
 dom::PBroadcastChannelChild* BackgroundChildImpl::AllocPBroadcastChannelChild(
     const PrincipalInfo& aPrincipalInfo, const nsCString& aOrigin,
     const nsString& aChannel) {
-  RefPtr<dom::BroadcastChannelChild> agent =
-      new dom::BroadcastChannelChild(aOrigin);
+  RefPtr<dom::BroadcastChannelChild> agent = new dom::BroadcastChannelChild();
   return agent.forget().take();
 }
 
@@ -545,14 +516,9 @@ bool BackgroundChildImpl::DeallocPCacheChild(PCacheChild* aActor) {
   return true;
 }
 
-PCacheStreamControlChild* BackgroundChildImpl::AllocPCacheStreamControlChild() {
+already_AddRefed<PCacheStreamControlChild>
+BackgroundChildImpl::AllocPCacheStreamControlChild() {
   return dom::cache::AllocPCacheStreamControlChild();
-}
-
-bool BackgroundChildImpl::DeallocPCacheStreamControlChild(
-    PCacheStreamControlChild* aActor) {
-  dom::cache::DeallocPCacheStreamControlChild(aActor);
-  return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -758,8 +724,18 @@ bool BackgroundChildImpl::DeallocPMediaTransportChild(
   return true;
 }
 
-}  // namespace ipc
-}  // namespace mozilla
+PChildToParentStreamChild*
+BackgroundChildImpl::SendPChildToParentStreamConstructor(
+    PChildToParentStreamChild* aActor) {
+  return PBackgroundChild::SendPChildToParentStreamConstructor(aActor);
+}
+
+PFileDescriptorSetChild* BackgroundChildImpl::SendPFileDescriptorSetConstructor(
+    const FileDescriptor& aFD) {
+  return PBackgroundChild::SendPFileDescriptorSetConstructor(aFD);
+}
+
+}  // namespace mozilla::ipc
 
 mozilla::ipc::IPCResult TestChild::Recv__delete__(const nsCString& aTestArg) {
   MOZ_RELEASE_ASSERT(aTestArg == mTestArg,

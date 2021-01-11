@@ -10,6 +10,7 @@ from argparse import ArgumentParser
 
 ALL_HARNESSES = [
     'common',  # Harnesses without a specific package will look here.
+    'condprof',
     'mochitest',
     'reftest',
     'xpcshell',
@@ -21,10 +22,13 @@ ALL_HARNESSES = [
     'raptor',
     'awsy',
     'gtest',
-    'updater-dep'
+    'updater-dep',
+    'jsreftest',
+    'perftests',
 ]
 
 PACKAGE_SPECIFIED_HARNESSES = [
+    'condprof',
     'cppunittest',
     'mochitest',
     'reftest',
@@ -34,6 +38,9 @@ PACKAGE_SPECIFIED_HARNESSES = [
     'raptor',
     'awsy',
     'updater-dep',
+    'jittest',
+    'jsreftest',
+    'perftests',
 ]
 
 # These packages are not present for every build configuration.
@@ -79,6 +86,7 @@ def generate_package_data(args):
 
     harness_requirements = dict([(k, [tests_common]) for k in ALL_HARNESSES])
     harness_requirements['jittest'].append(jsshell)
+    harness_requirements['jsreftest'].append(args.reftest)
     for harness in PACKAGE_SPECIFIED_HARNESSES + OPTIONAL_PACKAGES:
         pkg_name = getattr(args, harness, None)
         if pkg_name is None:

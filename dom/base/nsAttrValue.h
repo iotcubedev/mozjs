@@ -36,6 +36,7 @@ struct MiscContainer;
 
 namespace mozilla {
 class DeclarationBlock;
+class ShadowParts;
 }  // namespace mozilla
 
 #define NS_ATTRVALUE_MAX_STRINGLENGTH_ATOM 12
@@ -101,6 +102,10 @@ class nsAttrValue {
     eAtomArray,
     eDoubleValue,
     eIntMarginValue,
+    // eShadowParts is refcounted in the misc container, as we do copy attribute
+    // values quite a bit (for example to process style invalidation), and the
+    // underlying value could get expensive to copy.
+    eShadowParts,
     eSVGIntegerPair,
     eSVGTypesBegin = eSVGIntegerPair,
     eSVGOrient,
@@ -128,7 +133,7 @@ class nsAttrValue {
 
   inline const nsAttrValue& operator=(const nsAttrValue& aOther);
 
-  static nsresult Init();
+  static void Init();
   static void Shutdown();
 
   inline ValueType Type() const;
@@ -208,6 +213,7 @@ class nsAttrValue {
   inline nsIURI* GetURLValue() const;
   inline double GetDoubleValue() const;
   bool GetIntMarginValue(nsIntMargin& aMargin) const;
+  inline const mozilla::ShadowParts& GetShadowPartsValue() const;
 
   /**
    * Returns the string corresponding to the stored enum value.
@@ -230,6 +236,10 @@ class nsAttrValue {
   // aCaseSensitive == eIgnoreCase means ASCII case-insenstive matching
   bool Equals(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
   bool Equals(const nsAtom* aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasPrefix(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasSuffix(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasSubstring(const nsAString& aValue,
+                    nsCaseTreatment aCaseSensitive) const;
 
   /**
    * Compares this object with aOther according to their string representation.
@@ -255,6 +265,13 @@ class nsAttrValue {
   void ParseAtom(const nsAString& aValue);
   void ParseAtomArray(const nsAString& aValue);
   void ParseStringOrAtom(const nsAString& aValue);
+
+  /**
+   * Parses an exportparts attribute.
+   *
+   * https://drafts.csswg.org/css-shadow-parts/#parsing-mapping-list
+   */
+  void ParsePartMapping(const nsAString&);
 
   /**
    * Structure for a mapping from int (enum) values to strings.  When you use
@@ -420,12 +437,6 @@ class nsAttrValue {
   bool ParseDoubleValue(const nsAString& aString);
 
   /**
-   * Parse a lazy URI.  This just sets up the storage for the URI; it
-   * doesn't actually allocate it.
-   */
-  bool ParseLazyURIValue(const nsAString& aString);
-
-  /**
    * Parse a margin string of format 'top, right, bottom, left' into
    * an nsIntMargin.
    *
@@ -500,6 +511,10 @@ class nsAttrValue {
   // the actual integer value we should store.
   int32_t EnumTableEntryToValue(const EnumTable* aEnumTable,
                                 const EnumTable* aTableEntry);
+
+  template <typename F>
+  bool SubstringCheck(const nsAString& aValue,
+                      nsCaseTreatment aCaseSensitive) const;
 
   static MiscContainer* AllocMiscContainer();
   static void DeallocMiscContainer(MiscContainer* aCont);

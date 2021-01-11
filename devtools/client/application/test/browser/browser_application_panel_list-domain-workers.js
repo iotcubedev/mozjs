@@ -18,10 +18,11 @@ const EMPTY_URL = (URL_ROOT + "resources/service-workers/empty.html").replace(
 add_task(async function() {
   await enableApplicationPanel();
 
-  const { panel, target } = await openNewTabAndApplicationPanel(SIMPLE_URL);
+  const { panel, toolbox, tab } = await openNewTabAndApplicationPanel(
+    SIMPLE_URL
+  );
   const doc = panel.panelWin.document;
 
-  // select service worker view
   selectPage(panel, "service-workers");
 
   info("Wait until the service worker appears in the application panel");
@@ -37,9 +38,11 @@ add_task(async function() {
     "Navigate to another page for a different domain with no service worker"
   );
 
-  await navigate(target, EMPTY_URL);
+  await navigateTo(EMPTY_URL);
   info("Wait until the service worker list is updated");
-  await waitUntil(() => doc.querySelector(".worker-list-empty") !== null);
+  await waitUntil(
+    () => doc.querySelector(".js-registration-list-empty") !== null
+  );
   ok(
     true,
     "No service workers are shown for an empty page in a different domain."
@@ -48,7 +51,7 @@ add_task(async function() {
   info(
     "Navigate to another page for a different domain with another service worker"
   );
-  await navigate(target, OTHER_URL);
+  await navigateTo(OTHER_URL);
 
   info("Wait until the service worker appears in the application panel");
   await waitUntil(() => getWorkerContainers(doc).length === 1);
@@ -59,5 +62,9 @@ add_task(async function() {
     "Second service worker registration is displayed for the correct domain"
   );
 
-  await unregisterAllWorkers(target.client);
+  await unregisterAllWorkers(toolbox.target.client, doc);
+
+  // close the tab
+  info("Closing the tab.");
+  await BrowserTestUtils.removeTab(tab);
 });

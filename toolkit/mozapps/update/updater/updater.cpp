@@ -129,7 +129,6 @@ BOOL PathGetSiblingFilePath(LPWSTR destinationBuffer, LPCWSTR siblingFilePath,
         CloseHandle(handle);                        \
       }                                             \
       if (NS_tremove(path) && errno != ENOENT) {    \
-        LogFinish();                                \
         return retCode;                             \
       }                                             \
     }
@@ -182,9 +181,12 @@ class AutoFile {
 };
 
 struct MARChannelStringTable {
-  MARChannelStringTable() { MARChannelID[0] = '\0'; }
+  MARChannelStringTable() {
+    MARChannelID = mozilla::MakeUnique<char[]>(1);
+    MARChannelID[0] = '\0';
+  }
 
-  char MARChannelID[MAX_TEXT_LEN];
+  mozilla::UniquePtr<char[]> MARChannelID;
 };
 
 //-----------------------------------------------------------------------------
@@ -283,6 +285,12 @@ static bool sUsingService = false;
 static NS_tchar gCallbackRelPath[MAXPATHLEN];
 static NS_tchar gCallbackBackupPath[MAXPATHLEN];
 static NS_tchar gDeleteDirPath[MAXPATHLEN];
+
+// Whether to copy the update.log and update.status file to the update patch
+// directory from a secure directory.
+static bool gCopyOutputFiles = false;
+// Whether to write the update.log and update.status file to a secure directory.
+static bool gUseSecureOutputPath = false;
 #endif
 
 static const NS_tchar kWhitespace[] = NS_T(" \t");
@@ -342,6 +350,71 @@ static bool EnvHasValue(const char* name) {
   return (val && *val);
 }
 #endif
+
+#ifdef XP_WIN
+/**
+ * Obtains the update ID from the secure id file located in secure output
+ * directory.
+ *
+ * @param  outBuf
+ *         A buffer of size UUID_LEN (e.g. 37) to store the result. The uuid is
+ *         36 characters in length and 1 more for null termination.
+ * @return true if successful
+ */
+bool GetSecureID(char* outBuf) {
+  NS_tchar idFilePath[MAX_PATH + 1] = {L'\0'};
+  if (!GetSecureOutputFilePath(gPatchDirPath, L".id", idFilePath)) {
+    return false;
+  }
+
+  AutoFile idFile(NS_tfopen(idFilePath, NS_T("rb")));
+  if (idFile == nullptr) {
+    return false;
+  }
+
+  size_t read = fread(outBuf, UUID_LEN - 1, 1, idFile);
+  if (read != 1) {
+    return false;
+  }
+
+  outBuf[UUID_LEN - 1] = '\0';
+  return true;
+}
+#endif
+
+/**
+ * Calls LogFinish for the update log. On Windows, the unelevated updater copies
+ * the update status file and the update log file that were written by the
+ * elevated updater from the secure directory to the update patch directory.
+ *
+ * NOTE: All calls to WriteStatusFile MUST happen before calling output_finish
+ *       because this function copies the update status file for the elevated
+ *       updater and writing the status file after calling output_finish will
+ *       overwrite it.
+ */
+static void output_finish() {
+  LogFinish();
+#ifdef XP_WIN
+  if (gCopyOutputFiles) {
+    NS_tchar srcStatusPath[MAXPATHLEN + 1] = {NS_T('\0')};
+    if (GetSecureOutputFilePath(gPatchDirPath, L".status", srcStatusPath)) {
+      NS_tchar dstStatusPath[MAXPATHLEN + 1] = {NS_T('\0')};
+      NS_tsnprintf(dstStatusPath,
+                   sizeof(dstStatusPath) / sizeof(dstStatusPath[0]),
+                   NS_T("%s\\update.status"), gPatchDirPath);
+      CopyFileW(srcStatusPath, dstStatusPath, false);
+    }
+
+    NS_tchar srcLogPath[MAXPATHLEN + 1] = {NS_T('\0')};
+    if (GetSecureOutputFilePath(gPatchDirPath, L".log", srcLogPath)) {
+      NS_tchar dstLogPath[MAXPATHLEN + 1] = {NS_T('\0')};
+      NS_tsnprintf(dstLogPath, sizeof(dstLogPath) / sizeof(dstLogPath[0]),
+                   NS_T("%s\\update.log"), gPatchDirPath);
+      CopyFileW(srcLogPath, dstLogPath, false);
+    }
+  }
+#endif
+}
 
 /**
  * Coverts a relative update path to a full path.
@@ -877,7 +950,7 @@ static int remove_recursive_on_reboot(const NS_tchar* path,
   }
 
   if (!S_ISDIR(sInfo.st_mode)) {
-    NS_tchar tmpDeleteFile[MAXPATHLEN];
+    NS_tchar tmpDeleteFile[MAXPATHLEN + 1];
     GetUUIDTempFilePath(deleteDir, L"rep", tmpDeleteFile);
     if (NS_tremove(tmpDeleteFile) && errno != ENOENT) {
       LOG(("remove_recursive_on_reboot: failed to remove temporary file: " LOG_S
@@ -989,7 +1062,7 @@ static int backup_discard(const NS_tchar* path, const NS_tchar* relPath) {
 #if defined(XP_WIN)
   if (rv && !sStagedUpdate && !sReplaceRequest) {
     LOG(("backup_discard: unable to remove: " LOG_S, relBackup));
-    NS_tchar path[MAXPATHLEN];
+    NS_tchar path[MAXPATHLEN + 1];
     GetUUIDTempFilePath(gDeleteDirPath, L"moz", path);
     if (rename_file(backup, path)) {
       LOG(("backup_discard: failed to rename file:" LOG_S ", dst:" LOG_S,
@@ -1878,7 +1951,9 @@ void PatchIfFile::Finish(int status) {
 #  include "nsWindowsRestart.cpp"
 #  include "nsWindowsHelpers.h"
 #  include "uachelper.h"
-#  include "pathhash.h"
+#  ifdef MOZ_MAINTENANCE_SERVICE
+#    include "pathhash.h"
+#  endif
 
 /**
  * Launch the post update application (helper.exe). It takes in the path of the
@@ -1958,9 +2033,15 @@ bool LaunchWinPostProcess(const WCHAR* installationDir,
   }
 
   WCHAR slogFile[MAX_PATH + 1] = {L'\0'};
-  wcsncpy(slogFile, updateInfoDir, MAX_PATH);
-  if (!PathAppendSafe(slogFile, L"update.log")) {
-    return false;
+  if (gCopyOutputFiles) {
+    if (!GetSecureOutputFilePath(gPatchDirPath, L".log", slogFile)) {
+      return false;
+    }
+  } else {
+    wcsncpy(slogFile, updateInfoDir, MAX_PATH);
+    if (!PathAppendSafe(slogFile, L"update.log")) {
+      return false;
+    }
   }
 
   WCHAR dummyArg[14] = {L'\0'};
@@ -2042,52 +2123,78 @@ static void LaunchCallbackApp(const NS_tchar* workingDir, int argc,
 }
 
 static bool WriteToFile(const NS_tchar* aFilename, const char* aStatus) {
-  NS_tchar filename[MAXPATHLEN] = {NS_T('\0')};
+  NS_tchar statusFilePath[MAXPATHLEN + 1] = {NS_T('\0')};
 #if defined(XP_WIN)
-  // The temp file is not removed on failure since there is client code that
-  // will remove it.
-  if (!GetUUIDTempFilePath(gPatchDirPath, L"sta", filename)) {
-    return false;
+  if (gUseSecureOutputPath) {
+    if (!GetSecureOutputFilePath(gPatchDirPath, L".status", statusFilePath)) {
+      return false;
+    }
+  } else {
+    NS_tsnprintf(statusFilePath,
+                 sizeof(statusFilePath) / sizeof(statusFilePath[0]),
+                 NS_T("%s\\%s"), gPatchDirPath, aFilename);
   }
 #else
-  NS_tsnprintf(filename, sizeof(filename) / sizeof(filename[0]), NS_T("%s/%s"),
-               gPatchDirPath, aFilename);
+  NS_tsnprintf(statusFilePath,
+               sizeof(statusFilePath) / sizeof(statusFilePath[0]),
+               NS_T("%s/%s"), gPatchDirPath, aFilename);
+  // Make sure that the directory for the update status file exists
+  if (ensure_parent_dir(statusFilePath)) {
+    return false;
+  }
 #endif
 
-  // Make sure that the directory for the update status file exists
-  if (ensure_parent_dir(filename)) {
+  AutoFile statusFile(NS_tfopen(statusFilePath, NS_T("wb+")));
+  if (statusFile == nullptr) {
     return false;
   }
 
-  // This is scoped to make the AutoFile close the file so it is possible to
-  // move the temp file to the update.status file on Windows.
-  {
-    AutoFile file(NS_tfopen(filename, NS_T("wb+")));
-    if (file == nullptr) {
-      return false;
-    }
-
-    if (fwrite(aStatus, strlen(aStatus), 1, file) != 1) {
-      return false;
-    }
+  if (fwrite(aStatus, strlen(aStatus), 1, statusFile) != 1) {
+    return false;
   }
 
 #if defined(XP_WIN)
-  NS_tchar dstfilename[MAXPATHLEN] = {NS_T('\0')};
-  NS_tsnprintf(dstfilename, sizeof(dstfilename) / sizeof(dstfilename[0]),
-               NS_T("%s\\%s"), gPatchDirPath, aFilename);
-  if (MoveFileExW(filename, dstfilename, MOVEFILE_REPLACE_EXISTING) == 0) {
-    return false;
+  if (gUseSecureOutputPath) {
+    // This is done after the update status file has been written so if the
+    // write to the update status file fails an existing update status file
+    // won't be used.
+    if (!WriteSecureIDFile(gPatchDirPath)) {
+      return false;
+    }
   }
 #endif
 
   return true;
 }
 
+/**
+ * Writes a string to the update.status file.
+ *
+ * NOTE: All calls to WriteStatusFile MUST happen before calling output_finish
+ *       because the output_finish function copies the update status file for
+ *       the elevated updater and writing the status file after calling
+ *       output_finish will overwrite it.
+ *
+ * @param  aStatus
+ *         The string to write to the update.status file.
+ * @return true on success.
+ */
 static bool WriteStatusFile(const char* aStatus) {
   return WriteToFile(NS_T("update.status"), aStatus);
 }
 
+/**
+ * Writes a string to the update.status file based on the status param.
+ *
+ * NOTE: All calls to WriteStatusFile MUST happen before calling output_finish
+ *       because the output_finish function copies the update status file for
+ *       the elevated updater and writing the status file after calling
+ *       output_finish will overwrite it.
+ *
+ * @param  status
+ *         A status code used to determine what string to write to the
+ *         update.status file (see code).
+ */
 static void WriteStatusFile(int status) {
   const char* text;
 
@@ -2137,22 +2244,23 @@ static bool IsUpdateStatusPendingService() {
 }
 #endif
 
-#ifdef XP_WIN
+#if defined(XP_WIN) && defined(MOZ_MAINTENANCE_SERVICE)
 /*
- * Read the update.status file and sets isSuccess to true if
- * the status is set to succeeded.
+ * Reads the secure update status file and sets isSucceeded to true if the
+ * status is set to succeeded.
  *
  * @param  isSucceeded Out parameter for specifying if the status
  *         is set to succeeded or not.
  * @return true if the information was retrieved and it is succeeded.
  */
-static bool IsUpdateStatusSucceeded(bool& isSucceeded) {
+static bool IsSecureUpdateStatusSucceeded(bool& isSucceeded) {
   isSucceeded = false;
-  NS_tchar filename[MAXPATHLEN];
-  NS_tsnprintf(filename, sizeof(filename) / sizeof(filename[0]),
-               NS_T("%s/update.status"), gPatchDirPath);
+  NS_tchar statusFilePath[MAX_PATH + 1] = {L'\0'};
+  if (!GetSecureOutputFilePath(gPatchDirPath, L".status", statusFilePath)) {
+    return FALSE;
+  }
 
-  AutoFile file(NS_tfopen(filename, NS_T("rb")));
+  AutoFile file(NS_tfopen(statusFilePath, NS_T("rb")));
   if (file == nullptr) {
     return false;
   }
@@ -2345,7 +2453,7 @@ static int ProcessReplaceRequest() {
   return 0;
 }
 
-#ifdef XP_WIN
+#if defined(XP_WIN) && defined(MOZ_MAINTENANCE_SERVICE)
 static void WaitForServiceFinishThread(void* param) {
   // We wait at most 10 minutes, we already waited 5 seconds previously
   // before deciding to show this UI.
@@ -2366,13 +2474,8 @@ static int ReadMARChannelIDs(const NS_tchar* path,
                              MARChannelStringTable* results) {
   const unsigned int kNumStrings = 1;
   const char* kUpdaterKeys = "ACCEPTED_MAR_CHANNEL_IDS\0";
-  char updater_strings[kNumStrings][MAX_TEXT_LEN];
-
-  int result =
-      ReadStrings(path, kUpdaterKeys, kNumStrings, updater_strings, "Settings");
-
-  strncpy(results->MARChannelID, updater_strings[0], MAX_TEXT_LEN - 1);
-  results->MARChannelID[MAX_TEXT_LEN - 1] = 0;
+  int result = ReadStrings(path, kUpdaterKeys, kNumStrings,
+                           &results->MARChannelID, "Settings");
 
   return result;
 }
@@ -2402,7 +2505,7 @@ static void UpdateThreadFunc(void* param) {
 
     if (rv == OK) {
       if (rv == OK) {
-        NS_tchar updateSettingsPath[MAX_TEXT_LEN];
+        NS_tchar updateSettingsPath[MAXPATHLEN];
         NS_tsnprintf(updateSettingsPath,
                      sizeof(updateSettingsPath) / sizeof(updateSettingsPath[0]),
 #  ifdef XP_MACOSX
@@ -2415,8 +2518,8 @@ static void UpdateThreadFunc(void* param) {
         if (ReadMARChannelIDs(updateSettingsPath, &MARStrings) != OK) {
           rv = UPDATE_SETTINGS_FILE_CHANNEL;
         } else {
-          rv = gArchiveReader.VerifyProductInformation(MARStrings.MARChannelID,
-                                                       MOZ_APP_VERSION);
+          rv = gArchiveReader.VerifyProductInformation(
+              MARStrings.MARChannelID.get(), MOZ_APP_VERSION);
         }
       }
     }
@@ -2549,6 +2652,7 @@ int LaunchCallbackAndPostProcessApps(int argc, NS_tchar** argv,
         fprintf(stderr, "The post update process was not launched");
       }
 
+#  ifdef MOZ_MAINTENANCE_SERVICE
       // The service update will only be executed if it is already installed.
       // For first time installs of the service, the install will happen from
       // the PostUpdate process. We do the service update process here
@@ -2559,6 +2663,7 @@ int LaunchCallbackAndPostProcessApps(int argc, NS_tchar** argv,
       if (!sUsingService) {
         StartServiceUpdate(gInstallDirPath);
       }
+#  endif
     }
     EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 0);
 #elif XP_MACOSX
@@ -2687,6 +2792,15 @@ int NS_main(int argc, NS_tchar** argv) {
   NS_tstrncpy(gPatchDirPath, argv[1], MAXPATHLEN);
   gPatchDirPath[MAXPATHLEN - 1] = NS_T('\0');
 
+#ifdef XP_WIN
+  NS_tchar elevatedLockFilePath[MAXPATHLEN] = {NS_T('\0')};
+  NS_tsnprintf(elevatedLockFilePath,
+               sizeof(elevatedLockFilePath) / sizeof(elevatedLockFilePath[0]),
+               NS_T("%s\\update_elevated.lock"), gPatchDirPath);
+  gUseSecureOutputPath =
+      sUsingService || (NS_tremove(elevatedLockFilePath) && errno != ENOENT);
+#endif
+
   // This check is also performed in workmonitor.cpp since the maintenance
   // service can be called directly.
   if (!IsValidFullPath(argv[2])) {
@@ -2727,7 +2841,7 @@ int NS_main(int argc, NS_tchar** argv) {
   noServiceFallback = EnvHasValue("MOZ_NO_SERVICE_FALLBACK");
   putenv(const_cast<char*>("MOZ_NO_SERVICE_FALLBACK="));
   // Our tests run with a different apply directory for each test.
-  // We use this registry key on our test slaves to store the
+  // We use this registry key on our test machines to store the
   // allowed name/issuers.
   testOnlyFallbackKeyExists = DoesFallbackKeyExist();
 #    endif
@@ -2851,7 +2965,23 @@ int NS_main(int argc, NS_tchar** argv) {
   }
 #endif
 
-  LogInit(gPatchDirPath, NS_T("update.log"));
+  NS_tchar logFilePath[MAXPATHLEN + 1] = {L'\0'};
+#ifdef XP_WIN
+  if (gUseSecureOutputPath) {
+    // Remove the secure output files so it is easier to determine when new
+    // files are created in the unelevated updater.
+    RemoveSecureOutputFiles(gPatchDirPath);
+
+    (void)GetSecureOutputFilePath(gPatchDirPath, L".log", logFilePath);
+  } else {
+    NS_tsnprintf(logFilePath, sizeof(logFilePath) / sizeof(logFilePath[0]),
+                 NS_T("%s\\update.log"), gPatchDirPath);
+  }
+#else
+    NS_tsnprintf(logFilePath, sizeof(logFilePath) / sizeof(logFilePath[0]),
+                 NS_T("%s/update.log"), gPatchDirPath);
+#endif
+  LogInit(logFilePath);
 
   if (!WriteStatusFile("applying")) {
     LOG(("failed setting status to 'applying'"));
@@ -2861,6 +2991,7 @@ int NS_main(int argc, NS_tchar** argv) {
       CleanupElevatedMacUpdate(true);
     }
 #endif
+    output_finish();
     return 1;
   }
 
@@ -2883,7 +3014,7 @@ int NS_main(int argc, NS_tchar** argv) {
       LOG(
           ("Installation directory and working directory must be the same "
            "for non-staged updates. Exiting."));
-      LogFinish();
+      output_finish();
       return 1;
     }
 
@@ -2894,7 +3025,7 @@ int NS_main(int argc, NS_tchar** argv) {
     if (!PathRemoveFileSpecW(workingDirParent)) {
       WriteStatusFile(REMOVE_FILE_SPEC_ERROR);
       LOG(("Error calling PathRemoveFileSpecW: %d", GetLastError()));
-      LogFinish();
+      output_finish();
       return 1;
     }
 
@@ -2903,7 +3034,7 @@ int NS_main(int argc, NS_tchar** argv) {
       LOG(
           ("The apply-to directory must be the same as or "
            "a child of the installation directory! Exiting."));
-      LogFinish();
+      output_finish();
       return 1;
     }
   }
@@ -2952,11 +3083,10 @@ int NS_main(int argc, NS_tchar** argv) {
   // we will instead fallback to not using the service and display a UAC prompt.
   int lastFallbackError = FALLBACKKEY_UNKNOWN_ERROR;
 
-  // Launch a second instance of the updater with the runas verb on Windows
-  // when write access is denied to the installation directory and the update
-  // isn't being staged.
+  // Check whether a second instance of the updater should be launched by the
+  // maintenance service or with the 'runas' verb when write access is denied to
+  // the installation directory and the update isn't being staged.
   HANDLE updateLockFileHandle = INVALID_HANDLE_VALUE;
-  NS_tchar elevatedLockFilePath[MAXPATHLEN] = {NS_T('\0')};
   if (!sUsingService &&
       (argc > callbackIndex || sStagedUpdate || sReplaceRequest)) {
     NS_tchar updateLockFilePath[MAXPATHLEN];
@@ -2998,16 +3128,13 @@ int NS_main(int argc, NS_tchar** argv) {
         WriteStatusFile(DELETE_ERROR_STAGING_LOCK_FILE);
       }
       LOG(("Update already in progress! Exiting"));
+      output_finish();
       return 1;
     }
 
     updateLockFileHandle =
         CreateFileW(updateLockFilePath, GENERIC_READ | GENERIC_WRITE, 0,
                     nullptr, OPEN_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, nullptr);
-
-    NS_tsnprintf(elevatedLockFilePath,
-                 sizeof(elevatedLockFilePath) / sizeof(elevatedLockFilePath[0]),
-                 NS_T("%s/update_elevated.lock"), gPatchDirPath);
 
     // Even if a file has no sharing access, you can still get its attributes
     bool startedFromUnelevatedUpdater =
@@ -3029,7 +3156,8 @@ int NS_main(int argc, NS_tchar** argv) {
         (useService && testOnlyFallbackKeyExists && noServiceFallback)) {
       HANDLE elevatedFileHandle;
       if (NS_tremove(elevatedLockFilePath) && errno != ENOENT) {
-        fprintf(stderr, "Unable to create elevated lock file! Exiting\n");
+        LOG(("Unable to create elevated lock file! Exiting"));
+        output_finish();
         return 1;
       }
 
@@ -3038,14 +3166,26 @@ int NS_main(int argc, NS_tchar** argv) {
                       nullptr, OPEN_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, nullptr);
       if (elevatedFileHandle == INVALID_HANDLE_VALUE) {
         LOG(("Unable to create elevated lock file! Exiting"));
+        output_finish();
         return 1;
       }
 
       auto cmdLine = mozilla::MakeCommandLine(argc - 1, argv + 1);
       if (!cmdLine) {
         CloseHandle(elevatedFileHandle);
+        output_finish();
         return 1;
       }
+
+#  ifdef MOZ_MAINTENANCE_SERVICE
+// Only invoke the service for installations in Program Files.
+// This check is duplicated in workmonitor.cpp because the service can
+// be invoked directly without going through the updater.
+#    ifndef TEST_UPDATER
+      if (useService) {
+        useService = IsProgramFilesPath(gInstallDirPath);
+      }
+#    endif
 
       // Make sure the path to the updater to use for the update is on local.
       // We do this check to make sure that file locking is available for
@@ -3080,9 +3220,9 @@ int NS_main(int argc, NS_tchar** argv) {
                             &baseKey) == ERROR_SUCCESS) {
             RegCloseKey(baseKey);
           } else {
-#  ifdef TEST_UPDATER
+#    ifdef TEST_UPDATER
             useService = testOnlyFallbackKeyExists;
-#  endif
+#    endif
             if (!useService) {
               lastFallbackError = FALLBACKKEY_NOKEY_ERROR;
             }
@@ -3102,6 +3242,11 @@ int NS_main(int argc, NS_tchar** argv) {
       // If we still want to use the service try to launch the service
       // comamnd for the update.
       if (useService) {
+        // Get the secure ID before trying to update so it is possible to
+        // determine if the updater or the maintenance service has created a
+        // new one.
+        char uuidStringBefore[UUID_LEN] = {'\0'};
+        bool checkID = GetSecureID(uuidStringBefore);
         // Write a catchall service failure status in case it fails without
         // changing the status.
         WriteStatusFile(SERVICE_UPDATE_STATUS_UNCHANGED);
@@ -3139,11 +3284,24 @@ int NS_main(int argc, NS_tchar** argv) {
             // something seriously wrong.
             lastFallbackError = FALLBACKKEY_SERVICE_NO_STOP_ERROR;
             useService = false;
+          } else {
+            // Copy the secure output files if the secure ID has changed.
+            gCopyOutputFiles = true;
+            char uuidStringAfter[UUID_LEN] = {'\0'};
+            if (checkID && GetSecureID(uuidStringAfter) &&
+                strncmp(uuidStringBefore, uuidStringAfter,
+                        sizeof(uuidStringBefore)) == 0) {
+              LOG(
+                  ("The secure ID hasn't changed after launching the updater "
+                   "using the service"));
+              gCopyOutputFiles = false;
+            }
           }
         } else {
           lastFallbackError = FALLBACKKEY_LAUNCH_ERROR;
         }
       }
+#  endif
 
       // If the service can't be used when staging an update, make sure that
       // the UAC prompt is not shown! In this case, just set the status to
@@ -3156,19 +3314,20 @@ int NS_main(int argc, NS_tchar** argv) {
         LOG(
             ("Non-critical update staging error! Falling back to non-staged "
              "updates and exiting"));
+        output_finish();
         return 0;
       }
 
-      // If we started the service command, and it finished, check the
-      // update.status file to make sure it succeeded, and if it did
-      // we need to manually start the PostUpdate process from the
-      // current user's session of this unelevated updater.exe the
-      // current process is running as.
-      // Note that we don't need to do this if we're just staging the update,
-      // as the PostUpdate step runs when performing the replacing in that case.
+#  ifdef MOZ_MAINTENANCE_SERVICE
+      // If we started the service command, and it finished, check the secure
+      // update status file to make sure that it succeeded, and if it did we
+      // need to launch the PostUpdate process in the unelevated updater which
+      // is running in the current user's session. Note that we don't need to do
+      // this when staging an update since the PostUpdate step runs during the
+      // replace request.
       if (useService && !sStagedUpdate) {
         bool updateStatusSucceeded = false;
-        if (IsUpdateStatusSucceeded(updateStatusSucceeded) &&
+        if (IsSecureUpdateStatusSucceeded(updateStatusSucceeded) &&
             updateStatusSucceeded) {
           if (!LaunchWinPostProcess(gInstallDirPath, gPatchDirPath)) {
             fprintf(stderr,
@@ -3177,6 +3336,7 @@ int NS_main(int argc, NS_tchar** argv) {
           }
         }
       }
+#  endif
 
       // If we didn't want to use the service at all, or if an update was
       // already happening, or launching the service command failed, then
@@ -3186,6 +3346,14 @@ int NS_main(int argc, NS_tchar** argv) {
       // using the service is because we are testing.
       if (!useService && !noServiceFallback &&
           updateLockFileHandle == INVALID_HANDLE_VALUE) {
+        // Get the secure ID before trying to update so it is possible to
+        // determine if the updater has created a new one.
+        char uuidStringBefore[UUID_LEN] = {'\0'};
+        bool checkID = GetSecureID(uuidStringBefore);
+        // Write a catchall failure status in case it fails without changing the
+        // status.
+        WriteStatusFile(UPDATE_STATUS_UNCHANGED);
+
         SHELLEXECUTEINFO sinfo;
         memset(&sinfo, 0, sizeof(SHELLEXECUTEINFO));
         sinfo.cbSize = sizeof(SHELLEXECUTEINFO);
@@ -3202,43 +3370,72 @@ int NS_main(int argc, NS_tchar** argv) {
         if (result) {
           WaitForSingleObject(sinfo.hProcess, INFINITE);
           CloseHandle(sinfo.hProcess);
+
+          // Copy the secure output files if the secure ID has changed.
+          gCopyOutputFiles = true;
+          char uuidStringAfter[UUID_LEN] = {'\0'};
+          if (checkID && GetSecureID(uuidStringAfter) &&
+              strncmp(uuidStringBefore, uuidStringAfter,
+                      sizeof(uuidStringBefore)) == 0) {
+            LOG(
+                ("The secure ID hasn't changed after launching the updater "
+                 "using runas"));
+            gCopyOutputFiles = false;
+          }
         } else {
+          // Don't copy the secure output files if the elevation request was
+          // canceled since the status file written below is in the patch
+          // directory. At this point it should already be set to false and this
+          // is set here to make it clear that it should be false at this point
+          // and to prevent future changes from regressing this code.
+          gCopyOutputFiles = false;
           WriteStatusFile(ELEVATION_CANCELED);
         }
       }
 
+      // Note: The PostUpdate process is launched by the elevated updater which
+      // is running in the current user's session when the update is successful
+      // and doesn't need to be launched here by the unelevated updater as is
+      // done when the maintenance service launches the updater code above.
+
+      CloseHandle(elevatedFileHandle);
+
+      if (updateLockFileHandle != INVALID_HANDLE_VALUE) {
+        CloseHandle(updateLockFileHandle);
+      }
+
+      if (!useService && noServiceFallback) {
+        // When the service command was not launched at all.
+        // We should only reach this code path because we had write access
+        // all along to the directory and a fallback key existed, and we
+        // have fallback disabled (MOZ_NO_SERVICE_FALLBACK env var exists).
+        // We only currently use this env var from XPCShell tests.
+        gCopyOutputFiles = false;
+        WriteStatusFile(lastFallbackError);
+      }
+
+      // The logging output needs to be finished before launching the callback
+      // application so the update status file contains the value from the
+      // secure directory used by the maintenance service and the elevated
+      // updater.
+      output_finish();
       if (argc > callbackIndex) {
         LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
                           sUsingService);
       }
+      return 0;
 
-      CloseHandle(elevatedFileHandle);
-
-      if (!useService && !noServiceFallback &&
-          INVALID_HANDLE_VALUE == updateLockFileHandle) {
-        // We didn't use the service and we did run the elevated updater.exe.
-        // The elevated updater.exe is responsible for writing out the
-        // update.status file.
-        return 0;
-      } else if (useService) {
-        // The service command was launched. The service is responsible for
-        // writing out the update.status file.
-        if (updateLockFileHandle != INVALID_HANDLE_VALUE) {
-          CloseHandle(updateLockFileHandle);
-        }
-        return 0;
-      } else {
-        // Otherwise the service command was not launched at all.
-        // We are only reaching this code path because we had write access
-        // all along to the directory and a fallback key existed, and we
-        // have fallback disabled (MOZ_NO_SERVICE_FALLBACK env var exists).
-        // We only currently use this env var from XPCShell tests.
-        CloseHandle(updateLockFileHandle);
-        WriteStatusFile(lastFallbackError);
-        return 0;
-      }
+      // This is the end of the code block for launching another instance of the
+      // updater using either the maintenance service or with the 'runas' verb
+      // when the updater doesn't have write access to the installation
+      // directory.
     }
+    // This is the end of the code block when the updater was not launched by
+    // the service that checks whether the updater has write access to the
+    // installation directory.
   }
+  // If we made it this far this is the updater instance that will perform the
+  // actual update and gCopyOutputFiles will be false (e.g. the default value).
 #endif
 
   if (sStagedUpdate) {
@@ -3256,6 +3453,7 @@ int NS_main(int argc, NS_tchar** argv) {
       // WRITE_ERROR is one of the cases where the staging failure falls back to
       // applying the update on startup.
       WriteStatusFile(WRITE_ERROR);
+      output_finish();
       return 0;
     }
 #endif
@@ -3273,6 +3471,7 @@ int NS_main(int argc, NS_tchar** argv) {
         CleanupElevatedMacUpdate(true);
       }
 #endif
+      output_finish();
       return 1;
     }
   }
@@ -3282,9 +3481,9 @@ int NS_main(int argc, NS_tchar** argv) {
   if (!GetLongPathNameW(
           gWorkingDirPath, applyDirLongPath,
           sizeof(applyDirLongPath) / sizeof(applyDirLongPath[0]))) {
-    LOG(("NS_main: unable to find apply to dir: " LOG_S, gWorkingDirPath));
-    LogFinish();
     WriteStatusFile(WRITE_ERROR_APPLY_DIR_PATH);
+    LOG(("NS_main: unable to find apply to dir: " LOG_S, gWorkingDirPath));
+    output_finish();
     EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 1);
     if (argc > callbackIndex) {
       LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
@@ -3336,9 +3535,9 @@ int NS_main(int argc, NS_tchar** argv) {
     if (!GetLongPathNameW(
             targetPath, callbackLongPath,
             sizeof(callbackLongPath) / sizeof(callbackLongPath[0]))) {
-      LOG(("NS_main: unable to find callback file: " LOG_S, targetPath));
-      LogFinish();
       WriteStatusFile(WRITE_ERROR_CALLBACK_PATH);
+      LOG(("NS_main: unable to find callback file: " LOG_S, targetPath));
+      output_finish();
       EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 1);
       if (argc > callbackIndex) {
         LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
@@ -3382,9 +3581,9 @@ int NS_main(int argc, NS_tchar** argv) {
       if (callbackBackupPathLen < 0 ||
           callbackBackupPathLen >=
               static_cast<int>(callbackBackupPathBufSize)) {
-        LOG(("NS_main: callback backup path truncated"));
-        LogFinish();
         WriteStatusFile(USAGE_ERROR);
+        LOG(("NS_main: callback backup path truncated"));
+        output_finish();
 
         // Don't attempt to launch the callback when the callback path is
         // longer than expected.
@@ -3395,16 +3594,15 @@ int NS_main(int argc, NS_tchar** argv) {
       // Make a copy of the callback executable so it can be read when patching.
       if (!CopyFileW(argv[callbackIndex], gCallbackBackupPath, false)) {
         DWORD copyFileError = GetLastError();
-        LOG(("NS_main: failed to copy callback file " LOG_S
-             " into place at " LOG_S,
-             argv[callbackIndex], gCallbackBackupPath));
-        LogFinish();
         if (copyFileError == ERROR_ACCESS_DENIED) {
           WriteStatusFile(WRITE_ERROR_ACCESS_DENIED);
         } else {
           WriteStatusFile(WRITE_ERROR_CALLBACK_APP);
         }
-
+        LOG(("NS_main: failed to copy callback file " LOG_S
+             " into place at " LOG_S,
+             argv[callbackIndex], gCallbackBackupPath));
+        output_finish();
         EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 1);
         LaunchCallbackApp(argv[callbackIndex], argc - callbackIndex,
                           argv + callbackIndex, sUsingService);
@@ -3447,7 +3645,6 @@ int NS_main(int argc, NS_tchar** argv) {
               ("NS_main: callback app file in use, failed to exclusively open "
                "executable file: " LOG_S,
                argv[callbackIndex]));
-          LogFinish();
           if (lastWriteError == ERROR_ACCESS_DENIED) {
             WriteStatusFile(WRITE_ERROR_ACCESS_DENIED);
           } else {
@@ -3460,6 +3657,7 @@ int NS_main(int argc, NS_tchar** argv) {
                  "path: " LOG_S,
                  gCallbackBackupPath));
           }
+          output_finish();
           EXIT_WHEN_ELEVATED(elevatedLockFilePath, updateLockFileHandle, 1);
           LaunchCallbackApp(argv[5], argc - callbackIndex, argv + callbackIndex,
                             sUsingService);
@@ -3562,7 +3760,7 @@ int NS_main(int argc, NS_tchar** argv) {
   }
 #endif /* XP_MACOSX */
 
-  LogFinish();
+  output_finish();
 
   int retVal = LaunchCallbackAndPostProcessApps(argc, argv, callbackIndex
 #ifdef XP_WIN
@@ -3723,7 +3921,7 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
           return PARSE_ERROR;
         }
 
-        Action* action = new RemoveFile();
+        mozilla::UniquePtr<Action> action(new RemoveFile());
         rv = action->Parse(quotedpath);
         if (rv) {
           LOG(("add_dir_entries Parse error on recurse: " LOG_S ", err: %d",
@@ -3733,7 +3931,7 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
         }
         free(quotedpath);
 
-        list->Append(action);
+        list->Append(action.release());
       }
     } while (FindNextFileW(hFindFile, &finddata) != 0);
 
@@ -3745,13 +3943,13 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
         return PARSE_ERROR;
       }
 
-      Action* action = new RemoveDir();
+      mozilla::UniquePtr<Action> action(new RemoveDir());
       rv = action->Parse(quotedpath);
       if (rv) {
         LOG(("add_dir_entries Parse error on close: " LOG_S ", err: %d",
              quotedpath, rv));
       } else {
-        list->Append(action);
+        list->Append(action.release());
       }
       free(quotedpath);
     }
@@ -3760,86 +3958,115 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
   return rv;
 }
 
-#elif defined(SOLARIS)
+#elif defined(HAVE_FTS_H)
   int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
     int rv = OK;
-    NS_tchar foundpath[MAXPATHLEN];
-    struct {
-      dirent dent_buffer;
-      char chars[MAXNAMLEN];
-    } ent_buf;
-    struct dirent* ent;
+    FTS* ftsdir;
+    FTSENT* ftsdirEntry;
     mozilla::UniquePtr<NS_tchar[]> searchpath(get_full_path(dirpath));
 
-    DIR* dir = opendir(searchpath.get());
-    if (!dir) {
-      LOG(("add_dir_entries error on opendir: " LOG_S ", err: %d",
-           searchpath.get(), errno));
+    // Remove the trailing slash so the paths don't contain double slashes. The
+    // existence of the slash has already been checked in DoUpdate.
+    searchpath[NS_tstrlen(searchpath.get()) - 1] = NS_T('\0');
+    char* const pathargv[] = {searchpath.get(), nullptr};
+
+    // FTS_NOCHDIR is used so relative paths from the destination directory are
+    // returned.
+    if (!(ftsdir = fts_open(pathargv,
+                            FTS_PHYSICAL | FTS_NOSTAT | FTS_XDEV | FTS_NOCHDIR,
+                            nullptr))) {
       return UNEXPECTED_FILE_OPERATION_ERROR;
     }
 
-    while (readdir_r(dir, (dirent*)&ent_buf, &ent) == 0 && ent) {
-      if ((strcmp(ent->d_name, ".") == 0) || (strcmp(ent->d_name, "..") == 0)) {
-        continue;
-      }
+    while ((ftsdirEntry = fts_read(ftsdir)) != nullptr) {
+      NS_tchar foundpath[MAXPATHLEN];
+      NS_tchar* quotedpath = nullptr;
+      mozilla::UniquePtr<Action> action;
 
-      NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
-                   NS_T("%s%s"), searchpath.get(), ent->d_name);
-      struct stat64 st_buf;
-      int test = stat64(foundpath, &st_buf);
-      if (test) {
-        closedir(dir);
-        return UNEXPECTED_FILE_OPERATION_ERROR;
-      }
-      if (S_ISDIR(st_buf.st_mode)) {
-        NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
-                     NS_T("%s/"), foundpath);
-        // Recurse into the directory.
-        rv = add_dir_entries(foundpath, list);
-        if (rv) {
-          LOG(("add_dir_entries error: " LOG_S ", err: %d", foundpath, rv));
-          closedir(dir);
-          return rv;
-        }
-      } else {
-        // Add the file to be removed to the ActionList.
-        NS_tchar* quotedpath = get_quoted_path(get_relative_path(foundpath));
-        if (!quotedpath) {
-          closedir(dir);
-          return PARSE_ERROR;
-        }
+      switch (ftsdirEntry->fts_info) {
+        // Filesystem objects that shouldn't be in the application's directories
+        case FTS_SL:
+        case FTS_SLNONE:
+        case FTS_DEFAULT:
+          LOG(("add_dir_entries: found a non-standard file: " LOG_S,
+               ftsdirEntry->fts_path));
+          // Fall through and try to remove as a file
+          [[fallthrough]];
 
-        Action* action = new RemoveFile();
-        rv = action->Parse(quotedpath);
-        if (rv) {
-          LOG(("add_dir_entries Parse error on recurse: " LOG_S ", err: %d",
-               quotedpath, rv));
+        // Files
+        case FTS_F:
+        case FTS_NSOK:
+          // Add the file to be removed to the ActionList.
+          NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
+                       NS_T("%s"), ftsdirEntry->fts_accpath);
+          quotedpath = get_quoted_path(get_relative_path(foundpath));
+          if (!quotedpath) {
+            rv = UPDATER_QUOTED_PATH_MEM_ERROR;
+            break;
+          }
+          action.reset(new RemoveFile());
+          rv = action->Parse(quotedpath);
           free(quotedpath);
-          closedir(dir);
-          return rv;
-        }
-        free(quotedpath);
+          if (!rv) {
+            list->Append(action.release());
+          }
+          break;
 
-        list->Append(action);
+        // Directories
+        case FTS_DP:
+          // Add the directory to be removed to the ActionList.
+          NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
+                       NS_T("%s/"), ftsdirEntry->fts_accpath);
+          quotedpath = get_quoted_path(get_relative_path(foundpath));
+          if (!quotedpath) {
+            rv = UPDATER_QUOTED_PATH_MEM_ERROR;
+            break;
+          }
+
+          action.reset(new RemoveDir());
+          rv = action->Parse(quotedpath);
+          free(quotedpath);
+          if (!rv) {
+            list->Append(action.release());
+          }
+          break;
+
+        // Errors
+        case FTS_DNR:
+        case FTS_NS:
+          // ENOENT is an acceptable error for FTS_DNR and FTS_NS and means that
+          // we're racing with ourselves. Though strange, the entry will be
+          // removed anyway.
+          if (ENOENT == ftsdirEntry->fts_errno) {
+            rv = OK;
+            break;
+          }
+          [[fallthrough]];
+
+        case FTS_ERR:
+          rv = UNEXPECTED_FILE_OPERATION_ERROR;
+          LOG(("add_dir_entries: fts_read() error: " LOG_S ", err: %d",
+               ftsdirEntry->fts_path, ftsdirEntry->fts_errno));
+          break;
+
+        case FTS_DC:
+          rv = UNEXPECTED_FILE_OPERATION_ERROR;
+          LOG(("add_dir_entries: fts_read() returned FT_DC: " LOG_S,
+               ftsdirEntry->fts_path));
+          break;
+
+        default:
+          // FTS_D is ignored and FTS_DP is used instead (post-order).
+          rv = OK;
+          break;
+      }
+
+      if (rv != OK) {
+        break;
       }
     }
-    closedir(dir);
 
-    // Add the directory to be removed to the ActionList.
-    NS_tchar* quotedpath = get_quoted_path(get_relative_path(dirpath));
-    if (!quotedpath) {
-      return PARSE_ERROR;
-    }
-
-    Action* action = new RemoveDir();
-    rv = action->Parse(quotedpath);
-    if (rv) {
-      LOG(("add_dir_entries Parse error on close: " LOG_S ", err: %d",
-           quotedpath, rv));
-    } else {
-      list->Append(action);
-    }
-    free(quotedpath);
+    fts_close(ftsdir);
 
     return rv;
   }
@@ -3848,116 +4075,87 @@ int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
 
 int add_dir_entries(const NS_tchar* dirpath, ActionList* list) {
   int rv = OK;
-  FTS* ftsdir;
-  FTSENT* ftsdirEntry;
+  NS_tchar foundpath[PATH_MAX];
+  struct {
+    dirent dent_buffer;
+    char chars[NAME_MAX];
+  } ent_buf;
+  struct dirent* ent;
   mozilla::UniquePtr<NS_tchar[]> searchpath(get_full_path(dirpath));
 
-  // Remove the trailing slash so the paths don't contain double slashes. The
-  // existence of the slash has already been checked in DoUpdate.
-  searchpath[NS_tstrlen(searchpath.get()) - 1] = NS_T('\0');
-  char* const pathargv[] = {searchpath.get(), nullptr};
-
-  // FTS_NOCHDIR is used so relative paths from the destination directory are
-  // returned.
-  if (!(ftsdir = fts_open(pathargv,
-                          FTS_PHYSICAL | FTS_NOSTAT | FTS_XDEV | FTS_NOCHDIR,
-                          nullptr))) {
+  DIR* dir = opendir(searchpath.get());
+  if (!dir) {
+    LOG(("add_dir_entries error on opendir: " LOG_S ", err: %d",
+         searchpath.get(), errno));
     return UNEXPECTED_FILE_OPERATION_ERROR;
   }
 
-  while ((ftsdirEntry = fts_read(ftsdir)) != nullptr) {
-    NS_tchar foundpath[MAXPATHLEN];
-    NS_tchar* quotedpath = nullptr;
-    Action* action = nullptr;
-
-    switch (ftsdirEntry->fts_info) {
-      // Filesystem objects that shouldn't be in the application's directories
-      case FTS_SL:
-      case FTS_SLNONE:
-      case FTS_DEFAULT:
-        LOG(("add_dir_entries: found a non-standard file: " LOG_S,
-             ftsdirEntry->fts_path));
-        // Fall through and try to remove as a file
-        MOZ_FALLTHROUGH;
-
-      // Files
-      case FTS_F:
-      case FTS_NSOK:
-        // Add the file to be removed to the ActionList.
-        NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
-                     NS_T("%s"), ftsdirEntry->fts_accpath);
-        quotedpath = get_quoted_path(get_relative_path(foundpath));
-        if (!quotedpath) {
-          rv = UPDATER_QUOTED_PATH_MEM_ERROR;
-          break;
-        }
-        action = new RemoveFile();
-        rv = action->Parse(quotedpath);
-        free(quotedpath);
-        if (!rv) {
-          list->Append(action);
-        }
-        break;
-
-      // Directories
-      case FTS_DP:
-        rv = OK;
-        // Add the directory to be removed to the ActionList.
-        NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
-                     NS_T("%s/"), ftsdirEntry->fts_accpath);
-        quotedpath = get_quoted_path(get_relative_path(foundpath));
-        if (!quotedpath) {
-          rv = UPDATER_QUOTED_PATH_MEM_ERROR;
-          break;
-        }
-
-        action = new RemoveDir();
-        rv = action->Parse(quotedpath);
-        free(quotedpath);
-        if (!rv) {
-          list->Append(action);
-        }
-        break;
-
-      // Errors
-      case FTS_DNR:
-      case FTS_NS:
-        // ENOENT is an acceptable error for FTS_DNR and FTS_NS and means that
-        // we're racing with ourselves. Though strange, the entry will be
-        // removed anyway.
-        if (ENOENT == ftsdirEntry->fts_errno) {
-          rv = OK;
-          break;
-        }
-        MOZ_FALLTHROUGH;
-
-      case FTS_ERR:
-        rv = UNEXPECTED_FILE_OPERATION_ERROR;
-        LOG(("add_dir_entries: fts_read() error: " LOG_S ", err: %d",
-             ftsdirEntry->fts_path, ftsdirEntry->fts_errno));
-        break;
-
-      case FTS_DC:
-        rv = UNEXPECTED_FILE_OPERATION_ERROR;
-        LOG(("add_dir_entries: fts_read() returned FT_DC: " LOG_S,
-             ftsdirEntry->fts_path));
-        break;
-
-      default:
-        // FTS_D is ignored and FTS_DP is used instead (post-order).
-        rv = OK;
-        break;
+  while (readdir_r(dir, (dirent*)&ent_buf, &ent) == 0 && ent) {
+    if ((strcmp(ent->d_name, ".") == 0) || (strcmp(ent->d_name, "..") == 0)) {
+      continue;
     }
 
-    if (rv != OK) {
-      break;
+    NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
+                 NS_T("%s%s"), searchpath.get(), ent->d_name);
+    struct stat64 st_buf;
+    int test = stat64(foundpath, &st_buf);
+    if (test) {
+      closedir(dir);
+      return UNEXPECTED_FILE_OPERATION_ERROR;
+    }
+    if (S_ISDIR(st_buf.st_mode)) {
+      NS_tsnprintf(foundpath, sizeof(foundpath) / sizeof(foundpath[0]),
+                   NS_T("%s%s/"), dirpath, ent->d_name);
+      // Recurse into the directory.
+      rv = add_dir_entries(foundpath, list);
+      if (rv) {
+        LOG(("add_dir_entries error: " LOG_S ", err: %d", foundpath, rv));
+        closedir(dir);
+        return rv;
+      }
+    } else {
+      // Add the file to be removed to the ActionList.
+      NS_tchar* quotedpath = get_quoted_path(get_relative_path(foundpath));
+      if (!quotedpath) {
+        closedir(dir);
+        return PARSE_ERROR;
+      }
+
+      mozilla::UniquePtr<Action> action(new RemoveFile());
+      rv = action->Parse(quotedpath);
+      if (rv) {
+        LOG(("add_dir_entries Parse error on recurse: " LOG_S ", err: %d",
+             quotedpath, rv));
+        free(quotedpath);
+        closedir(dir);
+        return rv;
+      }
+      free(quotedpath);
+
+      list->Append(action.release());
     }
   }
+  closedir(dir);
 
-  fts_close(ftsdir);
+  // Add the directory to be removed to the ActionList.
+  NS_tchar* quotedpath = get_quoted_path(get_relative_path(dirpath));
+  if (!quotedpath) {
+    return PARSE_ERROR;
+  }
+
+  mozilla::UniquePtr<Action> action(new RemoveDir());
+  rv = action->Parse(quotedpath);
+  if (rv) {
+    LOG(("add_dir_entries Parse error on close: " LOG_S ", err: %d", quotedpath,
+         rv));
+  } else {
+    list->Append(action.release());
+  }
+  free(quotedpath);
 
   return rv;
 }
+
 #endif
 
 /*

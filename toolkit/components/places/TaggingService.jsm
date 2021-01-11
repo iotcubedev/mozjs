@@ -3,8 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
+const { ComponentUtils } = ChromeUtils.import(
+  "resource://gre/modules/ComponentUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { PlacesUtils } = ChromeUtils.import(
@@ -22,7 +22,7 @@ function TaggingService() {
   // Observe bookmarks changes.
   PlacesUtils.bookmarks.addObserver(this);
   PlacesUtils.observers.addListener(
-    ["bookmark-added"],
+    ["bookmark-added", "bookmark-removed"],
     this.handlePlacesEvents
   );
 
@@ -104,7 +104,6 @@ TaggingService.prototype = {
     }
     return -1;
   },
-
   /**
    * Makes a proper array of tag objects like  { id: number, name: string }.
    *
@@ -131,7 +130,7 @@ TaggingService.prototype = {
           tag.__defineGetter__("name", () => this._tagFolders[tag.id]);
         } else if (
           typeof idOrName == "string" &&
-          idOrName.length > 0 &&
+          !!idOrName.length &&
           idOrName.length <= PlacesUtils.bookmarks.MAX_TAG_LENGTH
         ) {
           // This is a tag name.
@@ -151,7 +150,7 @@ TaggingService.prototype = {
 
   // nsITaggingService
   tagURI: function TS_tagURI(aURI, aTags, aSource) {
-    if (!aURI || !aTags || !Array.isArray(aTags) || aTags.length == 0) {
+    if (!aURI || !aTags || !Array.isArray(aTags) || !aTags.length) {
       throw Components.Exception(
         "Invalid value for tags",
         Cr.NS_ERROR_INVALID_ARG
@@ -230,7 +229,7 @@ TaggingService.prototype = {
 
   // nsITaggingService
   untagURI: function TS_untagURI(aURI, aTags, aSource) {
-    if (!aURI || (aTags && (!Array.isArray(aTags) || aTags.length == 0))) {
+    if (!aURI || (aTags && (!Array.isArray(aTags) || !aTags.length))) {
       throw Components.Exception(
         "Invalid value for tags",
         Cr.NS_ERROR_INVALID_ARG
@@ -328,7 +327,7 @@ TaggingService.prototype = {
     if (aTopic == TOPIC_SHUTDOWN) {
       PlacesUtils.bookmarks.removeObserver(this);
       PlacesUtils.observers.removeListener(
-        ["bookmark-added"],
+        ["bookmark-added", "bookmark-removed"],
         this.handlePlacesEvents
       );
       Services.obs.removeObserver(this, TOPIC_SHUTDOWN);
@@ -347,7 +346,7 @@ TaggingService.prototype = {
    * @returns an array of item ids
    */
   _getTaggedItemIdsIfUnbookmarkedURI: function TS__getTaggedItemIdsIfUnbookmarkedURI(
-    aURI
+    url
   ) {
     var itemIds = [];
     var isBookmarked = false;
@@ -360,7 +359,7 @@ TaggingService.prototype = {
        FROM moz_bookmarks
        WHERE fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url)`
     );
-    stmt.params.page_url = aURI.spec;
+    stmt.params.page_url = url;
     try {
       while (stmt.executeStep() && !isBookmarked) {
         if (this._tagFolders[stmt.row.parent]) {
@@ -380,45 +379,46 @@ TaggingService.prototype = {
 
   handlePlacesEvents(events) {
     for (let event of events) {
-      if (
-        !event.isTagging ||
-        event.itemType != PlacesUtils.bookmarks.TYPE_FOLDER
-      ) {
-        continue;
-      }
+      switch (event.type) {
+        case "bookmark-added":
+          if (
+            !event.isTagging ||
+            event.itemType != PlacesUtils.bookmarks.TYPE_FOLDER
+          ) {
+            continue;
+          }
 
-      this._tagFolders[event.id] = event.title;
-    }
-  },
+          this._tagFolders[event.id] = event.title;
+          break;
+        case "bookmark-removed":
+          // Item is a tag folder.
+          if (
+            event.parentId == PlacesUtils.tagsFolderId &&
+            this._tagFolders[event.id]
+          ) {
+            delete this._tagFolders[event.id];
+            break;
+          }
 
-  // nsINavBookmarkObserver
-  onItemRemoved: function TS_onItemRemoved(
-    aItemId,
-    aFolderId,
-    aIndex,
-    aItemType,
-    aURI,
-    aGuid,
-    aParentGuid,
-    aSource
-  ) {
-    // Item is a tag folder.
-    if (aFolderId == PlacesUtils.tagsFolderId && this._tagFolders[aItemId]) {
-      delete this._tagFolders[aItemId];
-    } else if (aURI && !this._tagFolders[aFolderId]) {
-      // Item is a bookmark that was removed from a non-tag folder.
-      // If the only bookmark items now associated with the bookmark's URI are
-      // contained in tag folders, the URI is no longer properly bookmarked, so
-      // untag it.
-      let itemIds = this._getTaggedItemIdsIfUnbookmarkedURI(aURI);
-      for (let i = 0; i < itemIds.length; i++) {
-        try {
-          PlacesUtils.bookmarks.removeItem(itemIds[i], aSource);
-        } catch (ex) {}
+          Services.tm.dispatchToMainThread(() => {
+            if (event.url && !this._tagFolders[event.parentId]) {
+              // Item is a bookmark that was removed from a non-tag folder.
+              // If the only bookmark items now associated with the bookmark's URI are
+              // contained in tag folders, the URI is no longer properly bookmarked, so
+              // untag it.
+              let itemIds = this._getTaggedItemIdsIfUnbookmarkedURI(event.url);
+              for (let i = 0; i < itemIds.length; i++) {
+                try {
+                  PlacesUtils.bookmarks.removeItem(itemIds[i], event.source);
+                } catch (ex) {}
+              }
+            } else if (event.url && this._tagFolders[event.parentId]) {
+              // Item is a tag entry.  If this was the last entry for this tag, remove it.
+              this._removeTagIfEmpty(event.parentId, event.source);
+            }
+          });
+          break;
       }
-    } else if (aURI && this._tagFolders[aFolderId]) {
-      // Item is a tag entry.  If this was the last entry for this tag, remove it.
-      this._removeTagIfEmpty(aFolderId, aSource);
     }
   },
 
@@ -460,12 +460,12 @@ TaggingService.prototype = {
 
   classID: Components.ID("{bbc23860-2553-479d-8b78-94d9038334f7}"),
 
-  _xpcom_factory: XPCOMUtils.generateSingletonFactory(TaggingService),
+  _xpcom_factory: ComponentUtils.generateSingletonFactory(TaggingService),
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsITaggingService,
-    Ci.nsINavBookmarkObserver,
-    Ci.nsIObserver,
+    "nsITaggingService",
+    "nsINavBookmarkObserver",
+    "nsIObserver",
   ]),
 };
 
@@ -586,7 +586,7 @@ TagAutoCompleteSearch.prototype = {
   },
 
   classID: Components.ID("{1dcc23b0-d4cb-11dc-9ad6-479d56d89593}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIAutoCompleteSearch]),
+  QueryInterface: ChromeUtils.generateQI(["nsIAutoCompleteSearch"]),
 };
 
 var EXPORTED_SYMBOLS = ["TaggingService", "TagAutoCompleteSearch"];

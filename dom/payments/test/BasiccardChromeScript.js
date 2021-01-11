@@ -111,9 +111,7 @@ function showRequest(requestId) {
       );
     } catch (error) {
       emitTestFail(
-        `Unexpected error (${
-          error.name
-        }) when calling PaymentRequestService::changePaymentMethod`
+        `Unexpected error (${error.name}) when calling PaymentRequestService::changePaymentMethod`
       );
     }
     return;
@@ -207,7 +205,7 @@ const DummyUIService = {
     );
   },
   closePayment: requestId => {},
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPaymentUIService]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPaymentUIService"]),
 };
 
 paymentSrv.setTestingUIService(

@@ -11,28 +11,18 @@
 
 #include "nsGfxCIID.h"
 #include "nsIServiceManager.h"
-#include "nsIWebBrowserPrint.h"
 #include "nsWindowsHelpers.h"
 #include "ipc/IPCMessageUtils.h"
 
-const char kPrinterEnumeratorContractID[] =
-    "@mozilla.org/gfx/printerenumerator;1";
+const char kPrinterListContractID[] = "@mozilla.org/gfx/printerlist;1";
 
 using namespace mozilla::embedding;
 
 NS_IMETHODIMP
 nsPrintSettingsServiceWin::SerializeToPrintData(nsIPrintSettings* aSettings,
-                                                nsIWebBrowserPrint* aWBP,
                                                 PrintData* data) {
-  nsresult rv =
-      nsPrintSettingsService::SerializeToPrintData(aSettings, aWBP, data);
+  nsresult rv = nsPrintSettingsService::SerializeToPrintData(aSettings, data);
   NS_ENSURE_SUCCESS(rv, rv);
-
-  // Windows wants this information for its print dialogs
-  if (aWBP) {
-    aWBP->GetIsIFrameSelected(&data->isIFrameSelected());
-    aWBP->GetIsRangeSelection(&data->isRangeSelection());
-  }
 
   nsCOMPtr<nsIPrintSettingsWin> psWin = do_QueryInterface(aSettings);
   if (!psWin) {

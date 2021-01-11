@@ -22,6 +22,7 @@
 #include "GeckoProfiler.h"
 #include "nsIMozBrowserFrame.h"
 #include "nsPlaceholderFrame.h"
+#include "MobileViewportManager.h"
 
 using namespace mozilla;
 typedef nsAbsoluteContainingBlock::AbsPosReflowFlags AbsPosReflowFlags;
@@ -68,7 +69,7 @@ void ViewportFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
  * Returns whether we are going to put an element in the top layer for
  * fullscreen. This function should matches the CSS rule in ua.css.
  */
-static bool ShouldInTopLayerForFullscreen(Element* aElement) {
+static bool ShouldInTopLayerForFullscreen(dom::Element* aElement) {
   if (!aElement->GetParent()) {
     return false;
   }
@@ -85,7 +86,7 @@ static void BuildDisplayListForTopLayerFrame(nsDisplayListBuilder* aBuilder,
                                              nsDisplayList* aList) {
   nsRect visible;
   nsRect dirty;
-  DisplayListClipState::AutoClipMultiple clipState(aBuilder);
+  DisplayListClipState::AutoSaveRestore clipState(aBuilder);
   nsDisplayListBuilder::AutoCurrentActiveScrolledRootSetter asrSetter(aBuilder);
   nsDisplayListBuilder::OutOfFlowDisplayData* savedOutOfFlowData =
       nsDisplayListBuilder::GetOutOfFlowData(aFrame);
@@ -101,8 +102,6 @@ static void BuildDisplayListForTopLayerFrame(nsDisplayListBuilder* aBuilder,
     // root scroll frame.
     clipState.SetClipChainForContainingBlockDescendants(
         savedOutOfFlowData->mCombinedClipChain);
-    clipState.ClipContainingBlockDescendantsExtra(
-        visible + aBuilder->ToReferenceFrame(aFrame), nullptr);
     asrSetter.SetCurrentActiveScrolledRoot(
         savedOutOfFlowData->mContainingBlockActiveScrolledRoot);
   }
@@ -116,9 +115,8 @@ static void BuildDisplayListForTopLayerFrame(nsDisplayListBuilder* aBuilder,
 
 void ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
                                                 nsDisplayList* aList) {
-  nsTArray<Element*> fullscreenStack =
-      PresContext()->Document()->GetFullscreenStack();
-  for (Element* elem : fullscreenStack) {
+  nsTArray<dom::Element*> topLayer = PresContext()->Document()->GetTopLayer();
+  for (dom::Element* elem : topLayer) {
     if (nsIFrame* frame = elem->GetPrimaryFrame()) {
       // There are two cases where an element in fullscreen is not in
       // the top layer:
@@ -129,7 +127,7 @@ void ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
       //    layer for fullscreen. See ShouldInTopLayerForFullscreen().
       // In both cases, we want to skip the frame here and paint it in
       // the normal path.
-      if (frame->StyleDisplay()->mTopLayer == NS_STYLE_TOP_LAYER_NONE) {
+      if (frame->StyleDisplay()->mTopLayer == StyleTopLayer::None) {
         MOZ_ASSERT(!aBuilder->IsForPainting() ||
                    !ShouldInTopLayerForFullscreen(elem));
         continue;
@@ -138,7 +136,7 @@ void ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
       // Inner SVG, MathML elements, as well as children of some XUL
       // elements are not allowed to be out-of-flow. They should not
       // be handled as top layer element here.
-      if (!(frame->GetStateBits() & NS_FRAME_OUT_OF_FLOW)) {
+      if (!frame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
         MOZ_ASSERT(!elem->GetParent()->IsHTMLElement(),
                    "HTML element should always be out-of-flow if in the top "
                    "layer");
@@ -160,11 +158,11 @@ void ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
   }
 
   if (nsCanvasFrame* canvasFrame = PresShell()->GetCanvasFrame()) {
-    if (Element* container = canvasFrame->GetCustomContentContainer()) {
+    if (dom::Element* container = canvasFrame->GetCustomContentContainer()) {
       if (nsIFrame* frame = container->GetPrimaryFrame()) {
-        MOZ_ASSERT(frame->StyleDisplay()->mTopLayer != NS_STYLE_TOP_LAYER_NONE,
+        MOZ_ASSERT(frame->StyleDisplay()->mTopLayer != StyleTopLayer::None,
                    "ua.css should ensure this");
-        MOZ_ASSERT(frame->GetStateBits() & NS_FRAME_OUT_OF_FLOW);
+        MOZ_ASSERT(frame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW));
         BuildDisplayListForTopLayerFrame(aBuilder, frame, aList);
       }
     }
@@ -285,7 +283,7 @@ void ViewportFrame::Reflow(nsPresContext* aPresContext,
     // Deal with a non-incremental reflow or an incremental reflow
     // targeted at our one-and-only principal child frame.
     if (aReflowInput.ShouldReflowAllKids() || aReflowInput.IsBResize() ||
-        NS_SUBTREE_DIRTY(mFrames.FirstChild())) {
+        mFrames.FirstChild()->IsSubtreeDirty()) {
       // Reflow our one-and-only principal child frame
       nsIFrame* kidFrame = mFrames.FirstChild();
       ReflowOutput kidDesiredSize(aReflowInput);
@@ -349,7 +347,7 @@ void ViewportFrame::Reflow(nsPresContext* aPresContext,
   }
 
   // If we were dirty then do a repaint
-  if (GetStateBits() & NS_FRAME_IS_DIRTY) {
+  if (HasAnyStateBits(NS_FRAME_IS_DIRTY)) {
     InvalidateFrame();
   }
 
@@ -387,9 +385,15 @@ nsSize ViewportFrame::AdjustViewportSizeForFixedPosition(
   // Layout fixed position elements to the visual viewport size if and only if
   // it has been set and it is larger than the computed size, otherwise use the
   // computed size.
-  if (presShell->IsVisualViewportSizeSet() &&
-      result < presShell->GetVisualViewportSize()) {
-    result = presShell->GetVisualViewportSize();
+  if (presShell->IsVisualViewportSizeSet()) {
+    if (presShell->GetDynamicToolbarState() == DynamicToolbarState::Collapsed &&
+        result < presShell->GetVisualViewportSizeUpdatedByDynamicToolbar()) {
+      // We need to use the viewport size updated by the dynamic toolbar in the
+      // case where the dynamic toolbar is completely hidden.
+      result = presShell->GetVisualViewportSizeUpdatedByDynamicToolbar();
+    } else if (result < presShell->GetVisualViewportSize()) {
+      result = presShell->GetVisualViewportSize();
+    }
   }
   // Expand the size to the layout viewport size if necessary.
   const nsSize layoutViewportSize = presShell->GetLayoutViewportSize();
@@ -402,6 +406,6 @@ nsSize ViewportFrame::AdjustViewportSizeForFixedPosition(
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult ViewportFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Viewport"), aResult);
+  return MakeFrameName(u"Viewport"_ns, aResult);
 }
 #endif

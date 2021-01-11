@@ -23,6 +23,7 @@ job-defaults:
         max-run-time: 3600
         env:
             PERFHERDER_EXTRA_OPTIONS: static-analysis-autotest
+    run-on-projects: ['mozilla-central']
     run:
         using: mozharness
         actions: [static-analysis-autotest]
@@ -45,7 +46,7 @@ jobs:
             env:
                 # clang-tidy needs a recent libstdc++, which can be found in the clang
                 # toolchain.
-                LD_LIBRARY_PATH: /builds/worker/workspace/build/src/clang/lib
+                LD_LIBRARY_PATH: /builds/worker/checkouts/gecko/clang/lib
                 PERFHERDER_EXTRA_OPTIONS: static-analysis-autotest
         run:
             config:
@@ -53,6 +54,7 @@ jobs:
                 - builds/releng_sub_linux_configs/64_stat_and_debug.py
             tooltool-downloads: public
             keep-artifacts: false
+        use-sccache: true
         fetches:
             toolchain:
                 - linux64-clang
@@ -63,6 +65,8 @@ jobs:
                 - linux64-cbindgen
                 - linux64-nasm
                 - linux64-node
+                - linux64-lucetc
+                - wasi-sysroot
 
     win64-st-autotest/debug:
         description: "Win64 Debug Static Analysis Autotest"
@@ -81,8 +85,10 @@ jobs:
                 - builds/taskcluster_base_windows.py
                 - builds/taskcluster_base_win64.py
                 - builds/taskcluster_sub_win64/debug.py
+            tooltool-downloads: internal
             extra-config:
                 mozconfig_variant: debug
+        use-sccache: true
         fetches:
             toolchain:
                 - win64-clang-cl
@@ -92,3 +98,5 @@ jobs:
                 - win64-clang-tidy
                 - win64-nasm
                 - win64-node
+                - win64-dump-syms
+                - win64-winchecksec

@@ -218,7 +218,8 @@ void MacIOSurfaceTextureHostOGL::PushResourceUpdates(
 void MacIOSurfaceTextureHostOGL::PushDisplayItems(
     wr::DisplayListBuilder& aBuilder, const wr::LayoutRect& aBounds,
     const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-    const Range<wr::ImageKey>& aImageKeys) {
+    const Range<wr::ImageKey>& aImageKeys,
+    const bool aPreferCompositorSurface) {
   switch (GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:
     case gfx::SurfaceFormat::R8G8B8A8:
@@ -227,7 +228,9 @@ void MacIOSurfaceTextureHostOGL::PushDisplayItems(
       MOZ_ASSERT(aImageKeys.length() == 1);
       MOZ_ASSERT(mSurface->GetPlaneCount() == 0);
       aBuilder.PushImage(aBounds, aClip, true, aFilter, aImageKeys[0],
-                         !(mFlags & TextureFlags::NON_PREMULTIPLIED));
+                         !(mFlags & TextureFlags::NON_PREMULTIPLIED),
+                         wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
+                         aPreferCompositorSurface);
       break;
     }
     case gfx::SurfaceFormat::YUV422: {
@@ -238,7 +241,8 @@ void MacIOSurfaceTextureHostOGL::PushDisplayItems(
       aBuilder.PushYCbCrInterleavedImage(
           aBounds, aClip, true, aImageKeys[0], wr::ColorDepth::Color8,
           wr::ToWrYuvColorSpace(GetYUVColorSpace()),
-          wr::ToWrColorRange(GetColorRange()), aFilter);
+          wr::ToWrColorRange(GetColorRange()), aFilter,
+          aPreferCompositorSurface);
       break;
     }
     case gfx::SurfaceFormat::NV12: {
@@ -249,7 +253,8 @@ void MacIOSurfaceTextureHostOGL::PushDisplayItems(
       aBuilder.PushNV12Image(aBounds, aClip, true, aImageKeys[0], aImageKeys[1],
                              wr::ColorDepth::Color8,
                              wr::ToWrYuvColorSpace(GetYUVColorSpace()),
-                             wr::ToWrColorRange(GetColorRange()), aFilter);
+                             wr::ToWrColorRange(GetColorRange()), aFilter,
+                             aPreferCompositorSurface);
       break;
     }
     default: {

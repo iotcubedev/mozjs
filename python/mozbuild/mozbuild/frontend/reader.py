@@ -35,18 +35,14 @@ from collections import (
 from io import StringIO
 from itertools import chain
 from multiprocessing import cpu_count
+import six
+from six import string_types
 
 from mozbuild.util import (
     EmptyValue,
     HierarchicalStringList,
     memoize,
     ReadOnlyDefaultDict,
-)
-
-from mozbuild.testing import (
-    TEST_MANIFESTS,
-    REFTEST_FLAVORS,
-    WEB_PLATFORM_TESTS_FLAVORS,
 )
 
 from mozbuild.backend.configenvironment import ConfigEnvironment
@@ -80,11 +76,9 @@ from mozbuild.base import ExecutionSummary
 from concurrent.futures.process import ProcessPoolExecutor
 
 
-if sys.version_info.major == 2:
-    text_type = unicode
+if six.PY2:
     type_type = types.TypeType
 else:
-    text_type = str
     type_type = type
 
 
@@ -286,7 +280,7 @@ class MozbuildSandbox(Sandbox):
             raise Exception('`template` is a function decorator. You must '
                             'use it as `@template` preceding a function declaration.')
 
-        name = func.func_name
+        name = func.__name__
 
         if name in self.templates:
             raise KeyError(
@@ -383,10 +377,10 @@ class MozbuildSandbox(Sandbox):
 
 class TemplateFunction(object):
     def __init__(self, func, sandbox):
-        self.path = func.func_code.co_filename
-        self.name = func.func_name
+        self.path = func.__code__.co_filename
+        self.name = func.__name__
 
-        code = func.func_code
+        code = func.__code__
         firstlineno = code.co_firstlineno
         lines = sandbox._current_source.splitlines(True)
         if lines:
@@ -410,13 +404,14 @@ class TemplateFunction(object):
         # When using a custom dictionary for function globals/locals, Cpython
         # actually never calls __getitem__ and __setitem__, so we need to
         # modify the AST so that accesses to globals are properly directed
-        # to a dict.
-        self._global_name = b'_data'  # AST wants str for this, not unicode
+        # to a dict. AST wants binary_type for this in Py2 and text_type for
+        # this in Py3, so cast to str.
+        self._global_name = str('_data')
         # In case '_data' is a name used for a variable in the function code,
         # prepend more underscores until we find an unused name.
         while (self._global_name in code.co_names or
                 self._global_name in code.co_varnames):
-            self._global_name += '_'
+            self._global_name += str('_')
         func_ast = self.RewriteName(sandbox, self._global_name).visit(func_ast)
 
         # Execute the rewritten code. That code now looks like:
@@ -430,8 +425,8 @@ class TemplateFunction(object):
             compile(func_ast, self.path, 'exec'),
             glob,
             self.name,
-            func.func_defaults,
-            func.func_closure,
+            func.__defaults__,
+            func.__closure__,
         )
         func()
 
@@ -445,11 +440,11 @@ class TemplateFunction(object):
             '__builtins__': sandbox._builtins
         }
         func = types.FunctionType(
-            self._func.func_code,
+            self._func.__code__,
             glob,
             self.name,
-            self._func.func_defaults,
-            self._func.func_closure
+            self._func.__defaults__,
+            self._func.__closure__,
         )
         sandbox.exec_function(func, args, kwargs, self.path,
                               becomes_current_path=False)
@@ -464,9 +459,7 @@ class TemplateFunction(object):
             self._global_name = global_name
 
         def visit_Str(self, node):
-            # String nodes we got from the AST parser are str, but we want
-            # unicode literals everywhere, so transform them.
-            node.s = unicode(node.s)
+            node.s = six.ensure_text(node.s)
             return node
 
         def visit_Name(self, node):
@@ -507,8 +500,9 @@ class SandboxValidationError(Exception):
         s.write('The error occurred when validating the result of ')
         s.write('the execution. The reported error is:\n')
         s.write('\n')
-        s.write(''.join('    %s\n' % l
-                        for l in self.message.splitlines()))
+        s.write(''.join(
+            '    %s\n' % l
+            for l in super(SandboxValidationError, self).__str__().splitlines()))
         s.write('\n')
 
         return s.getvalue()
@@ -590,8 +584,9 @@ class BuildReaderError(Exception):
             s.write('The error occurred when validating the result of ')
             s.write('the execution. The reported error is:\n')
             s.write('\n')
-            s.write(''.join('    %s\n' % l
-                            for l in self.validation_error.message.splitlines()))
+            s.write(''.join(
+                '    %s\n' % l
+                for l in six.text_type(self.validation_error).splitlines()))
             s.write('\n')
         else:
             s.write('The error appears to be part of the %s ' % __name__)
@@ -601,7 +596,7 @@ class BuildReaderError(Exception):
 
             for l in traceback.format_exception(type(self.other), self.other,
                                                 self.trace):
-                s.write(unicode(l))
+                s.write(six.ensure_text(l))
 
         return s.getvalue()
 
@@ -840,6 +835,7 @@ class BuildReader(object):
         ignores = {
             # Ignore fake moz.build files used for testing moz.build.
             'python/mozbuild/mozbuild/test',
+            'testing/mozbase/moztest/tests/data',
 
             # Ignore object directories.
             'obj*',
@@ -848,7 +844,21 @@ class BuildReader(object):
         self._relevant_mozbuild_finder = FileFinder(self.config.topsrcdir,
                                                     ignore=ignores)
 
+        # Also ignore any other directories that could be objdirs, they don't
+        # necessarily start with the string 'obj'.
+        for path, f in self._relevant_mozbuild_finder.find('*/config.status'):
+            self._relevant_mozbuild_finder.ignore.add(os.path.dirname(path))
+
         max_workers = cpu_count()
+        if sys.platform.startswith('win'):
+            # In python 3, on Windows, ProcessPoolExecutor uses
+            # _winapi.WaitForMultipleObjects, which doesn't work on large
+            # number of objects. It also has some automatic capping to avoid
+            # _winapi.WaitForMultipleObjects being unhappy as a consequence,
+            # but that capping is actually insufficient in python 3.7 and 3.8
+            # (as well as inexistent in older versions). So we cap ourselves
+            # to 60, see https://bugs.python.org/issue26903#msg365886.
+            max_workers = min(max_workers, 60)
         self._gyp_worker_pool = ProcessPoolExecutor(max_workers=max_workers)
         self._gyp_processors = []
         self._execution_time = 0.0
@@ -900,48 +910,51 @@ class BuildReader(object):
         # In the future, we may traverse moz.build files by looking
         # for DIRS references in the AST, even if a directory is added behind
         # a conditional. For now, just walk the filesystem.
-        # The root doesn't get picked up by FileFinder.
-        yield 'moz.build'
-
         for path, f in self._relevant_mozbuild_finder.find('**/moz.build'):
             yield path
 
-    def find_sphinx_variables(self, path=None):
-        """This function finds all assignments of Sphinx documentation variables.
+    def find_variables_from_ast(self, variables, path=None):
+        """Finds all assignments to the specified variables by parsing
+        moz.build abstract syntax trees.
 
-        This is a generator of tuples of (moz.build path, var, key, value). For
-        variables that assign to keys in objects, key will be defined.
+        This function only supports two cases, as detailed below.
 
-        With a little work, this function could be made more generic. But if we
-        end up writing a lot of ast code, it might be best to import a
-        high-level AST manipulation library into the tree.
+        1) A dict. Keys and values should both be strings, e.g:
+
+            VARIABLE['foo'] = 'bar'
+
+        This is an `Assign` node with a `Subscript` target. The `Subscript`'s
+        value is a `Name` node with id "VARIABLE". The slice of this target is
+        an `Index` node and its value is a `Str` with value "foo".
+
+        2) A simple list. Values should be strings, e.g: The target of the
+        assignment should be a Name node. Values should be a List node,
+        whose elements are Str nodes. e.g:
+
+            VARIABLE += ['foo']
+
+        This is an `AugAssign` node with a `Name` target with id "VARIABLE".
+        The value is a `List` node containing one `Str` element whose value is
+        "foo".
+
+        With a little work, this function could support other types of
+        assignment. But if we end up writing a lot of AST code, it might be
+        best to import a high-level AST manipulation library into the tree.
+
+        Args:
+            variables (list): A list of variable assignments to capture.
+            path (str): A path relative to the source dir. If specified, only
+                `moz.build` files relevant to this path will be parsed. Otherwise
+                all `moz.build` files are parsed.
+
+        Returns:
+            A generator that generates tuples of the form `(<moz.build path>,
+            <variable name>, <key>, <value>)`. The `key` will only be
+            defined if the variable is an object, otherwise it is `None`.
         """
-        # This function looks for assignments to SPHINX_TREES and
-        # SPHINX_PYTHON_PACKAGE_DIRS variables.
-        #
-        # SPHINX_TREES is a dict. Keys and values should both be strings. The
-        # target of the assignment should be a Subscript node. The value
-        # assigned should be a Str node. e.g.
-        #
-        #  SPHINX_TREES['foo'] = 'bar'
-        #
-        # This is an Assign node with a Subscript target. The Subscript's value
-        # is a Name node with id "SPHINX_TREES." The slice of this target
-        # is an Index node and its value is a Str with value "foo."
-        #
-        # SPHINX_PYTHON_PACKAGE_DIRS is a simple list. The target of the
-        # assignment should be a Name node. Values should be a List node, whose
-        # elements are Str nodes. e.g.
-        #
-        #  SPHINX_PYTHON_PACKAGE_DIRS += ['foo']
-        #
-        # This is an AugAssign node with a Name target with id
-        # "SPHINX_PYTHON_PACKAGE_DIRS." The value is a List node containing 1
-        # Str elt whose value is "foo."
-        relevant = [
-            'SPHINX_TREES',
-            'SPHINX_PYTHON_PACKAGE_DIRS',
-        ]
+
+        if isinstance(variables, string_types):
+            variables = [variables]
 
         def assigned_variable(node):
             # This is not correct, but we don't care yet.
@@ -963,7 +976,7 @@ class BuildReader(object):
             else:
                 return None, None
 
-            if name not in relevant:
+            if name not in variables:
                 return None, None
 
             key = None
@@ -1072,11 +1085,11 @@ class BuildReader(object):
     def _read_mozbuild(self, path, config, descend, metadata):
         path = mozpath.normpath(path)
         log(self._log, logging.DEBUG, 'read_mozbuild', {'path': path},
-            'Reading file: {path}')
+            'Reading file: {path}'.format(path=path))
 
         if path in self._read_files:
             log(self._log, logging.WARNING, 'read_already', {'path': path},
-                'File already read. Skipping: {path}')
+                'File already read. Skipping: {path}'.format(path=path))
             return
 
         self._read_files.add(path)
@@ -1141,7 +1154,7 @@ class BuildReader(object):
                                                  context)
                 non_unified_sources.add(source)
             action_overrides = {}
-            for action, script in gyp_dir.action_overrides.iteritems():
+            for action, script in six.iteritems(gyp_dir.action_overrides):
                 action_overrides[action] = SourcePath(context, script)
 
             gyp_processor = GypProcessor(context.config,
@@ -1307,7 +1320,8 @@ class BuildReader(object):
 
         result = {}
         for path, paths in path_mozbuilds.items():
-            result[path] = reduce(lambda x, y: x + y, (contexts[p] for p in paths), [])
+            result[path] = six.moves.reduce(
+                lambda x, y: x + y, (contexts[p] for p in paths), [])
 
         return result, all_contexts
 
@@ -1330,20 +1344,6 @@ class BuildReader(object):
         5. Return the most recent value of attributes.
         """
         paths, _ = self.read_relevant_mozbuilds(paths)
-
-        # For thousands of inputs (say every file in a sub-tree),
-        # test_defaults_for_path() gets called with the same contexts multiple
-        # times (once for every path in a directory that doesn't have any
-        # test metadata). So, we cache the function call.
-        defaults_cache = {}
-
-        def test_defaults_for_path(ctxs):
-            key = tuple(ctx.current_path or ctx.main_path for ctx in ctxs)
-
-            if key not in defaults_cache:
-                defaults_cache[key] = self.test_defaults_for_path(ctxs)
-
-            return defaults_cache[key]
 
         r = {}
 
@@ -1381,41 +1381,6 @@ class BuildReader(object):
                 if any(path_matches_pattern(relpath, p) for p in ctx.patterns):
                     flags += ctx
 
-            if not any([flags.test_tags, flags.test_files, flags.test_flavors]):
-                flags += test_defaults_for_path(ctxs)
-
             r[path] = flags
 
         return r
-
-    def test_defaults_for_path(self, ctxs):
-        # This names the context keys that will end up emitting a test
-        # manifest.
-        test_manifest_contexts = set(
-            ['%s_MANIFESTS' % key for key in TEST_MANIFESTS] +
-            ['%s_MANIFESTS' % flavor.upper() for flavor in REFTEST_FLAVORS] +
-            ['%s_MANIFESTS' % flavor.upper().replace('-', '_')
-             for flavor in WEB_PLATFORM_TESTS_FLAVORS]
-        )
-
-        result_context = Files(Context())
-        for ctx in ctxs:
-            for key in ctx:
-                if key not in test_manifest_contexts:
-                    continue
-                for paths, obj in ctx[key]:
-                    if isinstance(paths, tuple):
-                        path, tests_root = paths
-                        tests_root = mozpath.join(ctx.relsrcdir, tests_root)
-                        for t in (mozpath.join(tests_root, it[0]) for it in obj):
-                            result_context.test_files.add(mozpath.dirname(t) + '/**')
-                    else:
-                        for t in obj.tests:
-                            if isinstance(t, tuple):
-                                path, _ = t
-                                relpath = mozpath.relpath(path,
-                                                          self.config.topsrcdir)
-                            else:
-                                relpath = t['relpath']
-                            result_context.test_files.add(mozpath.dirname(relpath) + '/**')
-        return result_context

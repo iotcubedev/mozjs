@@ -52,14 +52,7 @@ var FxAccountsProfileClient = function(options) {
     throw new Error("Missing 'serverURL' configuration option");
   }
 
-  this.fxa = options.fxa || fxAccounts;
-  // This is a work-around for loop that manages its own oauth tokens.
-  // * If |token| is in options we use it and don't attempt any token refresh
-  //  on 401. This is for loop.
-  // * If |token| doesn't exist we will fetch our own token. This is for the
-  //   normal FxAccounts methods for obtaining the profile.
-  // We should nuke all |this.token| support once loop moves closer to FxAccounts.
-  this.token = options.token;
+  this.fxai = options.fxai || fxAccounts._internal;
 
   try {
     this.serverURL = new URL(options.serverURL);
@@ -72,7 +65,7 @@ var FxAccountsProfileClient = function(options) {
   log.debug("FxAccountsProfileClient: Initialized");
 };
 
-this.FxAccountsProfileClient.prototype = {
+FxAccountsProfileClient.prototype = {
   /**
    * {nsIURI}
    * The server to fetch profile information from.
@@ -99,27 +92,20 @@ this.FxAccountsProfileClient.prototype = {
    * @private
    */
   async _createRequest(path, method = "GET", etag = null) {
-    let token = this.token;
-    if (!token) {
-      // tokens are cached, so getting them each request is cheap.
-      token = await this.fxa.getOAuthToken(this.oauthOptions);
-    }
+    // tokens are cached, so getting them each request is cheap.
+    let token = await this.fxai.getOAuthToken(this.oauthOptions);
     try {
       return await this._rawRequest(path, method, token, etag);
     } catch (ex) {
       if (!(ex instanceof FxAccountsProfileClientError) || ex.code != 401) {
         throw ex;
       }
-      // If this object was instantiated with a token then we don't refresh it.
-      if (this.token) {
-        throw ex;
-      }
       // it's an auth error - assume our token expired and retry.
       log.info(
         "Fetching the profile returned a 401 - revoking our token and retrying"
       );
-      await this.fxa.removeCachedOAuthToken({ token });
-      token = await this.fxa.getOAuthToken(this.oauthOptions);
+      await this.fxai.removeCachedOAuthToken({ token });
+      token = await this.fxai.getOAuthToken(this.oauthOptions);
       // and try with the new token - if that also fails then we fail after
       // revoking the token.
       try {
@@ -131,7 +117,7 @@ this.FxAccountsProfileClient.prototype = {
         log.info(
           "Retry fetching the profile still returned a 401 - revoking our token and failing"
         );
-        await this.fxa.removeCachedOAuthToken({ token });
+        await this.fxai.removeCachedOAuthToken({ token });
         throw ex;
       }
     }

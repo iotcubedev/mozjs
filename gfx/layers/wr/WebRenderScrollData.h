@@ -16,9 +16,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/GfxMessageUtils.h"
 #include "mozilla/layers/LayerAttributes.h"
-#include "mozilla/layers/LayersMessageUtils.h"
 #include "mozilla/layers/FocusTarget.h"
-#include "mozilla/layers/RenderRootBoundary.h"
 #include "mozilla/layers/WebRenderMessageUtils.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/HashTable.h"
@@ -50,8 +48,7 @@ class WebRenderLayerScrollData final {
   void Initialize(WebRenderScrollData& aOwner, nsDisplayItem* aItem,
                   int32_t aDescendantCount,
                   const ActiveScrolledRoot* aStopAtAsr,
-                  const Maybe<gfx::Matrix4x4>& aAncestorTransform,
-                  wr::RenderRoot aRenderRoot);
+                  const Maybe<gfx::Matrix4x4>& aAncestorTransform);
 
   int32_t GetDescendantCount() const;
   size_t GetScrollMetadataCount() const;
@@ -88,19 +85,14 @@ class WebRenderLayerScrollData final {
     mVisibleRegion = aRegion;
   }
   const LayerIntRegion& GetVisibleRegion() const { return mVisibleRegion; }
+  void SetRemoteDocumentSize(const LayerIntSize& aRemoteDocumentSize) {
+    mRemoteDocumentSize = aRemoteDocumentSize;
+  }
+  const LayerIntSize& GetRemoteDocumentSize() const {
+    return mRemoteDocumentSize;
+  }
   void SetReferentId(LayersId aReferentId) { mReferentId = Some(aReferentId); }
   Maybe<LayersId> GetReferentId() const { return mReferentId; }
-
-  void SetReferentRenderRoot(RenderRootBoundary aBoundary) {
-    mReferentRenderRoot = Some(aBoundary);
-  }
-  Maybe<RenderRootBoundary> GetReferentRenderRoot() const {
-    return mReferentRenderRoot;
-  }
-  void SetBoundaryRoot(RenderRootBoundary aBoundary) {
-    mBoundaryRoot = Some(aBoundary);
-  }
-  Maybe<RenderRootBoundary> GetBoundaryRoot() const { return mBoundaryRoot; }
 
   void SetScrollbarData(const ScrollbarData& aData) { mScrollbarData = aData; }
   const ScrollbarData& GetScrollbarData() const { return mScrollbarData; }
@@ -111,6 +103,18 @@ class WebRenderLayerScrollData final {
     return mScrollbarAnimationId;
   }
 
+  void SetFixedPositionAnimationId(const uint64_t& aId) {
+    mFixedPositionAnimationId = Some(aId);
+  }
+  Maybe<uint64_t> GetFixedPositionAnimationId() const {
+    return mFixedPositionAnimationId;
+  }
+
+  void SetFixedPositionSides(const SideBits& aSideBits) {
+    mFixedPositionSides = aSideBits;
+  }
+  SideBits GetFixedPositionSides() const { return mFixedPositionSides; }
+
   void SetFixedPositionScrollContainerId(ScrollableLayerGuid::ViewID aId) {
     mFixedPosScrollContainerId = aId;
   }
@@ -118,7 +122,33 @@ class WebRenderLayerScrollData final {
     return mFixedPosScrollContainerId;
   }
 
-  wr::RenderRoot GetRenderRoot() { return mRenderRoot; }
+  void SetStickyPositionScrollContainerId(ScrollableLayerGuid::ViewID aId) {
+    mStickyPosScrollContainerId = aId;
+  }
+  ScrollableLayerGuid::ViewID GetStickyPositionScrollContainerId() const {
+    return mStickyPosScrollContainerId;
+  }
+
+  void SetStickyScrollRangeOuter(const LayerRectAbsolute& scrollRange) {
+    mStickyScrollRangeOuter = scrollRange;
+  }
+  const LayerRectAbsolute& GetStickyScrollRangeOuter() const {
+    return mStickyScrollRangeOuter;
+  }
+
+  void SetStickyScrollRangeInner(const LayerRectAbsolute& scrollRange) {
+    mStickyScrollRangeInner = scrollRange;
+  }
+  const LayerRectAbsolute& GetStickyScrollRangeInner() const {
+    return mStickyScrollRangeInner;
+  }
+
+  void SetStickyPositionAnimationId(const uint64_t& aId) {
+    mStickyPositionAnimationId = Some(aId);
+  }
+  Maybe<uint64_t> GetStickyPositionAnimationId() const {
+    return mStickyPositionAnimationId;
+  }
 
   void SetZoomAnimationId(const uint64_t& aId) { mZoomAnimationId = Some(aId); }
   Maybe<uint64_t> GetZoomAnimationId() const { return mZoomAnimationId; }
@@ -146,7 +176,7 @@ class WebRenderLayerScrollData final {
   // mScrollMetadatas array. This indirection is used to deduplicate the
   // ScrollMetadata objects, since there is usually heavy duplication of them
   // within a layer tree.
-  nsTArray<size_t> mScrollIds;
+  CopyableTArray<size_t> mScrollIds;
 
   // Various data that we collect from the Layer in Initialize(), serialize
   // over IPC, and use on the parent side in APZ.
@@ -155,14 +185,20 @@ class WebRenderLayerScrollData final {
   gfx::Matrix4x4 mTransform;
   bool mTransformIsPerspective;
   LayerIntRegion mVisibleRegion;
+  // The remote documents only need their size because their origin is always
+  // (0, 0).
+  LayerIntSize mRemoteDocumentSize;
   Maybe<LayersId> mReferentId;
-  Maybe<RenderRootBoundary> mReferentRenderRoot;
-  Maybe<RenderRootBoundary> mBoundaryRoot;
   EventRegionsOverride mEventRegionsOverride;
   ScrollbarData mScrollbarData;
   Maybe<uint64_t> mScrollbarAnimationId;
+  Maybe<uint64_t> mFixedPositionAnimationId;
+  SideBits mFixedPositionSides;
   ScrollableLayerGuid::ViewID mFixedPosScrollContainerId;
-  wr::RenderRoot mRenderRoot;
+  ScrollableLayerGuid::ViewID mStickyPosScrollContainerId;
+  LayerRectAbsolute mStickyScrollRangeOuter;
+  LayerRectAbsolute mStickyScrollRangeInner;
+  Maybe<uint64_t> mStickyPositionAnimationId;
   Maybe<uint64_t> mZoomAnimationId;
   Maybe<ScrollableLayerGuid::ViewID> mAsyncZoomContainerId;
 };
@@ -247,82 +283,23 @@ class WebRenderScrollData final {
 namespace IPC {
 
 template <>
-struct ParamTraits<mozilla::layers::RenderRootBoundary>
-    : public PlainOldDataSerializer<mozilla::layers::RenderRootBoundary> {};
-
-// When ScrollbarData is stored on the layer tree, it's part of
-// SimpleAttributes which itself uses PlainOldDataSerializer, so
-// we don't need a ParamTraits specialization for ScrollbarData
-// separately. Here, however, ScrollbarData is stored as part
-// of WebRenderLayerScrollData whose fields are serialized
-// individually, so we do.
-template <>
-struct ParamTraits<mozilla::layers::ScrollbarData>
-    : public PlainOldDataSerializer<mozilla::layers::ScrollbarData> {};
-
-template <>
 struct ParamTraits<mozilla::layers::WebRenderLayerScrollData> {
   typedef mozilla::layers::WebRenderLayerScrollData paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mDescendantCount);
-    WriteParam(aMsg, aParam.mScrollIds);
-    WriteParam(aMsg, aParam.mAncestorTransform);
-    WriteParam(aMsg, aParam.mTransform);
-    WriteParam(aMsg, aParam.mTransformIsPerspective);
-    WriteParam(aMsg, aParam.mVisibleRegion);
-    WriteParam(aMsg, aParam.mReferentId);
-    WriteParam(aMsg, aParam.mReferentRenderRoot);
-    WriteParam(aMsg, aParam.mBoundaryRoot);
-    WriteParam(aMsg, aParam.mEventRegionsOverride);
-    WriteParam(aMsg, aParam.mScrollbarData);
-    WriteParam(aMsg, aParam.mScrollbarAnimationId);
-    WriteParam(aMsg, aParam.mFixedPosScrollContainerId);
-    WriteParam(aMsg, aParam.mRenderRoot);
-    WriteParam(aMsg, aParam.mZoomAnimationId);
-    WriteParam(aMsg, aParam.mAsyncZoomContainerId);
-  }
+  static void Write(Message* aMsg, const paramType& aParam);
 
   static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mDescendantCount) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollIds) &&
-           ReadParam(aMsg, aIter, &aResult->mAncestorTransform) &&
-           ReadParam(aMsg, aIter, &aResult->mTransform) &&
-           ReadParam(aMsg, aIter, &aResult->mTransformIsPerspective) &&
-           ReadParam(aMsg, aIter, &aResult->mVisibleRegion) &&
-           ReadParam(aMsg, aIter, &aResult->mReferentId) &&
-           ReadParam(aMsg, aIter, &aResult->mReferentRenderRoot) &&
-           ReadParam(aMsg, aIter, &aResult->mBoundaryRoot) &&
-           ReadParam(aMsg, aIter, &aResult->mEventRegionsOverride) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollbarData) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollbarAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mFixedPosScrollContainerId) &&
-           ReadParam(aMsg, aIter, &aResult->mRenderRoot) &&
-           ReadParam(aMsg, aIter, &aResult->mZoomAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mAsyncZoomContainerId);
-  }
+                   paramType* aResult);
 };
 
 template <>
 struct ParamTraits<mozilla::layers::WebRenderScrollData> {
   typedef mozilla::layers::WebRenderScrollData paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mScrollMetadatas);
-    WriteParam(aMsg, aParam.mLayerScrollData);
-    WriteParam(aMsg, aParam.mIsFirstPaint);
-    WriteParam(aMsg, aParam.mPaintSequenceNumber);
-  }
+  static void Write(Message* aMsg, const paramType& aParam);
 
   static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mScrollMetadatas) &&
-           ReadParam(aMsg, aIter, &aResult->mLayerScrollData) &&
-           ReadParam(aMsg, aIter, &aResult->mIsFirstPaint) &&
-           ReadParam(aMsg, aIter, &aResult->mPaintSequenceNumber) &&
-           aResult->RepopulateMap();
-  }
+                   paramType* aResult);
 };
 
 }  // namespace IPC

@@ -50,6 +50,8 @@ class Test(object):
         return os.path.join(self.cfg.sixgill_bin, prog)
 
     def compile(self, source, options=''):
+        env = os.environ
+        env['CCACHE_DISABLE'] = '1'
         cmd = "{CXX} -c {source} -O3 -std=c++11 -fplugin={sixgill} -fplugin-arg-xgill-mangle=1 {options}".format(  # NOQA: E501
             source=self.infile(source),
             CXX=self.cfg.cxx, sixgill=self.cfg.sixgill_plugin,

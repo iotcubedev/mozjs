@@ -22,20 +22,16 @@ const actions = require("devtools/client/webconsole/actions/index");
 const {
   FILTERBAR_DISPLAY_MODES,
 } = require("devtools/client/webconsole/constants");
+
+// We directly require Components that we know are going to be used right away
 const ConsoleOutput = createFactory(
   require("devtools/client/webconsole/components/Output/ConsoleOutput")
 );
 const FilterBar = createFactory(
   require("devtools/client/webconsole/components/FilterBar/FilterBar")
 );
-const SideBar = createFactory(
-  require("devtools/client/webconsole/components/SideBar")
-);
 const ReverseSearchInput = createFactory(
   require("devtools/client/webconsole/components/Input/ReverseSearchInput")
-);
-const EditorToolbar = createFactory(
-  require("devtools/client/webconsole/components/Input/EditorToolbar")
 );
 const JSTerm = createFactory(
   require("devtools/client/webconsole/components/Input/JSTerm")
@@ -43,11 +39,43 @@ const JSTerm = createFactory(
 const ConfirmDialog = createFactory(
   require("devtools/client/webconsole/components/Input/ConfirmDialog")
 );
-const NotificationBox = createFactory(
-  require("devtools/client/shared/components/NotificationBox").NotificationBox
+const EagerEvaluation = createFactory(
+  require("devtools/client/webconsole/components/Input/EagerEvaluation")
 );
-const GridElementWidthResizer = createFactory(
-  require("devtools/client/shared/components/splitter/GridElementWidthResizer")
+
+// And lazy load the ones that may not be used.
+loader.lazyGetter(this, "SideBar", () =>
+  createFactory(require("devtools/client/webconsole/components/SideBar"))
+);
+
+loader.lazyGetter(this, "EditorToolbar", () =>
+  createFactory(
+    require("devtools/client/webconsole/components/Input/EditorToolbar")
+  )
+);
+
+loader.lazyGetter(this, "NotificationBox", () =>
+  createFactory(
+    require("devtools/client/shared/components/NotificationBox").NotificationBox
+  )
+);
+loader.lazyRequireGetter(
+  this,
+  "getNotificationWithValue",
+  "devtools/client/shared/components/NotificationBox",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "PriorityLevels",
+  "devtools/client/shared/components/NotificationBox",
+  true
+);
+
+loader.lazyGetter(this, "GridElementWidthResizer", () =>
+  createFactory(
+    require("devtools/client/shared/components/splitter/GridElementWidthResizer")
+  )
 );
 
 const l10n = require("devtools/client/webconsole/utils/l10n");
@@ -55,11 +83,6 @@ const { Utils: WebConsoleUtils } = require("devtools/client/webconsole/utils");
 
 const SELF_XSS_OK = l10n.getStr("selfxss.okstring");
 const SELF_XSS_MSG = l10n.getFormatStr("selfxss.msg", [SELF_XSS_OK]);
-
-const {
-  getNotificationWithValue,
-  PriorityLevels,
-} = require("devtools/client/shared/components/NotificationBox");
 
 const {
   getAllNotifications,
@@ -85,12 +108,15 @@ class App extends Component {
       reverseSearchInitialValue: PropTypes.string,
       editorMode: PropTypes.bool,
       editorWidth: PropTypes.number,
+      hidePersistLogsCheckbox: PropTypes.bool,
       hideShowContentMessagesCheckbox: PropTypes.bool,
+      inputEnabled: PropTypes.bool,
       sidebarVisible: PropTypes.bool.isRequired,
+      eagerEvaluationEnabled: PropTypes.bool.isRequired,
       filterBarDisplayMode: PropTypes.oneOf([
         ...Object.values(FILTERBAR_DISPLAY_MODES),
       ]).isRequired,
-      editorFeatureEnabled: PropTypes.bool.isRequired,
+      showEvaluationContextSelector: PropTypes.bool,
     };
   }
 
@@ -112,7 +138,7 @@ class App extends Component {
   }
 
   onKeyDown(event) {
-    const { dispatch, webConsoleUI, editorFeatureEnabled } = this.props;
+    const { dispatch, webConsoleUI } = this.props;
 
     if (
       (!isMacOS && event.key === "F9") ||
@@ -120,12 +146,14 @@ class App extends Component {
     ) {
       const initialValue =
         webConsoleUI.jsterm && webConsoleUI.jsterm.getSelectedText();
-      dispatch(actions.reverseSearchInputToggle({ initialValue }));
+
+      dispatch(
+        actions.reverseSearchInputToggle({ initialValue, access: "keyboard" })
+      );
       event.stopPropagation();
     }
 
     if (
-      editorFeatureEnabled &&
       event.key.toLowerCase() === "b" &&
       ((isMacOS && event.metaKey) || (!isMacOS && event.ctrlKey))
     ) {
@@ -181,7 +209,7 @@ class App extends Component {
       return;
     }
 
-    if (webConsoleUI && webConsoleUI.jsterm) {
+    if (webConsoleUI?.jsterm) {
       webConsoleUI.jsterm.focus();
     }
   }
@@ -232,7 +260,7 @@ class App extends Component {
 
     // Remove notification automatically when the user types "allow pasting".
     const pasteKeyUpHandler = e => {
-      const value = e.target.value;
+      const { value } = e.target;
       if (value.includes(SELF_XSS_OK)) {
         dispatch(actions.removeNotification("selfxss-notification"));
         input.removeEventListener("keyup", pasteKeyUpHandler);
@@ -245,28 +273,59 @@ class App extends Component {
 
   renderFilterBar() {
     const {
-      webConsoleUI,
       closeSplitConsole,
       filterBarDisplayMode,
+      hidePersistLogsCheckbox,
       hideShowContentMessagesCheckbox,
+      webConsoleUI,
     } = this.props;
 
     return FilterBar({
       key: "filterbar",
-      hidePersistLogsCheckbox: webConsoleUI.isBrowserConsole,
+      hidePersistLogsCheckbox,
       hideShowContentMessagesCheckbox,
       closeSplitConsole,
       displayMode: filterBarDisplayMode,
+      webConsoleUI,
     });
   }
 
+  renderEditorToolbar() {
+    const {
+      editorMode,
+      dispatch,
+      reverseSearchInputVisible,
+      serviceContainer,
+      webConsoleUI,
+      showEvaluationContextSelector,
+      inputEnabled,
+    } = this.props;
+
+    if (!inputEnabled) {
+      return null;
+    }
+
+    return editorMode
+      ? EditorToolbar({
+          key: "editor-toolbar",
+          editorMode,
+          dispatch,
+          reverseSearchInputVisible,
+          serviceContainer,
+          showEvaluationContextSelector,
+          webConsoleUI,
+        })
+      : null;
+  }
+
   renderConsoleOutput() {
-    const { onFirstMeaningfulPaint, serviceContainer } = this.props;
+    const { onFirstMeaningfulPaint, serviceContainer, editorMode } = this.props;
 
     return ConsoleOutput({
       key: "console-output",
       serviceContainer,
       onFirstMeaningfulPaint,
+      editorMode,
     });
   }
 
@@ -277,7 +336,7 @@ class App extends Component {
       autocomplete,
       editorMode,
       editorWidth,
-      editorFeatureEnabled,
+      inputEnabled,
     } = this.props;
 
     return JSTerm({
@@ -286,10 +345,24 @@ class App extends Component {
       serviceContainer,
       onPaste: this.onPaste,
       autocomplete,
-      editorMode: editorMode && editorFeatureEnabled,
+      editorMode,
       editorWidth,
-      editorFeatureEnabled,
+      inputEnabled,
     });
+  }
+
+  renderEagerEvaluation() {
+    const {
+      eagerEvaluationEnabled,
+      serviceContainer,
+      inputEnabled,
+    } = this.props;
+
+    if (!eagerEvaluationEnabled || !inputEnabled) {
+      return null;
+    }
+
+    return EagerEvaluation({ serviceContainer });
   }
 
   renderReverseSearch() {
@@ -305,24 +378,28 @@ class App extends Component {
 
   renderSideBar() {
     const { serviceContainer, sidebarVisible } = this.props;
-    return SideBar({
-      key: "sidebar",
-      serviceContainer,
-      visible: sidebarVisible,
-    });
+    return sidebarVisible
+      ? SideBar({
+          key: "sidebar",
+          serviceContainer,
+          visible: sidebarVisible,
+        })
+      : null;
   }
 
   renderNotificationBox() {
-    const { notifications, editorMode, editorFeatureEnabled } = this.props;
+    const { notifications, editorMode } = this.props;
 
-    return NotificationBox({
-      id: "webconsole-notificationbox",
-      key: "notification-box",
-      displayBorderTop: !(editorMode && editorFeatureEnabled),
-      displayBorderBottom: editorMode && editorFeatureEnabled,
-      wrapping: true,
-      notifications,
-    });
+    return notifications && notifications.size > 0
+      ? NotificationBox({
+          id: "webconsole-notificationbox",
+          key: "notification-box",
+          displayBorderTop: !editorMode,
+          displayBorderBottom: editorMode,
+          wrapping: true,
+          notifications,
+        })
+      : null;
   }
 
   renderConfirmDialog() {
@@ -336,11 +413,23 @@ class App extends Component {
   }
 
   renderRootElement(children) {
-    const { editorMode, editorFeatureEnabled } = this.props;
+    const {
+      editorMode,
+      sidebarVisible,
+      inputEnabled,
+      eagerEvaluationEnabled,
+    } = this.props;
 
     const classNames = ["webconsole-app"];
-    if (editorMode && editorFeatureEnabled) {
+    if (sidebarVisible) {
+      classNames.push("sidebar-visible");
+    }
+    if (editorMode && inputEnabled) {
       classNames.push("jsterm-editor");
+    }
+
+    if (eagerEvaluationEnabled && inputEnabled) {
+      classNames.push("eager-evaluation");
     }
 
     return div(
@@ -352,48 +441,43 @@ class App extends Component {
           this.node = node;
         },
       },
-      ...children
+      children
     );
   }
 
   render() {
-    const {
-      webConsoleUI,
-      editorMode,
-      editorFeatureEnabled,
-      dispatch,
-    } = this.props;
+    const { webConsoleUI, editorMode, dispatch, inputEnabled } = this.props;
 
     const filterBar = this.renderFilterBar();
+    const editorToolbar = this.renderEditorToolbar();
     const consoleOutput = this.renderConsoleOutput();
     const notificationBox = this.renderNotificationBox();
     const jsterm = this.renderJsTerm();
+    const eager = this.renderEagerEvaluation();
     const reverseSearch = this.renderReverseSearch();
     const sidebar = this.renderSideBar();
     const confirmDialog = this.renderConfirmDialog();
 
     return this.renderRootElement([
       filterBar,
-      editorFeatureEnabled && editorMode
-        ? EditorToolbar({
-            dispatch,
-            editorMode,
-            webConsoleUI,
-          })
-        : null,
+      editorToolbar,
       dom.div(
-        { className: "flexible-output-input" },
+        { className: "flexible-output-input", key: "in-out-container" },
         consoleOutput,
         notificationBox,
-        jsterm
+        jsterm,
+        eager
       ),
-      GridElementWidthResizer({
-        enabled: editorFeatureEnabled && editorMode,
-        position: "end",
-        className: "editor-resizer",
-        getControlledElementNode: () => webConsoleUI.jsterm.node,
-        onResizeEnd: width => dispatch(actions.setEditorWidth(width)),
-      }),
+      editorMode && inputEnabled
+        ? GridElementWidthResizer({
+            key: "editor-resizer",
+            enabled: editorMode,
+            position: "end",
+            className: "editor-resizer",
+            getControlledElementNode: () => webConsoleUI.jsterm.node,
+            onResizeEnd: width => dispatch(actions.setEditorWidth(width)),
+          })
+        : null,
       reverseSearch,
       sidebar,
       confirmDialog,
@@ -409,13 +493,13 @@ const mapStateToProps = state => ({
   editorWidth: state.ui.editorWidth,
   sidebarVisible: state.ui.sidebarVisible,
   filterBarDisplayMode: state.ui.filterBarDisplayMode,
+  eagerEvaluationEnabled: state.prefs.eagerEvaluation,
+  autocomplete: state.prefs.autocomplete,
+  showEvaluationContextSelector: state.ui.showEvaluationContextSelector,
 });
 
 const mapDispatchToProps = dispatch => ({
   dispatch,
 });
 
-module.exports = connect(
-  mapStateToProps,
-  mapDispatchToProps
-)(App);
+module.exports = connect(mapStateToProps, mapDispatchToProps)(App);

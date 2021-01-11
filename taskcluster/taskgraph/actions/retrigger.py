@@ -11,7 +11,6 @@ import sys
 import logging
 import textwrap
 
-from slugid import nice as slugid
 from .util import (
     combine_task_graph_files,
     create_tasks,
@@ -25,6 +24,22 @@ from taskgraph.util import taskcluster
 logger = logging.getLogger(__name__)
 
 RERUN_STATES = ('exception', 'failed')
+
+
+def _should_retrigger(task_graph, label):
+    """
+    Return whether a given task in the taskgraph should be retriggered.
+
+    This handles the case where the task isn't there by assuming it should not be.
+    """
+    if label not in task_graph:
+        logger.info(
+            "Task {} not in full taskgraph, assuming task should not be retriggered.".format(
+                label
+            )
+        )
+        return False
+    return task_graph[label].attributes.get("retrigger", False)
 
 
 @register_callback_action(
@@ -51,14 +66,13 @@ def retrigger_decision_action(parameters, graph_config, input, task_group_id, ta
     # absolute timestamps relative to the current time.
     task = taskcluster.get_task_definition(task_id)
     task = relativize_datestamps(task)
-    create_task_from_def(slugid(), task, parameters['level'])
+    create_task_from_def(task, parameters['level'])
 
 
 @register_callback_action(
     title='Retrigger',
     name='retrigger',
     symbol='rt',
-    generic=True,
     description=(
         'Create a clone of the task.'
     ),
@@ -91,7 +105,6 @@ def retrigger_decision_action(parameters, graph_config, input, task_group_id, ta
     name='retrigger',
     cb_name='retrigger-disabled',
     symbol='rt',
-    generic=True,
     description=(
         'Create a clone of the task.\n\n'
         'This type of task should typically be re-run instead of re-triggered.'
@@ -138,7 +151,7 @@ def retrigger_action(parameters, graph_config, input, task_group_id, task_id):
     with_downstream = ' '
     to_run = [label]
 
-    if not input.get('force', None) and not full_task_graph[label].attributes.get('retrigger'):
+    if not input.get('force', None) and not _should_retrigger(full_task_graph, label):
         logger.info(
             "Not retriggering task {}, task should not be retrigged "
             "and force not specified.".format(
@@ -153,7 +166,7 @@ def retrigger_action(parameters, graph_config, input, task_group_id, task_id):
         with_downstream = ' (with downstream) '
 
     times = input.get('times', 1)
-    for i in xrange(times):
+    for i in range(times):
         create_tasks(
             graph_config,
             to_run,
@@ -171,7 +184,6 @@ def retrigger_action(parameters, graph_config, input, task_group_id, task_id):
 @register_callback_action(
     title='Rerun',
     name='rerun',
-    generic=True,
     symbol='rr',
     description=(
         'Rerun a task.\n\n'
@@ -216,7 +228,6 @@ def _rerun_task(task_id, label):
     title='Retrigger',
     name='retrigger-multiple',
     symbol='rt',
-    generic=True,
     description=(
         'Create a clone of the task.'
     ),
@@ -257,10 +268,11 @@ def retrigger_multiple(parameters, graph_config, input, task_group_id, task_id):
         times = request.get('times', 1)
         rerun_tasks = [
             label for label in request.get('tasks')
-            if not full_task_graph[label].attributes.get('retrigger')]
+            if not _should_retrigger(full_task_graph, label)
+        ]
         retrigger_tasks = [
             label for label in request.get('tasks')
-            if full_task_graph[label].attributes.get('retrigger')
+            if _should_retrigger(full_task_graph, label)
         ]
 
         for label in rerun_tasks:
@@ -270,7 +282,7 @@ def retrigger_multiple(parameters, graph_config, input, task_group_id, task_id):
             # those labels.
             _rerun_task(label_to_taskid[label], label)
 
-        for j in xrange(times):
+        for j in range(times):
             suffix = '{}-{}'.format(i, j)
             suffixes.append(suffix)
             create_tasks(

@@ -9,6 +9,11 @@
 
 #include "chrome/common/ipc_message_utils.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Variant.h"
+#include "mozilla/Tuple.h"
+#include "nsTArray.h"
+
+#include <type_traits>
 
 namespace mozilla {
 namespace ipc {
@@ -56,8 +61,8 @@ struct IPDLParamTraits {
 template <typename P>
 static MOZ_NEVER_INLINE void WriteIPDLParam(IPC::Message* aMsg,
                                             IProtocol* aActor, P&& aParam) {
-  IPDLParamTraits<typename Decay<P>::Type>::Write(aMsg, aActor,
-                                                  std::forward<P>(aParam));
+  IPDLParamTraits<std::decay_t<P>>::Write(aMsg, aActor,
+                                          std::forward<P>(aParam));
 }
 
 template <typename P>
@@ -65,6 +70,17 @@ static MOZ_NEVER_INLINE bool ReadIPDLParam(const IPC::Message* aMsg,
                                            PickleIterator* aIter,
                                            IProtocol* aActor, P* aResult) {
   return IPDLParamTraits<P>::Read(aMsg, aIter, aActor, aResult);
+}
+
+template <typename P>
+static MOZ_NEVER_INLINE bool ReadIPDLParamInfallible(
+    const IPC::Message* aMsg, PickleIterator* aIter, IProtocol* aActor,
+    P* aResult, const char* aCrashMessage) {
+  bool ok = ReadIPDLParam(aMsg, aIter, aActor, aResult);
+  if (!ok) {
+    MOZ_CRASH_UNSAFE(aCrashMessage);
+  }
+  return ok;
 }
 
 constexpr void WriteIPDLParamList(IPC::Message*, IProtocol*) {}
@@ -220,8 +236,11 @@ struct IPDLParamTraits<nsTArray<T>> {
   // a data structure T for which IsPod<T>::value is true, yet also have a
   // {IPDL,}ParamTraits<T> specialization.
   static const bool sUseWriteBytes =
-      (mozilla::IsIntegral<T>::value || mozilla::IsFloatingPoint<T>::value);
+      (std::is_integral_v<T> || std::is_floating_point_v<T>);
 };
+
+template <typename T>
+struct IPDLParamTraits<CopyableTArray<T>> : IPDLParamTraits<nsTArray<T>> {};
 
 // Maybe support for IPDLParamTraits
 template <typename T>
@@ -347,6 +366,75 @@ struct IPDLParamTraits<Tuple<Ts...>> {
                            IProtocol* aActor, Tuple<Ts...>& aResult,
                            std::index_sequence<Is...>) {
     return ReadIPDLParamList(aMsg, aIter, aActor, &Get<Is>(aResult)...);
+  }
+};
+
+template <class... Ts>
+struct IPDLParamTraits<mozilla::Variant<Ts...>> {
+  typedef mozilla::Variant<Ts...> paramType;
+  using Tag = typename mozilla::detail::VariantTag<Ts...>::Type;
+
+  static void Write(IPC::Message* aMsg, IProtocol* aActor,
+                    const paramType& aParam) {
+    WriteIPDLParam(aMsg, aActor, aParam.tag);
+    aParam.match(
+        [aMsg, aActor](const auto& t) { WriteIPDLParam(aMsg, aActor, t); });
+  }
+
+  static void Write(IPC::Message* aMsg, IProtocol* aActor, paramType&& aParam) {
+    WriteIPDLParam(aMsg, aActor, aParam.tag);
+    aParam.match([aMsg, aActor](auto& t) {
+      WriteIPDLParam(aMsg, aActor, std::move(t));
+    });
+  }
+
+  // Because VariantReader is a nested struct, we need the dummy template
+  // parameter to avoid making VariantReader<0> an explicit specialization,
+  // which is not allowed for a nested class template
+  template <size_t N, typename dummy = void>
+  struct VariantReader {
+    using Next = VariantReader<N - 1>;
+
+    static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
+                     IProtocol* aActor, Tag aTag, paramType* aResult) {
+      // Since the VariantReader specializations start at N , we need to
+      // subtract one to look at N - 1, the first valid tag.  This means our
+      // comparisons are off by 1.  If we get to N = 0 then we have failed to
+      // find a match to the tag.
+      if (aTag == N - 1) {
+        // Recall, even though the template parameter is N, we are
+        // actually interested in the N - 1 tag.
+        // Default construct our field within the result outparameter and
+        // directly deserialize into the variant. Note that this means that
+        // every type in Ts needs to be default constructible.
+        return ReadIPDLParam(aMsg, aIter, aActor,
+                             &aResult->template emplace<N - 1>());
+      }
+      return Next::Read(aMsg, aIter, aActor, aTag, aResult);
+    }
+
+  };  // VariantReader<N>
+
+  // Since we are conditioning on tag = N - 1 in the preceding specialization,
+  // if we get to `VariantReader<0, dummy>` we have failed to find
+  // a matching tag.
+  template <typename dummy>
+  struct VariantReader<0, dummy> {
+    static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
+                     IProtocol* aActor, Tag aTag, paramType* aResult) {
+      return false;
+    }
+  };
+
+  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
+                   IProtocol* aActor, paramType* aResult) {
+    Tag tag;
+    if (!ReadIPDLParam(aMsg, aIter, aActor, &tag)) {
+      return false;
+    }
+
+    return VariantReader<sizeof...(Ts)>::Read(aMsg, aIter, aActor, tag,
+                                              aResult);
   }
 };
 

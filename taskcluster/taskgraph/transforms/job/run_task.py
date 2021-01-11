@@ -15,7 +15,7 @@ from taskgraph.transforms.task import taskref_or_string
 from taskgraph.transforms.job import run_job_using
 from taskgraph.util.schema import Schema
 from taskgraph.transforms.job.common import (
-        docker_worker_add_tooltool,
+        add_tooltool,
         support_vcs_checkout
 )
 from voluptuous import Any, Optional, Required
@@ -42,7 +42,7 @@ run_task_schema = Schema({
 
     # The sparse checkout profile to use. Value is the filename relative to the
     # directory where sparse profiles are defined (build/sparse-profiles/).
-    Required('sparse-profile'): Any(basestring, None),
+    Required('sparse-profile'): Any(text_type, None),
 
     # if true, perform a checkout of a comm-central based branch inside the
     # gecko checkout
@@ -54,7 +54,7 @@ run_task_schema = Schema({
     Required('command'): Any([taskref_or_string], taskref_or_string),
 
     # Base work directory used to set up the task.
-    Required('workdir'): basestring,
+    Required('workdir'): text_type,
 
     # If not false, tooltool downloads will be enabled via relengAPIProxy
     # for either just public files, or all files. Only supported on
@@ -109,7 +109,7 @@ def docker_worker_run_task(config, job, taskdesc):
 
     if run['tooltool-downloads']:
         internal = run['tooltool-downloads'] == 'internal'
-        docker_worker_add_tooltool(config, job, taskdesc, internal=internal)
+        add_tooltool(config, job, taskdesc, internal=internal)
 
     if run.get('cache-dotcache'):
         worker['caches'].append({
@@ -131,8 +131,8 @@ def docker_worker_run_task(config, job, taskdesc):
             )
         )
 
-    # dict is for the case of `{'task-reference': basestring}`.
-    if isinstance(run_command, (basestring, dict)):
+    # dict is for the case of `{'task-reference': text_type}`.
+    if isinstance(run_command, (text_type, dict)):
         run_command = ['bash', '-cx', run_command]
     if run['comm-checkout']:
         command.append('--comm-checkout={}/comm'.format(
@@ -155,11 +155,15 @@ def generic_worker_run_task(config, job, taskdesc):
     is_mac = worker['os'] == 'macosx'
     is_bitbar = worker['os'] == 'linux-bitbar'
 
+    if run['tooltool-downloads']:
+        internal = run['tooltool-downloads'] == 'internal'
+        add_tooltool(config, job, taskdesc, internal=internal)
+
     if is_win:
         command = ['C:/mozilla-build/python3/python3.exe', 'run-task']
     elif is_mac:
         command = ['/tools/python37/bin/python3.7', 'run-task']
-        if job['worker-type'].endswith('1014'):
+        if job['worker-type'].endswith(('1014', '1014-pgo')):
             command = ['/usr/local/bin/python3', 'run-task']
     else:
         command = ['./run-task']
@@ -198,7 +202,7 @@ def generic_worker_run_task(config, job, taskdesc):
             )
         )
 
-    if isinstance(run_command, basestring):
+    if isinstance(run_command, text_type):
         if is_win:
             run_command = '"{}"'.format(run_command)
         run_command = ['bash', '-cx', run_command]

@@ -16,6 +16,8 @@
 #include "jit/mips64/Simulator-mips64.h"
 #include "jit/MoveEmitter.h"
 #include "jit/SharedICRegisters.h"
+#include "util/Memory.h"
+#include "vm/JitActivation.h"  // js::jit::JitActivation
 
 #include "jit/MacroAssembler-inl.h"
 
@@ -336,13 +338,27 @@ void MacroAssemblerMIPS64::ma_dext(Register rt, Register rs, Imm32 pos,
   }
 }
 
+void MacroAssemblerMIPS64::ma_dsbh(Register rd, Register rt) {
+  as_dsbh(rd, rt);
+}
+
+void MacroAssemblerMIPS64::ma_dshd(Register rd, Register rt) {
+  as_dshd(rd, rt);
+}
+
 void MacroAssemblerMIPS64::ma_dctz(Register rd, Register rs) {
   ma_dnegu(ScratchRegister, rs);
   as_and(rd, ScratchRegister, rs);
   as_dclz(rd, rd);
   ma_dnegu(SecondScratchReg, rd);
   ma_daddu(SecondScratchReg, Imm32(0x3f));
+#ifdef MIPS64
+  as_selnez(SecondScratchReg, SecondScratchReg, ScratchRegister);
+  as_seleqz(rd, rd, ScratchRegister);
+  as_or(rd, rd, SecondScratchReg);
+#else
   as_movn(rd, SecondScratchReg, ScratchRegister);
+#endif
 }
 
 // Arithmetic-based ops.
@@ -412,7 +428,13 @@ void MacroAssemblerMIPS64::ma_subTestOverflow(Register rd, Register rs,
 
 void MacroAssemblerMIPS64::ma_dmult(Register rs, Imm32 imm) {
   ma_li(ScratchRegister, imm);
+#ifdef MIPSR6
+  as_dmul(rs, ScratchRegister, SecondScratchReg);
+  as_dmuh(rs, ScratchRegister, rs);
+  ma_move(rs, SecondScratchReg);
+#else
   as_dmult(rs, ScratchRegister);
+#endif
 }
 
 // Memory.
@@ -552,6 +574,14 @@ void MacroAssemblerMIPS64Compat::computeScaledAddress(const BaseIndex& address,
     as_daddu(dest, address.base, ScratchRegister);
   } else {
     as_daddu(dest, address.base, address.index);
+  }
+}
+
+void MacroAssemblerMIPS64Compat::computeEffectiveAddress(
+    const BaseIndex& address, Register dest) {
+  computeScaledAddress(address, dest);
+  if (address.offset) {
+    asMasm().addPtr(Imm32(address.offset), dest);
   }
 }
 
@@ -1155,6 +1185,14 @@ void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
   as_roundwd(ScratchDoubleReg, input);
   ma_li(ScratchRegister, Imm32(255));
   as_mfc1(output, ScratchDoubleReg);
+#ifdef MIPSR6
+  as_slti(SecondScratchReg, output, 0);
+  as_seleqz(output, output, SecondScratchReg);
+  as_sltiu(SecondScratchReg, output, 255);
+  as_selnez(output, output, SecondScratchReg);
+  as_seleqz(ScratchRegister, ScratchRegister, SecondScratchReg);
+  as_or(output, output, ScratchRegister);
+#else
   zeroDouble(ScratchDoubleReg);
   as_sltiu(SecondScratchReg, output, 255);
   as_colt(DoubleFloat, ScratchDoubleReg, input);
@@ -1162,6 +1200,7 @@ void MacroAssembler::clampDoubleToUint8(FloatRegister input, Register output) {
   as_movz(output, ScratchRegister, SecondScratchReg);
   // if !(input > 0); res = 0;
   as_movf(output, zero);
+#endif
 }
 
 void MacroAssemblerMIPS64Compat::testNullSet(Condition cond,
@@ -1422,18 +1461,6 @@ Register MacroAssemblerMIPS64Compat::extractTag(const BaseIndex& address,
   return extractTag(Address(scratch, address.offset), scratch);
 }
 
-CodeOffsetJump MacroAssemblerMIPS64Compat::jumpWithPatch(RepatchLabel* label) {
-  // Only one branch per label.
-  MOZ_ASSERT(!label->used());
-
-  BufferOffset bo = nextOffset();
-  label->use(bo.getOffset());
-  ma_liPatchable(ScratchRegister, ImmWord(LabelBase::INVALID_OFFSET));
-  as_jr(ScratchRegister);
-  as_nop();
-  return CodeOffsetJump(bo.getOffset());
-}
-
 /////////////////////////////////////////////////////////////////
 // X86/X64-common/ARM/MIPS interface.
 /////////////////////////////////////////////////////////////////
@@ -1523,6 +1550,9 @@ void MacroAssemblerMIPS64Compat::tagValue(JSValueType type, Register payload,
   ma_li(ScratchRegister, ImmTag(JSVAL_TYPE_TO_TAG(type)));
   ma_dins(dest.valueReg(), ScratchRegister, Imm32(JSVAL_TAG_SHIFT),
           Imm32(64 - JSVAL_TAG_SHIFT));
+  if (type == JSVAL_TYPE_INT32 || type == JSVAL_TYPE_BOOLEAN) {
+    ma_dins(dest.valueReg(), zero, Imm32(32), Imm32(JSVAL_TAG_SHIFT - 32));
+  }
 }
 
 void MacroAssemblerMIPS64Compat::pushValue(ValueOperand val) {
@@ -1639,7 +1669,7 @@ void MacroAssemblerMIPS64Compat::handleFailureWithHandlerTail(
   jump(a0);
 
   // If we found a finally block, this must be a baseline frame. Push
-  // two values expected by JSOP_RETSUB: BooleanValue(true) and the
+  // two values expected by JSOp::Retsub: BooleanValue(true) and the
   // exception.
   bind(&finally);
   ValueOperand exception = ValueOperand(a1);
@@ -1759,6 +1789,11 @@ void MacroAssembler::PushRegsInMask(LiveRegisterSet set) {
     diff -= sizeof(intptr_t);
     storePtr(*iter, Address(StackPointer, diff));
   }
+
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
+
   for (FloatRegisterBackwardIterator iter(set.fpus().reduceSetForPush());
        iter.more(); ++iter) {
     diff -= sizeof(double);
@@ -1779,6 +1814,11 @@ void MacroAssembler::PopRegsInMaskIgnore(LiveRegisterSet set,
       loadPtr(Address(StackPointer, diff), *iter);
     }
   }
+
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
+
   for (FloatRegisterBackwardIterator iter(set.fpus().reduceSetForPush());
        iter.more(); ++iter) {
     diff -= sizeof(double);
@@ -1805,6 +1845,10 @@ void MacroAssembler::storeRegsInMask(LiveRegisterSet set, Address dest,
     storePtr(*iter, dest);
   }
   MOZ_ASSERT(diffG == 0);
+
+#ifdef ENABLE_WASM_SIMD
+#  error "Needs more careful logic if SIMD is enabled"
+#endif
 
   for (FloatRegisterBackwardIterator iter(fpuSet); iter.more(); ++iter) {
     FloatRegister reg = *iter;
@@ -1966,51 +2010,31 @@ void MacroAssembler::moveValue(const Value& src, const ValueOperand& dest) {
 // ===============================================================
 // Branch functions
 
-void MacroAssembler::branchValueIsNurseryObject(Condition cond,
-                                                ValueOperand value,
-                                                Register temp, Label* label) {
-  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
-
-  Label done;
-  branchTestObject(Assembler::NotEqual, value,
-                   cond == Assembler::Equal ? &done : label);
-
-  unboxObject(value, SecondScratchReg);
-  orPtr(Imm32(gc::ChunkMask), SecondScratchReg);
-  branch32(cond, Address(SecondScratchReg, gc::ChunkLocationOffsetFromLastByte),
-           Imm32(int32_t(gc::ChunkLocation::Nursery)), label);
-
-  bind(&done);
-}
-
 void MacroAssembler::branchValueIsNurseryCell(Condition cond,
                                               const Address& address,
                                               Register temp, Label* label) {
-  MOZ_ASSERT(temp != InvalidReg);
-  loadValue(address, ValueOperand(temp));
-  branchValueIsNurseryCell(cond, ValueOperand(temp), InvalidReg, label);
+  branchValueIsNurseryCellImpl(cond, address, temp, label);
 }
 
 void MacroAssembler::branchValueIsNurseryCell(Condition cond,
                                               ValueOperand value, Register temp,
                                               Label* label) {
-  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  branchValueIsNurseryCellImpl(cond, value, temp, label);
+}
 
-  Label done, checkAddress, checkObjectAddress;
+template <typename T>
+void MacroAssembler::branchValueIsNurseryCellImpl(Condition cond,
+                                                  const T& value, Register temp,
+                                                  Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+  Label done;
+  branchTestGCThing(Assembler::NotEqual, value,
+                    cond == Assembler::Equal ? &done : label);
+
+  // temp may be InvalidReg, use scratch2 instead.
   SecondScratchRegisterScope scratch2(*this);
 
-  splitTag(value, scratch2);
-  branchTestObject(Assembler::Equal, scratch2, &checkObjectAddress);
-  branchTestString(Assembler::NotEqual, scratch2,
-                   cond == Assembler::Equal ? &done : label);
-
-  unboxString(value, scratch2);
-  jump(&checkAddress);
-
-  bind(&checkObjectAddress);
-  unboxObject(value, scratch2);
-
-  bind(&checkAddress);
+  unboxGCThingForGCBarrier(value, scratch2);
   orPtr(Imm32(gc::ChunkMask), scratch2);
   load32(Address(scratch2, gc::ChunkLocationOffsetFromLastByte), scratch2);
   branch32(cond, scratch2, Imm32(int32_t(gc::ChunkLocation::Nursery)), label);

@@ -4,12 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// NB: This code may be used from non-XPCOM code, in particular, the
+// Windows Default Browser Agent.
+
 #ifndef nsAutoRef_h_
 #define nsAutoRef_h_
 
 #include "mozilla/Attributes.h"
-
-#include "nscore.h"  // for nullptr, bool
 
 template <class T>
 class nsSimpleRef;
@@ -117,7 +118,7 @@ class nsAutoRef : public nsAutoRefBase<T> {
   typedef typename BaseClass::LocalSimpleRef LocalSimpleRef;
 
  public:
-  nsAutoRef() {}
+  nsAutoRef() = default;
 
   // Explicit construction is required so as not to risk unintentionally
   // releasing the resource associated with a raw ref.
@@ -219,7 +220,7 @@ class nsCountedRef : public nsAutoRef<T> {
   typedef typename BaseClass::RawRef RawRef;
 
  public:
-  nsCountedRef() {}
+  nsCountedRef() = default;
 
   // Construction and assignment from a another nsCountedRef
   // or a raw ref copies and increments the ref count.
@@ -283,7 +284,7 @@ class nsReturnRef : public nsAutoRefBase<T> {
 
  public:
   // For constructing a return value with no resource
-  nsReturnRef() {}
+  nsReturnRef() = default;
 
   // For returning a smart reference from a raw reference that must be
   // released.  Explicit construction is required so as not to risk
@@ -493,7 +494,7 @@ class nsAutoRefBase : public nsSimpleRef<T> {
   typedef nsSimpleRef<T> SimpleRef;
   typedef typename SimpleRef::RawRef RawRef;
 
-  nsAutoRefBase() {}
+  nsAutoRefBase() = default;
 
   // A type for parameters that should be passed a raw ref but should not
   // accept implicit conversions (from another smart ref).  (The only
@@ -524,7 +525,7 @@ class nsAutoRefBase : public nsSimpleRef<T> {
   // not ThisClass).
   class LocalSimpleRef : public SimpleRef {
    public:
-    LocalSimpleRef() {}
+    LocalSimpleRef() = default;
     explicit LocalSimpleRef(RawRef aRawRef) : SimpleRef(aRawRef) {}
   };
 

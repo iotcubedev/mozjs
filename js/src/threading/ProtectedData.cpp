@@ -6,7 +6,6 @@
 
 #include "threading/ProtectedData.h"
 
-#include "gc/Heap.h"
 #include "gc/Zone.h"
 #include "vm/HelperThreads.h"
 #include "vm/JSContext.h"
@@ -15,8 +14,7 @@ namespace js {
 
 #ifdef JS_HAS_PROTECTED_DATA_CHECKS
 
-/* static */ mozilla::Atomic<size_t, mozilla::SequentiallyConsistent,
-                             mozilla::recordreplay::Behavior::DontPreserve>
+/* static */ mozilla::Atomic<size_t, mozilla::SequentiallyConsistent>
     AutoNoteSingleThreadedRegion::count(0);
 
 template <AllowedHelperThread Helper>
@@ -44,7 +42,7 @@ void CheckThreadLocal::check() const {
   MOZ_ASSERT(cx);
   MOZ_ASSERT_IF(cx->isMainThreadContext(),
                 CurrentThreadCanAccessRuntime(cx->runtime()));
-  MOZ_ASSERT(id == ThisThread::GetId());
+  MOZ_ASSERT(id == ThreadId::ThisThreadId());
 }
 
 void CheckContextLocal::check() const {

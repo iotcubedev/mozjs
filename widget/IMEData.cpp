@@ -6,6 +6,8 @@
 #include "IMEData.h"
 #include <sstream>
 
+#include "mozilla/WritingModes.h"
+
 namespace mozilla {
 
 namespace widget {
@@ -47,6 +49,40 @@ std::ostream& operator<<(std::ostream& aStream, const IMEState::Open& aOpen) {
       aStream << "illegal value";
       break;
   }
+  return aStream;
+}
+
+std::ostream& operator<<(std::ostream& aStream, const IMEState& aState) {
+  aStream << "{ mEnabled=" << aState.mEnabled << ", mOpen=" << aState.mOpen
+          << " }";
+  return aStream;
+}
+
+std::ostream& operator<<(std::ostream& aStream,
+                         const InputContext::Origin& aOrigin) {
+  switch (aOrigin) {
+    case InputContext::ORIGIN_MAIN:
+      aStream << "ORIGIN_MAIN";
+      break;
+    case InputContext::ORIGIN_CONTENT:
+      aStream << "ORIGIN_CONTENT";
+      break;
+    default:
+      aStream << "illegal value";
+      break;
+  }
+  return aStream;
+}
+
+std::ostream& operator<<(std::ostream& aStream, const InputContext& aContext) {
+  aStream << "{ mIMEState=" << aContext.mIMEState
+          << ", mOrigin=" << aContext.mOrigin << ", mHTMLInputType=\""
+          << aContext.mHTMLInputType << "\", mHTMLInputInputmode=\""
+          << aContext.mHTMLInputInputmode << "\", mActionHint=\""
+          << aContext.mActionHint << "\", mMayBeIMEUnaware="
+          << (aContext.mMayBeIMEUnaware ? "true" : "false")
+          << ", mIsPrivateBrowsing="
+          << (aContext.mInPrivateBrowsing ? "true" : "false") << " }";
   return aStream;
 }
 
@@ -109,6 +145,51 @@ std::ostream& operator<<(std::ostream& aStream,
       aStream << "illegal value";
       break;
   }
+  return aStream;
+}
+
+std::ostream& operator<<(
+    std::ostream& aStream,
+    const IMENotification::SelectionChangeDataBase& aData) {
+  if (!aData.IsValid()) {
+    aStream << "{ IsValid()=false }";
+    return aStream;
+  }
+  aStream << "{ mOffset=" << aData.mOffset;
+  if (aData.mString->Length() > 20) {
+    aStream << ", mString.Length()=" << aData.mString->Length();
+  } else {
+    aStream << ", mString=\"" << NS_ConvertUTF16toUTF8(*aData.mString)
+            << "\" (Length()=" << aData.mString->Length() << ")";
+  }
+
+  aStream << ", GetWritingMode()=" << aData.GetWritingMode()
+          << ", mReversed=" << (aData.mReversed ? "true" : "false")
+          << ", mCausedByComposition="
+          << (aData.mCausedByComposition ? "true" : "false")
+          << ", mCausedBySelectionEvent="
+          << (aData.mCausedBySelectionEvent ? "true" : "false")
+          << ", mOccurredDuringComposition="
+          << (aData.mOccurredDuringComposition ? "true" : "false") << " }";
+  return aStream;
+}
+
+std::ostream& operator<<(std::ostream& aStream,
+                         const IMENotification::TextChangeDataBase& aData) {
+  if (!aData.IsValid()) {
+    aStream << "{ IsValid()=false }";
+    return aStream;
+  }
+  aStream << "{ mStartOffset=" << aData.mStartOffset
+          << ", mRemoveEndOffset=" << aData.mRemovedEndOffset
+          << ", mAddedEndOffset=" << aData.mAddedEndOffset
+          << ", mCausedOnlyByComposition="
+          << (aData.mCausedOnlyByComposition ? "true" : "false")
+          << ", mIncludingChangesDuringComposition="
+          << (aData.mIncludingChangesDuringComposition ? "true" : "false")
+          << ", mIncludingChangesWithoutComposition="
+          << (aData.mIncludingChangesWithoutComposition ? "true" : "false")
+          << " }";
   return aStream;
 }
 

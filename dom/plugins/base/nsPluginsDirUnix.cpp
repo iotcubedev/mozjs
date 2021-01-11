@@ -13,8 +13,6 @@
 #include <sys/stat.h>
 #include "nsString.h"
 #include "nsIFile.h"
-#include "nsIPrefBranch.h"
-#include "nsIPrefService.h"
 
 #define LOCAL_PLUGIN_DLL_SUFFIX ".so"
 #if defined(__hpux)
@@ -44,13 +42,13 @@ bool nsPluginsDir::IsPluginFile(nsIFile* file) {
   nsAutoCString filename;
   if (NS_FAILED(file->GetNativeLeafName(filename))) return false;
 
-  NS_NAMED_LITERAL_CSTRING(dllSuffix, LOCAL_PLUGIN_DLL_SUFFIX);
+  constexpr auto dllSuffix = nsLiteralCString{LOCAL_PLUGIN_DLL_SUFFIX};
   if (filename.Length() > dllSuffix.Length() &&
       StringEndsWith(filename, dllSuffix))
     return true;
 
 #ifdef LOCAL_PLUGIN_DLL_ALT_SUFFIX
-  NS_NAMED_LITERAL_CSTRING(dllAltSuffix, LOCAL_PLUGIN_DLL_ALT_SUFFIX);
+  constexpr auto dllAltSuffix = nsLiteralCString{LOCAL_PLUGIN_DLL_ALT_SUFFIX};
   if (filename.Length() > dllAltSuffix.Length() &&
       StringEndsWith(filename, dllAltSuffix))
     return true;
@@ -62,7 +60,7 @@ bool nsPluginsDir::IsPluginFile(nsIFile* file) {
 
 nsPluginFile::nsPluginFile(nsIFile* file) : mPlugin(file) {}
 
-nsPluginFile::~nsPluginFile() {}
+nsPluginFile::~nsPluginFile() = default;
 
 nsresult nsPluginFile::LoadPlugin(PRLibrary** outLibrary) {
   PRLibSpec libSpec;

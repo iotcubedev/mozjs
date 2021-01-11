@@ -45,11 +45,6 @@ loader.lazyRequireGetter(
   "SmartTrace",
   "devtools/client/shared/components/SmartTrace"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "pointPrecedes",
-  "resource://devtools/shared/execution-point-utils.js"
-);
 
 class Message extends Component {
   static get propTypes() {
@@ -63,6 +58,7 @@ class Message extends Component {
       level: PropTypes.string.isRequired,
       indent: PropTypes.number.isRequired,
       inWarningGroup: PropTypes.bool,
+      isBlockedNetworkMessage: PropTypes.bool,
       topLevelClasses: PropTypes.array.isRequired,
       messageBody: PropTypes.any.isRequired,
       repeat: PropTypes.any,
@@ -70,8 +66,6 @@ class Message extends Component {
       attachment: PropTypes.any,
       stacktrace: PropTypes.any,
       messageId: PropTypes.string,
-      executionPoint: PropTypes.object,
-      pausedExecutionPoint: PropTypes.object,
       scrollToMessage: PropTypes.bool,
       exceptionDocURL: PropTypes.string,
       request: PropTypes.object,
@@ -79,17 +73,13 @@ class Message extends Component {
       timeStamp: PropTypes.number,
       timestampsVisible: PropTypes.bool.isRequired,
       serviceContainer: PropTypes.shape({
-        emitNewMessage: PropTypes.func.isRequired,
+        emitForTests: PropTypes.func.isRequired,
         onViewSource: PropTypes.func.isRequired,
         onViewSourceInDebugger: PropTypes.func,
-        onViewSourceInScratchpad: PropTypes.func,
         onViewSourceInStyleEditor: PropTypes.func,
         openContextMenu: PropTypes.func.isRequired,
         openLink: PropTypes.func.isRequired,
-        sourceMapService: PropTypes.any,
-        canRewind: PropTypes.func.isRequired,
-        jumpToExecutionPoint: PropTypes.func,
-        onMessageHover: PropTypes.func,
+        sourceMapURLService: PropTypes.any,
       }),
       notes: PropTypes.arrayOf(
         PropTypes.shape({
@@ -97,7 +87,6 @@ class Message extends Component {
           frame: PropTypes.any,
         })
       ),
-      isPaused: PropTypes.bool,
       maybeScrollToBottom: PropTypes.func,
       message: PropTypes.object.isRequired,
     };
@@ -114,7 +103,6 @@ class Message extends Component {
     this.onLearnMoreClick = this.onLearnMoreClick.bind(this);
     this.toggleMessage = this.toggleMessage.bind(this);
     this.onContextMenu = this.onContextMenu.bind(this);
-    this.onMouseEvent = this.onMouseEvent.bind(this);
     this.renderIcon = this.renderIcon.bind(this);
   }
 
@@ -123,20 +111,23 @@ class Message extends Component {
       if (this.props.scrollToMessage) {
         this.messageNode.scrollIntoView();
       }
-      // Event used in tests. Some message types don't pass it in because existing tests
-      // did not emit for them.
-      if (this.props.serviceContainer) {
-        this.props.serviceContainer.emitNewMessage(
-          this.messageNode,
-          this.props.messageId,
-          this.props.timeStamp
-        );
-      }
+
+      this.emitNewMessage(this.messageNode);
     }
   }
 
   componentDidCatch(e) {
     this.setState({ error: e });
+  }
+
+  // Event used in tests. Some message types don't pass it in because existing tests
+  // did not emit for them.
+  emitNewMessage(node) {
+    const { serviceContainer, messageId, timeStamp } = this.props;
+    serviceContainer.emitForTests(
+      "new-messages",
+      new Set([{ node, messageId, timeStamp }])
+    );
   }
 
   onLearnMoreClick(e) {
@@ -181,34 +172,19 @@ class Message extends Component {
     e.preventDefault();
   }
 
-  onMouseEvent(ev) {
-    const { messageId, serviceContainer, executionPoint } = this.props;
-    if (serviceContainer.canRewind() && executionPoint) {
-      serviceContainer.onMessageHover(ev.type, messageId);
-    }
-  }
-
   renderIcon() {
-    const {
-      level,
-      messageId,
-      executionPoint,
-      serviceContainer,
-      inWarningGroup,
-      type,
-    } = this.props;
+    const { level, inWarningGroup, isBlockedNetworkMessage, type } = this.props;
 
     if (inWarningGroup) {
       return undefined;
     }
 
+    if (isBlockedNetworkMessage) {
+      return MessageIcon({ type: "blockedReason" });
+    }
+
     return MessageIcon({
       level,
-      onRewindClick:
-        serviceContainer.canRewind() && executionPoint
-          ? () =>
-              serviceContainer.jumpToExecutionPoint(executionPoint, messageId)
-          : null,
       type,
     });
   }
@@ -255,7 +231,17 @@ class Message extends Component {
                 className: "devtools-button",
                 onClick: () =>
                   navigator.clipboard.writeText(
-                    JSON.stringify(this.props.message, null, 2)
+                    JSON.stringify(
+                      this.props.message,
+                      function(key, value) {
+                        // The message can hold one or multiple fronts that we need to serialize
+                        if (value?.getGrip) {
+                          return value.getGrip();
+                        }
+                        return value;
+                      },
+                      2
+                    )
                   ),
               },
               l10n.getStr(
@@ -269,7 +255,7 @@ class Message extends Component {
     );
   }
 
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   render() {
     if (this.state && this.state.error) {
       return this.renderErrorState();
@@ -281,7 +267,6 @@ class Message extends Component {
       collapseTitle,
       source,
       type,
-      isPaused,
       level,
       indent,
       inWarningGroup,
@@ -291,8 +276,6 @@ class Message extends Component {
       stacktrace,
       serviceContainer,
       exceptionDocURL,
-      executionPoint,
-      pausedExecutionPoint,
       messageId,
       notes,
     } = this.props;
@@ -300,18 +283,6 @@ class Message extends Component {
     topLevelClasses.push("message", source, type, level);
     if (open) {
       topLevelClasses.push("open");
-    }
-
-    if (isPaused) {
-      topLevelClasses.push("paused");
-
-      if (
-        pausedExecutionPoint &&
-        executionPoint &&
-        !pointPrecedes(executionPoint, pausedExecutionPoint)
-      ) {
-        topLevelClasses.push("paused-before");
-      }
     }
 
     const timestampEl = this.renderTimestamp();
@@ -331,12 +302,9 @@ class Message extends Component {
           onViewSourceInDebugger:
             serviceContainer.onViewSourceInDebugger ||
             serviceContainer.onViewSource,
-          onViewSourceInScratchpad:
-            serviceContainer.onViewSourceInScratchpad ||
-            serviceContainer.onViewSource,
           onViewSource: serviceContainer.onViewSource,
           onReady: this.props.maybeScrollToBottom,
-          sourceMapService: serviceContainer.sourceMapService,
+          sourceMapURLService: serviceContainer.sourceMapURLService,
         })
       );
     }
@@ -370,8 +338,8 @@ class Message extends Component {
                       serviceContainer.onViewSource
                     : undefined,
                   showEmptyPathAsHost: true,
-                  sourceMapService: serviceContainer
-                    ? serviceContainer.sourceMapService
+                  sourceMapURLService: serviceContainer
+                    ? serviceContainer.sourceMapURLService
                     : undefined,
                 })
               : null
@@ -393,10 +361,6 @@ class Message extends Component {
         onFrameClick =
           serviceContainer.onViewSourceInStyleEditor ||
           serviceContainer.onViewSource;
-      } else if (/^Scratchpad\/\d+$/.test(frame.source)) {
-        onFrameClick =
-          serviceContainer.onViewSourceInScratchpad ||
-          serviceContainer.onViewSource;
       } else {
         // Point everything else to debugger, if source not available,
         // it will fall back to view-source.
@@ -414,8 +378,8 @@ class Message extends Component {
             frame,
             onClick: onFrameClick,
             showEmptyPathAsHost: true,
-            sourceMapService: serviceContainer
-              ? serviceContainer.sourceMapService
+            sourceMapURLService: serviceContainer
+              ? serviceContainer.sourceMapURLService
               : undefined,
             messageSource: source,
           })
@@ -439,16 +403,10 @@ class Message extends Component {
       ? messageBody
       : [messageBody];
 
-    const mouseEvents =
-      serviceContainer.canRewind() && executionPoint
-        ? { onMouseEnter: this.onMouseEvent, onMouseLeave: this.onMouseEvent }
-        : {};
-
     return dom.div(
       {
         className: topLevelClasses.join(" "),
         onContextMenu: this.onContextMenu,
-        ...mouseEvents,
         ref: node => {
           this.messageNode = node;
         },
@@ -488,7 +446,6 @@ class Message extends Component {
       attachment ? null : dom.br()
     );
   }
-  /* eslint-enable complexity */
 }
 
 module.exports = Message;

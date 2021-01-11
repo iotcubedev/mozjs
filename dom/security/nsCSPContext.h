@@ -12,10 +12,8 @@
 #include "mozilla/StaticPrefs_security.h"
 #include "nsIChannel.h"
 #include "nsIChannelEventSink.h"
-#include "nsIClassInfo.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIInterfaceRequestor.h"
-#include "nsISerializable.h"
 #include "nsIStreamListener.h"
 #include "nsIWeakReferenceUtils.h"
 #include "nsXPCOM.h"
@@ -140,6 +138,10 @@ class nsCSPContext : public nsIContentSecurityPolicy {
         0);
   }
 
+  void AddIPCPolicy(const mozilla::ipc::ContentSecurityPolicy& aPolicy);
+  void SerializePolicies(
+      nsTArray<mozilla::ipc::ContentSecurityPolicy>& aPolicies);
+
  private:
   void EnsureIPCPoliciesRead();
 
@@ -162,7 +164,8 @@ class nsCSPContext : public nsIContentSecurityPolicy {
                              uint32_t aLineNumber, uint32_t aColumnNumber);
 
   nsString mReferrer;
-  uint64_t mInnerWindowID;  // used for web console logging
+  uint64_t mInnerWindowID;          // used for web console logging
+  bool mSkipAllowInlineStyleCheck;  // used to allow Devtools to edit styles
   // When deserializing an nsCSPContext instance, we initially just keep the
   // policies unparsed. We will only reconstruct actual CSP policy instances
   // when there's an attempt to use the CSP. Given a better way to serialize/

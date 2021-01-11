@@ -17,7 +17,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders collapsed top-level window 
     aria-level={1}
     className="tree-node"
     data-expandable={true}
-    id="Symbol(window)"
+    id="window"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -25,6 +25,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders collapsed top-level window 
     <div
       className="node object-node"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <button
         className="arrow"
@@ -42,6 +43,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders collapsed top-level window 
       <span
         className="objectBox objectBox-Window"
         data-link-actor-id="server1.conn3.obj198"
+        title={null}
       >
         <span
           className="objectTitle"
@@ -56,7 +58,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders collapsed top-level window 
 
 exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
 <div
-  aria-activedescendant="Symbol(root)"
+  aria-activedescendant="root"
   className="tree object-inspector"
   onBlur={[Function]}
   onFocus={[Function]}
@@ -72,7 +74,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
     aria-level={1}
     className="tree-node focused"
     data-expandable={true}
-    id="Symbol(root)"
+    id="root"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -80,6 +82,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
     <div
       className="node object-node focused"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <button
         className="arrow expanded"
@@ -96,7 +99,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
     aria-level={2}
     className="tree-node"
     data-expandable={true}
-    id="Symbol(window)"
+    id="window"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -109,6 +112,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
     <div
       className="node object-node"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <button
         className="arrow"
@@ -126,6 +130,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders sub-level window 1`] = `
       <span
         className="objectBox objectBox-Window"
         data-link-actor-id="server1.conn3.obj198"
+        title={null}
       >
         <span
           className="objectTitle"
@@ -155,7 +160,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     aria-level={1}
     className="tree-node"
     data-expandable={true}
-    id="Symbol(window)"
+    id="window"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -163,6 +168,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     <div
       className="node object-node lessen"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <button
         className="arrow"
@@ -180,6 +186,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
       <span
         className="objectBox objectBox-Window"
         data-link-actor-id="server1.conn3.obj198"
+        title={null}
       >
         <span
           className="objectTitle"
@@ -194,7 +201,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
 
 exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dimTopLevelWindow is true 2`] = `
 <div
-  aria-activedescendant="Symbol(window)"
+  aria-activedescendant="window"
   className="tree object-inspector"
   onBlur={[Function]}
   onFocus={[Function]}
@@ -210,7 +217,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     aria-level={1}
     className="tree-node focused"
     data-expandable={true}
-    id="Symbol(window)"
+    id="window"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -218,6 +225,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     <div
       className="node object-node focused"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <button
         className="arrow expanded"
@@ -235,6 +243,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
       <span
         className="objectBox objectBox-Window"
         data-link-actor-id="server1.conn3.obj198"
+        title={null}
       >
         <span
           className="objectTitle"
@@ -248,7 +257,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     aria-level={2}
     className="tree-node"
     data-expandable={false}
-    id="Symbol(window/<prototype>)"
+    id="window◦<prototype>"
     onClick={[Function]}
     onKeyDownCapture={null}
     role="treeitem"
@@ -261,6 +270,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
     <div
       className="node object-node lessen"
       onClick={[Function]}
+      onContextMenu={[Function]}
     >
       <span
         className="object-label"
@@ -274,6 +284,7 @@ exports[`ObjectInspector - dimTopLevelWindow renders window as expected when dim
       </span>
       <span
         className="objectBox objectBox-object"
+        title={null}
       >
         <span
           className="objectLeftBrace"

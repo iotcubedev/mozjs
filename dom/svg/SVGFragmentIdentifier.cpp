@@ -53,14 +53,14 @@ class MOZ_RAII AutoSVGViewHandler {
       return;
     }
     if (mValid) {
-      mRoot->mSVGView = mSVGView;
+      mRoot->mSVGView = std::move(mSVGView);
     }
     mRoot->InvalidateTransformNotifyFrame();
   }
 
   void CreateSVGView() {
     MOZ_ASSERT(!mSVGView, "CreateSVGView should not be called multiple times");
-    mSVGView = new SVGView();
+    mSVGView = MakeUnique<SVGView>();
   }
 
   bool ProcessAttr(const nsAString& aToken, const nsAString& aParams) {
@@ -71,35 +71,33 @@ class MOZ_RAII AutoSVGViewHandler {
     // If we encounter any attribute more than once or get any syntax errors
     // we're going to return false and cancel any changes.
 
-    if (IsMatchingParameter(aToken, NS_LITERAL_STRING("viewBox"))) {
+    if (IsMatchingParameter(aToken, u"viewBox"_ns)) {
       if (mSVGView->mViewBox.IsExplicitlySet() ||
           NS_FAILED(
               mSVGView->mViewBox.SetBaseValueString(aParams, mRoot, false))) {
         return false;
       }
-    } else if (IsMatchingParameter(aToken,
-                                   NS_LITERAL_STRING("preserveAspectRatio"))) {
+    } else if (IsMatchingParameter(aToken, u"preserveAspectRatio"_ns)) {
       if (mSVGView->mPreserveAspectRatio.IsExplicitlySet() ||
           NS_FAILED(mSVGView->mPreserveAspectRatio.SetBaseValueString(
               aParams, mRoot, false))) {
         return false;
       }
-    } else if (IsMatchingParameter(aToken, NS_LITERAL_STRING("transform"))) {
+    } else if (IsMatchingParameter(aToken, u"transform"_ns)) {
       if (mSVGView->mTransforms) {
         return false;
       }
-      mSVGView->mTransforms = new SVGAnimatedTransformList();
+      mSVGView->mTransforms = MakeUnique<SVGAnimatedTransformList>();
       if (NS_FAILED(
               mSVGView->mTransforms->SetBaseValueString(aParams, mRoot))) {
         return false;
       }
-    } else if (IsMatchingParameter(aToken, NS_LITERAL_STRING("zoomAndPan"))) {
+    } else if (IsMatchingParameter(aToken, u"zoomAndPan"_ns)) {
       if (mSVGView->mZoomAndPan.IsExplicitlySet()) {
         return false;
       }
       nsAtom* valAtom = NS_GetStaticAtom(aParams);
-      if (!valAtom ||
-          NS_FAILED(mSVGView->mZoomAndPan.SetBaseValueAtom(valAtom, mRoot))) {
+      if (!valAtom || !mSVGView->mZoomAndPan.SetBaseValueAtom(valAtom, mRoot)) {
         return false;
       }
     } else {
@@ -112,7 +110,7 @@ class MOZ_RAII AutoSVGViewHandler {
 
  private:
   SVGSVGElement* mRoot;
-  nsAutoPtr<SVGView> mSVGView;
+  UniquePtr<SVGView> mSVGView;
   bool mValid;
   bool mWasOverridden;
   MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
@@ -122,7 +120,7 @@ bool SVGFragmentIdentifier::ProcessSVGViewSpec(const nsAString& aViewSpec,
                                                SVGSVGElement* aRoot) {
   AutoSVGViewHandler viewHandler(aRoot);
 
-  if (!IsMatchingParameter(aViewSpec, NS_LITERAL_STRING("svgView"))) {
+  if (!IsMatchingParameter(aViewSpec, u"svgView"_ns)) {
     return false;
   }
 
@@ -171,7 +169,7 @@ bool SVGFragmentIdentifier::ProcessFragmentIdentifier(
 
   if (viewElement) {
     if (!rootElement->mCurrentViewID) {
-      rootElement->mCurrentViewID = new nsString();
+      rootElement->mCurrentViewID = MakeUnique<nsString>();
     }
     *rootElement->mCurrentViewID = aAnchorName;
     rootElement->mSVGView = nullptr;

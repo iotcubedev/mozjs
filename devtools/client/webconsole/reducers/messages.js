@@ -5,6 +5,7 @@
 
 const {
   isGroupType,
+  isMessageNetworkError,
   l10n,
 } = require("devtools/client/webconsole/utils/messages");
 
@@ -49,19 +50,21 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
+  "getDescriptorValue",
+  "devtools/client/webconsole/utils/messages",
+  true
+);
+loader.lazyRequireGetter(
+  this,
   "getParentWarningGroupMessageId",
   "devtools/client/webconsole/utils/messages",
   true
 );
-ChromeUtils.defineModuleGetter(
+loader.lazyRequireGetter(
   this,
-  "pointPrecedes",
-  "resource://devtools/shared/execution-point-utils.js"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "pointEquals",
-  "resource://devtools/shared/execution-point-utils.js"
+  "getNaturalOrder",
+  "devtools/client/webconsole/utils/messages",
+  true
 );
 
 const { UPDATE_REQUEST } = require("devtools/client/netmonitor/src/constants");
@@ -93,21 +96,16 @@ const MessageState = overrides =>
         currentGroup: null,
         // This group handles "warning groups" (Content Blocking, CORS, CSP, …)
         warningGroupsById: new Map(),
-        // Array of removed actors (i.e. actors logged in removed messages) we keep track of
-        // in order to properly release them.
-        // This array is not supposed to be consumed by any UI component.
-        removedActors: [],
+        // Array of fronts to release (i.e. fronts logged in removed messages).
+        // This array *should not* be consumed by any UI component.
+        frontsToRelease: [],
         // Map of the form {messageId : numberOfRepeat}
         repeatById: {},
         // Map of the form {messageId : networkInformation}
         // `networkInformation` holds request, response, totalTime, ...
         networkMessagesUpdateById: {},
-        // Set of logpoint IDs that have been removed
-        removedLogpointIds: new Set(),
-        // Any execution point we are currently paused at, when replaying.
-        pausedExecutionPoint: null,
-        // Whether any messages with execution points have been seen.
-        hasExecutionPoints: false,
+        // Id of the last messages that was added.
+        lastMessageId: null,
       },
       overrides
     )
@@ -122,13 +120,11 @@ function cloneState(state) {
     messagesPayloadById: new Map(state.messagesPayloadById),
     groupsById: new Map(state.groupsById),
     currentGroup: state.currentGroup,
-    removedActors: [...state.removedActors],
+    frontsToRelease: [...state.frontsToRelease],
     repeatById: { ...state.repeatById },
     networkMessagesUpdateById: { ...state.networkMessagesUpdateById },
-    removedLogpointIds: new Set(state.removedLogpointIds),
-    pausedExecutionPoint: state.pausedExecutionPoint,
-    hasExecutionPoints: state.hasExecutionPoints,
     warningGroupsById: new Map(state.warningGroupsById),
+    lastMessageId: state.lastMessageId,
   };
 }
 
@@ -142,22 +138,11 @@ function cloneState(state) {
  * @param {UiState} uiState: The ui state.
  * @returns {MessageState} a new messages state.
  */
-/* eslint-disable complexity */
+// eslint-disable-next-line complexity
 function addMessage(newMessage, state, filtersState, prefsState, uiState) {
   const { messagesById, groupsById, currentGroup, repeatById } = state;
-
   if (newMessage.type === constants.MESSAGE_TYPE.NULL_MESSAGE) {
     // When the message has a NULL type, we don't add it.
-    return state;
-  }
-
-  // After messages with a given logpoint ID have been removed, ignore all
-  // future messages with that ID.
-  if (
-    newMessage.logpointId &&
-    state.removedLogpointIds &&
-    state.removedLogpointIds.has(newMessage.logpointId)
-  ) {
     return state;
   }
 
@@ -167,9 +152,13 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
     return state;
   }
 
-  if (newMessage.allowRepeating && messagesById.size > 0) {
-    const lastMessage = messagesById.get(getLastMessageId(state));
+  const lastMessage = messagesById.get(state.lastMessageId);
+  // It can happen that the new message was actually emitted earlier than the last message,
+  // which means we need to insert it at the right position.
+  const isUnsorted =
+    lastMessage && lastMessage.timeStamp > newMessage.timeStamp;
 
+  if (lastMessage && newMessage.allowRepeating && messagesById.size > 0) {
     if (
       lastMessage.repeatId === newMessage.repeatId &&
       lastMessage.groupId === currentGroup
@@ -179,6 +168,11 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
     }
   }
 
+  // Store the id of the message as being the last one being added.
+  if (!isUnsorted) {
+    state.lastMessageId = newMessage.id;
+  }
+
   // Add the new message with a reference to the parent group.
   const parentGroups = getParentGroups(currentGroup, groupsById);
   if (!isWarningGroup(newMessage)) {
@@ -186,27 +180,7 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
     newMessage.indent = parentGroups.length;
   }
 
-  ensureExecutionPoint(state, newMessage);
-
-  if (newMessage.executionPoint) {
-    state.hasExecutionPoints = true;
-  }
-
-  // When replaying, we might get two messages with the same execution point and
-  // logpoint ID. In this case the first message is provisional and should be
-  // removed.
   const removedIds = [];
-  if (newMessage.logpointId) {
-    const existingMessage = [...state.messagesById.values()].find(existing => {
-      return (
-        existing.logpointId == newMessage.logpointId &&
-        pointEquals(existing.executionPoint, newMessage.executionPoint)
-      );
-    });
-    if (existingMessage) {
-      removedIds.push(existingMessage.id);
-    }
-  }
 
   // Check if the current message could be placed in a Warning Group.
   // This needs to be done before setting the new message in messagesById so we have a
@@ -291,7 +265,25 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
   }
 
   const addedMessage = Object.freeze(newMessage);
-  state.messagesById.set(newMessage.id, addedMessage);
+
+  // If the new message isn't the "oldest" one, then we need to insert it at the right
+  // position in the message map.
+  if (isUnsorted) {
+    const entries = Array.from(state.messagesById.entries());
+    const newMessageIndex = entries.findIndex(
+      entry => entry[1].timeStamp > addedMessage.timeStamp
+    );
+    // This shouldn't happen as `isUnsorted` would only be true if the last message is
+    // younger than the added message.
+    if (newMessageIndex === -1) {
+      state.messagesById.set(addedMessage.id, addedMessage);
+    } else {
+      entries.splice(newMessageIndex, 0, [addedMessage.id, addedMessage]);
+      state.messagesById = new Map(entries);
+    }
+  } else {
+    state.messagesById.set(addedMessage.id, addedMessage);
+  }
 
   if (newMessage.type === "trace") {
     // We want the stacktrace to be open by default.
@@ -335,6 +327,19 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
       }
       // Inserts the new warning message at the wanted location "in" the warning group.
       state.visibleMessages.splice(index + 1, 0, newMessage.id);
+    } else if (isUnsorted) {
+      // If the new message wasn't the "oldest" one, then we need to insert its id at
+      // the right position in the array.
+      const index = state.visibleMessages.findIndex(
+        id => state.messagesById.get(id).timeStamp > newMessage.timeStamp
+      );
+      // If the index wasn't found, it means the new message is the oldest of the visible
+      // messages, so we can directly push it into the array.
+      if (index == -1) {
+        state.visibleMessages.push(newMessage.id);
+      } else {
+        state.visibleMessages.splice(index, 0, newMessage.id);
+      }
     } else {
       state.visibleMessages.push(newMessage.id);
     }
@@ -352,9 +357,8 @@ function addMessage(newMessage, state, filtersState, prefsState, uiState) {
 
   return removeMessagesFromState(state, removedIds);
 }
-/* eslint-enable complexity */
 
-/* eslint-disable complexity */
+// eslint-disable-next-line complexity
 function messages(
   state = MessageState(),
   action,
@@ -375,15 +379,6 @@ function messages(
 
   let newState;
   switch (action.type) {
-    case constants.PAUSED_EXECUTION_POINT:
-      if (
-        state.pausedExecutionPoint &&
-        action.executionPoint &&
-        pointEquals(state.pausedExecutionPoint, action.executionPoint)
-      ) {
-        return state;
-      }
-      return { ...state, pausedExecutionPoint: action.executionPoint };
     case constants.MESSAGES_ADD:
       // Preemptively remove messages that will never be rendered
       const list = [];
@@ -416,7 +411,7 @@ function messages(
       }
 
       newState = cloneState(state);
-      list.forEach(message => {
+      for (const message of list) {
         newState = addMessage(
           message,
           newState,
@@ -424,7 +419,7 @@ function messages(
           prefsState,
           uiState
         );
-      });
+      }
 
       return limitTopLevelMessageCount(newState, logLimit);
 
@@ -432,8 +427,8 @@ function messages(
       return MessageState({
         // Store all actors from removed messages. This array is used by
         // `releaseActorsEnhancer` to release all of those backend actors.
-        removedActors: [...state.messagesById.values()].reduce((res, msg) => {
-          res.push(...getAllActorsInMessage(msg));
+        frontsToRelease: [...state.messagesById.values()].reduce((res, msg) => {
+          res.push(...getAllFrontsInMessage(msg));
           return res;
         }, []),
       });
@@ -454,30 +449,6 @@ function messages(
       return removeMessagesFromState(
         {
           ...state,
-        },
-        removedIds
-      );
-    }
-
-    case constants.MESSAGES_CLEAR_LOGPOINT: {
-      const removedIds = [];
-      for (const [id, message] of messagesById) {
-        if (message.logpointId == action.logpointId) {
-          removedIds.push(id);
-        }
-      }
-
-      if (removedIds.length === 0) {
-        return state;
-      }
-
-      return removeMessagesFromState(
-        {
-          ...state,
-          removedLogpointIds: new Set([
-            ...state.removedLogpointIds,
-            action.logpointId,
-          ]),
         },
         removedIds
       );
@@ -587,13 +558,26 @@ function messages(
       };
 
     case constants.NETWORK_MESSAGE_UPDATE:
-      return {
+      const updatedState = {
         ...state,
         networkMessagesUpdateById: {
           ...networkMessagesUpdateById,
           [action.message.id]: action.message,
         },
       };
+
+      // If the request status code is a 4XX or 5XX, then we may have to display the
+      // message (as an error).
+      if (isMessageNetworkError(action.message)) {
+        return setVisibleMessages({
+          messagesState: updatedState,
+          filtersState,
+          prefsState,
+          uiState,
+        });
+      }
+
+      return updatedState;
 
     case UPDATE_REQUEST:
     case constants.NETWORK_UPDATE_REQUEST: {
@@ -614,10 +598,10 @@ function messages(
       };
     }
 
-    case constants.REMOVED_ACTORS_CLEAR:
+    case constants.FRONTS_TO_RELEASE_CLEAR:
       return {
         ...state,
-        removedActors: [],
+        frontsToRelease: [],
       };
 
     case constants.WARNING_GROUPS_TOGGLE:
@@ -679,6 +663,14 @@ function messages(
         forceTimestampSort: !prefsState.groupWarnings,
       });
 
+    case constants.MESSAGE_REMOVE:
+      return removeMessagesFromState(
+        {
+          ...state,
+        },
+        [action.id]
+      );
+
     case constants.FILTER_TOGGLE:
     case constants.FILTER_TEXT_SET:
     case constants.FILTERS_CLEAR:
@@ -694,7 +686,6 @@ function messages(
 
   return state;
 }
-/* eslint-enable complexity */
 
 function setVisibleMessages({
   messagesState,
@@ -854,7 +845,7 @@ function removeMessagesFromState(state, removedMessagesIds) {
     return state;
   }
 
-  const removedActors = [];
+  const frontsToRelease = [];
   const visibleMessages = [...state.visibleMessages];
   removedMessagesIds.forEach(id => {
     const index = visibleMessages.indexOf(id);
@@ -862,15 +853,15 @@ function removeMessagesFromState(state, removedMessagesIds) {
       visibleMessages.splice(index, 1);
     }
 
-    removedActors.push(...getAllActorsInMessage(state.messagesById.get(id)));
+    frontsToRelease.push(...getAllFrontsInMessage(state.messagesById.get(id)));
   });
 
   if (state.visibleMessages.length > visibleMessages.length) {
     state.visibleMessages = visibleMessages;
   }
 
-  if (removedActors.length > 0) {
-    state.removedActors = state.removedActors.concat(removedActors);
+  if (frontsToRelease.length > 0) {
+    state.frontsToRelease = state.frontsToRelease.concat(frontsToRelease);
   }
 
   const isInRemovedId = id => removedMessagesIds.includes(id);
@@ -931,28 +922,31 @@ function removeMessagesFromState(state, removedMessagesIds) {
 }
 
 /**
- * Get an array of all the actors logged in a specific message.
+ * Get an array of all the fronts logged in a specific message.
  *
  * @param {Message} message: The message to get actors from.
- * @return {Array} An array containing all the actors logged in a message.
+ * @return {Array<ObjectFront|LongStringFront>} An array containing all the fronts logged
+ *                                              in a message.
  */
-function getAllActorsInMessage(message) {
+function getAllFrontsInMessage(message) {
   const { parameters, messageText } = message;
 
-  const actors = [];
+  const fronts = [];
+  const isFront = p => p && typeof p.release === "function";
+
   if (Array.isArray(parameters)) {
     message.parameters.forEach(parameter => {
-      if (parameter && parameter.actor) {
-        actors.push(parameter.actor);
+      if (isFront(parameter)) {
+        fronts.push(parameter);
       }
     });
   }
 
-  if (messageText && messageText.actor) {
-    actors.push(messageText.actor);
+  if (isFront(messageText)) {
+    fronts.push(messageText);
   }
 
-  return actors;
+  return fronts;
 }
 
 /**
@@ -988,7 +982,7 @@ function getToplevelMessageCount(state) {
  *         - visible {Boolean}: true if the message should be visible
  *         - cause {String}: if visible is false, what causes the message to be hidden.
  */
-/* eslint-disable complexity */
+// eslint-disable-next-line complexity
 function getMessageVisibility(
   message,
   {
@@ -1179,7 +1173,6 @@ function getMessageVisibility(
     visible: true,
   };
 }
-/* eslint-enable complexity */
 
 function isUnfilterable(message) {
   return [
@@ -1221,7 +1214,8 @@ function passNetworkFilter(message, filters) {
   return (
     message.source !== MESSAGE_SOURCE.NETWORK ||
     message.isXHR === true ||
-    filters[FILTERS.NET] === true
+    filters[FILTERS.NET] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1239,7 +1233,8 @@ function passXhrFilter(message, filters) {
   return (
     message.source !== MESSAGE_SOURCE.NETWORK ||
     message.isXHR === false ||
-    filters[FILTERS.NETXHR] === true
+    filters[FILTERS.NETXHR] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1256,7 +1251,8 @@ function passLevelFilters(message, filters) {
   return (
     (message.source !== MESSAGE_SOURCE.CONSOLE_API &&
       message.source !== MESSAGE_SOURCE.JAVASCRIPT) ||
-    filters[message.level] === true
+    filters[message.level] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1281,41 +1277,50 @@ function passCssFilters(message, filters) {
  * @returns {Boolean}
  */
 function passSearchFilters(message, filters) {
-  const text = (filters.text || "").trim().toLocaleLowerCase();
+  const trimmed = (filters.text || "").trim().toLocaleLowerCase();
+
+  // "-"-prefix switched to exclude mode
+  const exclude = trimmed.startsWith("-");
+  const term = exclude ? trimmed.slice(1) : trimmed;
+
   let regex;
-  if (text.startsWith("/") && text.endsWith("/") && text.length > 2) {
+  if (term.startsWith("/") && term.endsWith("/") && term.length > 2) {
     try {
-      regex = new RegExp(text.slice(1, -1), "im");
+      regex = new RegExp(term.slice(1, -1), "im");
     } catch (e) {}
   }
+  const matchStr = regex
+    ? str => regex.test(str)
+    : str => str.toLocaleLowerCase().includes(term);
 
   // If there is no search, the message passes the filter.
-  if (!text) {
+  if (!term) {
     return true;
   }
 
-  return (
+  const matched =
     // Look for a match in parameters.
-    isTextInParameters(text, regex, message.parameters) ||
+    isTextInParameters(matchStr, message.parameters) ||
     // Look for a match in location.
-    isTextInFrame(text, regex, message.frame) ||
+    isTextInFrame(matchStr, message.frame) ||
     // Look for a match in net events.
-    isTextInNetEvent(text, regex, message.request) ||
+    isTextInNetEvent(matchStr, message.request) ||
     // Look for a match in stack-trace.
-    isTextInStackTrace(text, regex, message.stacktrace) ||
+    isTextInStackTrace(matchStr, message.stacktrace) ||
     // Look for a match in messageText.
-    isTextInMessageText(text, regex, message.messageText) ||
+    isTextInMessageText(matchStr, message.messageText) ||
     // Look for a match in notes.
-    isTextInNotes(text, regex, message.notes) ||
+    isTextInNotes(matchStr, message.notes) ||
     // Look for a match in prefix.
-    isTextInPrefix(text, regex, message.prefix)
-  );
+    isTextInPrefix(matchStr, message.prefix);
+
+  return matched ? !exclude : exclude;
 }
 
 /**
  * Returns true if given text is included in provided stack frame.
  */
-function isTextInFrame(text, regex, frame) {
+function isTextInFrame(matchStr, frame) {
   if (!frame) {
     return false;
   }
@@ -1327,43 +1332,77 @@ function isTextInFrame(text, regex, frame) {
   const str = `${
     functionName ? functionName + " " : ""
   }${unicodeShort}:${line}:${column}`;
-  return regex ? regex.test(str) : str.toLocaleLowerCase().includes(text);
+  return matchStr(str);
 }
 
 /**
  * Returns true if given text is included in provided parameters.
  */
-function isTextInParameters(text, regex, parameters) {
+function isTextInParameters(matchStr, parameters) {
   if (!parameters) {
     return false;
   }
 
-  return getAllProps(parameters).some(prop => {
-    const str = prop + "";
-    return regex ? regex.test(str) : str.toLocaleLowerCase().includes(text);
-  });
+  return parameters.some(parameter => isTextInParameter(matchStr, parameter));
+}
+
+/**
+ * Returns true if given text is included in provided parameter.
+ */
+function isTextInParameter(matchStr, parameter) {
+  const paramGrip =
+    parameter && parameter.getGrip ? parameter.getGrip() : parameter;
+
+  if (paramGrip && paramGrip.class && matchStr(paramGrip.class)) {
+    return true;
+  }
+
+  const parameterType = typeof parameter;
+  if (parameterType !== "object" && parameterType !== "undefined") {
+    const str = paramGrip + "";
+    if (matchStr(str)) {
+      return true;
+    }
+  }
+
+  const previewItems = getGripPreviewItems(paramGrip);
+  for (const item of previewItems) {
+    if (isTextInParameter(matchStr, item)) {
+      return true;
+    }
+  }
+
+  if (paramGrip && paramGrip.ownProperties) {
+    for (const [key, desc] of Object.entries(paramGrip.ownProperties)) {
+      if (matchStr(key)) {
+        return true;
+      }
+
+      if (isTextInParameter(matchStr, getDescriptorValue(desc))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /**
  * Returns true if given text is included in provided net event grip.
  */
-function isTextInNetEvent(text, regex, request) {
+function isTextInNetEvent(matchStr, request) {
   if (!request) {
     return false;
   }
 
-  const method = request.method;
-  const url = request.url;
-  return regex
-    ? regex.test(method) || regex.test(url)
-    : method.toLocaleLowerCase().includes(text) ||
-        url.toLocaleLowerCase().includes(text);
+  const { method, url } = request;
+  return matchStr(method) || matchStr(url);
 }
 
 /**
  * Returns true if given text is included in provided stack trace.
  */
-function isTextInStackTrace(text, regex, stacktrace) {
+function isTextInStackTrace(matchStr, stacktrace) {
   if (!Array.isArray(stacktrace)) {
     return false;
   }
@@ -1371,7 +1410,7 @@ function isTextInStackTrace(text, regex, stacktrace) {
   // isTextInFrame expect the properties of the frame object to be in the same
   // order they are rendered in the Frame component.
   return stacktrace.some(frame =>
-    isTextInFrame(text, regex, {
+    isTextInFrame(matchStr, {
       functionName:
         frame.functionName || l10n.getStr("stacktrace.anonymousFunction"),
       source: frame.filename,
@@ -1384,21 +1423,19 @@ function isTextInStackTrace(text, regex, stacktrace) {
 /**
  * Returns true if given text is included in `messageText` field.
  */
-function isTextInMessageText(text, regex, messageText) {
+function isTextInMessageText(matchStr, messageText) {
   if (!messageText) {
     return false;
   }
 
   if (typeof messageText === "string") {
-    return regex
-      ? regex.test(messageText)
-      : messageText.toLocaleLowerCase().includes(text);
+    return matchStr(messageText);
   }
 
-  if (messageText.type === "longString") {
-    return regex
-      ? regex.test(messageText.initial)
-      : messageText.initial.toLocaleLowerCase().includes(text);
+  const grip =
+    messageText && messageText.getGrip ? messageText.getGrip() : messageText;
+  if (grip && grip.type === "longString") {
+    return matchStr(grip.initial);
   }
 
   return true;
@@ -1407,7 +1444,7 @@ function isTextInMessageText(text, regex, messageText) {
 /**
  * Returns true if given text is included in notes.
  */
-function isTextInNotes(text, regex, notes) {
+function isTextInNotes(matchStr, notes) {
   if (!Array.isArray(notes)) {
     return false;
   }
@@ -1415,48 +1452,21 @@ function isTextInNotes(text, regex, notes) {
   return notes.some(
     note =>
       // Look for a match in location.
-      isTextInFrame(text, regex, note.frame) ||
+      isTextInFrame(matchStr, note.frame) ||
       // Look for a match in messageBody.
-      (note.messageBody &&
-        (regex
-          ? regex.test(note.messageBody)
-          : note.messageBody.toLocaleLowerCase().includes(text)))
+      (note.messageBody && matchStr(note.messageBody))
   );
 }
 
 /**
  * Returns true if given text is included in prefix.
  */
-function isTextInPrefix(text, regex, prefix) {
+function isTextInPrefix(matchStr, prefix) {
   if (!prefix) {
     return false;
   }
 
-  const str = `${prefix}: `;
-
-  return regex ? regex.test(str) : str.toLocaleLowerCase().includes(text);
-}
-
-/**
- * Get a flat array of all the grips and their properties.
- *
- * @param {Array} Grips
- * @return {Array} Flat array of the grips and their properties.
- */
-function getAllProps(grips) {
-  let result = grips.reduce((res, grip) => {
-    const previewItems = getGripPreviewItems(grip);
-    const allProps = previewItems.length > 0 ? getAllProps(previewItems) : [];
-    return [...res, grip, grip.class, ...allProps];
-  }, []);
-
-  // We are interested only in primitive props (to search for)
-  // not in objects and undefined previews.
-  result = result.filter(
-    grip => typeof grip != "object" && typeof grip != "undefined"
-  );
-
-  return [...new Set(result)];
+  return matchStr(`${prefix}: `);
 }
 
 function getDefaultFiltersCounter() {
@@ -1466,42 +1476,6 @@ function getDefaultFiltersCounter() {
   }, {});
   count.global = 0;
   return count;
-}
-
-// Make sure that message has an execution point which can be used for sorting
-// if other messages with real execution points appear later.
-function ensureExecutionPoint(state, newMessage) {
-  if (newMessage.executionPoint) {
-    return;
-  }
-
-  // Add a lastExecutionPoint property which will place this message immediately
-  // after the last visible one when sorting.
-  let point = { checkpoint: 0, progress: 0 },
-    messageCount = 1;
-  if (state.visibleMessages.length) {
-    const lastId = state.visibleMessages[state.visibleMessages.length - 1];
-    const lastMessage = state.messagesById.get(lastId);
-    if (lastMessage.executionPoint) {
-      point = lastMessage.executionPoint;
-    } else {
-      point = lastMessage.lastExecutionPoint.point;
-      messageCount = lastMessage.lastExecutionPoint.messageCount + 1;
-    }
-  }
-  newMessage.lastExecutionPoint = { point, messageCount };
-}
-
-function messageExecutionPoint(state, id) {
-  const message = state.messagesById.get(id);
-  return message.executionPoint || message.lastExecutionPoint.point;
-}
-
-function messageCountSinceLastExecutionPoint(state, id) {
-  const message = state.messagesById.get(id);
-  return message.lastExecutionPoint
-    ? message.lastExecutionPoint.messageCount
-    : 0;
 }
 
 /**
@@ -1519,50 +1493,7 @@ function maybeSortVisibleMessages(
   sortWarningGroupMessage = false,
   timeStampSort = false
 ) {
-  // When using log points while replaying, messages can be added out of order
-  // with respect to how they originally executed. Use the execution point
-  // information in the messages to sort visible messages according to how
-  // they originally executed. This isn't necessary if we haven't seen any
-  // messages with execution points, as either we aren't replaying or haven't
-  // seen any messages yet.
-  if (state.hasExecutionPoints) {
-    state.visibleMessages.sort((a, b) => {
-      const pointA = messageExecutionPoint(state, a);
-      const pointB = messageExecutionPoint(state, b);
-      if (pointPrecedes(pointB, pointA)) {
-        return true;
-      } else if (pointPrecedes(pointA, pointB)) {
-        return false;
-      }
-
-      // When messages have the same execution point, they can still be
-      // distinguished by the number of messages since the last one which did
-      // have an execution point.
-      const countA = messageCountSinceLastExecutionPoint(state, a);
-      const countB = messageCountSinceLastExecutionPoint(state, b);
-      return countA > countB;
-    });
-  }
-
   if (state.warningGroupsById.size > 0 && sortWarningGroupMessage) {
-    function getNaturalOrder(messageA, messageB) {
-      const aFirst = -1;
-      const bFirst = 1;
-
-      // It can happen that messages are emitted in the same microsecond, making their
-      // timestamp similar. In such case, we rely on which message came first through
-      // the console API service, checking their id.
-      if (
-        messageA.timeStamp === messageB.timeStamp &&
-        !Number.isNaN(parseInt(messageA.id, 10)) &&
-        !Number.isNaN(parseInt(messageB.id, 10))
-      ) {
-        return parseInt(messageA.id, 10) < parseInt(messageB.id, 10)
-          ? aFirst
-          : bFirst;
-      }
-      return messageA.timeStamp < messageB.timeStamp ? aFirst : bFirst;
-    }
     state.visibleMessages.sort((a, b) => {
       const messageA = state.messagesById.get(a);
       const messageB = state.messagesById.get(b);
@@ -1614,14 +1545,9 @@ function maybeSortVisibleMessages(
     state.visibleMessages.sort((a, b) => {
       const messageA = state.messagesById.get(a);
       const messageB = state.messagesById.get(b);
-
-      return messageA.timeStamp < messageB.timeStamp ? -1 : 1;
+      return getNaturalOrder(messageA, messageB);
     });
   }
-}
-
-function getLastMessageId(state) {
-  return Array.from(state.messagesById.keys())[state.messagesById.size - 1];
 }
 
 /**
@@ -1657,6 +1583,3 @@ function shouldGroupWarningMessages(
 }
 
 exports.messages = messages;
-
-// Export for testing purpose.
-exports.ensureExecutionPoint = ensureExecutionPoint;

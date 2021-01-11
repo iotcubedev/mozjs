@@ -20,7 +20,6 @@
 #include "mozilla/dom/MediaKeysBinding.h"
 #include "mozilla/dom/MediaKeyStatusMapBinding.h"  // For MediaKeyStatus
 #include "mozilla/dom/MediaKeySystemAccessBinding.h"
-#include "mozIGeckoMediaPluginService.h"
 #include "mozilla/DetailedPromise.h"
 #include "mozilla/WeakPtr.h"
 
@@ -51,14 +50,13 @@ typedef uint32_t PromiseId;
 // Note: its addref/release is not (and can't be) thread safe!
 class MediaKeys final : public nsIDocumentActivity,
                         public nsWrapperCache,
-                        public SupportsWeakPtr<MediaKeys>,
+                        public SupportsWeakPtr,
                         public DecoderDoctorLifeLogger<MediaKeys> {
   ~MediaKeys();
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaKeys)
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaKeys)
   // We want to listen to the owning document so we can shutdown if it goes
   // inactive.
   NS_DECL_NSIDOCUMENTACTIVITY
@@ -81,7 +79,7 @@ class MediaKeys final : public nsIDocumentActivity,
 
   // JavaScript: MediaKeys.createSession()
   already_AddRefed<MediaKeySession> CreateSession(
-      JSContext* aCx, MediaKeySessionType aSessionType, ErrorResult& aRv);
+      MediaKeySessionType aSessionType, ErrorResult& aRv);
 
   // JavaScript: MediaKeys.SetServerCertificate()
   already_AddRefed<DetailedPromise> SetServerCertificate(
@@ -124,8 +122,8 @@ class MediaKeys final : public nsIDocumentActivity,
   // list of sessions awaiting a session id.
   void ConnectPendingPromiseIdWithToken(PromiseId aId, uint32_t aToken);
 
-  // Reject promise with DOMException corresponding to aExceptionCode.
-  void RejectPromise(PromiseId aId, nsresult aExceptionCode,
+  // Reject promise with the given exception.
+  void RejectPromise(PromiseId aId, ErrorResult&& aException,
                      const nsCString& aReason);
   // Resolves promise with "undefined".
   void ResolvePromise(PromiseId aId);
@@ -149,7 +147,13 @@ class MediaKeys final : public nsIDocumentActivity,
                                    dom::MediaKeyStatus aMediaKeyStatus);
 
   template <typename T>
-  void ResolvePromiseWithResult(PromiseId aId, const T& aResult);
+  void ResolvePromiseWithResult(PromiseId aId, const T& aResult) {
+    RefPtr<DetailedPromise> promise(RetrievePromise(aId));
+    if (!promise) {
+      return;
+    }
+    promise->MaybeResolve(aResult);
+  }
 
  private:
   // Instantiate CDMProxy instance.

@@ -28,6 +28,7 @@ const { prepareMessage } = require("devtools/client/webconsole/utils/messages");
 // Test fakes.
 const {
   stubPreparedMessages,
+  stubPackets,
 } = require("devtools/client/webconsole/test/node/fixtures/stubs/index");
 const serviceContainer = require("devtools/client/webconsole/test/node/fixtures/serviceContainer");
 
@@ -75,6 +76,22 @@ describe("ConsoleAPICall component:", () => {
       expect(secondElementStyle.background).toBe(undefined);
     });
 
+    it("renders string grips with data-url background", () => {
+      const message = stubPreparedMessages.get("console.log(%cfoobar)");
+
+      const dataURL =
+        "url(data:image/png,base64,iVBORw0KGgoAAAANSUhEUgAAAA0AAAANCAYAAABy6+R8AAAAAXNSR0IArs4c6QAAAaZJREFUKBV9UjFLQlEUPueaaUUEDZESNTYI9RfK5oimIGxJcy4IodWxpeZKiHBwc6ghIiIaWqNB/ANiBSU6vHfvU+89nSPpINKB996993zfPef7zkP4CyLCzl02Y7VNg4aE8y2QoYrTVJg+ublCROpjURb0ko11mt2i05BkEDjt+CGgvzUYehrvqtTUefFD8KpXoemK1ich1MDALppIPITROARqlwzWJKdbtihYIWH7dv/AenRBAdYmOriKmUJDEv1oHaVnOy39bn27wJjsfLl0qawHaWkFNOWGCUKcOSs0uM0c6wPyWC+H4k2Ce+b+w89yMDKC0LPzWadgORTJxh8YM5ITIdUmw4b5jt9MssaJrdD9DtZGMvjQ+zEbvUoBVgWj2K2CWGsDeyqih4n1zeyk1S4vlcDCteRRbGwe7z2yO0lOiOU5YA3SklTgYee5/WVw1IVoZGnxrVTv+e4dpmIyB74xSayPBQ8GS5qvZgIRjPFfUQlHQ+s9kpSUil9bOxl2U0aQIO0Mf6tA6hoi4Xsw7QfGsHv4OiAJ8b/4XNmeC9pYRgTvF+HgISP3T9PvAAAAAElFTkSuQmCC)";
+
+      message.userProvidedStyles[0] = `background-image: ${dataURL}`;
+
+      const wrapper = render(ConsoleApiCall({ message, serviceContainer }));
+      const elements = wrapper.find(".objectBox-string");
+      const firstElementStyle = elements.eq(0).prop("style");
+
+      // data-url background applied
+      expect(firstElementStyle["background-image"]).toBe(dataURL);
+    });
+
     it("renders custom styled logs with empty style as expected", () => {
       const message = stubPreparedMessages.get(
         'console.log("%cHello%c|%cWorld")'
@@ -98,19 +115,15 @@ describe("ConsoleAPICall component:", () => {
     });
 
     it("renders prefixed messages", () => {
+      const packet = stubPackets.get("console.log('foobar', 'test')");
       const stub = {
-        level: "debug",
-        filename: "resource:///modules/CustomizableUI.jsm",
-        lineNumber: 181,
-        functionName: "initialize",
-        timeStamp: 1519311532912,
-        arguments: ["Initializing"],
-        prefix: "MyNicePrefix",
-        workerType: "none",
-        styles: [],
-        category: "webdev",
-        _type: "ConsoleAPI",
+        ...packet,
+        message: {
+          ...packet.message,
+          prefix: "MyNicePrefix",
+        },
       };
+
       const wrapper = render(
         ConsoleApiCall({
           message: prepareMessage(stub, { getNextId: () => "p" }),
@@ -121,13 +134,13 @@ describe("ConsoleAPICall component:", () => {
       expect(prefix.text()).toBe("MyNicePrefix: ");
 
       expect(wrapper.find(".message-body").text()).toBe(
-        "MyNicePrefix: Initializing"
+        "MyNicePrefix: foobar test"
       );
 
       // There should be the location
       const locationLink = wrapper.find(`.message-location`);
       expect(locationLink.length).toBe(1);
-      expect(locationLink.text()).toBe("CustomizableUI.jsm:181");
+      expect(locationLink.text()).toBe("test-console-api.html:1:35");
     });
 
     it("renders repeat node", () => {

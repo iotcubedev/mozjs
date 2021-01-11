@@ -7,14 +7,10 @@
 #include "nsAndroidProtocolHandler.h"
 #include "nsCOMPtr.h"
 #include "nsIChannel.h"
-#include "nsIIOService.h"
-#include "nsIStandardURL.h"
-#include "nsIURL.h"
-#include "nsIURIMutator.h"
 #include "android/log.h"
 #include "nsBaseChannel.h"
 #include "AndroidBridge.h"
-#include "GeneratedJNIWrappers.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
 
 using namespace mozilla;
 

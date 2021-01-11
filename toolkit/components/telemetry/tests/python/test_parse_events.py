@@ -6,6 +6,7 @@ import yaml
 import mozunit
 import sys
 import unittest
+import os
 from os import path
 
 TELEMETRY_ROOT_PATH = path.abspath(path.join(path.dirname(__file__), path.pardir, path.pardir))
@@ -27,6 +28,15 @@ def load_event(event):
 
 
 class TestParser(unittest.TestCase):
+    def setUp(self):
+        def mockexit(x):
+            raise SystemExit(x)
+        self.oldexit = os._exit
+        os._exit = mockexit
+
+    def tearDown(self):
+        os._exit = self.oldexit
+
     def test_valid_event_defaults(self):
         SAMPLE_EVENT = """
 objects: ["object1", "object2"]
@@ -84,7 +94,7 @@ extra_keys:
   key1: test1
   key2: test2
 products:
-    - geckoview
+    - fennec
 operating_systems:
     - windows
 """
@@ -99,7 +109,7 @@ operating_systems:
         self.assertEqual(evt.methods, ["method1", "method2"])
         self.assertEqual(evt.objects, ["object1", "object2"])
         self.assertEqual(evt.record_in_processes, ["content"])
-        self.assertEqual(evt.products, ["geckoview"])
+        self.assertEqual(evt.products, ["fennec"])
         self.assertEqual(evt.operating_systems, ["windows"])
         self.assertEqual(sorted(evt.extra_keys), ["key1", "key2"])
 
@@ -135,6 +145,25 @@ expiry_version: never
                                                                      "test_event",
                                                                      event,
                                                                      strict_type_checks=True))
+
+    def test_geckoview_streaming_product(self):
+        SAMPLE_EVENT = """
+methods: ["method1", "method2"]
+objects: ["object1", "object2"]
+bug_numbers: [12345]
+notification_emails: ["test01@mozilla.com", "test02@mozilla.com"]
+record_in_processes: ["content"]
+description: This is a test entry for Telemetry.
+products: ["geckoview_streaming"]
+expiry_version: never
+"""
+        event = load_event(SAMPLE_EVENT)
+        parse_events.EventData("CATEGORY",
+                               "test_event",
+                               event,
+                               strict_type_checks=True)
+
+        self.assertRaises(SystemExit, ParserError.exit_func)
 
 
 if __name__ == '__main__':

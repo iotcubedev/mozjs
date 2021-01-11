@@ -4,7 +4,6 @@ py2:
     include: ['.']
     exclude:
         - build
-        - client.py
         - dom
         - editor
         - gfx
@@ -19,6 +18,8 @@ py2:
         - security
         - servo
         - taskcluster/docker/funsize-update-generator
+        - taskcluster/docker/visual-metrics
+        - testing/condprofile
         - testing/gtest
         - testing/mochitest
         - testing/mozharness
@@ -26,10 +27,19 @@ py2:
         - testing/tools
         - testing/web-platform
         - toolkit
-        - tools/profiler
-        - tools/rb
         - tools/update-packaging
         - xpcom
+
+        # These paths are intentionally excluded (Python 3 only)
+        - config/printconfigsetting.py
+        - python/mozbuild/mozbuild/html_build_viewer.py
+        - python/mozlint
+        - python/mozperftest
+        - tools/crashreporter/system-symbols/win/symsrv-fetch.py
+        - tools/github-sync
+        - tools/lint
+        - tools/tryselect
+        - testing/performance
     extensions: ['py']
     support-files:
         - 'tools/lint/python/*compat*'

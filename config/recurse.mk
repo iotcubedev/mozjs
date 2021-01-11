@@ -38,8 +38,6 @@ $(RUNNABLE_TIERS)::
 binaries::
 	+$(MAKE) recurse_compile
 
-# Carefully avoid $(eval) type of rule generation, which makes pymake slower
-# than necessary.
 # Get current tier and corresponding subtiers from the data in root.mk.
 CURRENT_TIER := $(filter $(foreach tier,$(RUNNABLE_TIERS) $(non_default_tiers),recurse_$(tier) $(tier)-deps),$(MAKECMDGOALS))
 ifneq (,$(filter-out 0 1,$(words $(CURRENT_TIER))))
@@ -69,8 +67,8 @@ CURRENT_DIRS := $($(CURRENT_TIER)_dirs)
 # Need a list of compile targets because we can't use pattern rules:
 # https://savannah.gnu.org/bugs/index.php?42833
 # Only recurse the paths starting with RECURSE_BASE_DIR when provided.
-.PHONY: $(compile_targets) $(syms_targets)
-$(compile_targets) $(syms_targets):
+.PHONY: $(pre_compile_targets) $(compile_targets) $(syms_targets)
+$(pre_compile_targets) $(compile_targets) $(syms_targets):
 	$(if $(filter $(RECURSE_BASE_DIR)%,$@),$(call RECURSE,$(@F),$(@D)))
 
 $(syms_targets): %/syms: %/target
@@ -162,31 +160,47 @@ recurse:
 	$(LOOP_OVER_DIRS)
 
 ifeq (.,$(DEPTH))
-# Interdependencies for parallel export.
-js/xpconnect/src/export: dom/bindings/export xpcom/xpidl/export
-accessible/xpcom/export: xpcom/xpidl/export
-
 # The Android SDK bindings needs to build the Java generator code
 # source code in order to write the SDK bindings.
 widget/android/bindings/export: mobile/android/base/export
 
 # The widget JNI wrapper generator code needs to build the GeckoView
-# and Fennec source code in order to find JNI wrapper annotations.
-widget/android/fennec/export: mobile/android/base/export
+# source code in order to find JNI wrapper annotations.
 widget/android/export: mobile/android/base/export
 
-# .xpt generation needs the xpidl lex/yacc files
-xpcom/xpidl/export: xpcom/idl-parser/xpidl/export
+# android_apks is not built on artifact builds without this dependency.
+mobile/android/base/export: mobile/android/base/android_apks
 
 # CSS2Properties.webidl needs ServoCSSPropList.py from layout/style
-dom/bindings/export: layout/style/export
+dom/bindings/export: layout/style/ServoCSSPropList.py
 
 # Various telemetry histogram files need ServoCSSPropList.py from layout/style
-toolkit/components/telemetry/export: layout/style/export
+toolkit/components/telemetry/export: layout/style/ServoCSSPropList.py
+
+# The update agent needs to link to the updatecommon library, but the build system does not
+# currently have a good way of expressing this dependency.
+toolkit/components/updateagent/target: toolkit/mozapps/update/common/target
+
+ifeq ($(TARGET_ENDIANNESS),big)
+config/external/icu/data/target-objects: config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub
+config/external/icu/data/$(MDDEPDIR)/icudt$(MOZ_ICU_VERSION)b.dat.stub: config/external/icu/icupkg/host
+endif
 
 ifdef ENABLE_CLANG_PLUGIN
-$(filter-out config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets)): build/clang-plugin/host build/clang-plugin/tests/target-objects
+# Only target rules use the clang plugin.
+$(filter %/target %/target-objects,$(filter-out config/export config/host build/unix/stdc++compat/% build/clang-plugin/%,$(compile_targets))): build/clang-plugin/host build/clang-plugin/tests/target-objects
 build/clang-plugin/tests/target-objects: build/clang-plugin/host
+# clang-plugin tests require js-confdefs.h on js standalone builds and mozilla-config.h on
+# other builds, because they are -include'd.
+ifdef JS_STANDALONE
+# The js/src/export target only exists when CURRENT_TIER is export. If we're in a later tier,
+# we can assume js/src/export has happened anyways.
+ifeq ($(CURRENT_TIER),export)
+build/clang-plugin/tests/target-objects: js/src/export
+endif
+else
+build/clang-plugin/tests/target-objects: mozilla-config.h
+endif
 endif
 
 # Interdependencies that moz.build world don't know about yet for compilation.
@@ -195,18 +209,34 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk)
 toolkit/library/target: widget/gtk/mozgtk/gtk3/target
 endif
 
+ifndef MOZ_FOLD_LIBS
+ifndef MOZ_SYSTEM_NSS
+netwerk/test/http3server/target: security/nss/lib/nss/nss_nss3/target security/nss/lib/ssl/ssl_ssl3/target
+endif
+ifndef MOZ_SYSTEM_NSPR
+netwerk/test/http3server/target: config/external/nspr/pr/target
+endif
+else
+ifndef MOZ_SYSTEM_NSS
+netwerk/test/http3server/target: security/target
+endif
+endif
+
 # Most things are built during compile (target/host), but some things happen during export
 # Those need to depend on config/export for system wrappers.
 $(addprefix build/unix/stdc++compat/,target host) build/clang-plugin/host: config/export
 
-# Rust targets need $topobjdir/.cargo/config to be preprocessed first. Ideally,
-# we'd only set it as a dependency of the rust targets, but unfortunately, that
-# pushes Make to execute them much later than we'd like them to be when the file
-# doesn't exist prior to Make running. So we also set it as a dependency of
-# export, which ensures it exists before recursing the rust targets, tricking
-# Make into keeping them early.
+# Rust targets, and export targets that run cbindgen need
+# $topobjdir/.cargo/config to be preprocessed first. Ideally, we'd only set it
+# as a dependency of the rust targets, but unfortunately, that pushes Make to
+# execute them much later than we'd like them to be when the file doesn't exist
+# prior to Make running. So we also set it as a dependency of pre-export, which
+# ensures it exists before recursing the rust targets and the export targets
+# that run cbindgen, tricking Make into keeping them early.
 $(rust_targets): $(DEPTH)/.cargo/config
-export:: $(DEPTH)/.cargo/config
+ifndef TEST_MOZBUILD
+pre-export:: $(DEPTH)/.cargo/config
+endif
 
 # When building gtest as part of the build (LINK_GTEST_DURING_COMPILE),
 # force the build system to get to it first, so that it can be linked

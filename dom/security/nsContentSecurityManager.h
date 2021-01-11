@@ -23,8 +23,6 @@ class nsIStreamListener;
     }                                                \
   }
 
-typedef mozilla::Pair<nsCString, mozilla::Maybe<nsString>> FilenameType;
-
 class nsContentSecurityManager : public nsIContentSecurityManager,
                                  public nsIChannelEventSink {
  public:
@@ -32,24 +30,24 @@ class nsContentSecurityManager : public nsIContentSecurityManager,
   NS_DECL_NSICONTENTSECURITYMANAGER
   NS_DECL_NSICHANNELEVENTSINK
 
-  nsContentSecurityManager() {}
+  nsContentSecurityManager() = default;
 
   static nsresult doContentSecurityCheck(
       nsIChannel* aChannel, nsCOMPtr<nsIStreamListener>& aInAndOutListener);
 
   static bool AllowTopLevelNavigationToDataURI(nsIChannel* aChannel);
   static bool AllowInsecureRedirectToDataURI(nsIChannel* aNewChannel);
-
-  static FilenameType FilenameToEvalType(const nsString& fileName);
-  static void AssertEvalNotRestricted(JSContext* cx,
-                                      nsIPrincipal* aSubjectPrincipal,
-                                      const nsAString& aScript);
+  static void MeasureUnexpectedPrivilegedLoads(
+      nsIURI* aFinalURI, nsContentPolicyType aContentPolicyType,
+      const nsACString& aRemoteType);
 
  private:
   static nsresult CheckChannel(nsIChannel* aChannel);
   static nsresult CheckFTPSubresourceLoad(nsIChannel* aChannel);
+  static nsresult CheckAllowLoadInSystemPrivilegedContext(nsIChannel* aChannel);
+  static nsresult CheckChannelHasProtocolSecurityFlag(nsIChannel* aChannel);
 
-  virtual ~nsContentSecurityManager() {}
+  virtual ~nsContentSecurityManager() = default;
 };
 
 #endif /* nsContentSecurityManager_h___ */

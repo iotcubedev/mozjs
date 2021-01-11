@@ -8,8 +8,6 @@ const TEST_URL =
   'width="200" height="200"></iframe>';
 
 addRDMTask(TEST_URL, async function({ ui, manager }) {
-  await pushPref("devtools.responsive.metaViewport.enabled", true);
-
   ok(ui, "An instance of the RDM should be attached to the tab.");
   await setViewportSizeAndAwaitReflow(ui, manager, 110, 500);
 
@@ -18,7 +16,7 @@ addRDMTask(TEST_URL, async function({ ui, manager }) {
 
   info("Checking initial width/height with meta viewport on");
   await setTouchAndMetaViewportSupport(ui, true);
-  await doInitialChecks(ui, 440);
+  await doInitialChecks(ui, 980);
   await setTouchAndMetaViewportSupport(ui, false);
 
   info("Changing the RDM size");
@@ -142,7 +140,7 @@ async function checkSubframeProps(ui) {
 }
 
 function grabContentInfo(ui) {
-  return ContentTask.spawn(ui.getViewportBrowser(), {}, async function() {
+  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function() {
     return {
       screen: {
         width: content.screen.width,
@@ -157,7 +155,7 @@ function grabContentInfo(ui) {
 }
 
 function grabContentSubframeInfo(ui) {
-  return ContentTask.spawn(ui.getViewportBrowser(), {}, async function() {
+  return SpecialPowers.spawn(ui.getViewportBrowser(), [], async function() {
     const subframe = content.document.getElementById("subframe");
     const win = subframe.contentWindow;
     return {

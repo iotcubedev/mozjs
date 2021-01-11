@@ -3,44 +3,55 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 const { LocalizationHelper } = require("devtools/shared/l10n");
+
 loader.lazyRequireGetter(
   this,
   "openContentLink",
   "devtools/client/shared/link",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "features",
+  "devtools/client/debugger/src/utils/prefs",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "registerStoreObserver",
+  "devtools/client/shared/redux/subscriber",
+  true
+);
 
 const DBG_STRINGS_URI = "devtools/client/locales/debugger.properties";
 const L10N = new LocalizationHelper(DBG_STRINGS_URI);
-
-function DebuggerPanel(iframeWindow, toolbox) {
-  this.panelWin = iframeWindow;
-  this.panelWin.L10N = L10N;
-  this.toolbox = toolbox;
-}
 
 async function getNodeFront(gripOrFront, toolbox) {
   // Given a NodeFront
   if ("actorID" in gripOrFront) {
     return new Promise(resolve => resolve(gripOrFront));
   }
-  // TODO: Bug1574506 - Use the contextual WalkerFront for gripToNodeFront.
-  // Given a grip
-  const walkerFront = (await toolbox.target.getFront("inspector")).walker;
-  return walkerFront.gripToNodeFront(gripOrFront);
+
+  const inspectorFront = await toolbox.target.getFront("inspector");
+  return inspectorFront.getNodeFrontFromNodeGrip(gripOrFront);
 }
 
-DebuggerPanel.prototype = {
-  open: async function() {
+class DebuggerPanel {
+  constructor(iframeWindow, toolbox) {
+    this.panelWin = iframeWindow;
+    this.panelWin.L10N = L10N;
+    this.toolbox = toolbox;
+  }
+
+  async open() {
     const {
       actions,
       store,
       selectors,
       client,
     } = await this.panelWin.Debugger.bootstrap({
-      threadFront: this.toolbox.threadFront,
-      tabTarget: this.toolbox.target,
-      debuggerClient: this.toolbox.target.client,
+      targetList: this.toolbox.targetList,
+      devToolsClient: this.toolbox.target.client,
       workers: {
         sourceMaps: this.toolbox.sourceMapService,
         evaluationsParser: this.toolbox.parserService,
@@ -63,8 +74,31 @@ DebuggerPanel.prototype = {
       this.toolbox.toggleDragging
     );
 
+    registerStoreObserver(this._store, this._onDebuggerStateChange.bind(this));
+
+    const resourceWatcher = this.toolbox.resourceWatcher;
+    await resourceWatcher.watchResources(
+      [resourceWatcher.TYPES.ERROR_MESSAGE],
+      { onAvailable: actions.addException }
+    );
+
     return this;
-  },
+  }
+
+  _onDebuggerStateChange(state, oldState) {
+    const { getCurrentThread } = this._selectors;
+
+    const currentThreadActorID = getCurrentThread(state);
+    if (
+      currentThreadActorID &&
+      currentThreadActorID !== getCurrentThread(oldState)
+    ) {
+      const threadFront = this.toolbox.target.client.getFrontByID(
+        currentThreadActorID
+      );
+      this.toolbox.selectTarget(threadFront?.targetFront.actorID);
+    }
+  }
 
   getVarsForTests() {
     return {
@@ -73,26 +107,30 @@ DebuggerPanel.prototype = {
       actions: this._actions,
       client: this._client,
     };
-  },
+  }
 
-  _getState: function() {
+  _getState() {
     return this._store.getState();
-  },
+  }
 
-  getToolboxStore: function() {
+  getToolboxStore() {
     return this.toolbox.store;
-  },
+  }
 
-  openLink: function(url) {
+  openLink(url) {
     openContentLink(url);
-  },
+  }
 
-  openConsoleAndEvaluate: async function(input) {
+  async openConsoleAndEvaluate(input) {
     const { hud } = await this.toolbox.selectTool("webconsole");
     hud.ui.wrapper.dispatchEvaluateExpression(input);
-  },
+  }
 
-  openElementInInspector: async function(gripOrFront) {
+  async openInspector() {
+    this.toolbox.selectTool("inspector");
+  }
+
+  async openElementInInspector(gripOrFront) {
     const onSelectInspector = this.toolbox.selectTool("inspector");
     const onGripNodeToFront = getNodeFront(gripOrFront, this.toolbox);
 
@@ -107,24 +145,28 @@ DebuggerPanel.prototype = {
     });
 
     return Promise.all([onNodeFrontSet, onInspectorUpdated]);
-  },
+  }
 
-  highlightDomElement: async function(gripOrFront) {
-    const nodeFront = await getNodeFront(gripOrFront, this.toolbox);
-    nodeFront.highlighterFront.highlight(nodeFront);
-  },
-
-  unHighlightDomElement: async function(gripOrFront) {
-    try {
-      const nodeFront = await getNodeFront(gripOrFront, this.toolbox);
-      nodeFront.highlighterFront.unhighlight();
-    } catch (e) {
-      // This call might fail if called asynchrously after the toolbox is finished
-      // closing.
+  highlightDomElement(gripOrFront) {
+    if (!this._highlight) {
+      const { highlight, unhighlight } = this.toolbox.getHighlighter();
+      this._highlight = highlight;
+      this._unhighlight = unhighlight;
     }
-  },
 
-  getFrames: function() {
+    return this._highlight(gripOrFront);
+  }
+
+  unHighlightDomElement() {
+    if (!this._unhighlight) {
+      return;
+    }
+
+    const forceUnHighlightInTest = true;
+    return this._unhighlight(forceUnHighlightInTest);
+  }
+
+  getFrames() {
     const thread = this._selectors.getCurrentThread(this._getState());
     const frames = this._selectors.getFrames(this._getState(), thread);
 
@@ -148,21 +190,61 @@ DebuggerPanel.prototype = {
     const target = this._client.lookupTarget(thread);
 
     return { frames, selected, target };
-  },
+  }
 
   getMappedExpression(expression) {
     return this._actions.getMappedExpression(expression);
-  },
+  }
 
   isPaused() {
     const thread = this._selectors.getCurrentThread(this._getState());
     return this._selectors.getIsPaused(this._getState(), thread);
-  },
+  }
 
   selectSourceURL(url, line, column) {
     const cx = this._selectors.getContext(this._getState());
     return this._actions.selectSourceURL(cx, url, { line, column });
-  },
+  }
+
+  async selectWorker(workerTargetFront) {
+    const threadActorID = workerTargetFront.threadFront?.actorID;
+
+    const isThreadAvailable = this._selectors
+      .getThreads(this._getState())
+      .find(x => x.actor === threadActorID);
+
+    if (!features.windowlessServiceWorkers) {
+      console.error(
+        "Selecting a worker needs the pref debugger.features.windowless-service-workers set to true"
+      );
+      return;
+    }
+
+    if (!isThreadAvailable) {
+      console.error(`Worker ${threadActorID} is not available for debugging`);
+      return;
+    }
+
+    // select worker's thread
+    this.selectThread(threadActorID);
+
+    // select worker's source
+    const source = this.getSourceByURL(workerTargetFront._url);
+    await this.selectSource(source.id, 1, 1);
+  }
+
+  selectThread(threadActorID) {
+    const cx = this._selectors.getContext(this._getState());
+    this._actions.selectThread(cx, threadActorID);
+  }
+
+  previewPausedLocation(location) {
+    return this._actions.previewPausedLocation(location);
+  }
+
+  clearPreviewPausedLocation() {
+    return this._actions.clearPreviewPausedLocation();
+  }
 
   async selectSource(sourceId, line, column) {
     const cx = this._selectors.getContext(this._getState());
@@ -172,24 +254,28 @@ DebuggerPanel.prototype = {
     if (this._selectors.hasLogpoint(this._getState(), location)) {
       this._actions.openConditionalPanel(location, true);
     }
-  },
+  }
 
-  canLoadSource(sourceId) {
-    return this._selectors.canLoadSource(this._getState(), sourceId);
-  },
+  getSourceActorsForSource(sourceId) {
+    return this._selectors.getSourceActorsForSource(this._getState(), sourceId);
+  }
 
   getSourceByActorId(sourceId) {
     return this._selectors.getSourceByActorId(this._getState(), sourceId);
-  },
+  }
 
   getSourceByURL(sourceURL) {
     return this._selectors.getSourceByURL(this._getState(), sourceURL);
-  },
+  }
 
-  destroy: function() {
+  getSource(sourceId) {
+    return this._selectors.getSource(this._getState(), sourceId);
+  }
+
+  destroy() {
     this.panelWin.Debugger.destroy();
     this.emit("destroyed");
-  },
-};
+  }
+}
 
 exports.DebuggerPanel = DebuggerPanel;

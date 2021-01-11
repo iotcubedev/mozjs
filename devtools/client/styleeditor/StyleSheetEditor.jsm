@@ -4,7 +4,7 @@
 
 "use strict";
 
-this.EXPORTED_SYMBOLS = ["StyleSheetEditor"];
+const EXPORTED_SYMBOLS = ["StyleSheetEditor"];
 
 const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
 const Editor = require("devtools/client/shared/sourceeditor/editor");
@@ -73,8 +73,19 @@ const EMIT_MEDIA_RULES_THROTTLING = 500;
  * @param {CustomHighlighterFront} highlighter
  *        Optional highlighter front for the SelectorHighligher used to
  *        highlight selectors
+ * @param {Number} styleSheetFriendlyIndex
+ *        Optional Integer representing the index of the current stylesheet
+ *        among all stylesheets of its type (inline or user-created)
  */
-function StyleSheetEditor(styleSheet, win, file, isNew, walker, highlighter) {
+function StyleSheetEditor(
+  styleSheet,
+  win,
+  file,
+  isNew,
+  walker,
+  highlighter,
+  styleSheetFriendlyIndex
+) {
   EventEmitter.decorate(this);
 
   this.styleSheet = styleSheet;
@@ -84,6 +95,7 @@ function StyleSheetEditor(styleSheet, win, file, isNew, walker, highlighter) {
   this._isNew = isNew;
   this.walker = walker;
   this.highlighter = highlighter;
+  this.styleSheetFriendlyIndex = styleSheetFriendlyIndex;
 
   // True when we've called update() on the style sheet.
   this._isUpdating = false;
@@ -139,7 +151,6 @@ function StyleSheetEditor(styleSheet, win, file, isNew, walker, highlighter) {
   this.savedFile = file;
   this.linkCSSFile();
 }
-this.StyleSheetEditor = StyleSheetEditor;
 
 StyleSheetEditor.prototype = {
   /**
@@ -189,12 +200,12 @@ StyleSheetEditor.prototype = {
     }
 
     if (this._isNew) {
-      const index = this.styleSheet.styleSheetIndex + 1;
+      const index = this.styleSheetFriendlyIndex + 1 || 0;
       return getString("newStyleSheet", index);
     }
 
     if (!this.styleSheet.href) {
-      const index = this.styleSheet.styleSheetIndex + 1;
+      const index = this.styleSheetFriendlyIndex + 1 || 0;
       return getString("inlineStyleSheet", index);
     }
 
@@ -493,8 +504,16 @@ StyleSheetEditor.prototype = {
         this._state.selection.end
       );
 
-      if (this.highlighter && this.walker) {
-        sourceEditor.container.addEventListener("mousemove", this._onMouseMove);
+      if (
+        this.highlighter &&
+        this.walker &&
+        sourceEditor.container &&
+        sourceEditor.container.contentWindow
+      ) {
+        sourceEditor.container.contentWindow.addEventListener(
+          "mousemove",
+          this._onMouseMove
+        );
       }
 
       // Add the commands controller for the source-editor.
@@ -836,8 +855,13 @@ StyleSheetEditor.prototype = {
       this._sourceEditor.off("dirty-change", this._onPropertyChange);
       this._sourceEditor.off("saveRequested", this.saveToFile);
       this._sourceEditor.off("change", this.updateStyleSheet);
-      if (this.highlighter && this.walker && this._sourceEditor.container) {
-        this._sourceEditor.container.removeEventListener(
+      if (
+        this.highlighter &&
+        this.walker &&
+        this._sourceEditor.container &&
+        this._sourceEditor.container.contentWindow
+      ) {
+        this._sourceEditor.container.contentWindow.removeEventListener(
           "mousemove",
           this._onMouseMove
         );

@@ -11,8 +11,6 @@
 #include "MediaInfo.h"
 #include "TimeUnits.h"
 #include "VideoLimits.h"
-#include "mozilla/gfx/Point.h"  // for gfx::IntSize
-#include "mozilla/gfx/Types.h"
 #include "mozilla/AbstractThread.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
@@ -20,13 +18,14 @@
 #include "mozilla/ReentrantMonitor.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SharedThreadPool.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
+#include "mozilla/gfx/Point.h"  // for gfx::IntSize
+#include "mozilla/gfx/Types.h"
 #include "nsCOMPtr.h"
 #include "nsINamed.h"
 #include "nsIThread.h"
 #include "nsITimer.h"
-
 #include "nsThreadUtils.h"
 #include "prtime.h"
 
@@ -92,7 +91,7 @@ class ShutdownThreadEvent : public Runnable {
  public:
   explicit ShutdownThreadEvent(nsIThread* aThread)
       : Runnable("ShutdownThreadEvent"), mThread(aThread) {}
-  ~ShutdownThreadEvent() {}
+  ~ShutdownThreadEvent() = default;
   NS_IMETHOD Run() override {
     mThread->Shutdown();
     mThread = nullptr;
@@ -182,12 +181,12 @@ class AutoSetOnScopeExit {
 };
 
 enum class MediaThreadType {
-  PLAYBACK,          // MediaDecoderStateMachine and MediaFormatReader
+  CONTROLLER,  // MediaFormatReader, RemoteDecoderManager, MediaDecodeTask and
+               // others
   PLATFORM_DECODER,  // MediaDataDecoder
   PLATFORM_ENCODER,  // MediaDataEncoder
-  MSG_CONTROL,
   WEBRTC_DECODER,
-  MDSM,
+  MDSM,  // MediaDecoderStateMachine
 };
 // Returns the thread pool that is shared amongst all decoder state machines
 // for decoding streams.
@@ -292,7 +291,7 @@ RefPtr<GenericPromise> InvokeUntil(Work aWork, Condition aCondition) {
   };
 
   Helper::Iteration(p, aWork, aCondition);
-  return p.forget();
+  return p;
 }
 
 // Simple timer to run a runnable after a timeout.
@@ -311,7 +310,7 @@ class SimpleTimer : public nsITimerCallback, public nsINamed {
   NS_IMETHOD Notify(nsITimer* timer) override;
 
  private:
-  virtual ~SimpleTimer() {}
+  virtual ~SimpleTimer() = default;
   nsresult Init(nsIRunnable* aTask, uint32_t aTimeoutMs,
                 nsIEventTarget* aTarget);
 
@@ -543,7 +542,7 @@ static bool StringListContains(const ListString& aList,
 
 inline void AppendStringIfNotEmpty(nsACString& aDest, nsACString&& aSrc) {
   if (!aSrc.IsEmpty()) {
-    aDest.Append(NS_LITERAL_CSTRING("\n"));
+    aDest.Append("\n"_ns);
     aDest.Append(aSrc);
   }
 }

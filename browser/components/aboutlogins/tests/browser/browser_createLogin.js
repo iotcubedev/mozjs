@@ -1,6 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
+ChromeUtils.import("resource://testing-common/OSKeyStoreTestUtils.jsm", this);
+
 add_task(async function setup() {
   let aboutLoginsTab = await BrowserTestUtils.openNewForegroundTab({
     gBrowser,
@@ -14,7 +16,7 @@ add_task(async function setup() {
 
 add_task(async function test_create_login() {
   let browser = gBrowser.selectedBrowser;
-  await ContentTask.spawn(browser, null, async () => {
+  await SpecialPowers.spawn(browser, [], async () => {
     let loginList = Cu.waiveXrays(content.document.querySelector("login-list"));
     ok(!loginList._selectedGuid, "should not be a selected guid by default");
     ok(
@@ -51,9 +53,9 @@ add_task(async function test_create_login() {
       (_, data) => data == "addLogin"
     );
 
-    await ContentTask.spawn(
+    await SpecialPowers.spawn(
       browser,
-      [originTuple, i],
+      [[originTuple, i]],
       async ([aOriginTuple, index]) => {
         let loginList = Cu.waiveXrays(
           content.document.querySelector("login-list")
@@ -130,7 +132,12 @@ add_task(async function test_create_login() {
       "passwordmgr-storage-changed",
       (_, data) => data == "modifyLogin"
     );
-    await ContentTask.spawn(browser, originTuple, async aOriginTuple => {
+    await SpecialPowers.spawn(browser, [originTuple], async aOriginTuple => {
+      await ContentTaskUtils.waitForCondition(() => {
+        return !content.document.documentElement.classList.contains(
+          "no-logins"
+        );
+      }, "waiting for no-logins view to exit");
       ok(
         !content.document.documentElement.classList.contains("no-logins"),
         "Should no longer be in no logins view"
@@ -187,19 +194,47 @@ add_task(async function test_create_login() {
       let usernameInput = loginItem.shadowRoot.querySelector(
         "input[name='username']"
       );
+      await ContentTaskUtils.waitForCondition(
+        () => usernameInput.placeholder,
+        "waiting for placeholder to get set"
+      );
       ok(
         usernameInput.placeholder,
         "there should be a placeholder on the username input when not in edit mode"
       );
+    });
 
+    if (!OSKeyStoreTestUtils.canTestOSKeyStoreLogin()) {
+      continue;
+    }
+
+    let reauthObserved = forceAuthTimeoutAndWaitForOSKeyStoreLogin({
+      loginResult: true,
+    });
+    await SpecialPowers.spawn(browser, [originTuple], async aOriginTuple => {
+      let loginItem = Cu.waiveXrays(
+        content.document.querySelector("login-item")
+      );
       let editButton = loginItem.shadowRoot.querySelector(".edit-button");
+      info("clicking on edit button");
       editButton.click();
+    });
+    info("waiting for oskeystore auth");
+    await reauthObserved;
 
+    await SpecialPowers.spawn(browser, [originTuple], async aOriginTuple => {
+      let loginItem = Cu.waiveXrays(
+        content.document.querySelector("login-item")
+      );
       await ContentTaskUtils.waitForCondition(
         () => loginItem.dataset.editing,
         "waiting for 'edit' mode"
       );
+      info("in edit mode");
 
+      let usernameInput = loginItem.shadowRoot.querySelector(
+        "input[name='username']"
+      );
       let passwordInput = loginItem.shadowRoot.querySelector(
         "input[name='password']"
       );
@@ -209,6 +244,7 @@ add_task(async function test_create_login() {
       let saveChangesButton = loginItem.shadowRoot.querySelector(
         ".save-changes-button"
       );
+      info("clicking save changes button");
       saveChangesButton.click();
     });
 
@@ -216,13 +252,22 @@ add_task(async function test_create_login() {
     await storageChangedPromised;
     info("login modified in storage");
 
-    await ContentTask.spawn(browser, originTuple, async aOriginTuple => {
+    await SpecialPowers.spawn(browser, [originTuple], async aOriginTuple => {
       let loginList = Cu.waiveXrays(
         content.document.querySelector("login-list")
       );
-      let login = Object.values(loginList._logins).find(
-        obj => obj.login.origin == aOriginTuple[1]
-      ).login;
+      let login;
+      await ContentTaskUtils.waitForCondition(() => {
+        login = Object.values(loginList._logins).find(
+          obj => obj.login.origin == aOriginTuple[1]
+        ).login;
+        info(`${login.origin} / ${login.username} / ${login.password}`);
+        return (
+          login.origin == aOriginTuple[1] &&
+          login.username == "testuser2" &&
+          login.password == "testpass2"
+        );
+      }, "waiting for the login to get updated");
       is(
         login.origin,
         aOriginTuple[1],
@@ -241,19 +286,25 @@ add_task(async function test_create_login() {
     });
   }
 
-  await ContentTask.spawn(browser, testCases.length, async testCasesLength => {
-    let loginList = Cu.waiveXrays(content.document.querySelector("login-list"));
-    is(
-      loginList._loginGuidsSortedOrder.length,
-      5,
-      "login list should have a login per testcase"
-    );
-  });
+  await SpecialPowers.spawn(
+    browser,
+    [testCases.length],
+    async testCasesLength => {
+      let loginList = Cu.waiveXrays(
+        content.document.querySelector("login-list")
+      );
+      is(
+        loginList._loginGuidsSortedOrder.length,
+        5,
+        "login list should have a login per testcase"
+      );
+    }
+  );
 });
 
 add_task(async function test_cancel_create_login() {
   let browser = gBrowser.selectedBrowser;
-  await ContentTask.spawn(browser, null, async () => {
+  await SpecialPowers.spawn(browser, [], async () => {
     let loginList = Cu.waiveXrays(content.document.querySelector("login-list"));
     ok(
       loginList._selectedGuid,
@@ -296,7 +347,7 @@ add_task(async function test_cancel_create_login() {
 add_task(
   async function test_cancel_create_login_with_filter_showing_one_login() {
     let browser = gBrowser.selectedBrowser;
-    await ContentTask.spawn(browser, null, async () => {
+    await SpecialPowers.spawn(browser, [], async () => {
       let loginList = Cu.waiveXrays(
         content.document.querySelector("login-list")
       );
@@ -347,7 +398,7 @@ add_task(
 
 add_task(async function test_cancel_create_login_with_logins_filtered_out() {
   let browser = gBrowser.selectedBrowser;
-  await ContentTask.spawn(browser, null, async () => {
+  await SpecialPowers.spawn(browser, [], async () => {
     let loginFilter = Cu.waiveXrays(
       content.document.querySelector("login-filter")
     );
@@ -396,8 +447,13 @@ add_task(async function test_cancel_create_login_with_logins_filtered_out() {
 });
 
 add_task(async function test_create_duplicate_login() {
+  if (!OSKeyStoreTestUtils.canTestOSKeyStoreLogin()) {
+    return;
+  }
+
   let browser = gBrowser.selectedBrowser;
-  await ContentTask.spawn(browser, null, async () => {
+  EXPECTED_ERROR_MESSAGE = "This login already exists.";
+  await SpecialPowers.spawn(browser, [], async () => {
     let loginList = Cu.waiveXrays(content.document.querySelector("login-list"));
     let createButton = loginList._createLoginButton;
     createButton.click();
@@ -412,8 +468,8 @@ add_task(async function test_create_duplicate_login() {
     let passwordInput = loginItem.shadowRoot.querySelector(
       "input[name='password']"
     );
-    const EXISTING_ORIGIN = "https://example.com";
     const EXISTING_USERNAME = "testuser2";
+    const EXISTING_ORIGIN = "https://example.com";
     originInput.value = EXISTING_ORIGIN;
     usernameInput.value = EXISTING_USERNAME;
     passwordInput.value = "different password value";
@@ -445,7 +501,7 @@ add_task(async function test_create_duplicate_login() {
       confirmationDialog.hidden,
       "the discard-changes dialog should be hidden before clicking the error-message-text"
     );
-    loginItem._errorMessageLink.click();
+    loginItem._errorMessageLink.querySelector("a").click();
     ok(
       !confirmationDialog.hidden,
       "the discard-changes dialog should be visible"
@@ -467,4 +523,5 @@ add_task(async function test_create_duplicate_login() {
       "the duplicated login should be selected in the list"
     );
   });
+  EXPECTED_ERROR_MESSAGE = null;
 });

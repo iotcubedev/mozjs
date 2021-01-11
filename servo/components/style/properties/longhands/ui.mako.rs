@@ -15,6 +15,7 @@ ${helpers.single_keyword(
     "ime-mode",
     "auto normal active disabled inactive",
     engines="gecko",
+    gecko_enum_prefix="StyleImeMode",
     gecko_ffi_name="mIMEMode",
     animation_value_type="discrete",
     spec="https://drafts.csswg.org/css-ui/#input-method-editor",
@@ -26,8 +27,6 @@ ${helpers.single_keyword(
     engines="gecko",
     gecko_enum_prefix="StyleScrollbarWidth",
     animation_value_type="discrete",
-    gecko_pref="layout.css.scrollbar-width.enabled",
-    enabled_in="chrome",
     spec="https://drafts.csswg.org/css-scrollbars-1/#scrollbar-width"
 )}
 
@@ -55,10 +54,10 @@ ${helpers.single_keyword(
 
 ${helpers.single_keyword(
     "-moz-window-shadow",
-    "none default menu tooltip sheet",
+    "default none menu tooltip sheet",
     engines="gecko",
     gecko_ffi_name="mWindowShadow",
-    gecko_constant_prefix="NS_STYLE_WINDOW_SHADOW",
+    gecko_enum_prefix="StyleWindowShadow",
     animation_value_type="discrete",
     enabled_in="chrome",
     spec="None (Nonstandard internal property)",

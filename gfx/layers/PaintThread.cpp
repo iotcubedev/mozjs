@@ -20,9 +20,8 @@
 #include "mozilla/SharedThreadPool.h"
 #include "mozilla/SyncRunnable.h"
 #ifdef XP_MACOSX
-#include "nsCocoaFeatures.h"
+#  include "nsCocoaFeatures.h"
 #endif
-#include "nsIPropertyBag2.h"
 #include "nsIThreadManager.h"
 #include "nsServiceManagerUtils.h"
 #include "prsystem.h"
@@ -43,7 +42,7 @@ StaticAutoPtr<PaintThread> PaintThread::sSingleton;
 StaticRefPtr<nsIThread> PaintThread::sThread;
 PlatformThreadId PaintThread::sThreadId;
 
-PaintThread::PaintThread() {}
+PaintThread::PaintThread() = default;
 
 void PaintThread::Release() {}
 
@@ -80,9 +79,10 @@ static uint32_t GetPaintThreadStackSize() {
   // Workaround bug 1578075 by increasing the stack size of paint threads
   if (nsCocoaFeatures::OnCatalinaOrLater()) {
     static const uint32_t kCatalinaPaintThreadStackSize = 512 * 1024;
-    static_assert(kCatalinaPaintThreadStackSize >= nsIThreadManager::DEFAULT_STACK_SIZE,
-                  "update default stack size of paint "
-                  "workers");
+    static_assert(
+        kCatalinaPaintThreadStackSize >= nsIThreadManager::DEFAULT_STACK_SIZE,
+        "update default stack size of paint "
+        "workers");
     return kCatalinaPaintThreadStackSize;
   }
   return nsIThreadManager::DEFAULT_STACK_SIZE;
@@ -121,8 +121,7 @@ void PaintThread::InitPaintWorkers() {
   MOZ_ASSERT(NS_IsMainThread());
   int32_t count = PaintThread::CalculatePaintWorkerCount();
   if (count != 1) {
-    mPaintWorkers =
-        SharedThreadPool::Get(NS_LITERAL_CSTRING("PaintWorker"), count);
+    mPaintWorkers = SharedThreadPool::Get("PaintWorker"_ns, count);
     mPaintWorkers->SetThreadStackSize(GetPaintThreadStackSize());
   }
 }
@@ -234,8 +233,8 @@ void PaintThread::AsyncPaintTask(CompositorBridgeChild* aBridge,
     // UnscaledFont objects, gets destroyed on the main thread (See bug
     // 1404742). This assumes (unflushed) target DrawTargets do not themselves
     // hold on to UnscaledFonts.
-    NS_ReleaseOnMainThreadSystemGroup("PaintTask::DrawTargetCapture",
-                                      aTask->mCapture.forget());
+    NS_ReleaseOnMainThread("PaintTask::DrawTargetCapture",
+                           aTask->mCapture.forget());
   }
 
   if (aBridge->NotifyFinishedAsyncWorkerPaint(aTask)) {

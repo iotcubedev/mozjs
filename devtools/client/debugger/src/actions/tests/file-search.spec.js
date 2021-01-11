@@ -22,14 +22,17 @@ describe("file text search", () => {
       count: 0,
     });
 
-    const matches = [{ line: 1, ch: 3 }, { line: 3, ch: 2 }];
+    const matches = [
+      { line: 1, ch: 3 },
+      { line: 3, ch: 2 },
+    ];
     dispatch(actions.updateSearchResults(cx, 2, 3, matches));
 
     expect(getFileSearchResults(getState())).toEqual({
       count: 2,
       index: 2,
       matchIndex: 1,
-      matches: matches,
+      matches,
     });
   });
 

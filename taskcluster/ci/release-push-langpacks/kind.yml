@@ -10,22 +10,22 @@ transforms:
 
 kind-dependencies:
     - build
-    - nightly-l10n
+    - shippable-l10n
 
 
 only-for-build-platforms:
     - linux64-shippable/opt  # addons.mozilla.org only support 1 platform per locale. That's why we use linux64
-    - linux64-devedition-nightly/opt
+    - linux64-devedition/opt
     - macosx64-shippable/opt  # Although, we need the special locale "ja-JP-Mac" from this platform
-    - macosx64-devedition-nightly/opt
+    - macosx64-devedition/opt
 
 
 job-template:
     description: Sends {locales} XPIs for platform to addons.mozilla.org
     worker-type:
         by-release-level:
-            production: scriptworker-prov-v1/addon-v1
-            staging: scriptworker-prov-v1/addon-dev
+            production: scriptworker-k8s/gecko-3-addon
+            staging: scriptworker-k8s/gecko-1-addon
     worker:
         implementation: push-addons
         channel:
@@ -38,7 +38,6 @@ job-template:
                 mozilla-beta:
                     by-platform:
                         # ja-JP-mac is only langpack on mac, and is unlisted always
-                        macosx64-nightly.*: unlisted
                         macosx64-shippable.*: unlisted
                         macosx64-devedition.*: unlisted
                         linux.*-devedition.*: unlisted

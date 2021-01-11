@@ -18,7 +18,6 @@
 #include "nsIContent.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIDocShell.h"
-#include "nsIDOMWindow.h"
 #include "nsIFrame.h"
 #include "prtime.h"
 
@@ -73,8 +72,7 @@ UIEvent::UIEvent(EventTarget* aOwner, nsPresContext* aPresContext,
 // static
 already_AddRefed<UIEvent> UIEvent::Constructor(const GlobalObject& aGlobal,
                                                const nsAString& aType,
-                                               const UIEventInit& aParam,
-                                               ErrorResult& aRv) {
+                                               const UIEventInit& aParam) {
   nsCOMPtr<EventTarget> t = do_QueryInterface(aGlobal.GetAsSupports());
   RefPtr<UIEvent> e = new UIEvent(t, nullptr, nullptr);
   bool trusted = e->Init(t);
@@ -134,7 +132,8 @@ void UIEvent::InitUIEvent(const nsAString& typeArg, bool canBubbleArg,
   mView = viewArg ? viewArg->GetOuterWindow() : nullptr;
 }
 
-already_AddRefed<nsINode> UIEvent::GetRangeParent() {
+already_AddRefed<nsIContent> UIEvent::GetRangeParentContentAndOffset(
+    int32_t* aOffset) const {
   if (NS_WARN_IF(!mPresContext)) {
     return nullptr;
   }
@@ -144,7 +143,7 @@ already_AddRefed<nsINode> UIEvent::GetRangeParent() {
   }
   nsCOMPtr<nsIContent> container;
   nsLayoutUtils::GetContainerAndOffsetAtEvent(
-      presShell, mEvent, getter_AddRefs(container), nullptr);
+      presShell, mEvent, getter_AddRefs(container), aOffset);
   return container.forget();
 }
 
@@ -182,7 +181,8 @@ nsIntPoint UIEvent::GetLayerPoint() const {
   nsIFrame* targetFrame = mPresContext->EventStateManager()->GetEventTarget();
   if (!targetFrame) return mLayerPoint;
   nsIFrame* layer = nsLayoutUtils::GetClosestLayer(targetFrame);
-  nsPoint pt(nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, layer));
+  nsPoint pt(
+      nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, RelativeTo{layer}));
   return nsIntPoint(nsPresContext::AppUnitsToIntCSSPixels(pt.x),
                     nsPresContext::AppUnitsToIntCSSPixels(pt.y));
 }
@@ -208,7 +208,7 @@ void UIEvent::DuplicatePrivateData() {
 
 void UIEvent::Serialize(IPC::Message* aMsg, bool aSerializeInterfaceType) {
   if (aSerializeInterfaceType) {
-    IPC::WriteParam(aMsg, NS_LITERAL_STRING("uievent"));
+    IPC::WriteParam(aMsg, u"uievent"_ns);
   }
 
   Event::Serialize(aMsg, false);

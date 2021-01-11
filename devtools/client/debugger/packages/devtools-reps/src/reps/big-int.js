@@ -3,30 +3,40 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
 const { getGripType, wrapRender } = require("./rep-utils");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
- * Renders a number
+ * Renders a BigInt Number
  */
+
 BigInt.propTypes = {
   object: PropTypes.oneOfType([
     PropTypes.object,
     PropTypes.number,
     PropTypes.bool,
   ]).isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function BigInt(props) {
-  const { text } = props.object;
+  const { object, shouldRenderTooltip } = props;
+  const text = object.text;
+  const config = getElementConfig({ text, shouldRenderTooltip });
 
-  return span({ className: "objectBox objectBox-number" }, `${text}n`);
+  return span(config, `${text}n`);
 }
 
+function getElementConfig(opts) {
+  const { text, shouldRenderTooltip } = opts;
+
+  return {
+    className: "objectBox objectBox-number",
+    title: shouldRenderTooltip ? `${text}n` : null,
+  };
+}
 function supportsObject(object, noGrip = false) {
   return getGripType(object, noGrip) === "BigInt";
 }

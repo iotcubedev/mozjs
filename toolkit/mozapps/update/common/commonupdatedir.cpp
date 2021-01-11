@@ -756,11 +756,11 @@ static bool PathConflictsWithLeaf(const SimpleAutoString& path,
  *          caller.
  * @param   useCompatibilityMode
  *          Enables compatibility mode. Defaults to false.
- * @return  NS_OK, if successful.
+ * @return  true if successful and false otherwise.
  */
-nsresult GetInstallHash(const char16_t* installPath, const char* vendor,
-                        mozilla::UniquePtr<NS_tchar[]>& result,
-                        bool useCompatibilityMode /* = false */) {
+bool GetInstallHash(const char16_t* installPath, const char* vendor,
+                    mozilla::UniquePtr<NS_tchar[]>& result,
+                    bool useCompatibilityMode /* = false */) {
   MOZ_ASSERT(installPath != nullptr,
              "Install path must not be null in GetInstallHash");
 
@@ -785,10 +785,8 @@ nsresult GetInstallHash(const char16_t* installPath, const char* vendor,
     charsWritten =
         NS_tsnprintf(result.get(), hashStrSize, NS_T("%") NS_T(PRIX64), hash);
   }
-  if (charsWritten < 1 || static_cast<size_t>(charsWritten) > hashStrSize - 1) {
-    return NS_ERROR_FAILURE;
-  }
-  return NS_OK;
+  return !(charsWritten < 1 ||
+           static_cast<size_t>(charsWritten) > hashStrSize - 1);
 }
 
 #ifdef XP_WIN
@@ -898,6 +896,23 @@ GetUserUpdateDirectory(const wchar_t* installPath, const char* vendor,
 }
 
 /**
+ * This is a much more limited version of the GetCommonUpdateDirectory that can
+ * be called from Rust.
+ * The result parameter must be a valid pointer to a buffer of length
+ * MAX_PATH + 1
+ */
+extern "C" HRESULT get_common_update_directory(const wchar_t* installPath,
+                                               wchar_t* result) {
+  mozilla::UniquePtr<wchar_t[]> uniqueResult;
+  HRESULT hr = GetCommonUpdateDirectory(
+      installPath, SetPermissionsOf::BaseDirIfNotExists, uniqueResult);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  return StringCchCopyW(result, MAX_PATH + 1, uniqueResult.get());
+}
+
+/**
  * This is a helper function that does all of the work for
  * GetCommonUpdateDirectory and GetUserUpdateDirectory. It partially exists to
  * prevent callers of GetUserUpdateDirectory from having to pass a useless
@@ -966,13 +981,13 @@ static HRESULT GetUpdateDirectory(const wchar_t* installPath,
                                 HKEY_CURRENT_USER, regPath, hash);
       }
     }
-    nsresult rv = NS_OK;
+    bool success = true;
     if (!gotHash) {
       bool useCompatibilityMode = (whichDir == WhichUpdateDir::UserAppData);
-      rv = GetInstallHash(reinterpret_cast<const char16_t*>(installPath),
-                          vendor, hash, useCompatibilityMode);
+      success = GetInstallHash(reinterpret_cast<const char16_t*>(installPath),
+                               vendor, hash, useCompatibilityMode);
     }
-    if (NS_SUCCEEDED(rv)) {
+    if (success) {
       const wchar_t midPathDirName[] = NS_T(UPDATE_PATH_MID_DIR_NAME);
       size_t updatePathLen = basePath.Length() + 1 /* path separator */ +
                              wcslen(midPathDirName) + 1 /* path separator */ +
@@ -1472,8 +1487,9 @@ static HRESULT EnsureCorrectPermissions(SimpleAutoString& path,
   // and we don't really want to move everything around unnecessarily in those
   // cases.
   Tristate permissionsOk = file.PermsOk(path, perms);
-  if (permissionsOk == Tristate::False || (permissionsOk == Tristate::Unknown &&
-      permsToSet == SetPermissionsOf::AllFilesAndDirs)) {
+  if (permissionsOk == Tristate::False ||
+      (permissionsOk == Tristate::Unknown &&
+       permsToSet == SetPermissionsOf::AllFilesAndDirs)) {
     bool permissionsFixed;
     hrv = FixDirectoryPermissions(path, file, perms, permissionsFixed);
     returnValue = FAILED(returnValue) ? returnValue : hrv;
@@ -1509,12 +1525,6 @@ static HRESULT EnsureCorrectPermissions(SimpleAutoString& path,
     return returnValue;
   }
 
-  SimpleAutoString childBuffer;
-  if (!childBuffer.AllocEmpty(MAX_PATH)) {
-    // Fatal error. We need a buffer to put the path in.
-    return FAILED(returnValue) ? returnValue : E_OUTOFMEMORY;
-  }
-
   // Recurse into the directory.
   DIR directoryHandle(path.String());
   errno = 0;
@@ -1523,6 +1533,13 @@ static HRESULT EnsureCorrectPermissions(SimpleAutoString& path,
     if (wcscmp(entry->d_name, L".") == 0 || wcscmp(entry->d_name, L"..") == 0 ||
         file.LockFilenameMatches(entry->d_name)) {
       continue;
+    }
+
+    SimpleAutoString childBuffer;
+    if (!childBuffer.AllocEmpty(MAX_PATH)) {
+      // Just return on this failure rather than continuing. It is unlikely that
+      // this error will go away for the next path we try.
+      return FAILED(returnValue) ? returnValue : E_OUTOFMEMORY;
     }
 
     childBuffer.AssignSprintf(MAX_PATH + 1, L"%s\\%s", path.String(),
@@ -1691,7 +1708,7 @@ static HRESULT MoveFileOrDir(const SimpleAutoString& moveFrom,
                              const AutoPerms& perms) {
   BOOL success = MoveFileW(moveFrom.String(), moveTo.String());
   if (success) {
-   return S_OK;
+    return S_OK;
   }
 
   FileOrDirectory fileToMove(moveFrom, Lockstate::Locked);
@@ -1712,19 +1729,19 @@ static HRESULT MoveFileOrDir(const SimpleAutoString& moveFrom,
     success = DeleteFileW(moveFrom.String());
     if (!success) {
       // If we failed to delete it, try having it removed at reboot.
-      success = MoveFileExW(moveFrom.String(), nullptr,
-                            MOVEFILE_DELAY_UNTIL_REBOOT);
+      success =
+          MoveFileExW(moveFrom.String(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
       if (!success) {
         returnValue = FAILED(returnValue) ? returnValue
                                           : HRESULT_FROM_WIN32(GetLastError());
       }
     }
     return returnValue;
-  } // Done handling files. The rest of this function is for moving a directory.
+  }  // Done handling files. The rest of this function is for moving a
+     // directory.
 
-  success = CreateDirectoryW(
-    moveTo.String(),
-    const_cast<LPSECURITY_ATTRIBUTES>(&perms.securityAttributes));
+  success = CreateDirectoryW(moveTo.String(), const_cast<LPSECURITY_ATTRIBUTES>(
+                                                  &perms.securityAttributes));
   if (!success) {
     return HRESULT_FROM_WIN32(GetLastError());
   }
@@ -1752,7 +1769,7 @@ static HRESULT MoveFileOrDir(const SimpleAutoString& moveFrom,
       }
 
       childPath.AssignSprintf(MAX_PATH + 1, L"%s\\%s", moveFrom.String(),
-                             entry->d_name);
+                              entry->d_name);
       if (childPath.Length() == 0) {
         returnValue = FAILED(returnValue)
                           ? returnValue
@@ -1787,8 +1804,8 @@ static HRESULT MoveFileOrDir(const SimpleAutoString& moveFrom,
   HRESULT hrv = RemoveRecursive(moveFrom, fileToMove);
   if (FAILED(hrv)) {
     // If we failed to remove it, try having it removed on reboot.
-    success = MoveFileExW(moveFrom.String(), nullptr,
-                          MOVEFILE_DELAY_UNTIL_REBOOT);
+    success =
+        MoveFileExW(moveFrom.String(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
     if (!success) {
       returnValue = FAILED(returnValue) ? returnValue
                                         : HRESULT_FROM_WIN32(GetLastError());

@@ -224,13 +224,13 @@
 namespace mozilla {
 
 using mozilla::dom::Element;
+using mozilla::dom::HTMLInputElement;
 using mozilla::dom::HTMLSlotElement;
 using mozilla::dom::ShadowRoot;
 
 static nsIContent* GetParentOrHostOrSlot(
     nsIContent* aContent, bool* aCrossedShadowBoundary = nullptr) {
-  mozilla::dom::HTMLSlotElement* slot = aContent->GetAssignedSlot();
-  if (slot) {
+  if (HTMLSlotElement* slot = aContent->GetAssignedSlot()) {
     if (aCrossedShadowBoundary) {
       *aCrossedShadowBoundary = true;
     }
@@ -276,13 +276,16 @@ static bool AncestorChainCrossesShadowBoundary(nsIContent* aDescendant,
  * test for it separately, e.g. with DoesNotAffectDirectionOfAncestors.
  * It *does* include textarea, because even if a textarea has dir=auto, it has
  * unicode-bidi: plaintext and is handled automatically in bidi resolution.
+ * It also includes `input`, because it takes the `dir` value from its value
+ * attribute, instead of the child nodes.
  */
 static bool DoesNotParticipateInAutoDirection(const nsIContent* aContent) {
   mozilla::dom::NodeInfo* nodeInfo = aContent->NodeInfo();
   return ((!aContent->IsHTMLElement() || nodeInfo->Equals(nsGkAtoms::script) ||
            nodeInfo->Equals(nsGkAtoms::style) ||
+           nodeInfo->Equals(nsGkAtoms::input) ||
            nodeInfo->Equals(nsGkAtoms::textarea) ||
-           aContent->IsInAnonymousSubtree())) &&
+           aContent->IsInNativeAnonymousSubtree())) &&
          !aContent->IsShadowRoot();
 }
 
@@ -317,7 +320,7 @@ inline static bool NodeAffectsDirAutoAncestor(nsIContent* aTextNode) {
   nsIContent* parent = GetParentOrHostOrSlot(aTextNode);
   return (parent && !DoesNotParticipateInAutoDirection(parent) &&
           parent->NodeOrAncestorHasDirAuto() &&
-          !aTextNode->IsInAnonymousSubtree());
+          !aTextNode->IsInNativeAnonymousSubtree());
 }
 
 Directionality GetDirectionFromText(const char16_t* aText,
@@ -330,8 +333,7 @@ Directionality GetDirectionFromText(const char16_t* aText,
     uint32_t current = start - aText;
     uint32_t ch = *start++;
 
-    if (NS_IS_HIGH_SURROGATE(ch) && start < end &&
-        NS_IS_LOW_SURROGATE(*start)) {
+    if (start < end && NS_IS_SURROGATE_PAIR(ch, *start)) {
       ch = SURROGATE_TO_UCS4(ch, *start++);
       current++;
     }
@@ -400,9 +402,7 @@ static nsTextNode* WalkDescendantsAndGetDirectionFromText(
       continue;
     }
 
-    mozilla::dom::HTMLSlotElement* slot =
-        mozilla::dom::HTMLSlotElement::FromNode(child);
-    if (slot) {
+    if (auto* slot = HTMLSlotElement::FromNode(child)) {
       const nsTArray<RefPtr<nsINode>>& assignedNodes = slot->AssignedNodes();
       for (uint32_t i = 0; i < assignedNodes.Length(); ++i) {
         nsIContent* assignedNode = assignedNodes[i]->AsContent();
@@ -509,9 +509,7 @@ class nsTextNodeDirectionalityMap {
     aTextNode->SetHasTextNodeDirectionalityMap();
   }
 
-  ~nsTextNodeDirectionalityMap() {
-    MOZ_COUNT_DTOR(nsTextNodeDirectionalityMap);
-  }
+  MOZ_COUNTED_DTOR(nsTextNodeDirectionalityMap)
 
   static void nsTextNodeDirectionalityMapPropertyDestructor(
       void* aObject, nsAtom* aProperty, void* aPropertyValue, void* aData) {
@@ -539,7 +537,7 @@ class nsTextNodeDirectionalityMap {
 
     mElements.Remove(aElement);
     aElement->ClearHasDirAutoSet();
-    aElement->DeleteProperty(nsGkAtoms::dirAutoSetBy);
+    aElement->RemoveProperty(nsGkAtoms::dirAutoSetBy);
   }
 
   void RemoveEntryForProperty(Element* aElement) {
@@ -605,7 +603,7 @@ class nsTextNodeDirectionalityMap {
       nsTextNodeDirectionalityMap::AddEntryToMap(newTextNode, rootNode);
     } else {
       rootNode->ClearHasDirAutoSet();
-      rootNode->DeleteProperty(nsGkAtoms::dirAutoSetBy);
+      rootNode->RemoveProperty(nsGkAtoms::dirAutoSetBy);
     }
     return OpRemove;
   }
@@ -634,7 +632,7 @@ class nsTextNodeDirectionalityMap {
     mElements.EnumerateEntries(TakeEntries, &entries);
     for (Element* el : entries) {
       el->ClearHasDirAutoSet();
-      el->DeleteProperty(nsGkAtoms::dirAutoSetBy);
+      el->RemoveProperty(nsGkAtoms::dirAutoSetBy);
     }
   }
 
@@ -729,9 +727,7 @@ static void SetDirectionalityOnDescendantsInternal(nsINode* aNode,
       SetDirectionalityOnDescendantsInternal(shadow, aDir, aNotify);
     }
 
-    mozilla::dom::HTMLSlotElement* slot =
-        mozilla::dom::HTMLSlotElement::FromNode(child);
-    if (slot) {
+    if (auto* slot = HTMLSlotElement::FromNode(child)) {
       const nsTArray<RefPtr<nsINode>>& assignedNodes = slot->AssignedNodes();
       for (uint32_t i = 0; i < assignedNodes.Length(); ++i) {
         nsINode* node = assignedNodes[i];
@@ -822,7 +818,7 @@ void WalkAncestorsResetAutoDirection(Element* aElement, bool aNotify) {
   }
 }
 
-void SlotStateChanged(mozilla::dom::HTMLSlotElement* aSlot) {
+void SlotStateChanged(HTMLSlotElement* aSlot) {
   if (!aSlot) {
     return;
   }
@@ -895,9 +891,7 @@ static void SetAncestorHasDirAutoOnDescendants(nsINode* aRoot) {
     if (!child->GetAssignedSlot()) {
       MaybeSetAncestorHasDirAutoOnShadowDOM(child);
       child->SetAncestorHasDirAuto();
-      mozilla::dom::HTMLSlotElement* slot =
-          mozilla::dom::HTMLSlotElement::FromNode(child);
-      if (slot) {
+      if (auto* slot = HTMLSlotElement::FromNode(child)) {
         const nsTArray<RefPtr<nsINode>>& assignedNodes = slot->AssignedNodes();
         for (uint32_t i = 0; i < assignedNodes.Length(); ++i) {
           assignedNodes[i]->SetAncestorHasDirAuto();
@@ -949,9 +943,7 @@ void WalkDescendantsClearAncestorDirAuto(nsIContent* aContent) {
         continue;
       }
 
-      mozilla::dom::HTMLSlotElement* slot =
-          mozilla::dom::HTMLSlotElement::FromNode(child);
-      if (slot) {
+      if (auto* slot = HTMLSlotElement::FromNode(child)) {
         const nsTArray<RefPtr<nsINode>>& assignedNodes = slot->AssignedNodes();
         for (uint32_t i = 0; i < assignedNodes.Length(); ++i) {
           if (assignedNodes[i]->IsElement()) {

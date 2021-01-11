@@ -6,7 +6,6 @@
 
 #include "mozilla/layers/ProfilerScreenshots.h"
 
-#include "mozilla/SystemGroup.h"
 #include "mozilla/TimeStamp.h"
 
 #include "GeckoProfiler.h"
@@ -23,19 +22,7 @@ using namespace mozilla::layers;
 ProfilerScreenshots::ProfilerScreenshots()
     : mMutex("ProfilerScreenshots::mMutex"), mLiveSurfaceCount(0) {}
 
-ProfilerScreenshots::~ProfilerScreenshots() {
-  if (mThread) {
-    // Shut down mThread. Do the actual shutdown on the main thread, because it
-    // has to happen on an XPCOM thread, and ~ProfilerScreenshots() may not be
-    // running on an XPCOM thread - it usually runs on the Compositor thread
-    // which is a chromium thread.
-    SystemGroup::Dispatch(
-        TaskCategory::Other,
-        NewRunnableMethod("ProfilerScreenshots::~ProfilerScreenshots", mThread,
-                          &nsIThread::AsyncShutdown));
-    mThread = nullptr;
-  }
-}
+ProfilerScreenshots::~ProfilerScreenshots() = default;
 
 /* static */
 bool ProfilerScreenshots::IsEnabled() {
@@ -68,18 +55,6 @@ void ProfilerScreenshots::SubmitScreenshot(
     return;
   }
 
-  if (!mThread) {
-    nsresult rv = NS_NewNamedThread("ProfScreenshot", getter_AddRefs(mThread));
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      PROFILER_ADD_MARKER(
-          "NoCompositorScreenshot because ProfilerScreenshots thread creation "
-          "failed",
-          DOM);
-      ReturnSurface(backingSurface);
-      return;
-    }
-  }
-
   int sourceThread = profiler_current_thread_id();
   uintptr_t windowIdentifier = aWindowIdentifier;
   IntSize originalSize = aOriginalSize;
@@ -88,13 +63,13 @@ void ProfilerScreenshots::SubmitScreenshot(
 
   RefPtr<ProfilerScreenshots> self = this;
 
-  mThread->Dispatch(NS_NewRunnableFunction(
+  NS_DispatchBackgroundTask(NS_NewRunnableFunction(
       "ProfilerScreenshots::SubmitScreenshot",
       [self{std::move(self)}, backingSurface, sourceThread, windowIdentifier,
        originalSize, scaledSize, timeStamp]() {
         // Create a new surface that wraps backingSurface's data but has the
         // correct size.
-        {
+        if (profiler_can_accept_markers()) {
           DataSourceSurface::ScopedMap scopedMap(backingSurface,
                                                  DataSourceSurface::READ);
           RefPtr<DataSourceSurface> surf =
@@ -105,15 +80,16 @@ void ProfilerScreenshots::SubmitScreenshot(
           // Encode surf to a JPEG data URL.
           nsCString dataURL;
           nsresult rv = gfxUtils::EncodeSourceSurface(
-              surf, ImageType::JPEG, NS_LITERAL_STRING("quality=85"),
-              gfxUtils::eDataURIEncode, nullptr, &dataURL);
+              surf, ImageType::JPEG, u"quality=85"_ns, gfxUtils::eDataURIEncode,
+              nullptr, &dataURL);
           if (NS_SUCCEEDED(rv)) {
             // Add a marker with the data URL.
+            AUTO_PROFILER_STATS(add_marker_with_ScreenshotPayload);
             profiler_add_marker_for_thread(
                 sourceThread, JS::ProfilingCategoryPair::GRAPHICS,
                 "CompositorScreenshot",
-                MakeUnique<ScreenshotPayload>(timeStamp, std::move(dataURL),
-                                              originalSize, windowIdentifier));
+                ScreenshotPayload(timeStamp, std::move(dataURL), originalSize,
+                                  windowIdentifier));
           }
         }
 

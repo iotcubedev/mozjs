@@ -35,6 +35,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(SpeechSynthesis,
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCurrentTask)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSpeechQueue)
   tmp->mVoiceCache.Clear();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(SpeechSynthesis,
@@ -68,7 +69,7 @@ SpeechSynthesis::SpeechSynthesis(nsPIDOMWindowInner* aParent)
   }
 }
 
-SpeechSynthesis::~SpeechSynthesis() {}
+SpeechSynthesis::~SpeechSynthesis() = default;
 
 JSObject* SpeechSynthesis::WrapObject(JSContext* aCx,
                                       JS::Handle<JSObject*> aGivenProto) {
@@ -161,7 +162,7 @@ void SpeechSynthesis::Cancel() {
   if (!mSpeechQueue.IsEmpty() && HasSpeakingTask()) {
     // Remove all queued utterances except for current one, we will remove it
     // in OnEnd
-    mSpeechQueue.RemoveElementsAt(1, mSpeechQueue.Length() - 1);
+    mSpeechQueue.RemoveLastElements(mSpeechQueue.Length() - 1);
   } else {
     mSpeechQueue.Clear();
   }
@@ -248,7 +249,7 @@ void SpeechSynthesis::GetVoices(
 
   for (uint32_t i = 0; i < aResult.Length(); i++) {
     SpeechSynthesisVoice* voice = aResult[i];
-    mVoiceCache.Put(voice->mUri, voice);
+    mVoiceCache.Put(voice->mUri, RefPtr{voice});
   }
 }
 
@@ -289,7 +290,7 @@ SpeechSynthesis::Observe(nsISupports* aSubject, const char* aTopic,
     nsCOMPtr<nsIDocShell> docShell = window ? window->GetDocShell() : nullptr;
 
     if (!nsContentUtils::ShouldResistFingerprinting(docShell)) {
-      DispatchTrustedEvent(NS_LITERAL_STRING("voiceschanged"));
+      DispatchTrustedEvent(u"voiceschanged"_ns);
       // If we have a pending item, and voices become available, speak it.
       if (!mCurrentTask && !mHoldQueue && HasVoices()) {
         AdvanceQueue();

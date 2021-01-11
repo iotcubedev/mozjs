@@ -8,19 +8,19 @@
 #define mozilla_dom_workers_WorkerLoadInfo_h
 
 #include "mozilla/StorageAccess.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/ChannelInfo.h"
 #include "mozilla/dom/ServiceWorkerRegistrationDescriptor.h"
 #include "mozilla/dom/WorkerCommon.h"
 
 #include "nsIInterfaceRequestor.h"
 #include "nsILoadContext.h"
-#include "nsIRequest.h"
 #include "nsISupportsImpl.h"
 #include "nsIWeakReferenceUtils.h"
 
 class nsIChannel;
 class nsIContentSecurityPolicy;
-class nsICookieSettings;
+class nsICookieJarSettings;
 class nsILoadGroup;
 class nsIPrincipal;
 class nsIRunnable;
@@ -52,10 +52,10 @@ struct WorkerLoadInfoData {
   // If we load a data: URL, mPrincipal will be a null principal.
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
   nsCOMPtr<nsIPrincipal> mPrincipal;
-  nsCOMPtr<nsIPrincipal> mStoragePrincipal;
+  nsCOMPtr<nsIPrincipal> mPartitionedPrincipal;
 
   // Taken from the parent context.
-  nsCOMPtr<nsICookieSettings> mCookieSettings;
+  nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
 
   nsCOMPtr<nsIScriptContext> mScriptContext;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
@@ -65,7 +65,7 @@ struct WorkerLoadInfoData {
   // needs to happen on the main thread, but storing the CSPInfo needs to happen
   // on the worker thread. We move the CSPInfo into the Client within
   // ScriptLoader::PreRun().
-  nsAutoPtr<mozilla::ipc::CSPInfo> mCSPInfo;
+  UniquePtr<mozilla::ipc::CSPInfo> mCSPInfo;
 
   nsCOMPtr<nsIChannel> mChannel;
   nsCOMPtr<nsILoadGroup> mLoadGroup;
@@ -85,7 +85,7 @@ struct WorkerLoadInfoData {
     }
 
    private:
-    ~InterfaceRequestor() {}
+    ~InterfaceRequestor() = default;
 
     already_AddRefed<nsIBrowserChild> GetAnyLiveBrowserChild();
 
@@ -101,10 +101,14 @@ struct WorkerLoadInfoData {
   // Only set if we have a custom overriden load group
   RefPtr<InterfaceRequestor> mInterfaceRequestor;
 
-  nsAutoPtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
-  nsAutoPtr<mozilla::ipc::PrincipalInfo> mStoragePrincipalInfo;
+  UniquePtr<mozilla::ipc::PrincipalInfo> mPrincipalInfo;
+  UniquePtr<mozilla::ipc::PrincipalInfo> mPartitionedPrincipalInfo;
   nsCString mDomain;
-  nsString mOrigin;  // Derived from mPrincipal; can be used on worker thread.
+  nsString mOriginNoSuffix;  // Derived from mPrincipal; can be used on worker
+                             // thread.
+  nsCString mOrigin;  // Derived from mPrincipal; can be used on worker thread.
+  nsCString mPartitionedOrigin;  // Derived from mPartitionedPrincipal; can be
+                                 // used on worker thread.
 
   nsString mServiceWorkerCacheName;
   Maybe<ServiceWorkerDescriptor> mServiceWorkerDescriptor;
@@ -112,6 +116,8 @@ struct WorkerLoadInfoData {
       mServiceWorkerRegistrationDescriptor;
 
   Maybe<ServiceWorkerDescriptor> mParentController;
+
+  nsID mAgentClusterId;
 
   ChannelInfo mChannelInfo;
   nsLoadFlags mLoadFlags;
@@ -124,9 +130,11 @@ struct WorkerLoadInfoData {
   bool mReportCSPViolations;
   bool mXHRParamsAllowed;
   bool mPrincipalIsSystem;
-  bool mWatchedByDevtools;
+  bool mPrincipalIsAddonOrExpandedAddon;
+  bool mWatchedByDevTools;
   StorageAccess mStorageAccess;
-  bool mFirstPartyStorageAccessGranted;
+  bool mUseRegularPrincipal;
+  bool mHasStorageAccessPermissionGranted;
   bool mServiceWorkersTestingInWindow;
   OriginAttributes mOriginAttributes;
 
@@ -150,13 +158,13 @@ struct WorkerLoadInfo : WorkerLoadInfoData {
   WorkerLoadInfo& operator=(WorkerLoadInfo&& aOther) = default;
 
   nsresult SetPrincipalsAndCSPOnMainThread(nsIPrincipal* aPrincipal,
-                                           nsIPrincipal* aStoragePrincipal,
+                                           nsIPrincipal* aPartitionedPrincipal,
                                            nsILoadGroup* aLoadGroup,
                                            nsIContentSecurityPolicy* aCSP);
 
   nsresult GetPrincipalsAndLoadGroupFromChannel(
       nsIChannel* aChannel, nsIPrincipal** aPrincipalOut,
-      nsIPrincipal** aStoragePrincipalOut, nsILoadGroup** aLoadGroupOut);
+      nsIPrincipal** aPartitionedPrincipalOut, nsILoadGroup** aLoadGroupOut);
 
   nsresult SetPrincipalsAndCSPFromChannel(nsIChannel* aChannel);
 

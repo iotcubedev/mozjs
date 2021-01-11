@@ -11,19 +11,16 @@
 #include "mozilla/Components.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/NullPrincipal.h"
-#include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsIObserver.h"
 #include "nsThreadUtils.h"
 #include "nsProxyRelease.h"
 #include "nsIStringBundle.h"
-#include "nsIStandardURL.h"
 #include "nsMimeTypes.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIURI.h"
-#include "nsIURIMutator.h"
 #include "nsIAuthPrompt.h"
 #include "nsIChannel.h"
 #include "nsIInputStream.h"
@@ -583,8 +580,7 @@ nsGIOInputStream::Close() {
   }
 
   if (mChannel) {
-    NS_ReleaseOnMainThreadSystemGroup("nsGIOInputStream::mChannel",
-                                      dont_AddRef(mChannel));
+    NS_ReleaseOnMainThread("nsGIOInputStream::mChannel", dont_AddRef(mChannel));
 
     mChannel = nullptr;
   }
@@ -964,11 +960,10 @@ nsGIOProtocolHandler::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
   }
 
   RefPtr<nsGIOInputStream> tmpStream = stream;
-  rv =
-      NS_NewInputStreamChannelInternal(aResult, aURI, tmpStream.forget(),
-                                       NS_LITERAL_CSTRING(UNKNOWN_CONTENT_TYPE),
-                                       EmptyCString(),  // aContentCharset
-                                       aLoadInfo);
+  rv = NS_NewInputStreamChannelInternal(aResult, aURI, tmpStream.forget(),
+                                        nsLiteralCString(UNKNOWN_CONTENT_TYPE),
+                                        EmptyCString(),  // aContentCharset
+                                        aLoadInfo);
   if (NS_SUCCEEDED(rv)) {
     stream->SetChannel(*aResult);
   }

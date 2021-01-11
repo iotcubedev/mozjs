@@ -22,6 +22,14 @@ const _OpenInPrivateWindow = site => ({
 export const LinkMenuOptions = {
   Separator: () => ({ type: "separator" }),
   EmptyItem: () => ({ type: "empty" }),
+  ShowPrivacyInfo: site => ({
+    id: "newtab-menu-show-privacy-info",
+    icon: "info",
+    action: {
+      type: at.SHOW_PRIVACY_INFO,
+    },
+    userEvent: "SHOW_PRIVACY_INFO",
+  }),
   RemoveBookmark: site => ({
     id: "newtab-menu-remove-bookmark",
     icon: "bookmark-added",
@@ -53,23 +61,34 @@ export const LinkMenuOptions = {
     }),
     userEvent: "OPEN_NEW_WINDOW",
   }),
-  BlockUrl: (site, index, eventSource) => ({
+  // This blocks the url for regular stories,
+  // but also sends a message to DiscoveryStream with flight_id.
+  // If DiscoveryStream sees this message for a flight_id
+  // it also blocks it on the flight_id.
+  BlockUrl: (site, index, eventSource) => {
+    return LinkMenuOptions.BlockUrls([site], index, eventSource);
+  },
+  // Same as BlockUrl, cept can work on an array of sites.
+  BlockUrls: (tiles, pos, eventSource) => ({
     id: "newtab-menu-dismiss",
     icon: "dismiss",
     action: ac.AlsoToMain({
       type: at.BLOCK_URL,
-      data: { url: site.open_url || site.url, pocket_id: site.pocket_id },
+      data: tiles.map(site => ({
+        url: site.open_url || site.url,
+        // pocket_id is only for pocket stories being in highlights, and then dismissed.
+        pocket_id: site.pocket_id,
+        ...(site.flight_id ? { flight_id: site.flight_id } : {}),
+      })),
     }),
     impression: ac.ImpressionStats({
       source: eventSource,
       block: 0,
-      tiles: [
-        {
-          id: site.guid,
-          pos: index,
-          ...(site.shim && site.shim.delete ? { shim: site.shim.delete } : {}),
-        },
-      ],
+      tiles: tiles.map((site, index) => ({
+        id: site.guid,
+        pos: pos + index,
+        ...(site.shim && site.shim.delete ? { shim: site.shim.delete } : {}),
+      })),
     }),
     userEvent: "BLOCK",
   }),

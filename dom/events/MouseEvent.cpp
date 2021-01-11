@@ -120,7 +120,7 @@ void MouseEvent::InitializeExtraMouseEventDictionaryMembers(
 
 already_AddRefed<MouseEvent> MouseEvent::Constructor(
     const GlobalObject& aGlobal, const nsAString& aType,
-    const MouseEventInit& aParam, ErrorResult& aRv) {
+    const MouseEventInit& aParam) {
   nsCOMPtr<EventTarget> t = do_QueryInterface(aGlobal.GetAsSupports());
   RefPtr<MouseEvent> e = new MouseEvent(t, nullptr, nullptr);
   bool trusted = e->Init(t);
@@ -166,7 +166,7 @@ int16_t MouseEvent::Button() {
       return mEvent->AsMouseEventBase()->mButton;
     default:
       NS_WARNING("Tried to get mouse mButton for non-mouse event!");
-      return MouseButton::eLeft;
+      return MouseButton::ePrimary;
   }
 }
 
@@ -318,10 +318,6 @@ bool MouseEvent::MetaKey() { return mEvent->AsInputEvent()->IsMeta(); }
 
 float MouseEvent::MozPressure() const {
   return mEvent->AsMouseEventBase()->mPressure;
-}
-
-bool MouseEvent::HitCluster() const {
-  return mEvent->AsMouseEventBase()->mHitCluster;
 }
 
 uint16_t MouseEvent::MozInputSource() const {

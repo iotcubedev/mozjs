@@ -4,19 +4,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef NS_SVGPOLYELEMENT_H_
-#define NS_SVGPOLYELEMENT_H_
+#ifndef DOM_SVG_SVGPOLYELEMENT_H_
+#define DOM_SVG_SVGPOLYELEMENT_H_
 
 #include "mozilla/Attributes.h"
 #include "SVGAnimatedPointList.h"
 #include "SVGGeometryElement.h"
 
 namespace mozilla {
-class DOMSVGPointList;
-
 namespace dom {
 
-typedef SVGGeometryElement SVGPolyElementBase;
+class DOMSVGPointList;
+
+using SVGPolyElementBase = SVGGeometryElement;
 
 class SVGPolyElement : public SVGPolyElementBase {
  protected:
@@ -52,8 +52,8 @@ class SVGPolyElement : public SVGPolyElementBase {
       const Matrix* aToNonScalingStrokeSpace = nullptr) override;
 
   // WebIDL
-  already_AddRefed<mozilla::DOMSVGPointList> Points();
-  already_AddRefed<mozilla::DOMSVGPointList> AnimatedPoints();
+  already_AddRefed<DOMSVGPointList> Points();
+  already_AddRefed<DOMSVGPointList> AnimatedPoints();
 
  protected:
   SVGAnimatedPointList mPoints;
@@ -62,4 +62,4 @@ class SVGPolyElement : public SVGPolyElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // NS_SVGPOLYELEMENT_H_
+#endif  // DOM_SVG_SVGPOLYELEMENT_H_

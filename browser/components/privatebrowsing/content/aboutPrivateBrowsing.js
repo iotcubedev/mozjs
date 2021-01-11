@@ -24,6 +24,51 @@ document.addEventListener("DOMContentLoaded", function() {
       RPMGetFormatURLPref("app.support.baseURL") + "private-browsing-myths"
     );
 
+  // Set up the private search banner.
+  const privateSearchBanner = document.getElementById("search-banner");
+
+  RPMSendQuery("ShouldShowSearchBanner", {}).then(engineName => {
+    if (engineName) {
+      document.l10n.setAttributes(
+        document.getElementById("about-private-browsing-search-banner-title"),
+        "about-private-browsing-search-banner-title",
+        { engineName }
+      );
+      privateSearchBanner.removeAttribute("hidden");
+      document.body.classList.add("showBanner");
+    }
+
+    // We set this attribute so that tests know when we are done.
+    document.documentElement.setAttribute("SearchBannerInitialized", true);
+  });
+
+  function hideSearchBanner() {
+    privateSearchBanner.setAttribute("hidden", "true");
+    document.body.classList.remove("showBanner");
+    RPMSendAsyncMessage("SearchBannerDismissed");
+  }
+
+  document
+    .getElementById("search-banner-close-button")
+    .addEventListener("click", () => {
+      hideSearchBanner();
+    });
+
+  let openSearchOptions = document.getElementById(
+    "about-private-browsing-search-banner-description"
+  );
+  let openSearchOptionsEvtHandler = evt => {
+    if (
+      evt.target.id == "open-search-options-link" &&
+      (evt.keyCode == evt.DOM_VK_RETURN || evt.type == "click")
+    ) {
+      RPMSendAsyncMessage("OpenSearchPreferences");
+      hideSearchBanner();
+    }
+  };
+  openSearchOptions.addEventListener("click", openSearchOptionsEvtHandler);
+  openSearchOptions.addEventListener("keypress", openSearchOptionsEvtHandler);
+
   // Setup the search hand-off box.
   let btn = document.getElementById("search-handoff-button");
   let editable = document.getElementById("fake-editable");
@@ -72,14 +117,5 @@ document.addEventListener("DOMContentLoaded", function() {
   });
 
   // Load contentSearchUI so it sets the search engine icon for us.
-  // TODO: FIXME. We should eventually refector contentSearchUI to do only what
-  // we need and have it do the common search handoff work for
-  // about:newtab and about:privatebrowsing.
-  let input = document.getElementById("dummy-input");
-  new window.ContentSearchUIController(
-    input,
-    input.parentNode,
-    "aboutprivatebrowsing",
-    "aboutprivatebrowsing"
-  );
+  new window.ContentSearchHandoffUIController();
 });

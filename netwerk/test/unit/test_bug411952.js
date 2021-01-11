@@ -1,3 +1,5 @@
+"use strict";
+
 function run_test() {
   try {
     var cm = Cc["@mozilla.org/cookiemanager;1"].getService(Ci.nsICookieManager);
@@ -14,12 +16,13 @@ function run_test() {
       false,
       time,
       {},
-      Ci.nsICookie.SAMESITE_NONE
+      Ci.nsICookie.SAMESITE_NONE,
+      Ci.nsICookie.SCHEME_HTTPS
     );
     const now = Math.floor(new Date().getTime() / 1000);
 
     var found = false;
-    for (let cookie of cm.enumerator) {
+    for (let cookie of cm.cookies) {
       if (
         cookie.host == "example.com" &&
         cookie.path == "/" &&

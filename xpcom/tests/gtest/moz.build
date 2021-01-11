@@ -7,8 +7,8 @@
 UNIFIED_SOURCES += [
     'Helpers.cpp',
     'TestArenaAllocator.cpp',
+    'TestArrayAlgorithm.cpp',
     'TestAtoms.cpp',
-    'TestAutoPtr.cpp',
     'TestAutoRef.cpp',
     'TestAutoRefCnt.cpp',
     'TestBase64.cpp',
@@ -42,11 +42,13 @@ UNIFIED_SOURCES += [
     'TestRecursiveMutex.cpp',
     'TestRWLock.cpp',
     'TestSlicedInputStream.cpp',
+    'TestSmallArrayLRUCache.cpp',
     'TestSnappyStreams.cpp',
     'TestStateWatching.cpp',
     'TestStorageStream.cpp',
     'TestStrings.cpp',
     'TestStringStream.cpp',
+    'TestSubstringTuple.cpp',
     'TestSynchronization.cpp',
     'TestTArray.cpp',
     'TestTArray2.cpp',
@@ -117,12 +119,9 @@ LOCAL_INCLUDES += [
     '../../base',
 ]
 
-GENERATED_FILES = [
-    'dafsa_test_1.inc',
-]
-dafsa_data = GENERATED_FILES['dafsa_test_1.inc']
-dafsa_data.script = '../../ds/tools/make_dafsa.py'
-dafsa_data.inputs = ['dafsa_test_1.dat']
+GeneratedFile('dafsa_test_1.inc',
+              script='../../ds/tools/make_dafsa.py',
+              inputs=['dafsa_test_1.dat'])
 
 TEST_HARNESS_FILES.gtest += [
     'wikipedia/ar.txt',

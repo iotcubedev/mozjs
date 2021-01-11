@@ -41,7 +41,6 @@ class nsDOMCSSValueList;
 struct nsMargin;
 class nsROCSSPrimitiveValue;
 class nsStyleGradient;
-struct nsStyleImage;
 
 class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
                                  public nsStubMutationObserver {
@@ -70,11 +69,12 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
   NS_DECL_NSIDOMCSSSTYLEDECLARATION_HELPER
   nsresult GetPropertyValue(const nsCSSPropertyID aPropID,
                             nsAString& aValue) override;
-  nsresult SetPropertyValue(const nsCSSPropertyID aPropID,
-                            const nsAString& aValue,
-                            nsIPrincipal* aSubjectPrincipal) override;
+  void SetPropertyValue(const nsCSSPropertyID aPropID, const nsACString& aValue,
+                        nsIPrincipal* aSubjectPrincipal,
+                        mozilla::ErrorResult& aRv) override;
 
-  void IndexedGetter(uint32_t aIndex, bool& aFound, nsAString& aPropName) final;
+  void IndexedGetter(uint32_t aIndex, bool& aFound,
+                     nsACString& aPropName) final;
 
   enum StyleType {
     eDefaultOnly,  // Only includes UA and user sheets
@@ -105,8 +105,8 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
     mExposeVisitedStyle = aExpose;
   }
 
-  void GetCSSImageURLs(const nsAString& aPropertyName,
-                       nsTArray<nsString>& aImageURLs,
+  void GetCSSImageURLs(const nsACString& aPropertyName,
+                       nsTArray<nsCString>& aImageURLs,
                        mozilla::ErrorResult& aRv) final;
 
   // nsDOMCSSDeclaration abstract methods which should never be called
@@ -179,11 +179,7 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
 
   already_AddRefed<CSSValue> GetPaddingWidthFor(mozilla::Side aSide);
 
-  already_AddRefed<CSSValue> GetBorderStyleFor(mozilla::Side aSide);
-
   already_AddRefed<CSSValue> GetBorderWidthFor(mozilla::Side aSide);
-
-  already_AddRefed<CSSValue> GetBorderColorFor(mozilla::Side aSide);
 
   already_AddRefed<CSSValue> GetMarginWidthFor(mozilla::Side aSide);
 
@@ -197,7 +193,7 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
                               const mozilla::StyleTrackBreadth&);
   already_AddRefed<CSSValue> GetGridTemplateColumnsRows(
       const mozilla::StyleGridTemplateComponent& aTrackList,
-      const mozilla::ComputedGridTrackInfo* aTrackInfo);
+      const mozilla::ComputedGridTrackInfo& aTrackInfo);
 
   bool GetLineHeightCoord(nscoord& aCoord);
 
@@ -294,27 +290,6 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
 
   void SetValueToExtremumLength(nsROCSSPrimitiveValue* aValue,
                                 StyleExtremumLength);
-
-  /**
-   * If aCoord is a eStyleUnit_Coord returns the nscoord.  If it's
-   * eStyleUnit_Percent, attempts to resolve the percentage base and returns
-   * the resulting nscoord.  If it's some other unit or a percentage base can't
-   * be determined, returns aDefaultValue.
-   */
-  nscoord StyleCoordToNSCoord(const LengthPercentage& aCoord,
-                              PercentageBaseGetter aPercentageBaseGetter,
-                              nscoord aDefaultValue, bool aClampNegativeCalc);
-  template <typename LengthPercentageLike>
-  nscoord StyleCoordToNSCoord(const LengthPercentageLike& aCoord,
-                              PercentageBaseGetter aPercentageBaseGetter,
-                              nscoord aDefaultValue, bool aClampNegativeCalc) {
-    if (aCoord.IsLengthPercentage()) {
-      return StyleCoordToNSCoord(aCoord.AsLengthPercentage(),
-                                 aPercentageBaseGetter, aDefaultValue,
-                                 aClampNegativeCalc);
-    }
-    return aDefaultValue;
-  }
 
   bool GetCBContentWidth(nscoord& aWidth);
   bool GetCBContentHeight(nscoord& aHeight);

@@ -11,6 +11,7 @@ import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.ClosedSessionAtStart
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.NullDelegate
+import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
 import org.mozilla.geckoview.test.util.Callbacks
 import org.mozilla.geckoview.test.util.UiThreadUtils
 import org.junit.Ignore
@@ -19,9 +20,9 @@ import android.os.Bundle
 import android.os.Debug
 import android.os.Parcelable
 import android.os.SystemClock
-import android.support.test.InstrumentationRegistry
-import android.support.test.filters.MediumTest
-import android.support.test.runner.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.filters.MediumTest
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.util.Log
 import android.util.SparseArray
 
@@ -78,6 +79,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.session.open()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel() {
         val session = sessionRule.createOpenSession()
 
@@ -96,6 +98,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.session.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Ignore //Disable test for frequent failures Bug 1532186
     @Test(expected = IllegalStateException::class)
     fun readFromParcel_throwOnAlreadyOpen() {
@@ -107,6 +110,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         }
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_canLoadPageAfterRead() {
         var newSession: GeckoSession? = null
 
@@ -118,6 +122,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         newSession!!.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_closedSession() {
         val session = sessionRule.createClosedSession()
 
@@ -131,6 +136,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.session.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_closedSessionAfterParceling() {
         val session = sessionRule.createOpenSession()
 
@@ -147,6 +153,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.session.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_closedSessionAfterReadParcel() {
         // disable test on opt for frequently failing Bug 1519591
         assumeThat(sessionRule.env.isDebugBuild, equalTo(true))
@@ -165,6 +172,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.session.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_closeOpenAndLoad() {
         var newSession: GeckoSession? = null
 
@@ -179,6 +187,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         newSession!!.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_allowCallsBeforeUnparceling() {
         val newSession = sessionRule.createClosedSession()
 
@@ -191,6 +200,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         newSession.waitForPageStops(2)
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_chained() {
         var session1: GeckoSession? = null
         var session2: GeckoSession? = null
@@ -210,6 +220,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         session3!!.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @NullDelegate(GeckoSession.NavigationDelegate::class)
     @ClosedSessionAtStart
     @Test fun readFromParcel_moduleUpdated() {
@@ -243,6 +254,7 @@ class SessionLifecycleTest : BaseSessionTest() {
                    onLocationCount, equalTo(1))
     }
 
+    @Suppress("DEPRECATION")
     @Test fun readFromParcel_focusedInput() {
         // When an input is focused, make sure SessionTextInput is still active after transferring.
         mainSession.loadTestPath(INPUTS_PATH)
@@ -260,6 +272,10 @@ class SessionLifecycleTest : BaseSessionTest() {
         var newSession: GeckoSession? = null
         mainSession.toParcel { parcel ->
             newSession = sessionRule.createFromParcel(parcel)
+            // Since we will be calling evaluateJS on newSession, we need to
+            // tell sessionRule to transfer mainSession's WebExtension.Port
+            // over to newSession.
+            sessionRule.transferPort(mainSession, newSession!!)
         }
 
         // We generate an extra focus event during transfer.
@@ -284,8 +300,10 @@ class SessionLifecycleTest : BaseSessionTest() {
 
     private fun testRestoreInstanceState(fromSession: GeckoSession?,
                                          ontoSession: GeckoSession?) =
-            GeckoView(InstrumentationRegistry.getTargetContext()).apply {
+            GeckoView(InstrumentationRegistry.getInstrumentation().targetContext).apply {
                 id = 0
+                autofillEnabled = false
+
                 if (fromSession != null) {
                     setSession(fromSession)
                 }
@@ -408,6 +426,7 @@ class SessionLifecycleTest : BaseSessionTest() {
         sessionRule.waitForPageStop()
     }
 
+    @Suppress("DEPRECATION")
     @Ignore // Bug 1533934 - disabled createFromParcel on pgo for frequent failures
     @Test fun createFromParcel() {
         val session = sessionRule.createOpenSession()
@@ -459,9 +478,34 @@ class SessionLifecycleTest : BaseSessionTest() {
         waitUntilCollected(createSession())
     }
 
+    @WithDisplay(width = 100, height = 100)
+    @Test fun asyncScriptsSuspendedWhileInactive() {
+        mainSession.loadTestPath(HELLO_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        // Deactivate the GeckoSession and confirm that rAF/setTimeout/etc callbacks do not run
+        mainSession.setActive(false)
+        mainSession.evaluateJS(
+            """function fail() {
+                 document.documentElement.style.backgroundColor = 'green';
+               }
+               requestAnimationFrame(fail);
+               setTimeout(fail, 1);
+               fetch("missing.html").catch(fail);""")
+        mainSession.waitForJS("new Promise(resolve => { resolve() })")
+        val isNotGreen = mainSession.evaluateJS("document.documentElement.style.backgroundColor !== 'green'") as Boolean
+        assertThat("requestAnimationFrame has not run yet", isNotGreen, equalTo(true))
+
+        // Reactivate the GeckoSession and confirm that rAF/setTimeout/etc callbacks now run
+        mainSession.setActive(true)
+        mainSession.waitForJS("new Promise(resolve => requestAnimationFrame(() => { resolve(); }))");
+        var isGreen = mainSession.evaluateJS("document.documentElement.style.backgroundColor === 'green'") as Boolean
+        assertThat("requestAnimationFrame has run", isGreen, equalTo(true))
+    }
+
     private fun dumpHprof() {
         try {
-            val dest = File(InstrumentationRegistry.getTargetContext()
+            val dest = File(InstrumentationRegistry.getInstrumentation().targetContext
                     .filesDir.parent, "dump.hprof").absolutePath
             Debug.dumpHprofData(dest)
             Log.d(LOGTAG, "Dumped hprof to $dest")

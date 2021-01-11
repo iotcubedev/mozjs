@@ -9,7 +9,5 @@ DIRS += [
 ]
 
 DevToolsModules(
-    'reps-old.js',
-    'reps.css',
     'reps.js',
 )

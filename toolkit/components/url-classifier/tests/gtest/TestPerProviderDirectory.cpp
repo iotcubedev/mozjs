@@ -3,11 +3,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
 #include "HashStore.h"
 #include "LookupCache.h"
 #include "LookupCacheV4.h"
 #include "nsAppDirectoryServiceDefs.h"
+
+#include "Common.h"
 
 namespace mozilla {
 namespace safebrowsing {
@@ -62,10 +63,10 @@ static void VerifyPrivateStorePath(T* target, const nsCString& aTableName,
 
 TEST(UrlClassifierPerProviderDirectory, LookupCache)
 {
-  RunTestInNewThread([]() -> void {
-    nsCOMPtr<nsIFile> rootDir;
-    NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(rootDir));
+  nsCOMPtr<nsIFile> rootDir;
+  NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(rootDir));
 
+  RunTestInNewThread([&]() -> void {
     // For V2 tables (NOT ending with '-proto'), root directory should be
     // used as the private store.
     {
@@ -96,10 +97,10 @@ TEST(UrlClassifierPerProviderDirectory, LookupCache)
 
 TEST(UrlClassifierPerProviderDirectory, HashStore)
 {
-  RunTestInNewThread([]() -> void {
-    nsCOMPtr<nsIFile> rootDir;
-    NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(rootDir));
+  nsCOMPtr<nsIFile> rootDir;
+  NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR, getter_AddRefs(rootDir));
 
+  RunTestInNewThread([&]() -> void {
     // For V2 tables (NOT ending with '-proto'), root directory should be
     // used as the private store.
     {

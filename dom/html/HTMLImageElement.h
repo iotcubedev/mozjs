@@ -47,7 +47,7 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   }
 
   // Element
-  virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const override;
+  virtual bool IsInteractiveHTMLContent() const override;
 
   // EventTarget
   virtual void AsyncEventRunning(AsyncEventDispatcher* aEvent) override;
@@ -183,11 +183,25 @@ class HTMLImageElement final : public nsGenericHTMLElement,
   }
   void GetDecoding(nsAString& aValue);
 
-  already_AddRefed<Promise> Decode(ErrorResult& aRv);
+  enum class Loading : uint8_t {
+    Eager,
+    Lazy,
+  };
 
-  ReferrerPolicy GetImageReferrerPolicy() override {
-    return GetReferrerPolicyAsEnum();
+  void SetLoading(const nsAString& aLoading, ErrorResult& aError) {
+    SetHTMLAttr(nsGkAtoms::loading, aLoading, aError);
   }
+  void GetLoading(nsAString&) const;
+
+  bool IsAwaitingLoadOrLazyLoading() const {
+    return mLazyLoading || mPendingImageLoadTask;
+  }
+
+  bool IsLazyLoading() const { return mLazyLoading; }
+
+  Loading LoadingState() const;
+
+  already_AddRefed<Promise> Decode(ErrorResult& aRv);
 
   MOZ_CAN_RUN_SCRIPT int32_t X();
   MOZ_CAN_RUN_SCRIPT int32_t Y();
@@ -246,6 +260,8 @@ class HTMLImageElement final : public nsGenericHTMLElement,
       const nsAString& aSrcsetAttr, const nsAString& aSizesAttr,
       const nsAString& aTypeAttr, const nsAString& aMediaAttr,
       nsAString& aResult);
+
+  void StopLazyLoadingAndStartLoadIfNeeded();
 
  protected:
   virtual ~HTMLImageElement();
@@ -357,17 +373,23 @@ class HTMLImageElement final : public nsGenericHTMLElement,
    *        previously set. This value should only be used when
    *        aValueMaybeChanged is true; when aValueMaybeChanged is false,
    *        aOldValue should be considered unreliable.
-   * @param aValueMaybeChanged will be false when this function is called from
-   *        OnAttrSetButNotChanged to indicate that the value was not changed.
    * @param aNotify Whether we plan to notify document observers.
    */
   void AfterMaybeChangeAttr(int32_t aNamespaceID, nsAtom* aName,
                             const nsAttrValueOrString& aValue,
                             const nsAttrValue* aOldValue,
                             nsIPrincipal* aMaybeScriptedPrincipal,
-                            bool aValueMaybeChanged, bool aNotify);
+                            bool aNotify);
+
+  bool ShouldLoadImage() const;
+
+  // Set this image as a lazy load image due to loading="lazy".
+  void SetLazyLoading();
+
+  void StartLoadingIfNeeded();
 
   bool mInDocResponsiveContent;
+
   RefPtr<ImageLoadTask> mPendingImageLoadTask;
   nsCOMPtr<nsIPrincipal> mSrcTriggeringPrincipal;
   nsCOMPtr<nsIPrincipal> mSrcsetTriggeringPrincipal;

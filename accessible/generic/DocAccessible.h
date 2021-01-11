@@ -11,15 +11,13 @@
 #include "HyperTextAccessibleWrap.h"
 #include "AccEvent.h"
 
-#include "nsAutoPtr.h"
 #include "nsClassHashtable.h"
 #include "nsDataHashtable.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/UniquePtr.h"
 #include "nsIDocumentObserver.h"
 #include "nsIObserver.h"
-#include "nsIScrollPositionListener.h"
 #include "nsITimer.h"
-#include "nsIWeakReference.h"
 
 class nsAccessiblePivot;
 
@@ -46,7 +44,6 @@ class TNotification;
 class DocAccessible : public HyperTextAccessibleWrap,
                       public nsIDocumentObserver,
                       public nsIObserver,
-                      public nsIScrollPositionListener,
                       public nsSupportsWeakReference,
                       public nsIAccessiblePivotObserver {
   NS_DECL_ISUPPORTS_INHERITED
@@ -60,10 +57,6 @@ class DocAccessible : public HyperTextAccessibleWrap,
 
  public:
   DocAccessible(Document* aDocument, PresShell* aPresShell);
-
-  // nsIScrollPositionListener
-  virtual void ScrollPositionWillChange(nscoord aX, nscoord aY) override {}
-  virtual void ScrollPositionDidChange(nscoord aX, nscoord aY) override;
 
   // nsIDocumentObserver
   NS_DECL_NSIDOCUMENTOBSERVER
@@ -327,10 +320,6 @@ class DocAccessible : public HyperTextAccessibleWrap,
 
   /**
    * Return true if the given ID is referred by relation attribute.
-   *
-   * @note Different elements may share the same ID if they are hosted inside
-   *       XBL bindings. Be careful the result of this method may be  senseless
-   *       while it's called for XUL elements (where XBL is used widely).
    */
   bool IsDependentID(dom::Element* aElement, const nsAString& aID) const {
     return GetRelProviders(aElement, aID);
@@ -389,6 +378,13 @@ class DocAccessible : public HyperTextAccessibleWrap,
    */
   DocAccessibleChild* IPCDoc() const { return mIPCDoc; }
 
+  /**
+   * Notify the document that a DOM node has been scrolled. document will
+   * dispatch throttled accessibility events for scrolling, and a scroll-end
+   * event.
+   */
+  void HandleScroll(nsINode* aTarget);
+
  protected:
   virtual ~DocAccessible();
 
@@ -424,17 +420,14 @@ class DocAccessible : public HyperTextAccessibleWrap,
   void ProcessLoad();
 
   /**
-   * Add/remove scroll listeners, @see nsIScrollPositionListener interface.
-   */
-  void AddScrollListener();
-  void RemoveScrollListener();
-
-  /**
    * Append the given document accessible to this document's child document
    * accessibles.
    */
   bool AppendChildDocument(DocAccessible* aChildDocument) {
-    return mChildDocuments.AppendElement(aChildDocument);
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier, or change the return type to void.
+    mChildDocuments.AppendElement(aChildDocument);
+    return true;
   }
 
   /**
@@ -482,9 +475,10 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aAccessible   [in] accessible the DOM attribute is changed for
    * @param aNameSpaceID  [in] namespace of changed attribute
    * @param aAttribute    [in] changed attribute
+   * @param aModType      [in] modification type (changed/added/removed)
    */
   void AttributeChangedImpl(Accessible* aAccessible, int32_t aNameSpaceID,
-                            nsAtom* aAttribute);
+                            nsAtom* aAttribute, int32_t aModType);
 
   /**
    * Fire accessible events when ARIA attribute is changed.
@@ -582,7 +576,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    */
   static void ScrollTimerCallback(nsITimer* aTimer, void* aClosure);
 
-  void DispatchScrollingEvent(uint32_t aEventType);
+  void DispatchScrollingEvent(nsINode* aTarget, uint32_t aEventType);
 
   /**
    * Check if an id attribute change affects aria-activedescendant and handle
@@ -612,11 +606,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * State and property flags, kept by mDocFlags.
    */
   enum {
-    // Whether scroll listeners were added.
-    eScrollInitialized = 1 << 0,
-
-    // Whether the document is a tab document.
-    eTabDocument = 1 << 1
+    // Whether the document is a top level content document in this process.
+    eTopLevelContentDocInProcess = 1 << 0
   };
 
   /**
@@ -628,8 +619,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
 
   Document* mDocumentNode;
   nsCOMPtr<nsITimer> mScrollWatchTimer;
-  uint16_t mScrollPositionChangedTicks;  // Used for tracking scroll events
-  TimeStamp mLastScrollingDispatch;
+  nsDataHashtable<nsPtrHashKey<nsINode>, TimeStamp> mLastScrollingDispatch;
 
   /**
    * Bit mask of document load states (@see LoadState).
@@ -659,8 +649,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
     // ARIA attribute value
     const nsAtom* mARIAAttrOldValue;
 
-    // True if the accessible state bit was on
-    bool mStateBitWasOn;
+    // Previous state bits before attribute change
+    uint64_t mPrevStateBits;
   };
 
   nsTArray<RefPtr<DocAccessible>> mChildDocuments;
@@ -687,7 +677,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
     AttrRelProvider& operator=(const AttrRelProvider&);
   };
 
-  typedef nsTArray<nsAutoPtr<AttrRelProvider>> AttrRelProviders;
+  typedef nsTArray<mozilla::UniquePtr<AttrRelProvider>> AttrRelProviders;
   typedef nsClassHashtable<nsStringHashKey, AttrRelProviders>
       DependentIDsHashtable;
 
@@ -733,6 +723,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
   friend class NotificationController;
 
  private:
+  void SetRoleMapEntryForDoc(dom::Element* aElement);
+
   PresShell* mPresShell;
 
   // Exclusively owned by IPDL so don't manually delete it!

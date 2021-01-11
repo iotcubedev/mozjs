@@ -16,6 +16,7 @@
 #  include "mozilla/Maybe.h"
 #  include "mozilla/Sprintf.h"
 
+#  include "jstypes.h"
 #  include "vm/JSONPrinter.h"
 #  include "vm/Printer.h"
 
@@ -66,13 +67,14 @@
 // - Each file is prefixed with the PID to handle multiple processes.
 // - Files are opened lazily, just before the first write to them.
 
-class JSScript;
+class JS_PUBLIC_API JSScript;
 
 namespace js {
 
 #  define STRUCTURED_CHANNEL_LIST(_) \
     _(BaselineICStats)               \
-    _(ScriptStats)
+    _(ScriptStats)                   \
+    _(RateMyCacheIR)
 
 // Structured spew channels
 enum class SpewChannel {
@@ -111,10 +113,6 @@ class StructuredSpewer {
         spewingEnabled_(false),
         json_(mozilla::Nothing()),
         selectedChannels_() {
-    // If we are recording or replaying, we cannot use getenv
-    if (mozilla::recordreplay::IsRecordingOrReplaying()) {
-      return;
-    }
     if (getenv("SPEW")) {
       parseSpewFlags(getenv("SPEW"));
     }

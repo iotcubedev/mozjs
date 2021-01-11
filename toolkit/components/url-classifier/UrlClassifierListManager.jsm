@@ -8,7 +8,7 @@ const { XPCOMUtils } = ChromeUtils.import(
 );
 
 // This is the only implementation of nsIUrlListManager.
-// A class that manages lists, namely white and black lists for
+// A class that manages lists, namely exception and block lists for
 // phishing or malware protection. The ListManager knows how to fetch,
 // update, and store lists.
 //
@@ -41,7 +41,7 @@ this.log = function log(...stuff) {
 };
 
 /**
- * A ListManager keeps track of black and white lists and knows
+ * A ListManager keeps track of exception and block lists and knows
  * how to update them.
  *
  * @constructor
@@ -395,7 +395,7 @@ PROT_ListManager.prototype.forceUpdates = function(tables) {
     }
 
     // Trigger an update for the given url.
-    if (!this.checkForUpdates(url)) {
+    if (!this.checkForUpdates(url, true)) {
       ret = false;
     }
   });
@@ -408,11 +408,22 @@ PROT_ListManager.prototype.forceUpdates = function(tables) {
  *
  * @param updateUrl: request updates for tables associated with that url, or
  * for all tables if the url is empty.
+ * @param manual: the update is triggered manually
  */
-PROT_ListManager.prototype.checkForUpdates = function(updateUrl) {
+PROT_ListManager.prototype.checkForUpdates = function(
+  updateUrl,
+  manual = false
+) {
   log("checkForUpdates with " + updateUrl);
   // See if we've triggered the request backoff logic.
   if (!updateUrl) {
+    return false;
+  }
+
+  // Disable SafeBrowsing updates in Safe Mode, but still allow manually
+  // triggering an update for debugging.
+  if (Services.appinfo.inSafeMode && !manual) {
+    log("update is disabled in Safe Mode");
     return false;
   }
 
@@ -564,7 +575,7 @@ PROT_ListManager.prototype.makeUpdateRequest_ = function(updateUrl, tableData) {
   log("update request: " + JSON.stringify(streamerMap, undefined, 2) + "\n");
 
   // Don't send an empty request.
-  if (streamerMap.requestPayload.length > 0) {
+  if (streamerMap.requestPayload.length) {
     this.makeUpdateRequestForEntry_(
       updateUrl,
       streamerMap.tableList,

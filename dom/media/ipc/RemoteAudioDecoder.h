@@ -20,7 +20,7 @@ class RemoteAudioDecoderChild final : public RemoteDecoderChild {
   MediaResult InitIPDL(const AudioInfo& aAudioInfo,
                        const CreateDecoderParams::OptionSet& aOptions);
 
-  IPCResult RecvOutput(const DecodedOutputIPDL& aDecodedData) override;
+  MediaResult ProcessOutput(const DecodedOutputIPDL& aDecodedData) override;
 };
 
 class RemoteAudioDecoderParent final : public RemoteDecoderParent {
@@ -28,13 +28,13 @@ class RemoteAudioDecoderParent final : public RemoteDecoderParent {
   RemoteAudioDecoderParent(RemoteDecoderManagerParent* aParent,
                            const AudioInfo& aAudioInfo,
                            const CreateDecoderParams::OptionSet& aOptions,
-                           TaskQueue* aManagerTaskQueue,
+                           nsISerialEventTarget* aManagerThread,
                            TaskQueue* aDecodeTaskQueue, bool* aSuccess,
                            nsCString* aErrorDescription);
 
  protected:
-  MediaResult ProcessDecodedData(
-      const MediaDataDecoder::DecodedData& aData) override;
+  MediaResult ProcessDecodedData(const MediaDataDecoder::DecodedData& aData,
+                                 DecodedOutputIPDL& aDecodedData) override;
 
  private:
   // Can only be accessed from the manager thread

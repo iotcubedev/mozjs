@@ -6,14 +6,26 @@
 #ifndef mozilla_layers_NativeLayer_h
 #define mozilla_layers_NativeLayer_h
 
+#include "mozilla/Maybe.h"
+#include "mozilla/Range.h"
+#include "mozilla/UniquePtr.h"
+
+#include "GLTypes.h"
 #include "nsISupportsImpl.h"
 #include "nsRegion.h"
 
 namespace mozilla {
+
+namespace gl {
+class GLContext;
+}  // namespace gl
+
 namespace layers {
 
 class NativeLayer;
 class NativeLayerCA;
+class NativeLayerRootSnapshotter;
+class SurfacePoolHandle;
 
 // NativeLayerRoot and NativeLayer allow building up a flat layer "tree" of
 // sibling layers. These layers provide a cross-platform abstraction for the
@@ -25,12 +37,52 @@ class NativeLayerRoot {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(NativeLayerRoot)
 
-  virtual already_AddRefed<NativeLayer> CreateLayer() = 0;
+  virtual already_AddRefed<NativeLayer> CreateLayer(
+      const gfx::IntSize& aSize, bool aIsOpaque,
+      SurfacePoolHandle* aSurfacePoolHandle) = 0;
   virtual void AppendLayer(NativeLayer* aLayer) = 0;
   virtual void RemoveLayer(NativeLayer* aLayer) = 0;
+  virtual void SetLayers(const nsTArray<RefPtr<NativeLayer>>& aLayers) = 0;
+
+  // Publish the layer changes to the screen. Returns whether the commit was
+  // successful.
+  virtual bool CommitToScreen() = 0;
+
+  // Returns a new NativeLayerRootSnapshotter that can be used to read back the
+  // visual output of this NativeLayerRoot. The snapshotter needs to be
+  // destroyed on the same thread that CreateSnapshotter() was called on. Only
+  // one snapshotter per NativeLayerRoot can be in existence at any given time.
+  // CreateSnapshotter() makes sure of this and crashes if called at a time at
+  // which there still exists a snapshotter for this NativeLayerRoot.
+  virtual UniquePtr<NativeLayerRootSnapshotter> CreateSnapshotter() {
+    return nullptr;
+  }
 
  protected:
-  virtual ~NativeLayerRoot() {}
+  virtual ~NativeLayerRoot() = default;
+};
+
+// Allows reading back the visual output of a NativeLayerRoot.
+// Can only be used on a single thread, unlike NativeLayerRoot.
+// Holds a strong reference to the NativeLayerRoot that created it.
+// On Mac, this owns a GLContext, which wants to be created and destroyed on the
+// same thread.
+class NativeLayerRootSnapshotter {
+ public:
+  virtual ~NativeLayerRootSnapshotter() = default;
+
+  // Reads the composited result of the NativeLayer tree into aReadbackBuffer,
+  // synchronously. Should only be called right after a call to CommitToScreen()
+  // - in that case it is guaranteed to read back exactly the NativeLayer state
+  // that was committed. If called at other times, this API does not define
+  // whether the observed state includes NativeLayer modifications which have
+  // not been committed. (The macOS implementation will include those pending
+  // modifications by doing an offscreen commit.)
+  // The readback buffer's stride is assumed to be aReadbackSize.width * 4. Only
+  // BGRA is supported.
+  virtual bool ReadbackPixels(const gfx::IntSize& aReadbackSize,
+                              gfx::SurfaceFormat aReadbackFormat,
+                              const Range<uint8_t>& aReadbackBuffer) = 0;
 };
 
 // Represents a native layer. Native layers, such as CoreAnimation layers on
@@ -57,18 +109,100 @@ class NativeLayer {
 
   virtual NativeLayerCA* AsNativeLayerCA() { return nullptr; }
 
-  // The location and size of the layer, in integer device pixels. This also
-  // determines the size of the surface that should be returned from the next
-  // call to NextSurface.
-  virtual void SetRect(const gfx::IntRect& aRect) = 0;
+  // The size and opaqueness of a layer are supplied during layer creation and
+  // never change.
+  virtual gfx::IntSize GetSize() = 0;
+  virtual bool IsOpaque() = 0;
+
+  // The location of the layer, in integer device pixels.
+  virtual void SetPosition(const gfx::IntPoint& aPosition) = 0;
+  virtual gfx::IntPoint GetPosition() = 0;
+
   virtual gfx::IntRect GetRect() = 0;
 
-  // Define which parts of the layer are opaque..
-  virtual void SetOpaqueRegion(const gfx::IntRegion& aRegion) = 0;
-  virtual gfx::IntRegion OpaqueRegion() = 0;
+  // Set an optional clip rect on the layer. The clip rect is in the same
+  // coordinate space as the layer rect.
+  virtual void SetClipRect(const Maybe<gfx::IntRect>& aClipRect) = 0;
+  virtual Maybe<gfx::IntRect> ClipRect() = 0;
+
+  // Returns the "display rect", in content coordinates, of the current front
+  // surface. This rect acts as an extra clip and prevents invalid content from
+  // getting to the screen. The display rect starts out empty before the first
+  // call to NextSurface*. Note the different coordinate space from the regular
+  // clip rect: the clip rect is "outside" the layer position, the display rect
+  // is "inside" the layer position (moves with the layer).
+  virtual gfx::IntRect CurrentSurfaceDisplayRect() = 0;
+
+  // Whether the surface contents are flipped vertically compared to this
+  // layer's coordinate system. Can be set on any thread at any time.
+  virtual void SetSurfaceIsFlipped(bool aIsFlipped) = 0;
+  virtual bool SurfaceIsFlipped() = 0;
+
+  // Returns a DrawTarget. The size of the DrawTarget will be the same as the
+  // size of this layer. The caller should draw to that DrawTarget, then drop
+  // its reference to the DrawTarget, and then call NotifySurfaceReady(). It can
+  // limit its drawing to aUpdateRegion (which is in the DrawTarget's device
+  // space). After a call to NextSurface*, NextSurface* must not be called again
+  // until after NotifySurfaceReady has been called. Can be called on any
+  // thread. When used from multiple threads, callers need to make sure that
+  // they still only call NextSurface* and NotifySurfaceReady alternatingly and
+  // not in any other order. aUpdateRegion and aDisplayRect are in "content
+  // coordinates" and must not extend beyond the layer size. If aDisplayRect
+  // contains parts that were not valid before, then those parts must be updated
+  // (must be part of aUpdateRegion), so that the entirety of aDisplayRect is
+  // valid after the update. The display rect determines the parts of the
+  // surface that will be shown; this allows using surfaces with only
+  // partially-valid content, as long as none of the invalid content is included
+  // in the display rect.
+  virtual RefPtr<gfx::DrawTarget> NextSurfaceAsDrawTarget(
+      const gfx::IntRect& aDisplayRect, const gfx::IntRegion& aUpdateRegion,
+      gfx::BackendType aBackendType) = 0;
+
+  // Returns a GLuint for a framebuffer that can be used for drawing to the
+  // surface. The size of the framebuffer will be the same as the size of this
+  // layer. If aNeedsDepth is true, the framebuffer is created with a depth
+  // buffer.
+  // The framebuffer's depth buffer (if present) may be shared with other
+  // framebuffers of the same size, even from entirely different NativeLayer
+  // objects. The caller should not assume anything about the depth buffer's
+  // existing contents (i.e. it should clear it at the beginning of the draw).
+  // Callers should draw to one layer at a time, such that there is no
+  // interleaved drawing to different framebuffers that could be tripped up by
+  // the sharing.
+  // The caller should draw to the framebuffer, unbind it, and then call
+  // NotifySurfaceReady(). It can limit its drawing to aUpdateRegion (which is
+  // in the framebuffer's device space, possibly "upside down" if
+  // SurfaceIsFlipped()).
+  // The framebuffer will be created in the GLContext that this layer's
+  // SurfacePoolHandle was created for.
+  // After a call to NextSurface*, NextSurface* must not be called again until
+  // after NotifySurfaceReady has been called. Can be called on any thread. When
+  // used from multiple threads, callers need to make sure that they still only
+  // call NextSurface and NotifySurfaceReady alternatingly and not in any other
+  // order.
+  // aUpdateRegion and aDisplayRect are in "content coordinates" and must not
+  // extend beyond the layer size. If aDisplayRect contains parts that were not
+  // valid before, then those parts must be updated (must be part of
+  // aUpdateRegion), so that the entirety of aDisplayRect is valid after the
+  // update. The display rect determines the parts of the surface that will be
+  // shown; this allows using surfaces with only partially-valid content, as
+  // long as none of the invalid content is included in the display rect.
+  virtual Maybe<GLuint> NextSurfaceAsFramebuffer(
+      const gfx::IntRect& aDisplayRect, const gfx::IntRegion& aUpdateRegion,
+      bool aNeedsDepth) = 0;
+
+  // Indicates that the surface which has been returned from the most recent
+  // call to NextSurface* is now finished being drawn to and can be displayed on
+  // the screen. Resets the invalid region on the surface to the empty region.
+  virtual void NotifySurfaceReady() = 0;
+
+  // If you know that this layer will likely not draw any more frames, then it's
+  // good to call DiscardBackbuffers in order to save memory and allow other
+  // layer's to pick up the released surfaces from the pool.
+  virtual void DiscardBackbuffers() = 0;
 
  protected:
-  virtual ~NativeLayer() {}
+  virtual ~NativeLayer() = default;
 };
 
 }  // namespace layers

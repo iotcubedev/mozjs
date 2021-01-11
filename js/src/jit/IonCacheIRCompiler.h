@@ -8,6 +8,7 @@
 #define jit_IonCacheIRCompiler_h
 
 #include "mozilla/Maybe.h"
+
 #include "jit/CacheIR.h"
 #include "jit/CacheIRCompiler.h"
 #include "jit/IonIC.h"
@@ -29,6 +30,10 @@ class MOZ_RAII IonCacheIRCompiler : public CacheIRCompiler {
   MOZ_MUST_USE bool init();
   JitCode* compile();
 
+#ifdef DEBUG
+  void assertFloatRegisterAvailable(FloatRegister reg);
+#endif
+
  private:
   const CacheIRWriter& writer_;
   IonIC* ic_;
@@ -41,7 +46,6 @@ class MOZ_RAII IonCacheIRCompiler : public CacheIRCompiler {
   // this is a SetProp/SetElem stub.
   const PropertyTypeCheckInfo* typeCheckInfo_;
 
-  CodeOffsetJump rejoinOffset_;
   Vector<CodeOffset, 4, SystemAllocPolicy> nextCodeOffsets_;
   mozilla::Maybe<LiveRegisterSet> liveRegs_;
   mozilla::Maybe<CodeOffset> stubJitCodeOffset_;
@@ -61,20 +65,22 @@ class MOZ_RAII IonCacheIRCompiler : public CacheIRCompiler {
   template <typename Fn, Fn fn>
   void callVM(MacroAssembler& masm);
 
-  MOZ_MUST_USE bool emitAddAndStoreSlotShared(CacheOp op);
+  MOZ_MUST_USE bool emitAddAndStoreSlotShared(
+      CacheOp op, ObjOperandId objId, uint32_t offsetOffset, ValOperandId rhsId,
+      bool changeGroup, uint32_t newGroupOffset, uint32_t newShapeOffset,
+      mozilla::Maybe<uint32_t> numNewSlotsOffset);
   MOZ_MUST_USE bool emitCallScriptedGetterResultShared(
-      TypedOrValueRegister receiver, TypedOrValueRegister output);
+      TypedOrValueRegister receiver, uint32_t getterOffset, bool sameRealm,
+      TypedOrValueRegister output);
   MOZ_MUST_USE bool emitCallNativeGetterResultShared(
-      TypedOrValueRegister receiver, const AutoOutputRegister& output,
-      AutoSaveLiveRegisters& save);
+      TypedOrValueRegister receiver, uint32_t getterOffset,
+      const AutoOutputRegister& output, AutoSaveLiveRegisters& save);
 
   bool needsPostBarrier() const;
 
   void pushStubCodePointer();
 
-#define DEFINE_OP(op, ...) MOZ_MUST_USE bool emit##op();
-  CACHE_IR_OPS(DEFINE_OP)
-#undef DEFINE_OP
+  CACHE_IR_COMPILER_UNSHARED_GENERATED
 };
 
 }  // namespace jit

@@ -98,6 +98,7 @@ this.geckoProfiler = class extends ExtensionAPI {
               interval,
               features,
               threads,
+              0,
               windowLength
             );
           } else {
@@ -106,6 +107,7 @@ this.geckoProfiler = class extends ExtensionAPI {
               interval,
               features,
               [],
+              0,
               windowLength
             );
           }
@@ -120,11 +122,11 @@ this.geckoProfiler = class extends ExtensionAPI {
         },
 
         async pause() {
-          Services.profiler.PauseSampling();
+          Services.profiler.Pause();
         },
 
         async resume() {
-          Services.profiler.ResumeSampling();
+          Services.profiler.Resume();
         },
 
         async dumpProfileToFile(fileName) {

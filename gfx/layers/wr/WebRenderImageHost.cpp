@@ -6,16 +6,17 @@
 
 #include "WebRenderImageHost.h"
 
+#include <utility>
+
 #include "LayersLogging.h"
-#include "mozilla/Move.h"
 #include "mozilla/ScopeExit.h"
+#include "mozilla/layers/AsyncImagePipelineManager.h"
 #include "mozilla/layers/Compositor.h"                // for Compositor
 #include "mozilla/layers/CompositorVsyncScheduler.h"  // for CompositorVsyncScheduler
 #include "mozilla/layers/Effects.h"  // for TexturedEffect, Effect, etc
 #include "mozilla/layers/LayerManagerComposite.h"  // for TexturedEffect, Effect, etc
 #include "mozilla/layers/WebRenderBridgeParent.h"
 #include "mozilla/layers/WebRenderTextureHost.h"
-#include "mozilla/layers/AsyncImagePipelineManager.h"
 #include "nsAString.h"
 #include "nsDebug.h"          // for NS_WARNING, NS_ASSERTION
 #include "nsPrintfCString.h"  // for nsPrintfCString
@@ -123,6 +124,24 @@ TimeStamp WebRenderImageHost::GetCompositionTime() const {
   return time;
 }
 
+CompositionOpportunityId WebRenderImageHost::GetCompositionOpportunityId()
+    const {
+  CompositionOpportunityId id;
+
+  MOZ_ASSERT(mCurrentAsyncImageManager);
+  if (mCurrentAsyncImageManager) {
+    id = mCurrentAsyncImageManager->GetCompositionOpportunityId();
+  }
+  return id;
+}
+
+void WebRenderImageHost::AppendImageCompositeNotification(
+    const ImageCompositeNotificationInfo& aInfo) const {
+  if (mCurrentAsyncImageManager) {
+    mCurrentAsyncImageManager->AppendImageCompositeNotification(aInfo);
+  }
+}
+
 TextureHost* WebRenderImageHost::GetAsTextureHost(IntRect* aPictureRect) {
   MOZ_ASSERT_UNREACHABLE("unexpected to be called");
   return nullptr;
@@ -147,23 +166,13 @@ TextureHost* WebRenderImageHost::GetAsTextureHostForComposite(
   }
 
   const TimedImage* img = GetImage(imageIndex);
-
-  if (mLastFrameID != img->mFrameID || mLastProducerID != img->mProducerID) {
-    if (mAsyncRef) {
-      ImageCompositeNotificationInfo info;
-      info.mImageBridgeProcessId = mAsyncRef.mProcessId;
-      info.mNotification = ImageCompositeNotification(
-          mAsyncRef.mHandle, img->mTimeStamp,
-          mCurrentAsyncImageManager->GetCompositionTime(), img->mFrameID,
-          img->mProducerID);
-      mCurrentAsyncImageManager->AppendImageCompositeNotification(info);
-    }
-    mLastFrameID = img->mFrameID;
-    mLastProducerID = img->mProducerID;
-  }
   SetCurrentTextureHost(img->mTextureHost);
 
-  UpdateBias(imageIndex);
+  if (mCurrentAsyncImageManager->GetCompositionTime()) {
+    // We are in a composition. Send ImageCompositeNotifications and call
+    // UpdateBias.
+    OnFinishRendering(imageIndex, img, mAsyncRef.mProcessId, mAsyncRef.mHandle);
+  }
 
   return mCurrentTextureHost;
 }

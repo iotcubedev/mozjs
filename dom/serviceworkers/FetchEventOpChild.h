@@ -30,7 +30,7 @@ class FetchEventOpChild final : public PFetchEventOpChild {
   friend class PFetchEventOpChild;
 
  public:
-  static RefPtr<GenericPromise> Create(
+  static RefPtr<GenericPromise> SendFetchEvent(
       PRemoteWorkerControllerChild* aManager,
       ServiceWorkerFetchEventOpArgs&& aArgs,
       nsCOMPtr<nsIInterceptedChannel> aInterceptedChannel,
@@ -55,7 +55,7 @@ class FetchEventOpChild final : public PFetchEventOpChild {
       IPCFetchEventRespondWithResult&& aResult);
 
   mozilla::ipc::IPCResult Recv__delete__(
-      const ServiceWorkerFetchEventOpResult& aResult) override;
+      const ServiceWorkerFetchEventOpResult& aResult);
 
   void ActorDestroy(ActorDestroyReason) override;
 

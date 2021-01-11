@@ -15,8 +15,7 @@
 #include "mozStorageBindingParamsArray.h"
 #include "Variant.h"
 
-namespace mozilla {
-namespace storage {
+namespace mozilla::storage {
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Local Helper Objects
@@ -318,8 +317,7 @@ BindingParams::BindByIndex(uint32_t aIndex, nsIVariant* aValue) {
     (void)mParameters.SetLength(aIndex);
     (void)mParameters.AppendElement(variant);
   } else {
-    NS_ENSURE_TRUE(mParameters.ReplaceElementAt(aIndex, variant),
-                   NS_ERROR_OUT_OF_MEMORY);
+    mParameters.ReplaceElementAt(aIndex, variant);
   }
   return NS_OK;
 }
@@ -336,8 +334,7 @@ AsyncBindingParams::BindByIndex(uint32_t aIndex, nsIVariant* aValue) {
     mParameters.SetLength(aIndex);
     mParameters.AppendElement(variant);
   } else {
-    NS_ENSURE_TRUE(mParameters.ReplaceElementAt(aIndex, variant),
-                   NS_ERROR_OUT_OF_MEMORY);
+    mParameters.ReplaceElementAt(aIndex, variant);
   }
   return NS_OK;
 }
@@ -432,5 +429,4 @@ BindingParams::BindAdoptedBlobByIndex(uint32_t aIndex, uint8_t* aValue,
   return BindByIndex(aIndex, value);
 }
 
-}  // namespace storage
-}  // namespace mozilla
+}  // namespace mozilla::storage

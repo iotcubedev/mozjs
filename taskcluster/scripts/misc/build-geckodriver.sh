@@ -14,12 +14,12 @@ if [ -n "$TOOLTOOL_MANIFEST" ]; then
 fi
 
 EXE=
-COMPRESS_EXT=xz
+COMPRESS_EXT=gz
 
 case "$TARGET" in
 *windows-msvc)
   EXE=.exe
-  COMPRESS_EXT=bz2
+  COMPRESS_EXT=zip
   if [[ $TARGET == "i686-pc-windows-msvc" ]]; then
     . $GECKO_PATH/taskcluster/scripts/misc/vs-setup32.sh
     export CARGO_TARGET_I686_PC_WINDOWS_MSVC_LINKER=$MOZ_FETCHES_DIR/clang/bin/lld-link
@@ -32,6 +32,8 @@ case "$TARGET" in
       (cd "$d"; rename y/A-Z/a-z/ *)
     done
   )
+  # Bug 1584530: don't require the Microsoft MSVC runtime to be installed.
+  export RUSTFLAGS="-Ctarget-feature=+crt-static"
   ;;
 # OSX cross builds are a bit harder
 x86_64-apple-darwin)
@@ -41,17 +43,24 @@ x86_64-apple-darwin)
   ;;
 esac
 
-export PATH="$(cd $MOZ_FETCHES_DIR && pwd)/rustc/bin:$PATH"
+export PATH="$MOZ_FETCHES_DIR/rustc/bin:$PATH"
 
 cd $GECKO_PATH/testing/geckodriver
+
+cp $GECKO_PATH/.cargo/config.in $GECKO_PATH/.cargo/config
 
 cargo build --frozen --verbose --release --target "$TARGET"
 
 cd $GECKO_PATH
+mkdir -p $UPLOAD_DIR
 
 cp target/$TARGET/release/geckodriver$EXE .
-tar -acf geckodriver.tar.$COMPRESS_EXT geckodriver$EXE
-mkdir -p $UPLOAD_DIR
-cp geckodriver.tar.$COMPRESS_EXT $UPLOAD_DIR
+if [ "$COMPRESS_EXT" = "zip" ]; then
+    zip geckodriver.zip geckodriver$EXE
+    cp geckodriver.zip $UPLOAD_DIR
+else
+    tar -acf geckodriver.tar.$COMPRESS_EXT geckodriver$EXE
+    cp geckodriver.tar.$COMPRESS_EXT $UPLOAD_DIR
+fi
 
 . $GECKO_PATH/taskcluster/scripts/misc/vs-cleanup.sh

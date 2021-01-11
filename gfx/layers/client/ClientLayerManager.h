@@ -23,7 +23,6 @@
 #include "mozilla/layers/APZTestData.h"   // for APZTestData
 #include "mozilla/layers/MemoryPressureObserver.h"
 #include "nsCOMPtr.h"         // for already_AddRefed
-#include "nsIObserver.h"      // for nsIObserver
 #include "nsISupportsImpl.h"  // for Layer::Release, etc
 #include "nsRect.h"           // for mozilla::gfx::IntRect
 #include "nsTArray.h"         // for nsTArray
@@ -34,13 +33,7 @@
 class nsDisplayListBuilder;
 
 namespace mozilla {
-
-namespace dom {
-class TabGroup;
-}
 namespace layers {
-
-using dom::TabGroup;
 
 class ClientPaintedLayer;
 class CompositorBridgeChild;
@@ -66,8 +59,6 @@ class ClientLayerManager final : public LayerManager,
   KnowsCompositor* AsKnowsCompositor() override { return mForwarder; }
 
   ClientLayerManager* AsClientLayerManager() override { return this; }
-
-  TabGroup* GetTabGroup();
 
   int32_t GetMaxTextureSize() const override;
 
@@ -350,7 +341,7 @@ class ClientLayerManager final : public LayerManager,
 
 class ClientLayer : public ShadowableLayer {
  public:
-  ClientLayer() { MOZ_COUNT_CTOR(ClientLayer); }
+  MOZ_COUNTED_DEFAULT_CTOR(ClientLayer)
 
   ~ClientLayer();
 

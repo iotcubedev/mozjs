@@ -111,15 +111,24 @@ EventTree* NotificationController::QueueMutation(Accessible* aContainer) {
 }
 
 bool NotificationController::QueueMutationEvent(AccTreeMutationEvent* aEvent) {
-  // We have to allow there to be a hide and then a show event for a target
-  // because of targets getting moved.  However we need to coalesce a show and
-  // then a hide for a target which means we need to check for that here.
-  if (aEvent->GetEventType() == nsIAccessibleEvent::EVENT_HIDE &&
-      aEvent->GetAccessible()->ShowEventTarget()) {
-    AccTreeMutationEvent* showEvent =
-        mMutationMap.GetEvent(aEvent->GetAccessible(), EventMap::ShowEvent);
-    DropMutationEvent(showEvent);
-    return false;
+  if (aEvent->GetEventType() == nsIAccessibleEvent::EVENT_HIDE) {
+    // We have to allow there to be a hide and then a show event for a target
+    // because of targets getting moved.  However we need to coalesce a show and
+    // then a hide for a target which means we need to check for that here.
+    if (aEvent->GetAccessible()->ShowEventTarget()) {
+      AccTreeMutationEvent* showEvent =
+          mMutationMap.GetEvent(aEvent->GetAccessible(), EventMap::ShowEvent);
+      DropMutationEvent(showEvent);
+      return false;
+    }
+
+    // If this is an additional hide event, the accessible may be hidden, or
+    // moved again after a move. Preserve the original hide event since
+    // its properties are consistent with the tree that existed before
+    // the next batch of mutation events is processed.
+    if (aEvent->GetAccessible()->HideEventTarget()) {
+      return false;
+    }
   }
 
   AccMutationEvent* mutEvent = downcast_accEvent(aEvent);
@@ -192,9 +201,7 @@ bool NotificationController::QueueMutationEvent(AccTreeMutationEvent* aEvent) {
 
   // It is not possible to have a text change event for something other than a
   // hyper text accessible.
-  // If the accessible doesn't have a frame, we are probably mid frame
-  // destruction bail early.
-  if (!container->IsHyperText() || !container->GetFrame()) {
+  if (!container->IsHyperText()) {
     return true;
   }
 
@@ -640,10 +647,6 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
                  "isn't created!");
   }
 
-  // Initialize scroll support if needed.
-  if (!(mDocument->mDocFlags & DocAccessible::eScrollInitialized))
-    mDocument->AddScrollListener();
-
   // Process rendered text change notifications.
   for (auto iter = mTextHash.Iter(); !iter.Done(); iter.Next()) {
     nsCOMPtrHashKey<nsIContent>* entry = iter.Get();
@@ -905,6 +908,7 @@ void NotificationController::WillRefresh(mozilla::TimeStamp aTime) {
       if (browserChild) {
         static_cast<BrowserChild*>(browserChild.get())
             ->SendPDocAccessibleConstructor(ipcDoc, parentIPCDoc, id, 0, 0);
+        ipcDoc->SendPDocAccessiblePlatformExtConstructor();
       }
 #endif
     }
@@ -929,7 +933,7 @@ void NotificationController::EventMap::PutEvent(AccTreeMutationEvent* aEvent) {
   uint64_t addr = reinterpret_cast<uintptr_t>(aEvent->GetAccessible());
   MOZ_ASSERT((addr & 0x3) == 0, "accessible is not 4 byte aligned");
   addr |= type;
-  mTable.Put(addr, aEvent);
+  mTable.Put(addr, RefPtr{aEvent});
 }
 
 AccTreeMutationEvent* NotificationController::EventMap::GetEvent(

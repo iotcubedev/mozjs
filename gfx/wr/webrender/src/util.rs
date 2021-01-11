@@ -66,6 +66,9 @@ pub trait VecHelper<T> {
     /// Equivalent to `mem::replace(&mut vec, Vec::new())`
     fn take(&mut self) -> Self;
 
+    /// Call clear and return self (useful for chaining with calls that move the vector).
+    fn cleared(self) -> Self;
+
     /// Functionally equivalent to `mem::replace(&mut vec, Vec::new())` but tries
     /// to keep the allocation in the caller if it is empty or replace it with a
     /// pre-allocated vector.
@@ -99,6 +102,12 @@ impl<T> VecHelper<T> for Vec<T> {
         replace(self, Vec::new())
     }
 
+    fn cleared(mut self) -> Self {
+        self.clear();
+
+        self
+    }
+
     fn take_and_preallocate(&mut self) -> Self {
         let len = self.len();
         if len == 0 {
@@ -116,7 +125,7 @@ impl<T> VecHelper<T> for Vec<T> {
 // scaling is applied first, followed by the translation.
 // TODO(gw): We should try and incorporate F <-> T units here,
 //           but it's a bit tricky to do that now with the
-//           way the current clip-scroll tree works.
+//           way the current spatial tree works.
 #[derive(Debug, Clone, Copy, MallocSizeOf)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 pub struct ScaleOffset {
@@ -166,6 +175,13 @@ impl ScaleOffset {
         })
     }
 
+    pub fn from_offset(offset: default::Vector2D<f32>) -> Self {
+        ScaleOffset {
+            scale: Vector2D::new(1.0, 1.0),
+            offset,
+        }
+    }
+
     pub fn inverse(&self) -> Self {
         ScaleOffset {
             scale: Vector2D::new(
@@ -184,6 +200,15 @@ impl ScaleOffset {
             &ScaleOffset {
                 scale: Vector2D::new(1.0, 1.0),
                 offset,
+            }
+        )
+    }
+
+    pub fn scale(&self, scale: f32) -> Self {
+        self.accumulate(
+            &ScaleOffset {
+                scale: Vector2D::new(scale, scale),
+                offset: Vector2D::zero(),
             }
         )
     }
@@ -230,6 +255,34 @@ impl ScaleOffset {
         )
     }
 
+    pub fn map_vector<F, T>(&self, vector: &Vector2D<f32, F>) -> Vector2D<f32, T> {
+        Vector2D::new(
+            vector.x * self.scale.x,
+            vector.y * self.scale.y,
+        )
+    }
+
+    pub fn unmap_vector<F, T>(&self, vector: &Vector2D<f32, F>) -> Vector2D<f32, T> {
+        Vector2D::new(
+            vector.x / self.scale.x,
+            vector.y / self.scale.y,
+        )
+    }
+
+    pub fn map_point<F, T>(&self, point: &Point2D<f32, F>) -> Point2D<f32, T> {
+        Point2D::new(
+            point.x * self.scale.x + self.offset.x,
+            point.y * self.scale.y + self.offset.y,
+        )
+    }
+
+    pub fn unmap_point<F, T>(&self, point: &Point2D<f32, F>) -> Point2D<f32, T> {
+        Point2D::new(
+            (point.x - self.offset.x) / self.scale.x,
+            (point.y - self.offset.y) / self.scale.y,
+        )
+    }
+
     pub fn to_transform<F, T>(&self) -> Transform3D<f32, F, T> {
         Transform3D::row_major(
             self.scale.x,
@@ -270,6 +323,7 @@ pub trait MatrixHelpers<Src, Dst> {
     fn transform_kind(&self) -> TransformedRectKind;
     fn is_simple_translation(&self) -> bool;
     fn is_simple_2d_translation(&self) -> bool;
+    fn is_2d_scale_translation(&self) -> bool;
     /// Return the determinant of the 2D part of the matrix.
     fn determinant_2d(&self) -> f32;
     /// This function returns a point in the `Src` space that projects into zero XY.
@@ -382,6 +436,21 @@ impl<Src, Dst> MatrixHelpers<Src, Dst> for Transform3D<f32, Src, Dst> {
         self.m43.abs() < NEARLY_ZERO
     }
 
+    /*  is this...
+     *  X  0  0  0
+     *  0  Y  0  0
+     *  0  0  1  0
+     *  a  b  0  1
+     */
+    fn is_2d_scale_translation(&self) -> bool {
+        (self.m33 - 1.0).abs() < NEARLY_ZERO && 
+            (self.m44 - 1.0).abs() < NEARLY_ZERO &&
+            self.m12.abs() < NEARLY_ZERO && self.m13.abs() < NEARLY_ZERO && self.m14.abs() < NEARLY_ZERO &&
+            self.m21.abs() < NEARLY_ZERO && self.m23.abs() < NEARLY_ZERO && self.m24.abs() < NEARLY_ZERO &&
+            self.m31.abs() < NEARLY_ZERO && self.m32.abs() < NEARLY_ZERO && self.m34.abs() < NEARLY_ZERO &&
+            self.m43.abs() < NEARLY_ZERO
+    }
+
     fn determinant_2d(&self) -> f32 {
         self.m11 * self.m22 - self.m12 * self.m21
     }
@@ -405,12 +474,29 @@ impl<Src, Dst> MatrixHelpers<Src, Dst> for Transform3D<f32, Src, Dst> {
     }
 }
 
+pub trait PointHelpers<U>
+where
+    Self: Sized,
+{
+    fn snap(&self) -> Self;
+}
+
+impl<U> PointHelpers<U> for Point2D<f32, U> {
+    fn snap(&self) -> Self {
+        Point2D::new(
+            (self.x + 0.5).floor(),
+            (self.y + 0.5).floor(),
+        )
+    }
+}
+
 pub trait RectHelpers<U>
 where
     Self: Sized,
 {
     fn from_floats(x0: f32, y0: f32, x1: f32, y1: f32) -> Self;
     fn is_well_formed_and_nonempty(&self) -> bool;
+    fn snap(&self) -> Self;
 }
 
 impl<U> RectHelpers<U> for Rect<f32, U> {
@@ -423,6 +509,36 @@ impl<U> RectHelpers<U> for Rect<f32, U> {
 
     fn is_well_formed_and_nonempty(&self) -> bool {
         self.size.width > 0.0 && self.size.height > 0.0
+    }
+
+    fn snap(&self) -> Self {
+        let origin = Point2D::new(
+            (self.origin.x + 0.5).floor(),
+            (self.origin.y + 0.5).floor(),
+        );
+        Rect::new(
+            origin,
+            Size2D::new(
+                (self.origin.x + self.size.width + 0.5).floor() - origin.x,
+                (self.origin.y + self.size.height + 0.5).floor() - origin.y,
+            ),
+        )
+    }
+}
+
+pub trait VectorHelpers<U>
+where
+    Self: Sized,
+{
+    fn snap(&self) -> Self;
+}
+
+impl<U> VectorHelpers<U> for Vector2D<f32, U> {
+    fn snap(&self) -> Self {
+        Vector2D::new(
+            (self.x + 0.5).floor(),
+            (self.y + 0.5).floor(),
+        )
     }
 }
 
@@ -829,7 +945,7 @@ pub fn project_rect<F, T>(
         let mut clipper = Clipper::new();
         let polygon = Polygon::from_rect(*rect, 1);
 
-        let planes = match Clipper::frustum_planes(
+        let planes = match Clipper::<_, _, usize>::frustum_planes(
             transform,
             Some(*bounds),
         ) {
@@ -975,105 +1091,53 @@ impl Recycler {
     }
 }
 
-/// A specialized array container for comparing equality between the current
-/// contents and the new contents, incrementally. As each item is added, the
-/// container maintains track of whether this is the same as last time items
-/// were added, or if the contents have diverged. After each reset, the memory
-/// of the vec is retained, which means that memory allocation is rare.
-#[derive(Debug)]
-pub struct ComparableVec<T> {
-    /// The items to be stored and compared
-    items: Vec<T>,
-    /// The current index to add the next item to
-    current_index: usize,
-    /// The previous length of the array
-    prev_len: usize,
-    /// Whether the contents of the vec is the same as last time.
-    is_same: bool,
+/// Record the size of a data structure to preallocate a similar size
+/// at the next frame and avoid growing it too many time.
+#[derive(Copy, Clone, Debug)]
+pub struct Preallocator {
+    size: usize,
 }
 
-impl<T> ComparableVec<T> where T: PartialEq + Clone + fmt::Debug {
-    /// Construct a new comparable vec
-    pub fn new() -> Self {
-        ComparableVec {
-            items: Vec::new(),
-            current_index: 0,
-            prev_len: 0,
-            is_same: false,
+impl Preallocator {
+    pub fn new(initial_size: usize) -> Self {
+        Preallocator {
+            size: initial_size,
         }
     }
 
-    /// Retrieve a reference to the current items array
-    pub fn items(&self) -> &[T] {
-        &self.items[.. self.current_index]
-    }
-
-    /// Clear the contents of the vec, ready for adding new items.
-    pub fn reset(&mut self) {
-        self.items.truncate(self.current_index);
-        self.prev_len = self.current_index;
-        self.current_index = 0;
-        self.is_same = true;
-    }
-
-    /// Return the current length of the container
-    pub fn len(&self) -> usize {
-        self.current_index
-    }
-
-    /// Return true if the container has no items
-    pub fn is_empty(&self) -> bool {
-        self.current_index == 0
-    }
-
-    /// Push a number of items into the container
-    pub fn extend_from_slice(&mut self, items: &[T]) {
-        for item in items {
-            self.push(item.clone());
-        }
-    }
-
-    /// Push a single item into the container.
-    pub fn push(&mut self, item: T) {
-        // If this item extends the real length of the vec, it's clearly not
-        // the same as last time.
-        if self.current_index < self.items.len() {
-            // If the vec is currently considered equal, we need to compare
-            // the item being pushed.
-            if self.is_same {
-                let existing_item = &mut self.items[self.current_index];
-                if *existing_item != item {
-                    // Overwrite the current item with the new one and
-                    // mark the vec as different.
-                    *existing_item = item;
-                    self.is_same = false;
-                }
-            } else {
-                // The vec is already not equal, so just push the item.
-                self.items[self.current_index] = item;
-            }
+    /// Record the size of a vector to preallocate it the next frame.
+    pub fn record_vec<T>(&mut self, vec: &Vec<T>) {
+        let len = vec.len();
+        if len > self.size {
+            self.size = len;
         } else {
-            // In this case, mark the vec as different and store the new item.
-            self.is_same = false;
-            self.items.push(item);
-        }
-
-        // Increment where the next item will be pushed.
-        self.current_index += 1;
-    }
-
-    #[allow(dead_code)]
-    pub fn dump(&self, tag: &str) {
-        println!("{}", tag);
-        let items = self.items();
-        for (i, item) in items.iter().enumerate() {
-            println!("{}/{}: {:?}", i, items.len(), item);
+            self.size = (self.size + len) / 2;
         }
     }
 
-    /// Return true if the contents of the vec are the same as the previous time.
-    pub fn is_valid(&self) -> bool {
-        self.is_same && self.prev_len == self.current_index
+    /// The size that we'll preallocate the vector with.
+    pub fn preallocation_size(&self) -> usize {
+        // Round up to multiple of 16 to avoid small tiny
+        // variations causing reallocations.
+        (self.size + 15) & !15
+    }
+
+    /// Preallocate vector storage.
+    ///
+    /// The preallocated amount depends on the length recorded in the last
+    /// record_vec call.
+    pub fn preallocate_vec<T>(&self, vec: &mut Vec<T>) {
+        let len = vec.len();
+        let cap = self.preallocation_size();
+        if len < cap {
+            vec.reserve(cap - len);
+        }
+    }
+}
+
+impl Default for Preallocator {
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 
@@ -1200,5 +1264,16 @@ pub fn round_up_to_multiple(val: usize, mul: NonZeroUsize) -> usize {
     match val % mul.get() {
         0 => val,
         rem => val - rem + mul.get(),
+    }
+}
+
+
+#[macro_export]
+macro_rules! c_str {
+    ($lit:expr) => {
+        unsafe {
+            std::ffi::CStr::from_ptr(concat!($lit, "\0").as_ptr()
+                                     as *const std::os::raw::c_char)
+        }
     }
 }

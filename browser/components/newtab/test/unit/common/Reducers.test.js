@@ -7,6 +7,7 @@ const {
   Dialog,
   Sections,
   Pocket,
+  Personalization,
   DiscoveryStream,
   Search,
   ASRouter,
@@ -893,12 +894,66 @@ describe("Reducers", () => {
       assert.equal(state.pocketCta.useCta, data.use_cta);
     });
   });
+  describe("Personalization", () => {
+    it("should return INITIAL_STATE by default", () => {
+      assert.equal(
+        Personalization(undefined, { type: "some_action" }),
+        INITIAL_STATE.Personalization
+      );
+    });
+    it("should set version to 2 with DISCOVERY_STREAM_PERSONALIZATION_VERSION", () => {
+      const state = Personalization(undefined, {
+        type: at.DISCOVERY_STREAM_PERSONALIZATION_VERSION,
+        data: {
+          version: 2,
+        },
+      });
+      assert.equal(state.version, 2);
+    });
+    it("should set version to 2 with PREF_CHANGED", () => {
+      const state = Personalization(undefined, {
+        type: at.PREF_CHANGED,
+        data: {
+          name: "discoverystream.personalization.version",
+          value: 2,
+        },
+      });
+      assert.equal(state.version, 2);
+    });
+    it("should set lastUpdated with DISCOVERY_STREAM_PERSONALIZATION_LAST_UPDATED", () => {
+      const state = Personalization(undefined, {
+        type: at.DISCOVERY_STREAM_PERSONALIZATION_LAST_UPDATED,
+        data: {
+          lastUpdated: 123,
+        },
+      });
+      assert.equal(state.lastUpdated, 123);
+    });
+    it("should set initialized to true with DISCOVERY_STREAM_PERSONALIZATION_INIT", () => {
+      const state = Personalization(undefined, {
+        type: at.DISCOVERY_STREAM_PERSONALIZATION_INIT,
+      });
+      assert.equal(state.initialized, true);
+    });
+  });
   describe("DiscoveryStream", () => {
     it("should return INITIAL_STATE by default", () => {
       assert.equal(
         DiscoveryStream(undefined, { type: "some_action" }),
         INITIAL_STATE.DiscoveryStream
       );
+    });
+    it("should set isPrivacyInfoModalVisible to true with SHOW_PRIVACY_INFO", () => {
+      const state = DiscoveryStream(undefined, {
+        type: at.SHOW_PRIVACY_INFO,
+      });
+      assert.equal(state.isPrivacyInfoModalVisible, true);
+    });
+    it("should set isPrivacyInfoModalVisible to false with HIDE_PRIVACY_INFO", () => {
+      const state = DiscoveryStream(undefined, {
+        type: at.HIDE_PRIVACY_INFO,
+      });
+      assert.equal(state.isPrivacyInfoModalVisible, false);
     });
     it("should set layout data with DISCOVERY_STREAM_LAYOUT_UPDATE", () => {
       const state = DiscoveryStream(undefined, {
@@ -948,13 +1003,12 @@ describe("Reducers", () => {
       });
       assert.isTrue(state.feeds.loaded);
     });
-    it("should set spoc_endpoint and spocs_per_domain with DISCOVERY_STREAM_SPOCS_ENDPOINT", () => {
+    it("should set spoc_endpoint with DISCOVERY_STREAM_SPOCS_ENDPOINT", () => {
       const state = DiscoveryStream(undefined, {
         type: at.DISCOVERY_STREAM_SPOCS_ENDPOINT,
-        data: { url: "foo.com", spocs_per_domain: 2 },
+        data: { url: "foo.com" },
       });
       assert.equal(state.spocs.spocs_endpoint, "foo.com");
-      assert.equal(state.spocs.spocs_per_domain, 2);
     });
     it("should use initial state with DISCOVERY_STREAM_SPOCS_PLACEMENTS", () => {
       const state = DiscoveryStream(undefined, {
@@ -983,7 +1037,6 @@ describe("Reducers", () => {
       });
       assert.deepEqual(state.spocs, {
         spocs_endpoint: "",
-        spocs_per_domain: 1,
         data: [1, 2, 3],
         lastUpdated: 123,
         loaded: true,
@@ -1000,7 +1053,13 @@ describe("Reducers", () => {
       const oldState = {
         spocs: {
           data: {
-            spocs: [{ url: "test-spoc.com" }],
+            spocs: {
+              items: [
+                {
+                  url: "test-spoc.com",
+                },
+              ],
+            },
           },
           loaded: true,
         },
@@ -1012,7 +1071,7 @@ describe("Reducers", () => {
 
       const newState = DiscoveryStream(oldState, deleteAction);
 
-      assert.equal(newState.spocs.data.spocs.length, 1);
+      assert.equal(newState.spocs.data.spocs.items.length, 1);
     });
     it("should handle no data from DISCOVERY_STREAM_SPOCS_UPDATE", () => {
       const data = null;
@@ -1078,7 +1137,9 @@ describe("Reducers", () => {
       const oldState = {
         spocs: {
           data: {
-            spocs: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            spocs: {
+              items: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1089,7 +1150,9 @@ describe("Reducers", () => {
         },
       };
       const newState = DiscoveryStream(oldState, deleteAction);
-      assert.deepEqual(newState.spocs.data.spocs, [{ url: "test-spoc.com" }]);
+      assert.deepEqual(newState.spocs.data.spocs.items, [
+        { url: "test-spoc.com" },
+      ]);
     });
     it("should remove the site on DISCOVERY_STREAM_LINK_BLOCKED from feeds if spocs data is empty", () => {
       const deleteAction = {
@@ -1139,7 +1202,9 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            spocs: {
+              items: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1150,7 +1215,9 @@ describe("Reducers", () => {
         data: { url: "https://foo.com" },
       };
       const newState = DiscoveryStream(oldState, deleteAction);
-      assert.deepEqual(newState.spocs.data.spocs, [{ url: "test-spoc.com" }]);
+      assert.deepEqual(newState.spocs.data.spocs.items, [
+        { url: "test-spoc.com" },
+      ]);
       assert.deepEqual(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
         [{ url: "test.com" }]
@@ -1179,7 +1246,9 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            spocs: {
+              items: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            },
           },
           placements: [{ name: "spocs" }],
           loaded: true,
@@ -1196,13 +1265,16 @@ describe("Reducers", () => {
 
       const newState = DiscoveryStream(oldState, action);
 
-      assert.lengthOf(newState.spocs.data.spocs, 2);
+      assert.lengthOf(newState.spocs.data.spocs.items, 2);
       assert.equal(
-        newState.spocs.data.spocs[0].pocket_id,
+        newState.spocs.data.spocs.items[0].pocket_id,
         action.data.pocket_id
       );
-      assert.equal(newState.spocs.data.spocs[0].open_url, action.data.open_url);
-      assert.isUndefined(newState.spocs.data.spocs[1].pocket_id);
+      assert.equal(
+        newState.spocs.data.spocs.items[0].open_url,
+        action.data.open_url
+      );
+      assert.isUndefined(newState.spocs.data.spocs.items[1].pocket_id);
 
       assert.lengthOf(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
@@ -1246,10 +1318,12 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [
-              { url: "https://foo.com", pocket_id: 1234 },
-              { url: "test-spoc.com" },
-            ],
+            spocs: {
+              items: [
+                { url: "https://foo.com", pocket_id: 1234 },
+                { url: "test-spoc.com" },
+              ],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1263,7 +1337,9 @@ describe("Reducers", () => {
       };
 
       const newState = DiscoveryStream(oldState, deleteAction);
-      assert.deepEqual(newState.spocs.data.spocs, [{ url: "test-spoc.com" }]);
+      assert.deepEqual(newState.spocs.data.spocs.items, [
+        { url: "test-spoc.com" },
+      ]);
       assert.deepEqual(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
         [{ url: "test.com" }]
@@ -1286,10 +1362,12 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [
-              { url: "https://foo.com", pocket_id: 1234 },
-              { url: "test-spoc.com" },
-            ],
+            spocs: {
+              items: [
+                { url: "https://foo.com", pocket_id: 1234 },
+                { url: "test-spoc.com" },
+              ],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1303,7 +1381,9 @@ describe("Reducers", () => {
       };
 
       const newState = DiscoveryStream(oldState, deleteAction);
-      assert.deepEqual(newState.spocs.data.spocs, [{ url: "test-spoc.com" }]);
+      assert.deepEqual(newState.spocs.data.spocs.items, [
+        { url: "test-spoc.com" },
+      ]);
       assert.deepEqual(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
         [{ url: "test.com" }]
@@ -1326,7 +1406,9 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            spocs: {
+              items: [{ url: "https://foo.com" }, { url: "test-spoc.com" }],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1344,16 +1426,16 @@ describe("Reducers", () => {
 
       const newState = DiscoveryStream(oldState, bookmarkAction);
 
-      assert.lengthOf(newState.spocs.data.spocs, 2);
+      assert.lengthOf(newState.spocs.data.spocs.items, 2);
       assert.equal(
-        newState.spocs.data.spocs[0].bookmarkGuid,
+        newState.spocs.data.spocs.items[0].bookmarkGuid,
         bookmarkAction.data.bookmarkGuid
       );
       assert.equal(
-        newState.spocs.data.spocs[0].bookmarkTitle,
+        newState.spocs.data.spocs.items[0].bookmarkTitle,
         bookmarkAction.data.bookmarkTitle
       );
-      assert.isUndefined(newState.spocs.data.spocs[1].bookmarkGuid);
+      assert.isUndefined(newState.spocs.data.spocs.items[1].bookmarkGuid);
 
       assert.lengthOf(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
@@ -1396,14 +1478,16 @@ describe("Reducers", () => {
         },
         spocs: {
           data: {
-            spocs: [
-              {
-                url: "https://foo.com",
-                bookmarkGuid: "bookmark123",
-                bookmarkTitle: "Title for bar.com",
-              },
-              { url: "test-spoc.com" },
-            ],
+            spocs: {
+              items: [
+                {
+                  url: "https://foo.com",
+                  bookmarkGuid: "bookmark123",
+                  bookmarkTitle: "Title for bar.com",
+                },
+                { url: "test-spoc.com" },
+              ],
+            },
           },
           loaded: true,
           placements: [{ name: "spocs" }],
@@ -1418,9 +1502,9 @@ describe("Reducers", () => {
 
       const newState = DiscoveryStream(oldState, action);
 
-      assert.lengthOf(newState.spocs.data.spocs, 2);
-      assert.isUndefined(newState.spocs.data.spocs[0].bookmarkGuid);
-      assert.isUndefined(newState.spocs.data.spocs[0].bookmarkTitle);
+      assert.lengthOf(newState.spocs.data.spocs.items, 2);
+      assert.isUndefined(newState.spocs.data.spocs.items[0].bookmarkGuid);
+      assert.isUndefined(newState.spocs.data.spocs.items[0].bookmarkTitle);
 
       assert.lengthOf(
         newState.feeds.data["https://foo.com/feed1"].data.recommendations,
@@ -1434,6 +1518,18 @@ describe("Reducers", () => {
         newState.feeds.data["https://foo.com/feed1"].data.recommendations[0]
           .bookmarkTitle
       );
+    });
+    describe("PREF_CHANGED", () => {
+      it("should set isCollectionDismissible", () => {
+        const state = DiscoveryStream(undefined, {
+          type: at.PREF_CHANGED,
+          data: {
+            name: "discoverystream.isCollectionDismissible",
+            value: true,
+          },
+        });
+        assert.equal(state.isCollectionDismissible, true);
+      });
     });
   });
   describe("Search", () => {

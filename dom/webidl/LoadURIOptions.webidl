@@ -11,7 +11,7 @@ interface ReferrerInfo;
 /**
  * This dictionary holds load arguments for docshell loads.
  */
-
+[GenerateInit]
 dictionary LoadURIOptions {
   /**
    * The principal that initiated the load.
@@ -61,4 +61,16 @@ dictionary LoadURIOptions {
    * and cannot be used to resolve aURI.
    */
   URI? baseURI = null;
+
+  /**
+   * Set to indicate that the URI to be loaded was triggered by a user
+   * action. (Mostly used in the context of Sec-Fetch-User).
+   */
+  boolean hasValidUserGestureActivation = false;
+
+  /**
+   * If non-0, a value to pass to nsIDocShell::setCancelContentJSEpoch
+   * when initiating the load.
+   */
+  long cancelContentJSEpoch = 0;
 };

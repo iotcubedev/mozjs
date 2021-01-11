@@ -5,20 +5,22 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "KeyPath.h"
+
 #include "IDBObjectStore.h"
+#include "IndexedDBCommon.h"
 #include "Key.h"
 #include "ReportInternalError.h"
-
-#include "nsCharSeparatedTokenizer.h"
-#include "nsJSUtils.h"
-#include "nsPrintfCString.h"
-#include "xpcpublic.h"
-
+#include "js/Array.h"  // JS::NewArrayObject
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Blob.h"
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/IDBObjectStoreBinding.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsJSUtils.h"
+#include "nsPrintfCString.h"
+#include "xpcpublic.h"
 
 namespace mozilla {
 namespace dom {
@@ -36,24 +38,20 @@ bool IsValidKeyPathString(const nsAString& aKeyPath) {
   KeyPathTokenizer tokenizer(aKeyPath, '.');
 
   while (tokenizer.hasMoreTokens()) {
-    nsString token(tokenizer.nextToken());
+    const auto& token = tokenizer.nextToken();
 
     if (!token.Length()) {
       return false;
     }
 
-    if (!JS_IsIdentifier(token.get(), token.Length())) {
+    if (!JS_IsIdentifier(token.Data(), token.Length())) {
       return false;
     }
   }
 
   // If the very last character was a '.', the tokenizer won't give us an empty
   // token, but the keyPath is still invalid.
-  if (!aKeyPath.IsEmpty() && aKeyPath.CharAt(aKeyPath.Length() - 1) == '.') {
-    return false;
-  }
-
-  return true;
+  return aKeyPath.IsEmpty() || aKeyPath.CharAt(aKeyPath.Length() - 1) != '.';
 }
 
 enum KeyExtractionOptions { DoNotCreateProperties, CreateProperties };
@@ -80,7 +78,7 @@ nsresult GetJSValFromKeyPathString(
   JS::Rooted<JSObject*> obj(aCx);
 
   while (tokenizer.hasMoreTokens()) {
-    const nsDependentSubstring& token = tokenizer.nextToken();
+    const auto& token = tokenizer.nextToken();
 
     NS_ASSERTION(!token.IsEmpty(), "Should be a valid keypath");
 
@@ -254,8 +252,10 @@ nsresult GetJSValFromKeyPathString(
     IDB_ENSURE_TRUE(succeeded, NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
   }
 
-  NS_ENSURE_SUCCESS(rv, rv);
-  return rv;
+  // TODO: It would be nicer to do the cleanup using a RAII class or something.
+  //       This last IDB_TRY could be removed then.
+  IDB_TRY(rv);
+  return NS_OK;
 }
 
 }  // namespace
@@ -353,11 +353,12 @@ nsresult KeyPath::ExtractKey(JSContext* aCx, const JS::Value& aValue,
       return rv;
     }
 
-    ErrorResult errorResult;
-    auto result = aKey.AppendItem(aCx, IsArray() && i == 0, value, errorResult);
-    if (!result.Is(Ok, errorResult)) {
+    auto result = aKey.AppendItem(aCx, IsArray() && i == 0, value);
+    if (!result.Is(Ok)) {
       NS_ASSERTION(aKey.IsUnset(), "Encoding error should unset");
-      errorResult.SuppressException();
+      if (result.Is(SpecialValues::Exception)) {
+        result.AsException().SuppressException();
+      }
       return NS_ERROR_DOM_INDEXEDDB_DATA_ERR;
     }
   }
@@ -377,7 +378,7 @@ nsresult KeyPath::ExtractKeyAsJSVal(JSContext* aCx, const JS::Value& aValue,
   }
 
   const uint32_t len = mStrings.Length();
-  JS::Rooted<JSObject*> arrayObj(aCx, JS_NewArrayObject(aCx, len));
+  JS::Rooted<JSObject*> arrayObj(aCx, JS::NewArrayObject(aCx, len));
   if (!arrayObj) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
@@ -418,11 +419,12 @@ nsresult KeyPath::ExtractOrCreateKey(JSContext* aCx, const JS::Value& aValue,
     return rv;
   }
 
-  ErrorResult errorResult;
-  auto result = aKey.AppendItem(aCx, false, value, errorResult);
-  if (!result.Is(Ok, errorResult)) {
+  auto result = aKey.AppendItem(aCx, false, value);
+  if (!result.Is(Ok)) {
     NS_ASSERTION(aKey.IsUnset(), "Should be unset");
-    errorResult.SuppressException();
+    if (result.Is(SpecialValues::Exception)) {
+      result.AsException().SuppressException();
+    }
     return value.isUndefined() ? NS_OK : NS_ERROR_DOM_INDEXEDDB_DATA_ERR;
   }
 
@@ -476,7 +478,7 @@ KeyPath KeyPath::DeserializeFromString(const nsAString& aString) {
       // There is a trailing comma, indicating the original KeyPath has
       // a trailing empty string, i.e. [..., '']. We should append this
       // empty string.
-      keyPath.mStrings.AppendElement(nsString{});
+      keyPath.mStrings.EmplaceBack();
     }
 
     return keyPath;
@@ -492,7 +494,7 @@ nsresult KeyPath::ToJSVal(JSContext* aCx,
                           JS::MutableHandle<JS::Value> aValue) const {
   if (IsArray()) {
     uint32_t len = mStrings.Length();
-    JS::Rooted<JSObject*> array(aCx, JS_NewArrayObject(aCx, len));
+    JS::Rooted<JSObject*> array(aCx, JS::NewArrayObject(aCx, len));
     if (!array) {
       IDB_WARNING("Failed to make array!");
       return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;

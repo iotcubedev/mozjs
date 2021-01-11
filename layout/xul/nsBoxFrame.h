@@ -71,7 +71,7 @@ class nsBoxFrame : public nsContainerFrame {
   virtual Halignment GetXULHAlign() const override { return mHalign; }
   NS_IMETHOD DoXULLayout(nsBoxLayoutState& aBoxLayoutState) override;
 
-  virtual bool ComputesOwnOverflowArea() override { return false; }
+  virtual bool XULComputesOwnOverflowArea() override { return false; }
 
   // ----- child and sibling operations ---
 
@@ -116,8 +116,8 @@ class nsBoxFrame : public nsContainerFrame {
     // that contains a block so ReflowInput doesn't tell us to be
     // NS_UNCONSTRAINEDSIZE wide.)
     return nsContainerFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock |
-                   eXULBox | nsIFrame::eExcludesIgnorableWhitespace));
+        aFlags &
+        ~(nsIFrame::eReplaced | nsIFrame::eReplacedContainsBlock | eXULBox));
   }
 
 #ifdef DEBUG_FRAME_DUMP
@@ -195,8 +195,6 @@ class nsBoxFrame : public nsContainerFrame {
   void CheckBoxOrder();
 
  private:
-  virtual void UpdateMouseThrough();
-
   void CacheAttributes();
 
   // instance variables.

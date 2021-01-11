@@ -3,7 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 // Reps
 const {
@@ -13,27 +14,39 @@ const {
   wrapRender,
 } = require("./rep-utils");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
  * Renders DOM document object.
  */
+
 Document.propTypes = {
   object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function Document(props) {
   const grip = props.object;
+  const shouldRenderTooltip = props.shouldRenderTooltip;
   const location = getLocation(grip);
+  const config = getElementConfig({ grip, location, shouldRenderTooltip });
   return span(
-    {
-      "data-link-actor-id": grip.actor,
-      className: "objectBox objectBox-document",
-    },
+    config,
     getTitle(grip),
     location ? span({ className: "location" }, ` ${location}`) : null
   );
+}
+
+function getElementConfig(opts) {
+  const { grip, location, shouldRenderTooltip } = opts;
+  const config = {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox objectBox-document",
+  };
+
+  if (!shouldRenderTooltip || !location) {
+    return config;
+  }
+  config.title = `${grip.class} ${location}`;
+  return config;
 }
 
 function getLocation(grip) {

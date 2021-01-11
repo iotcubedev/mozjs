@@ -108,7 +108,7 @@ bool TypeTo_impl(Client::Type aType, T& aData) {
         ClientTypeTraits<Client::Type::LS>::To(aData);
         return true;
       }
-      MOZ_FALLTHROUGH;
+      [[fallthrough]];
 
     case Client::TYPE_MAX:
     default:
@@ -147,6 +147,25 @@ bool TypeFrom_impl(const T& aData, Client::Type& aType) {
 void BadType() { MOZ_CRASH("Bad client type value!"); }
 
 }  // namespace
+
+// static
+bool Client::IsValidType(Type aType) {
+  switch (aType) {
+    case Client::IDB:
+    case Client::DOMCACHE:
+    case Client::SDB:
+      return true;
+
+    case Client::LS:
+      if (CachedNextGenLocalStorageEnabled()) {
+        return true;
+      }
+      [[fallthrough]];
+
+    default:
+      return false;
+  }
+}
 
 // static
 bool Client::TypeToText(Type aType, nsAString& aText, const fallible_t&) {

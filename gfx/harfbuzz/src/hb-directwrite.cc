@@ -625,7 +625,7 @@ _hb_directwrite_shape_full (hb_shape_plan_t    *shape_plan,
   HB_STMT_START { \
     DEBUG_MSG (DIRECTWRITE, nullptr, __VA_ARGS__); \
     return false; \
-  } HB_STMT_END;
+  } HB_STMT_END
 
   if (FAILED (hr))
     FAIL ("Analyzer failed to generate results.");
@@ -635,7 +635,7 @@ _hb_directwrite_shape_full (hb_shape_plan_t    *shape_plan,
   bool isRightToLeft = HB_DIRECTION_IS_BACKWARD (buffer->props.direction);
 
   const wchar_t localeName[20] = {0};
-  if (buffer->props.language != nullptr)
+  if (buffer->props.language)
     mbstowcs ((wchar_t*) localeName,
 	      hb_language_to_string (buffer->props.language), 20);
 

@@ -7,6 +7,7 @@
 #ifndef DOM_VIEWPORT_META_DATA_H_
 #define DOM_VIEWPORT_META_DATA_H_
 
+#include "nsString.h"
 #include "nsAString.h"
 
 namespace mozilla {
@@ -20,13 +21,15 @@ struct ViewportMetaData {
   nsString mMinimumScale;
   nsString mMaximumScale;
   nsString mUserScalable;
+  nsString mViewportFit;
 
   bool operator==(const ViewportMetaData& aOther) const {
     return mWidth == aOther.mWidth && mHeight == aOther.mHeight &&
            mInitialScale == aOther.mInitialScale &&
            mMinimumScale == aOther.mMinimumScale &&
            mMaximumScale == aOther.mMaximumScale &&
-           mUserScalable == aOther.mUserScalable;
+           mUserScalable == aOther.mUserScalable &&
+           mViewportFit == aOther.mViewportFit;
   }
   bool operator!=(const ViewportMetaData& aOther) const {
     return !(*this == aOther);

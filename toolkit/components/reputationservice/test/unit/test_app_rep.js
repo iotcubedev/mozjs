@@ -358,6 +358,7 @@ add_test(function test_blocklist_trumps_allowlist() {
       referrerInfo: createReferrerInfo(blocklistedURI),
       suggestedFileName: binaryFile,
       fileSize: 12,
+      signatureInfo: [],
     },
     function onComplete(aShouldBlock, aStatus) {
       Assert.equal(Cr.NS_OK, aStatus);
@@ -383,13 +384,13 @@ add_test(function test_redirect_on_blocklist() {
   );
 
   let redirect1 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(exampleURI, {}),
   };
   badRedirects.appendElement(redirect1);
 
   let redirect2 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(blocklistedURI, {}),
   };
   badRedirects.appendElement(redirect2);
@@ -397,7 +398,7 @@ add_test(function test_redirect_on_blocklist() {
   // Add a whitelisted URI that will not be looked up against the
   // whitelist (i.e. it will match NO_LIST).
   let redirect3 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(whitelistedURI, {}),
   };
   badRedirects.appendElement(redirect3);
@@ -409,6 +410,7 @@ add_test(function test_redirect_on_blocklist() {
       redirects: badRedirects,
       suggestedFileName: binaryFile,
       fileSize: 12,
+      signatureInfo: [],
     },
     function onComplete(aShouldBlock, aStatus) {
       Assert.equal(Cr.NS_OK, aStatus);
@@ -429,6 +431,7 @@ add_test(function test_whitelisted_source() {
       sourceURI: whitelistedURI,
       suggestedFileName: binaryFile,
       fileSize: 12,
+      signatureInfo: [],
     },
     function onComplete(aShouldBlock, aStatus) {
       Assert.equal(Cr.NS_OK, aStatus);
@@ -491,7 +494,7 @@ add_test(function test_whitelisted_redirect() {
   );
 
   let redirect1 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(exampleURI, {}),
   };
   okayRedirects.appendElement(redirect1);
@@ -499,7 +502,7 @@ add_test(function test_whitelisted_redirect() {
   // Add a whitelisted URI that will not be looked up against the
   // whitelist (i.e. it will match NO_LIST).
   let redirect2 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(whitelistedURI, {}),
   };
   okayRedirects.appendElement(redirect2);
@@ -536,7 +539,7 @@ add_test(function test_remote_lookup_protocolbuf() {
   // Redirects
   let redirects = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
   let redirect1 = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIRedirectHistoryEntry]),
+    QueryInterface: ChromeUtils.generateQI(["nsIRedirectHistoryEntry"]),
     principal: secman.createContentPrincipal(exampleRedirectURI, {}),
   };
   redirects.appendElement(redirect1);
@@ -552,6 +555,7 @@ add_test(function test_remote_lookup_protocolbuf() {
       sha256Hash,
       redirects,
       fileSize: 12,
+      signatureInfo: [],
     },
     function onComplete(aShouldBlock, aStatus) {
       Assert.equal(Cr.NS_OK, aStatus);

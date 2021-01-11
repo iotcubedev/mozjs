@@ -10,7 +10,7 @@
 add_task(async function() {
   const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
 
-  const { monitor } = await initNetMonitor(SORTING_URL);
+  const { monitor } = await initNetMonitor(SORTING_URL, { requestCount: 1 });
   info("Starting test... ");
 
   // It seems that this test may be slow on debug builds. This could be because
@@ -29,7 +29,6 @@ add_task(async function() {
 
   // Loading the frame script and preparing the xhr request URLs so we can
   // generate some requests later.
-  loadFrameScriptUtils();
   const requests = [
     {
       url: "sjs_sorting-test-server.sjs?index=1&" + Math.random(),
@@ -173,7 +172,7 @@ add_task(async function() {
       "The first item should be still selected after sorting."
     );
     is(
-      !!document.querySelector(".network-details-panel"),
+      !!document.querySelector(".network-details-bar"),
       true,
       "The network details panel should still be visible after sorting."
     );
@@ -205,7 +204,7 @@ add_task(async function() {
     verifyRequestItemTarget(
       document,
       getDisplayedRequests(store.getState()),
-      getSortedRequests(store.getState()).get(a),
+      getSortedRequests(store.getState())[a],
       "GET1",
       SORTING_SJS + "?index=1",
       {
@@ -216,13 +215,12 @@ add_task(async function() {
         fullMimeType: "text/1",
         transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 198),
         size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 0),
-        time: true,
       }
     );
     verifyRequestItemTarget(
       document,
       getDisplayedRequests(store.getState()),
-      getSortedRequests(store.getState()).get(b),
+      getSortedRequests(store.getState())[b],
       "GET2",
       SORTING_SJS + "?index=2",
       {
@@ -233,13 +231,12 @@ add_task(async function() {
         fullMimeType: "text/2",
         transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 217),
         size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 19),
-        time: true,
       }
     );
     verifyRequestItemTarget(
       document,
       getDisplayedRequests(store.getState()),
-      getSortedRequests(store.getState()).get(c),
+      getSortedRequests(store.getState())[c],
       "GET3",
       SORTING_SJS + "?index=3",
       {
@@ -250,13 +247,12 @@ add_task(async function() {
         fullMimeType: "text/3",
         transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 227),
         size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 29),
-        time: true,
       }
     );
     verifyRequestItemTarget(
       document,
       getDisplayedRequests(store.getState()),
-      getSortedRequests(store.getState()).get(d),
+      getSortedRequests(store.getState())[d],
       "GET4",
       SORTING_SJS + "?index=4",
       {
@@ -267,13 +263,12 @@ add_task(async function() {
         fullMimeType: "text/4",
         transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 237),
         size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 39),
-        time: true,
       }
     );
     verifyRequestItemTarget(
       document,
       getDisplayedRequests(store.getState()),
-      getSortedRequests(store.getState()).get(e),
+      getSortedRequests(store.getState())[e],
       "GET5",
       SORTING_SJS + "?index=5",
       {
@@ -284,7 +279,6 @@ add_task(async function() {
         fullMimeType: "text/5",
         transferred: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 247),
         size: L10N.getFormatStrWithNumbers("networkMenu.sizeB", 49),
-        time: true,
       }
     );
   }

@@ -5,6 +5,7 @@
 "use strict";
 
 const PERMISSION_SAVE_LOGINS = "login-saving";
+const MAX_DATE_MS = 8640000000000000;
 
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
@@ -20,11 +21,6 @@ ChromeUtils.defineModuleGetter(
   this,
   "LoginFormFactory",
   "resource://gre/modules/LoginFormFactory.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "LoginManagerContent",
-  "resource://gre/modules/LoginManagerContent.jsm"
 );
 ChromeUtils.defineModuleGetter(
   this,
@@ -50,9 +46,9 @@ function LoginManager() {
 LoginManager.prototype = {
   classID: Components.ID("{cb9e0de8-3598-4ed7-857b-827f011ad5d8}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsILoginManager,
-    Ci.nsISupportsWeakReference,
-    Ci.nsIInterfaceRequestor,
+    "nsILoginManager",
+    "nsISupportsWeakReference",
+    "nsIInterfaceRequestor",
   ]),
   getInterface(aIID) {
     if (aIID.equals(Ci.mozIStorageConnection) && this._storage) {
@@ -120,8 +116,8 @@ LoginManager.prototype = {
     _pwmgr: null,
 
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsIObserver,
-      Ci.nsISupportsWeakReference,
+      "nsIObserver",
+      "nsISupportsWeakReference",
     ]),
 
     // nsIObserver
@@ -255,7 +251,7 @@ LoginManager.prototype = {
    */
   _checkLogin(login) {
     // Sanity check the login
-    if (login.origin == null || login.origin.length == 0) {
+    if (login.origin == null || !login.origin.length) {
       throw new Error("Can't add a login with a null or empty origin.");
     }
 
@@ -264,7 +260,7 @@ LoginManager.prototype = {
       throw new Error("Can't add a login with a null username.");
     }
 
-    if (login.password == null || login.password.length == 0) {
+    if (login.password == null || !login.password.length) {
       throw new Error("Can't add a login with a null or empty password.");
     }
 
@@ -287,6 +283,14 @@ LoginManager.prototype = {
       throw new Error(
         "Can't add a login without a httpRealm or formActionOrigin."
       );
+    }
+
+    login.QueryInterface(Ci.nsILoginMetaInfo);
+    for (let pname of ["timeCreated", "timeLastUsed", "timePasswordChanged"]) {
+      // Invalid dates
+      if (login[pname] > MAX_DATE_MS) {
+        throw new Error("Can't add a login with invalid date properties.");
+      }
     }
   },
 
@@ -366,16 +370,49 @@ LoginManager.prototype = {
    * Remove the specified login from the stored logins.
    */
   removeLogin(login) {
-    log.debug("Removing login");
+    log.debug("Removing login", login.QueryInterface(Ci.nsILoginMetaInfo).guid);
     return this._storage.removeLogin(login);
   },
 
   /**
-   * Change the specified login to match the new login.
+   * Change the specified login to match the new login or new properties.
    */
   modifyLogin(oldLogin, newLogin) {
-    log.debug("Modifying login");
+    log.debug(
+      "Modifying login",
+      oldLogin.QueryInterface(Ci.nsILoginMetaInfo).guid
+    );
     return this._storage.modifyLogin(oldLogin, newLogin);
+  },
+
+  /**
+   * Record that the password of a saved login was used (e.g. submitted or copied).
+   */
+  recordPasswordUse(
+    login,
+    privateContextWithoutExplicitConsent,
+    loginType,
+    filled
+  ) {
+    log.debug(
+      "Recording password use",
+      loginType,
+      login.QueryInterface(Ci.nsILoginMetaInfo).guid
+    );
+    if (!privateContextWithoutExplicitConsent) {
+      // don't record non-interactive use in private browsing
+      this._storage.recordPasswordUse(login);
+    }
+
+    Services.telemetry.recordEvent(
+      "pwmgr",
+      "saved_login_used",
+      loginType,
+      null,
+      {
+        filled: "" + filled,
+      }
+    );
   },
 
   /**
@@ -418,7 +455,7 @@ LoginManager.prototype = {
     log.debug("Getting a list of all disabled origins");
 
     let disabledHosts = [];
-    for (let perm of Services.perms.enumerator) {
+    for (let perm of Services.perms.all) {
       if (
         perm.type == PERMISSION_SAVE_LOGINS &&
         perm.capability == Services.perms.DENY_ACTION
@@ -451,10 +488,17 @@ LoginManager.prototype = {
     return this._storage.findLogins(origin, formActionOrigin, httpRealm);
   },
 
+  async searchLoginsAsync(matchData) {
+    log.debug("searchLoginsAsync:", matchData);
+
+    if (!matchData.origin) {
+      throw new Error("searchLoginsAsync: An `origin` is required");
+    }
+
+    return this._storage.searchLoginsAsync(matchData);
+  },
+
   /**
-   * Public wrapper around _searchLogins to convert the nsIPropertyBag to a
-   * JavaScript object and decrypt the results.
-   *
    * @return {nsILoginInfo[]} which are decrypted.
    */
   searchLogins(matchData) {
@@ -464,15 +508,6 @@ LoginManager.prototype = {
     if (!matchData.hasKey("guid")) {
       if (!matchData.hasKey("origin")) {
         log.warn("searchLogins: An `origin` is recommended");
-      }
-
-      if (
-        !matchData.hasKey("formActionOrigin") &&
-        !matchData.hasKey("httpRealm")
-      ) {
-        log.warn(
-          "searchLogins: `formActionOrigin` or `httpRealm` is recommended"
-        );
       }
     }
 

@@ -71,11 +71,6 @@ function assertEvent(event, data) {
         "navigate",
         "Then once the second doc is loaded, we get the navigate event"
       );
-      is(
-        data.readyState,
-        "complete",
-        "navigate is emitted only once the document is fully loaded"
-      );
       break;
     case 9:
       is(event, "tabNavigated", "Finally, the receive the client event");
@@ -95,7 +90,7 @@ function waitForOnBeforeUnloadDialog(browser, callback) {
       const stack = browser.parentNode;
       const dialogs = stack.getElementsByTagName("tabmodalprompt");
       await waitUntil(() => dialogs[0]);
-      const { button0, button1 } = browser.tabModalPromptBox.prompts.get(
+      const { button0, button1 } = browser.tabModalPromptBox.getPrompt(
         dialogs[0]
       ).ui;
       callback(button0, button1);
@@ -121,10 +116,17 @@ function onMessage({ data }) {
 async function connectAndAttachTab(tab) {
   const target = await TargetFactory.forTab(tab);
   await target.attach();
-  const actorID = target.targetForm.actor;
+  const actorID = target.actorID;
   target.on("tabNavigated", function(packet) {
     assertEvent("tabNavigated", packet);
   });
+  // In order to listen to internal will-navigate/navigate events
+  target.on("will-navigate", function(data) {
+    assertEvent("will-navigate", {
+      newURI: data.url,
+    });
+  });
+  target.on("navigate", () => assertEvent("navigate"));
   return { target, actorID };
 }
 
@@ -145,27 +147,6 @@ add_task(async function() {
   const tab = gBrowser.getTabForBrowser(browser);
   const { target, actorID } = await connectAndAttachTab(tab);
   await ContentTask.spawn(browser, [actorID], async function(actorId) {
-    const { require } = ChromeUtils.import(
-      "resource://devtools/shared/Loader.jsm"
-    );
-    const { DebuggerServer } = require("devtools/server/debugger-server");
-    const EventEmitter = require("devtools/shared/event-emitter");
-
-    // !Hack! Retrieve a server side object, the FrameTargetActor instance
-    const targetActor = DebuggerServer.searchAllConnectionsForActor(actorId);
-    // In order to listen to internal will-navigate/navigate events
-    EventEmitter.on(targetActor, "will-navigate", function(data) {
-      sendSyncMessage("devtools-test:event", {
-        event: "will-navigate",
-        data: { newURI: data.newURI },
-      });
-    });
-    EventEmitter.on(targetActor, "navigate", function(data) {
-      sendSyncMessage("devtools-test:event", {
-        event: "navigate",
-        data: { readyState: content.document.readyState },
-      });
-    });
     // Forward DOMContentLoaded and load events
     addEventListener(
       "DOMContentLoaded",
@@ -191,7 +172,13 @@ add_task(async function() {
 
   // Load another document in this doc to dispatch these events
   assertEvent("load-new-document");
-  BrowserTestUtils.loadURI(browser, URL2);
+
+  // Use BrowserTestUtils instead of navigateTo as there is no toolbox opened
+  const onBrowserLoaded = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser
+  );
+  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, URL2);
+  await onBrowserLoaded;
 
   // Wait for all events to be received
   await onAllEventsReceived;
@@ -203,5 +190,5 @@ add_task(async function() {
   );
   await target.destroy();
   Services.obs.addObserver(httpObserver, "http-on-modify-request");
-  DebuggerServer.destroy();
+  DevToolsServer.destroy();
 });

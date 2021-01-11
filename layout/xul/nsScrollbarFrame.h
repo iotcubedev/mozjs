@@ -19,6 +19,9 @@ class nsIScrollbarMediator;
 
 namespace mozilla {
 class PresShell;
+namespace dom {
+class Element;
+}
 }  // namespace mozilla
 
 nsIFrame* NS_NewScrollbarFrame(mozilla::PresShell* aPresShell,
@@ -26,6 +29,8 @@ nsIFrame* NS_NewScrollbarFrame(mozilla::PresShell* aPresShell,
 
 class nsScrollbarFrame final : public nsBoxFrame,
                                public nsIAnonymousContentCreator {
+  using Element = mozilla::dom::Element;
+
  public:
   explicit nsScrollbarFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
       : nsBoxFrame(aStyle, aPresContext, kClassID),
@@ -44,7 +49,7 @@ class nsScrollbarFrame final : public nsBoxFrame,
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("ScrollbarFrame"), aResult);
+    return MakeFrameName(u"ScrollbarFrame"_ns, aResult);
   }
 #endif
 

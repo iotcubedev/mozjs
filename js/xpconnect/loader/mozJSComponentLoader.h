@@ -12,7 +12,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Module.h"
 #include "mozilla/StaticPtr.h"
-#include "nsAutoPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsISupports.h"
 #include "nsIURI.h"
 #include "nsClassHashtable.h"
@@ -86,13 +86,6 @@ class mozJSComponentLoader final {
 
   friend class XPCJSRuntime;
 
-  JSObject* CompilationScope(JSContext* aCx) {
-    if (mLoaderGlobal) {
-      return mLoaderGlobal;
-    }
-    return GetSharedGlobal(aCx);
-  }
-
  private:
   static mozilla::StaticRefPtr<mozJSComponentLoader> sSelf;
 
@@ -102,13 +95,10 @@ class mozJSComponentLoader final {
   void CreateLoaderGlobal(JSContext* aCx, const nsACString& aLocation,
                           JS::MutableHandleObject aGlobal);
 
-  bool ReuseGlobal(nsIURI* aComponent);
-
   JSObject* GetSharedGlobal(JSContext* aCx);
 
   JSObject* PrepareObjectForLocation(JSContext* aCx, nsIFile* aComponentFile,
-                                     nsIURI* aComponent, bool* aReuseGlobal,
-                                     bool* aRealFile);
+                                     nsIURI* aComponent, bool* aRealFile);
 
   nsresult ObjectForLocation(ComponentLoaderInfo& aInfo,
                              nsIFile* aComponentFile,
@@ -187,13 +177,6 @@ class mozJSComponentLoader final {
   nsresult ExtractExports(JSContext* aCx, ComponentLoaderInfo& aInfo,
                           ModuleEntry* aMod, JS::MutableHandleObject aExports);
 
-  static size_t DataEntrySizeOfExcludingThis(
-      const nsACString& aKey, ModuleEntry* const& aData,
-      mozilla::MallocSizeOf aMallocSizeOf, void* arg);
-  static size_t ClassEntrySizeOfExcludingThis(
-      const nsACString& aKey, const nsAutoPtr<ModuleEntry>& aData,
-      mozilla::MallocSizeOf aMallocSizeOf, void* arg);
-
   // Modules are intentionally leaked, but still cleared.
   nsDataHashtable<nsCStringHashKey, ModuleEntry*> mModules;
 
@@ -206,7 +189,6 @@ class mozJSComponentLoader final {
   nsClassHashtable<nsCStringHashKey, nsCString> mLocations;
 
   bool mInitialized;
-  bool mShareLoaderGlobal;
   JS::PersistentRooted<JSObject*> mLoaderGlobal;
 };
 

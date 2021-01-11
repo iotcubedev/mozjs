@@ -13,7 +13,7 @@ const TEST_URL = `data:text/html;charset=utf-8,
                         height: 8000px'>
                     </div>`;
 
-const PREFIX = "measuring-tool-highlighter-";
+const PREFIX = "measuring-tool-";
 const HIGHLIGHTER_TYPE = "MeasuringToolHighlighter";
 
 const SIDES = ["top", "right", "bottom", "left"];
@@ -130,5 +130,9 @@ async function hasCorrectSizeLabelValue({ getElementTextContent }) {
 
   is(parseFloat(width), WIDTH, "width on label's size is correct");
   is(parseFloat(height), HEIGHT, "height on label's size is correct");
-  is(parseFloat(hypot), HYPOTENUSE, "hypotenuse on label's size is correct");
+  is(
+    parseFloat(hypot),
+    parseFloat(HYPOTENUSE),
+    "hypotenuse on label's size is correct"
+  );
 }

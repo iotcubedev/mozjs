@@ -1,24 +1,7 @@
 /*
-** Copyright (c) 2016 The Khronos Group Inc.
-**
-** Permission is hereby granted, free of charge, to any person obtaining a
-** copy of this software and/or associated documentation files (the
-** "Materials"), to deal in the Materials without restriction, including
-** without limitation the rights to use, copy, modify, merge, publish,
-** distribute, sublicense, and/or sell copies of the Materials, and to
-** permit persons to whom the Materials are furnished to do so, subject to
-** the following conditions:
-**
-** The above copyright notice and this permission notice shall be included
-** in all copies or substantial portions of the Materials.
-**
-** THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-** EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-** MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-** IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-** CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-** TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-** MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+Copyright (c) 2019 The Khronos Group Inc.
+Use of this source code is governed by an MIT-style license that can be
+found in the LICENSE.txt file.
 */
 
 
@@ -403,21 +386,11 @@ function runImageBitmapTestInternal(bitmaps, alphaVal, internalFormat, pixelForm
 
 function runImageBitmapTest(source, alphaVal, internalFormat, pixelFormat, pixelType, gl, tiu, wtu, is3D)
 {
-    var p1 = createImageBitmap(source, {imageOrientation: "none", premultiplyAlpha: "premultiply"})
-                .then(cur => { cur.flipY = false; cur.premultiply = true; return cur; });
-    var p2 = createImageBitmap(source, {imageOrientation: "none", premultiplyAlpha: "none"})
-                .then(cur => { cur.flipY = false; cur.premultiply = false; return cur; });
-    var p3 = createImageBitmap(source, {imageOrientation: "flipY", premultiplyAlpha: "premultiply"})
-                .then(cur => { cur.flipY = true; cur.premultiply = true; return cur; });
-    var p4 = createImageBitmap(source, {imageOrientation: "flipY", premultiplyAlpha: "none"})
-                .then(cur => { cur.flipY = true; cur.premultiply = false; return cur; });
-    return Promise.all([p1, p2, p3, p4])
-        .catch( () => {
-            testPassed("createImageBitmap with options may be rejected if it is not supported. Retrying without options.");
-            var p = createImageBitmap(source)
-                .then(cur => { cur.flipY = false; cur.premultiply = false; return cur; });
-            return Promise.all([p]);
-        }).then( bitmaps => {
+    var p = createImageBitmap(source)
+        .then(cur => { cur.flipY = false; cur.premultiply = false; return cur; });
+
+    return Promise.all([p])
+        .then( bitmaps => {
             bufferedLogToConsole("All createImageBitmap promises are resolved");
             runImageBitmapTestInternal(bitmaps, alphaVal, internalFormat, pixelFormat, pixelType, gl, tiu, wtu, is3D);
         }, (e) => {

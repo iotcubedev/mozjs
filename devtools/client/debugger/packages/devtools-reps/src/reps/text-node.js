@@ -3,18 +3,20 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const {
+  button,
+  span,
+} = require("devtools/client/shared/vendor/react-dom-factories");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
 // Reps
 const { isGrip, cropString, wrapRender } = require("./rep-utils");
 const { MODE } = require("./constants");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
  * Renders DOM #text node.
  */
+
 TextNode.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
@@ -22,62 +24,78 @@ TextNode.propTypes = {
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function TextNode(props) {
+  const { object: grip, mode = MODE.SHORT } = props;
+
+  const isInTree = grip.preview && grip.preview.isConnected === true;
+  const config = getElementConfig({ ...props, isInTree });
+  const inspectIcon = getInspectIcon({ ...props, isInTree });
+
+  if (mode === MODE.TINY) {
+    return span(config, getTitle(grip), inspectIcon);
+  }
+
+  return span(
+    config,
+    getTitle(grip),
+    span({ className: "nodeValue" }, " ", `"${getTextContent(grip)}"`),
+    inspectIcon ? inspectIcon : null
+  );
+}
+
+function getElementConfig(opts) {
   const {
-    object: grip,
-    mode = MODE.SHORT,
+    object,
+    isInTree,
     onDOMNodeMouseOver,
     onDOMNodeMouseOut,
-    onInspectIconClick,
-  } = props;
+    shouldRenderTooltip,
+  } = opts;
 
-  const baseConfig = {
-    "data-link-actor-id": grip.actor,
+  const config = {
+    "data-link-actor-id": object.actor,
     className: "objectBox objectBox-textNode",
+    title: shouldRenderTooltip ? `#text "${getTextContent(object)}"` : null,
   };
-  let inspectIcon;
-  const isInTree = grip.preview && grip.preview.isConnected === true;
 
   if (isInTree) {
     if (onDOMNodeMouseOver) {
-      Object.assign(baseConfig, {
-        onMouseOver: _ => onDOMNodeMouseOver(grip),
+      Object.assign(config, {
+        onMouseOver: _ => onDOMNodeMouseOver(object),
       });
     }
 
     if (onDOMNodeMouseOut) {
-      Object.assign(baseConfig, {
-        onMouseOut: _ => onDOMNodeMouseOut(grip),
-      });
-    }
-
-    if (onInspectIconClick) {
-      inspectIcon = dom.button({
-        className: "open-inspector",
-        draggable: false,
-        // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
-        title: "Click to select the node in the inspector",
-        onClick: e => onInspectIconClick(grip, e),
+      Object.assign(config, {
+        onMouseOut: _ => onDOMNodeMouseOut(object),
       });
     }
   }
 
-  if (mode === MODE.TINY) {
-    return span(baseConfig, getTitle(grip), inspectIcon);
-  }
-
-  return span(
-    baseConfig,
-    getTitle(grip),
-    span({ className: "nodeValue" }, " ", `"${getTextContent(grip)}"`),
-    inspectIcon
-  );
+  return config;
 }
 
 function getTextContent(grip) {
   return cropString(grip.preview.textContent);
+}
+
+function getInspectIcon(opts) {
+  const { object, isInTree, onInspectIconClick } = opts;
+
+  if (!isInTree || !onInspectIconClick) {
+    return null;
+  }
+
+  return button({
+    className: "open-inspector",
+    draggable: false,
+    // TODO: Localize this with "openNodeInInspector" when Bug 1317038 lands
+    title: "Click to select the node in the inspector",
+    onClick: e => onInspectIconClick(object, e),
+  });
 }
 
 function getTitle(grip) {

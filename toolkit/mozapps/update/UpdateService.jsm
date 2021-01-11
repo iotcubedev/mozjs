@@ -59,6 +59,7 @@ const PREF_APP_UPDATE_ELEVATE_ATTEMPTS = "app.update.elevate.attempts";
 const PREF_APP_UPDATE_ELEVATE_MAXATTEMPTS = "app.update.elevate.maxAttempts";
 const PREF_APP_UPDATE_LOG = "app.update.log";
 const PREF_APP_UPDATE_LOG_FILE = "app.update.log.file";
+const PREF_APP_UPDATE_NOTIFYDURINGDOWNLOAD = "app.update.notifyDuringDownload";
 const PREF_APP_UPDATE_PROMPTWAITTIME = "app.update.promptWaitTime";
 const PREF_APP_UPDATE_SERVICE_ENABLED = "app.update.service.enabled";
 const PREF_APP_UPDATE_SERVICE_ERRORS = "app.update.service.errors";
@@ -66,7 +67,6 @@ const PREF_APP_UPDATE_SERVICE_MAXERRORS = "app.update.service.maxErrors";
 const PREF_APP_UPDATE_SOCKET_MAXERRORS = "app.update.socket.maxErrors";
 const PREF_APP_UPDATE_SOCKET_RETRYTIMEOUT = "app.update.socket.retryTimeout";
 const PREF_APP_UPDATE_STAGING_ENABLED = "app.update.staging.enabled";
-const PREF_APP_UPDATE_URL = "app.update.url";
 const PREF_APP_UPDATE_URL_DETAILS = "app.update.url.details";
 const PREF_NETWORK_PROXY_TYPE = "network.proxy.type";
 
@@ -252,8 +252,6 @@ var gLogfileWritePromise;
 // at once. Computers with many users (ex: a school computer), should not end
 // up with dozens of BITS jobs.
 var gBITSInUseByAnotherUser = false;
-// The start time in milliseconds of the update check.
-var gCheckStartMs;
 
 XPCOMUtils.defineLazyGetter(this, "gLogEnabled", function aus_gLogEnabled() {
   return (
@@ -328,7 +326,7 @@ function closeHandle(handle) {
  */
 function createMutex(aName, aAllowExisting = true) {
   if (AppConstants.platform != "win") {
-    throw Cr.NS_ERROR_NOT_IMPLEMENTED;
+    throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   }
 
   const INITIAL_OWN = 1;
@@ -369,7 +367,7 @@ function createMutex(aName, aAllowExisting = true) {
  */
 function getPerInstallationMutexName(aGlobal = true) {
   if (AppConstants.platform != "win") {
-    throw Cr.NS_ERROR_NOT_IMPLEMENTED;
+    throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
   }
 
   let hasher = Cc["@mozilla.org/security/hash;1"].createInstance(
@@ -1313,7 +1311,7 @@ function pingStateAndStatusCodes(aUpdate, aStartup, aStatus) {
   let suffix = patchType + "_" + (aStartup ? AUSTLMY.STARTUP : AUSTLMY.STAGE);
   let stateCode = 0;
   let parts = aStatus.split(":");
-  if (parts.length > 0) {
+  if (parts.length) {
     switch (parts[0]) {
       case STATE_NONE:
         stateCode = 2;
@@ -1521,7 +1519,7 @@ function UpdatePatch(patch) {
       case "size":
         if (0 == parseInt(attr.value)) {
           LOG("UpdatePatch:init - 0-sized patch!");
-          throw Cr.NS_ERROR_ILLEGAL_VALUE;
+          throw Components.Exception("", Cr.NS_ERROR_ILLEGAL_VALUE);
         }
         this[attr.name] = attr.value;
         break;
@@ -1628,7 +1626,7 @@ UpdatePatch.prototype = {
     if (name in this._properties) {
       this._properties[name].present = false;
     } else {
-      throw Cr.NS_ERROR_FAILURE;
+      throw Components.Exception("", Cr.NS_ERROR_FAILURE);
     }
   },
 
@@ -1648,7 +1646,7 @@ UpdatePatch.prototype = {
     let ip = Cc["@mozilla.org/supports-interface-pointer;1"].createInstance(
       Ci.nsISupportsInterfacePointer
     );
-    let qi = ChromeUtils.generateQI([Ci.nsIProperty]);
+    let qi = ChromeUtils.generateQI(["nsIProperty"]);
     for (let [name, value] of Object.entries(this._properties)) {
       if (value.present && !this._attrNames.includes(name)) {
         // The nsIPropertyBag enumerator returns a nsISimpleEnumerator whose
@@ -1685,9 +1683,9 @@ UpdatePatch.prototype = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIUpdatePatch,
-    Ci.nsIPropertyBag,
-    Ci.nsIWritablePropertyBag,
+    "nsIUpdatePatch",
+    "nsIPropertyBag",
+    "nsIWritablePropertyBag",
   ]),
 };
 
@@ -1734,8 +1732,8 @@ function Update(update) {
     this._patches.push(patch);
   }
 
-  if (this._patches.length == 0 && !update.hasAttribute("unsupported")) {
-    throw Cr.NS_ERROR_ILLEGAL_VALUE;
+  if (!this._patches.length && !update.hasAttribute("unsupported")) {
+    throw Components.Exception("", Cr.NS_ERROR_ILLEGAL_VALUE);
   }
 
   // Set the installDate value with the current time. If the update has an
@@ -1998,7 +1996,7 @@ Update.prototype = {
     if (name in this._properties) {
       this._properties[name].present = false;
     } else {
-      throw Cr.NS_ERROR_FAILURE;
+      throw Components.Exception("", Cr.NS_ERROR_FAILURE);
     }
   },
 
@@ -2018,7 +2016,7 @@ Update.prototype = {
     let ip = Cc["@mozilla.org/supports-interface-pointer;1"].createInstance(
       Ci.nsISupportsInterfacePointer
     );
-    let qi = ChromeUtils.generateQI([Ci.nsIProperty]);
+    let qi = ChromeUtils.generateQI(["nsIProperty"]);
     for (let [name, value] of Object.entries(this._properties)) {
       if (value.present && !this._attrNames.includes(name)) {
         // The nsIPropertyBag enumerator returns a nsISimpleEnumerator whose
@@ -2054,9 +2052,9 @@ Update.prototype = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIUpdate,
-    Ci.nsIPropertyBag,
-    Ci.nsIWritablePropertyBag,
+    "nsIUpdate",
+    "nsIPropertyBag",
+    "nsIWritablePropertyBag",
   ]),
 };
 
@@ -2064,7 +2062,7 @@ const UpdateServiceFactory = {
   _instance: null,
   createInstance(outer, iid) {
     if (outer != null) {
-      throw Cr.NS_ERROR_NO_AGGREGATION;
+      throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
     }
     return this._instance == null
       ? (this._instance = new UpdateService())
@@ -2199,18 +2197,8 @@ UpdateService.prototype = {
         // be resumed the next time the application starts. Downloads using
         // Windows BITS are not stopped since they don't require Firefox to be
         // running to perform the download.
-        if (this._downloader) {
-          if (!this._downloader.usingBits) {
-            this.stopDownload();
-          } else {
-            this._downloader.cleanup();
-            // The BITS downloader isn't stopped on exit so the
-            // active-update.xml needs to be saved for the values sent to
-            // telemetry to be saved to disk.
-            Cc["@mozilla.org/updates/update-manager;1"]
-              .getService(Ci.nsIUpdateManager)
-              .saveUpdates();
-          }
+        if (this._downloader && !this._downloader.usingBits) {
+          this.stopDownload();
         }
         // Prevent leaking the downloader (bug 454964)
         this._downloader = null;
@@ -2445,14 +2433,6 @@ UpdateService.prototype = {
       update.errorCode = parseInt(parts[1]);
     }
 
-    if (
-      update.state == STATE_SUCCEEDED ||
-      update.patchCount == 1 ||
-      (update.selectedPatch && update.selectedPatch.type == "complete")
-    ) {
-      AUSTLMY.pingUpdatePhases(update, true);
-    }
-
     if (status != STATE_SUCCEEDED) {
       // Rotate the update logs so the update log isn't removed. By passing
       // false the patch directory won't be removed.
@@ -2484,7 +2464,7 @@ UpdateService.prototype = {
         );
         cleanupActiveUpdate();
       } else {
-        let uri = "chrome://mozapps/content/update/updateElevation.xul";
+        let uri = "chrome://mozapps/content/update/updateElevation.xhtml";
         let features =
           "chrome,centerscreen,resizable=no,titlebar,toolbar=no,dialog=no";
         Services.ww.openWindow(null, uri, "Update:Elevation", features, null);
@@ -2840,7 +2820,7 @@ UpdateService.prototype = {
    * @return  The nsIUpdate to offer.
    */
   selectUpdate: function AUS_selectUpdate(updates) {
-    if (updates.length == 0) {
+    if (!updates.length) {
       AUSTLMY.pingCheckCode(this._pingSuffix, AUSTLMY.CHK_NO_UPDATE_FOUND);
       return null;
     }
@@ -3207,7 +3187,7 @@ UpdateService.prototype = {
    */
   downloadUpdate: function AUS_downloadUpdate(update, background) {
     if (!update) {
-      throw Cr.NS_ERROR_NULL_POINTER;
+      throw Components.Exception("", Cr.NS_ERROR_NULL_POINTER);
     }
 
     // Don't download the update if the update's version is less than the
@@ -3289,6 +3269,15 @@ UpdateService.prototype = {
     if (!gLogEnabled) {
       return;
     }
+    if (this.disabledByPolicy) {
+      LOG("Current UpdateService status: disabledByPolicy");
+      // Return early if UpdateService is disabled by policy. Otherwise some of
+      // the getters we call to display status information may discover that the
+      // update directory is not writable, which automatically results in the
+      // permissions being fixed. Which we shouldn't really be doing if update
+      // is disabled by policy.
+      return;
+    }
     LOG("Logging current UpdateService status:");
     // These getters print their own logging
     this.canCheckForUpdates;
@@ -3329,10 +3318,10 @@ UpdateService.prototype = {
 
   _xpcom_factory: UpdateServiceFactory,
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIApplicationUpdateService,
-    Ci.nsIUpdateCheckListener,
-    Ci.nsITimerCallback,
-    Ci.nsIObserver,
+    "nsIApplicationUpdateService",
+    "nsIUpdateCheckListener",
+    "nsITimerCallback",
+    "nsIObserver",
   ]),
 };
 
@@ -3343,7 +3332,7 @@ UpdateService.prototype = {
 function UpdateManager() {
   // Load the active-update.xml file to see if there is an active update.
   let activeUpdates = this._loadXMLFileIntoArray(FILE_ACTIVE_UPDATE_XML);
-  if (activeUpdates.length > 0) {
+  if (activeUpdates.length) {
     // Set the active update directly on the var used to cache the value.
     this._activeUpdate = activeUpdates[0];
     // This check is performed here since UpdateService:_postUpdateProcessing
@@ -3398,18 +3387,12 @@ UpdateManager.prototype = {
       this._activeUpdate = null;
       if (data != "skip-files") {
         let activeUpdates = this._loadXMLFileIntoArray(FILE_ACTIVE_UPDATE_XML);
-        if (activeUpdates.length > 0) {
+        if (activeUpdates.length) {
           this._activeUpdate = activeUpdates[0];
         }
         updates = this._loadXMLFileIntoArray(FILE_UPDATES_XML);
       }
-      delete this._updates;
-      Object.defineProperty(this, "_updates", {
-        value: updates,
-        writable: true,
-        configurable: true,
-        enumerable: true,
-      });
+      this._updatesCache = updates;
     }
   },
 
@@ -3490,7 +3473,7 @@ UpdateManager.prototype = {
       );
     }
     fileStream.close();
-    if (updates.length == 0) {
+    if (!updates.length) {
       LOG(
         "UpdateManager:_loadXMLFileIntoArray - update xml file " +
           fileName +
@@ -3512,34 +3495,27 @@ UpdateManager.prototype = {
   },
 
   /**
-   * Loads the update history from the updates.xml file and then replaces
-   * |_updates| with an array of all previous updates so the file is only read
-   * once.
+   * Loads the update history from the updates.xml file into a cache.
    */
-  get _updates() {
-    delete this._updates;
-    let updates = this._loadXMLFileIntoArray(FILE_UPDATES_XML);
-    Object.defineProperty(this, "_updates", {
-      value: updates,
-      writable: true,
-      configurable: true,
-      enumerable: true,
-    });
-    return this._updates;
+  _getUpdates() {
+    if (!this._updatesCache) {
+      this._updatesCache = this._loadXMLFileIntoArray(FILE_UPDATES_XML);
+    }
+    return this._updatesCache;
   },
 
   /**
    * See nsIUpdateService.idl
    */
   getUpdateAt: function UM_getUpdateAt(aIndex) {
-    return this._updates[aIndex];
+    return this._getUpdates()[aIndex];
   },
 
   /**
    * See nsIUpdateService.idl
    */
-  get updateCount() {
-    return this._updates.length;
+  getUpdateCount() {
+    return this._getUpdates().length;
   },
 
   /**
@@ -3552,9 +3528,10 @@ UpdateManager.prototype = {
     if (!aActiveUpdate && this._activeUpdate) {
       this._updatesDirty = true;
       // Add the current active update to the front of the update history.
-      this._updates.unshift(this._activeUpdate);
+      let updates = this._getUpdates();
+      updates.unshift(this._activeUpdate);
       // Limit the update history to 10 updates.
-      this._updates.splice(10);
+      updates.splice(10);
     }
 
     this._activeUpdate = aActiveUpdate;
@@ -3584,7 +3561,7 @@ UpdateManager.prototype = {
       );
       return false;
     }
-    if (updates.length == 0) {
+    if (!updates.length) {
       LOG(
         "UpdateManager:_writeUpdatesToXMLFile - no updates to write. " +
           "removing file: " +
@@ -3682,7 +3659,7 @@ UpdateManager.prototype = {
     if (this._updatesDirty) {
       this._updatesDirty = false;
       promises[1] = this._writeUpdatesToXMLFile(
-        this._updates,
+        this._getUpdates(),
         FILE_UPDATES_XML
       ).then(wroteSuccessfully =>
         handleCriticalWriteResult(wroteSuccessfully, FILE_UPDATES_XML)
@@ -3699,9 +3676,6 @@ UpdateManager.prototype = {
     if (!update) {
       return;
     }
-
-    let patch = update.selectedPatch.QueryInterface(Ci.nsIWritablePropertyBag);
-    patch.setProperty("stageFinished", Math.ceil(Date.now() / 1000));
 
     var status = readStatusFile(getUpdatesDir());
     pingStateAndStatusCodes(update, false, status);
@@ -3728,20 +3702,6 @@ UpdateManager.prototype = {
     }
     if (update.state == STATE_APPLIED && shouldUseService()) {
       writeStatusFile(getUpdatesDir(), (update.state = STATE_APPLIED_SERVICE));
-    }
-
-    if (update.state == STATE_FAILED) {
-      AUSTLMY.pingUpdatePhases(update, false);
-    }
-
-    if (
-      update.state == STATE_APPLIED ||
-      update.state == STATE_APPLIED_SERVICE ||
-      update.state == STATE_PENDING ||
-      update.state == STATE_PENDING_SERVICE ||
-      update.state == STATE_PENDING_ELEVATE
-    ) {
-      patch.setProperty("applyStart", Math.floor(Date.now() / 1000));
     }
 
     // Now that the active update's properties have been updated write the
@@ -3793,7 +3753,7 @@ UpdateManager.prototype = {
   },
 
   classID: Components.ID("{093C2356-4843-4C65-8709-D7DBCBBE7DFB}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIUpdateManager, Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIUpdateManager", "nsIObserver"]),
 };
 
 /**
@@ -3890,9 +3850,14 @@ Checker.prototype = {
   getUpdateURL: async function UC_getUpdateURL(force) {
     this._forced = force;
 
-    let url = Services.prefs
-      .getDefaultBranch(null)
-      .getCharPref(PREF_APP_UPDATE_URL, "");
+    let url = Services.appinfo.updateURL;
+
+    if (Services.policies) {
+      let policies = Services.policies.getActivePolicies();
+      if (policies && "AppUpdateURL" in policies) {
+        url = policies.AppUpdateURL.toString();
+      }
+    }
 
     if (!url) {
       LOG("Checker:getUpdateURL - update URL not defined");
@@ -3920,10 +3885,9 @@ Checker.prototype = {
     LOG("Checker: checkForUpdates, force: " + force);
     gUpdateFileWriteInfo = { phase: "check", failure: false };
     if (!listener) {
-      throw Cr.NS_ERROR_NULL_POINTER;
+      throw Components.Exception("", Cr.NS_ERROR_NULL_POINTER);
     }
 
-    gCheckStartMs = Date.now();
     let UpdateServiceInstance = UpdateServiceFactory.createInstance();
     // |force| can override |canCheckForUpdates| since |force| indicates a
     // manual update check. But nothing should override enterprise policies.
@@ -4058,8 +4022,11 @@ Checker.prototype = {
       if (sslStatus && sslStatus.succeededCertChain) {
         let rootCert = null;
         // The root cert is the last cert in the chain.
-        // eslint-disable-next-line no-empty
-        for (rootCert of sslStatus.succeededCertChain.getEnumerator()) {
+        if (sslStatus.succeededCertChain.length) {
+          rootCert =
+            sslStatus.succeededCertChain[
+              sslStatus.succeededCertChain.length - 1
+            ];
         }
         if (rootCert) {
           Services.prefs.setStringPref(
@@ -4162,7 +4129,7 @@ Checker.prototype = {
   },
 
   classID: Components.ID("{898CDC9B-E43F-422F-9CC4-2F6291B415A3}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIUpdateChecker]),
+  QueryInterface: ChromeUtils.generateQI(["nsIUpdateChecker"]),
 };
 
 /**
@@ -4232,17 +4199,6 @@ Downloader.prototype = {
    * resolves.
    */
   _bitsActiveNotifications: false,
-
-  /**
-   * The start time of the first download attempt in milliseconds for telemetry.
-   */
-  _startDownloadMs: null,
-
-  /**
-   * The name of the downloader being used to download the update. This is used
-   * when setting property names on the update patch for telemetry.
-   */
-  _downloaderName: null,
 
   /**
    * Cancels the active download.
@@ -4466,6 +4422,24 @@ Downloader.prototype = {
   },
 
   /**
+   * Whether or not the user wants to be notified that an update is being
+   * downloaded.
+   */
+  get _notifyDuringDownload() {
+    return Services.prefs.getBoolPref(
+      PREF_APP_UPDATE_NOTIFYDURINGDOWNLOAD,
+      false
+    );
+  },
+
+  _notifyDownloadStatusObservers: function Downloader_notifyDownloadStatusObservers() {
+    if (this._notifyDuringDownload) {
+      let status = this.updateService.isDownloading ? "downloading" : "idle";
+      Services.obs.notifyObservers(this._update, "update-downloading", status);
+    }
+  },
+
+  /**
    * Whether or not we are currently downloading something.
    */
   get isBusy() {
@@ -4506,7 +4480,7 @@ Downloader.prototype = {
     gUpdateFileWriteInfo = { phase: "download", failure: false };
     if (!update) {
       AUSTLMY.pingDownloadCode(undefined, AUSTLMY.DWNLD_ERR_NO_UPDATE);
-      throw Cr.NS_ERROR_NULL_POINTER;
+      throw Components.Exception("", Cr.NS_ERROR_NULL_POINTER);
     }
 
     var updateDir = getUpdatesDir();
@@ -4521,20 +4495,12 @@ Downloader.prototype = {
       AUSTLMY.pingDownloadCode(undefined, AUSTLMY.DWNLD_ERR_NO_UPDATE_PATCH);
       return readStatusFile(updateDir);
     }
-    // QI the update and the patch to nsIWritablePropertyBag so it isn't
-    // necessary later in the download code.
+    // The update and the patch implement nsIWritablePropertyBag. Expose that
+    // interface immediately after a patch is assigned so that
+    // this.(_patch|_update).(get|set)Property can always safely be called.
     this._update.QueryInterface(Ci.nsIWritablePropertyBag);
-    if (gCheckStartMs && !this._update.getProperty("checkInterval")) {
-      let interval = Math.max(
-        Math.ceil((Date.now() - gCheckStartMs) / 1000),
-        1
-      );
-      this._update.setProperty("checkInterval", interval);
-    }
-    // this._patch implements nsIWritablePropertyBag. Expose that interface
-    // immediately after a patch is assigned so that this._patch.getProperty
-    // and this._patch.setProperty can always safely be called.
     this._patch.QueryInterface(Ci.nsIWritablePropertyBag);
+
     this.isCompleteUpdate = this._patch.type == "complete";
 
     let canUseBits = false;
@@ -4546,14 +4512,6 @@ Downloader.prototype = {
       );
     } else {
       canUseBits = this._canUseBits(this._patch);
-    }
-
-    this._downloaderName = canUseBits ? "bits" : "internal";
-    if (!this._patch.getProperty(this._downloaderName + "DownloadStart")) {
-      this._patch.setProperty(
-        this._downloaderName + "DownloadStart",
-        Math.floor(Date.now() / 1000)
-      );
     }
 
     if (!canUseBits) {
@@ -4722,6 +4680,9 @@ Downloader.prototype = {
         .getService(Ci.nsIUpdateManager)
         .saveUpdates();
     }
+
+    this._notifyDownloadStatusObservers();
+
     return STATE_DOWNLOADING;
   },
 
@@ -4760,7 +4721,7 @@ Downloader.prototype = {
         this._listeners.splice(i, 1);
 
         // Decrease the status update frequency when no one is listening
-        if (this._listeners.length == 0) {
+        if (!this._listeners.length) {
           this._maybeStopActiveNotifications();
         }
         return;
@@ -4772,7 +4733,7 @@ Downloader.prototype = {
    * Returns a boolean indicating whether there are any download listeners
    */
   get hasDownloadListeners() {
-    return this._listeners.length > 0;
+    return !!this._listeners.length;
   },
 
   /**
@@ -4874,19 +4835,6 @@ Downloader.prototype = {
           .saveUpdates();
       }
     }
-    // Only record the download bytes per second when there isn't already a
-    // value for the bytes per second so downloads that are already in progess
-    // don't have their records overwritten. When the Update Agent is
-    // implemented this should be reworked so that telemetry receives the bytes
-    // and seconds it took to complete for the entire update download instead of
-    // just the sample that is currently recorded. Note: this._patch has already
-    // been QI'd to nsIWritablePropertyBag.
-    if (
-      !this._patch.getProperty("internalBytes") &&
-      !this._patch.getProperty("bitsBytes")
-    ) {
-      this._startDownloadMs = Date.now();
-    }
 
     // Make shallow copy in case listeners remove themselves when called.
     let listeners = this._listeners.concat();
@@ -4900,25 +4848,13 @@ Downloader.prototype = {
    * When new data has been downloaded
    * @param   request
    *          The nsIRequest object for the transfer
-   * @param   context
-   *          Additional data
    * @param   progress
    *          The current number of bytes transferred
    * @param   maxProgress
    *          The total number of bytes that must be transferred
    */
-  onProgress: function Downloader_onProgress(
-    request,
-    context,
-    progress,
-    maxProgress
-  ) {
+  onProgress: function Downloader_onProgress(request, progress, maxProgress) {
     LOG("Downloader:onProgress - progress: " + progress + "/" + maxProgress);
-    if (this._startDownloadMs) {
-      let seconds = Math.round((Date.now() - this._startDownloadMs) / 1000);
-      this._patch.setProperty(this._downloaderName + "Seconds", seconds);
-      this._patch.setProperty(this._downloaderName + "Bytes", progress);
-    }
 
     if (progress > this._patch.size) {
       LOG(
@@ -4959,7 +4895,7 @@ Downloader.prototype = {
     for (var i = 0; i < listenerCount; ++i) {
       var listener = listeners[i];
       if (listener instanceof Ci.nsIProgressEventSink) {
-        listener.onProgress(request, context, progress, maxProgress);
+        listener.onProgress(request, progress, maxProgress);
       }
     }
     this.updateService._consecutiveSocketErrors = 0;
@@ -4969,14 +4905,12 @@ Downloader.prototype = {
    * When we have new status text
    * @param   request
    *          The nsIRequest object for the transfer
-   * @param   context
-   *          Additional data
    * @param   status
    *          A status code
    * @param   statusText
    *          Human readable version of |status|
    */
-  onStatus: function Downloader_onStatus(request, context, status, statusText) {
+  onStatus: function Downloader_onStatus(request, status, statusText) {
     LOG(
       "Downloader:onStatus - status: " + status + ", statusText: " + statusText
     );
@@ -4987,7 +4921,7 @@ Downloader.prototype = {
     for (var i = 0; i < listenerCount; ++i) {
       var listener = listeners[i];
       if (listener instanceof Ci.nsIProgressEventSink) {
-        listener.onStatus(request, context, status, statusText);
+        listener.onStatus(request, status, statusText);
       }
     }
   },
@@ -5042,8 +4976,6 @@ Downloader.prototype = {
       }
     }
 
-    // XXX ehsan shouldShowPrompt should always be false here.
-    // But what happens when there is already a UI showing?
     var state = this._patch.state;
     var shouldShowPrompt = false;
     var shouldRegisterOnlineObserver = false;
@@ -5075,10 +5007,6 @@ Downloader.prototype = {
         "retryTimeout: " +
         retryTimeout
     );
-    this._patch.setProperty(
-      this._downloaderName + "DownloadFinished",
-      Math.floor(Date.now() / 1000)
-    );
     if (Components.isSuccessCode(status)) {
       if (this._verifyDownload()) {
         if (shouldUseService()) {
@@ -5088,9 +5016,7 @@ Downloader.prototype = {
         } else {
           state = STATE_PENDING;
         }
-        if (this.background) {
-          shouldShowPrompt = !getCanStageUpdates();
-        }
+        shouldShowPrompt = !getCanStageUpdates();
         AUSTLMY.pingDownloadCode(this.isCompleteUpdate, AUSTLMY.DWNLD_SUCCESS);
 
         // Tell the updater.exe we're ready to apply.
@@ -5259,6 +5185,11 @@ Downloader.prototype = {
 
     this._request = null;
 
+    // This notification must happen after _request is set to null so that
+    // the correct this.updateService.isDownloading value is available in
+    // _notifyDownloadStatusObservers().
+    this._notifyDownloadStatusObservers();
+
     if (state == STATE_DOWNLOAD_FAILED) {
       var allFailed = true;
       // If we haven't already, attempt to download without BITS
@@ -5310,7 +5241,6 @@ Downloader.prototype = {
           10
         );
 
-        AUSTLMY.pingUpdatePhases(this._update, false);
         if (downloadAttempts > maxAttempts) {
           LOG(
             "Downloader:onStopRequest - notifying observers of error. " +
@@ -5358,7 +5288,6 @@ Downloader.prototype = {
             this._update.name
         );
         gUpdateFileWriteInfo = { phase: "stage", failure: false };
-        this._patch.setProperty("stageStart", Math.floor(Date.now() / 1000));
         // Stage the update
         try {
           Cc["@mozilla.org/updates/update-processor;1"]
@@ -5370,13 +5299,8 @@ Downloader.prototype = {
           LOG(
             "Downloader:onStopRequest - failed to stage update. Exception: " + e
           );
-          if (this.background) {
-            shouldShowPrompt = true;
-          }
+          shouldShowPrompt = true;
         }
-      } else {
-        this._patch.setProperty("applyStart", Math.floor(Date.now() / 1000));
-        um.saveUpdates();
       }
     }
 
@@ -5446,13 +5370,13 @@ Downloader.prototype = {
       ].createInstance();
       return prompt.QueryInterface(iid);
     }
-    throw Cr.NS_NOINTERFACE;
+    throw Components.Exception("", Cr.NS_NOINTERFACE);
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIRequestObserver,
-    Ci.nsIProgressEventSink,
-    Ci.nsIInterfaceRequestor,
+    "nsIRequestObserver",
+    "nsIProgressEventSink",
+    "nsIInterfaceRequestor",
   ]),
 };
 

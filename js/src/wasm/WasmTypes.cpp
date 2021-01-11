@@ -19,10 +19,13 @@
 #include "wasm/WasmTypes.h"
 
 #include "js/Printf.h"
+#include "util/Memory.h"
 #include "vm/ArrayBufferObject.h"
+#include "vm/Warnings.h"  // js:WarnNumberASCII
 #include "wasm/WasmBaselineCompile.h"
 #include "wasm/WasmInstance.h"
 #include "wasm/WasmSerialize.h"
+#include "wasm/WasmStubs.h"
 
 #include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
@@ -42,11 +45,9 @@ using mozilla::MakeEnumeratedRange;
 #  endif
 #endif
 
-// More sanity checks.
-
-static_assert(MaxMemoryInitialPages <=
+static_assert(MaxMemoryPages ==
                   ArrayBufferObject::MaxBufferByteLength / PageSize,
-              "Memory sizing constraint");
+              "invariant");
 
 // All plausible targets must be able to do at least IEEE754 double
 // loads/stores, hence the lower limit of 8.  Some Intel processors support
@@ -63,7 +64,7 @@ static_assert(HugeMappedSize > ArrayBufferObject::MaxBufferByteLength,
 
 Val::Val(const LitVal& val) {
   type_ = val.type();
-  switch (type_.code()) {
+  switch (type_.kind()) {
     case ValType::I32:
       u.i32_ = val.i32();
       return;
@@ -76,13 +77,12 @@ Val::Val(const LitVal& val) {
     case ValType::F64:
       u.f64_ = val.f64();
       return;
+    case ValType::V128:
+      u.v128_ = val.v128();
+      return;
     case ValType::Ref:
-    case ValType::FuncRef:
-    case ValType::AnyRef:
       u.ref_ = val.ref();
       return;
-    case ValType::NullRef:
-      break;
   }
   MOZ_CRASH();
 }
@@ -103,23 +103,11 @@ void AnyRef::trace(JSTracer* trc) {
   }
 }
 
-class WasmValueBox : public NativeObject {
-  static const unsigned VALUE_SLOT = 0;
-
- public:
-  static const unsigned RESERVED_SLOTS = 1;
-  static const JSClass class_;
-
-  static WasmValueBox* create(JSContext* cx, HandleValue val);
-  Value value() const { return getFixedSlot(VALUE_SLOT); }
-};
-
 const JSClass WasmValueBox::class_ = {
     "WasmValueBox", JSCLASS_HAS_RESERVED_SLOTS(RESERVED_SLOTS)};
 
 WasmValueBox* WasmValueBox::create(JSContext* cx, HandleValue val) {
-  WasmValueBox* obj = (WasmValueBox*)NewObjectWithGivenProto(
-      cx, &WasmValueBox::class_, nullptr);
+  WasmValueBox* obj = NewObjectWithGivenProto<WasmValueBox>(cx, nullptr);
   if (!obj) {
     return nullptr;
   }
@@ -147,6 +135,11 @@ bool wasm::BoxAnyRef(JSContext* cx, HandleValue val, MutableHandleAnyRef addr) {
   return true;
 }
 
+JSObject* wasm::BoxBoxableValue(JSContext* cx, HandleValue val) {
+  MOZ_ASSERT(!val.isNull() && !val.isObject());
+  return WasmValueBox::create(cx, val);
+}
+
 Value wasm::UnboxAnyRef(AnyRef val) {
   // If UnboxAnyRef needs to allocate then we need a more complicated API, and
   // we need to root the value in the callers, see comments in callExport().
@@ -159,6 +152,14 @@ Value wasm::UnboxAnyRef(AnyRef val) {
   } else {
     result.setObjectOrNull(obj);
   }
+  return result;
+}
+
+Value wasm::UnboxFuncRef(FuncRef val) {
+  JSFunction* fn = val.asJSFunction();
+  Value result;
+  MOZ_ASSERT_IF(fn, fn->is<JSFunction>());
+  result.setObjectOrNull(fn);
   return result;
 }
 
@@ -218,41 +219,28 @@ bool wasm::IsRoundingFunction(SymbolicAddress callee, jit::RoundingMode* mode) {
 }
 
 size_t FuncType::serializedSize() const {
-  return sizeof(ret_) + SerializedPodVectorSize(args_);
+  return SerializedPodVectorSize(results_) + SerializedPodVectorSize(args_);
 }
 
 uint8_t* FuncType::serialize(uint8_t* cursor) const {
-  cursor = WriteScalar<ExprType>(cursor, ret_);
+  cursor = SerializePodVector(cursor, results_);
   cursor = SerializePodVector(cursor, args_);
   return cursor;
 }
 
-namespace js {
-namespace wasm {
-
-// ExprType is not POD while ReadScalar requires POD, so specialize.
-template <>
-inline const uint8_t* ReadScalar<ExprType>(const uint8_t* src, ExprType* dst) {
-  static_assert(sizeof(PackedTypeCode) == sizeof(ExprType),
-                "ExprType must carry only a PackedTypeCode");
-  memcpy(dst->packedPtr(), src, sizeof(PackedTypeCode));
-  return src + sizeof(*dst);
-}
-
-}  // namespace wasm
-}  // namespace js
-
 const uint8_t* FuncType::deserialize(const uint8_t* cursor) {
-  (cursor = ReadScalar<ExprType>(cursor, &ret_)) &&
-      (cursor = DeserializePodVector(cursor, &args_));
-  return cursor;
+  cursor = DeserializePodVector(cursor, &results_);
+  if (!cursor) {
+    return nullptr;
+  }
+  return DeserializePodVector(cursor, &args_);
 }
 
 size_t FuncType::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return args_.sizeOfExcludingThis(mallocSizeOf);
 }
 
-typedef uint32_t ImmediateType;  // for 32/64 consistency
+using ImmediateType = uint32_t;  // for 32/64 consistency
 static const unsigned sTotalBits = sizeof(ImmediateType) * 8;
 static const unsigned sTagBits = 1;
 static const unsigned sReturnBit = 1;
@@ -262,24 +250,29 @@ static const unsigned sMaxTypes =
     (sTotalBits - sTagBits - sReturnBit - sLengthBits) / sTypeBits;
 
 static bool IsImmediateType(ValType vt) {
-  switch (vt.code()) {
+  switch (vt.kind()) {
     case ValType::I32:
     case ValType::I64:
     case ValType::F32:
     case ValType::F64:
-    case ValType::FuncRef:
-    case ValType::AnyRef:
+    case ValType::V128:
       return true;
-    case ValType::NullRef:
     case ValType::Ref:
-      return false;
+      switch (vt.refTypeKind()) {
+        case RefType::Func:
+        case RefType::Any:
+          return true;
+        case RefType::TypeIndex:
+          return false;
+      }
+      break;
   }
   MOZ_CRASH("bad ValType");
 }
 
 static unsigned EncodeImmediateType(ValType vt) {
   static_assert(4 < (1 << sTypeBits), "fits");
-  switch (vt.code()) {
+  switch (vt.kind()) {
     case ValType::I32:
       return 0;
     case ValType::I64:
@@ -288,12 +281,17 @@ static unsigned EncodeImmediateType(ValType vt) {
       return 2;
     case ValType::F64:
       return 3;
-    case ValType::FuncRef:
+    case ValType::V128:
       return 4;
-    case ValType::AnyRef:
-      return 5;
-    case ValType::NullRef:
     case ValType::Ref:
+      switch (vt.refTypeKind()) {
+        case RefType::Func:
+          return 5;
+        case RefType::Any:
+          return 6;
+        case RefType::TypeIndex:
+          break;
+      }
       break;
   }
   MOZ_CRASH("bad ValType");
@@ -301,18 +299,23 @@ static unsigned EncodeImmediateType(ValType vt) {
 
 /* static */
 bool FuncTypeIdDesc::isGlobal(const FuncType& funcType) {
-  unsigned numTypes =
-      (funcType.ret() == ExprType::Void ? 0 : 1) + (funcType.args().length());
-  if (numTypes > sMaxTypes) {
+  const ValTypeVector& results = funcType.results();
+  const ValTypeVector& args = funcType.args();
+  if (results.length() + args.length() > sMaxTypes) {
     return true;
   }
 
-  if (funcType.ret() != ExprType::Void &&
-      !IsImmediateType(NonVoidToValType(funcType.ret()))) {
+  if (results.length() > 1) {
     return true;
   }
 
-  for (ValType v : funcType.args()) {
+  for (ValType v : results) {
+    if (!IsImmediateType(v)) {
+      return true;
+    }
+  }
+
+  for (ValType v : args) {
     if (!IsImmediateType(v)) {
       return true;
     }
@@ -339,11 +342,12 @@ FuncTypeIdDesc FuncTypeIdDesc::immediate(const FuncType& funcType) {
   ImmediateType immediate = ImmediateBit;
   uint32_t shift = sTagBits;
 
-  if (funcType.ret() != ExprType::Void) {
+  if (funcType.results().length() > 0) {
+    MOZ_ASSERT(funcType.results().length() == 1);
     immediate |= (1 << shift);
     shift += sReturnBit;
 
-    immediate |= EncodeImmediateType(NonVoidToValType(funcType.ret())) << shift;
+    immediate |= EncodeImmediateType(funcType.results()[0]) << shift;
     shift += sTypeBits;
   } else {
     shift += sReturnBit;
@@ -380,6 +384,11 @@ const uint8_t* FuncTypeWithId::deserialize(const uint8_t* cursor) {
 size_t FuncTypeWithId::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
   return FuncType::sizeOfExcludingThis(mallocSizeOf);
 }
+
+ArgTypeVector::ArgTypeVector(const FuncType& funcType)
+    : args_(funcType.args()),
+      hasStackResults_(ABIResultIter::HasStackResults(
+          ResultType::Vector(funcType.results()))) {}
 
 // A simple notion of prefix: types and mutability must match exactly.
 
@@ -486,19 +495,23 @@ size_t Export::sizeOfExcludingThis(MallocSizeOf mallocSizeOf) const {
 }
 
 size_t ElemSegment::serializedSize() const {
-  return sizeof(tableIndex) + sizeof(offsetIfActive) +
-         SerializedPodVectorSize(elemFuncIndices);
+  return sizeof(kind) + sizeof(tableIndex) + sizeof(elementType) +
+         sizeof(offsetIfActive) + SerializedPodVectorSize(elemFuncIndices);
 }
 
 uint8_t* ElemSegment::serialize(uint8_t* cursor) const {
+  cursor = WriteBytes(cursor, &kind, sizeof(kind));
   cursor = WriteBytes(cursor, &tableIndex, sizeof(tableIndex));
+  cursor = WriteBytes(cursor, &elementType, sizeof(elementType));
   cursor = WriteBytes(cursor, &offsetIfActive, sizeof(offsetIfActive));
   cursor = SerializePodVector(cursor, elemFuncIndices);
   return cursor;
 }
 
 const uint8_t* ElemSegment::deserialize(const uint8_t* cursor) {
-  (cursor = ReadBytes(cursor, &tableIndex, sizeof(tableIndex))) &&
+  (cursor = ReadBytes(cursor, &kind, sizeof(kind))) &&
+      (cursor = ReadBytes(cursor, &tableIndex, sizeof(tableIndex))) &&
+      (cursor = ReadBytes(cursor, &elementType, sizeof(elementType))) &&
       (cursor = ReadBytes(cursor, &offsetIfActive, sizeof(offsetIfActive))) &&
       (cursor = DeserializePodVector(cursor, &elemFuncIndices));
   return cursor;
@@ -576,8 +589,10 @@ bool wasm::IsValidARMImmediate(uint32_t i) {
   return valid;
 }
 
-uint32_t wasm::RoundUpToNextValidARMImmediate(uint32_t i) {
-  MOZ_ASSERT(i <= 0xff000000);
+uint64_t wasm::RoundUpToNextValidARMImmediate(uint64_t i) {
+  MOZ_ASSERT(i <= HighestValidARMImmediate);
+  static_assert(HighestValidARMImmediate == 0xff000000,
+                "algorithm relies on specific constant");
 
   if (i <= 16 * 1024 * 1024) {
     i = i ? mozilla::RoundUpPow2(i) : 0;
@@ -598,7 +613,7 @@ bool wasm::IsValidBoundsCheckImmediate(uint32_t i) {
 #endif
 }
 
-size_t wasm::ComputeMappedSize(uint32_t maxSize) {
+size_t wasm::ComputeMappedSize(uint64_t maxSize) {
   MOZ_ASSERT(maxSize % PageSize == 0);
 
   // It is the bounds-check limit, not the mapped size, that gets baked into
@@ -606,9 +621,9 @@ size_t wasm::ComputeMappedSize(uint32_t maxSize) {
   // *before* adding in the guard page.
 
 #ifdef JS_CODEGEN_ARM
-  uint32_t boundsCheckLimit = RoundUpToNextValidARMImmediate(maxSize);
+  uint64_t boundsCheckLimit = RoundUpToNextValidARMImmediate(maxSize);
 #else
-  uint32_t boundsCheckLimit = maxSize;
+  uint64_t boundsCheckLimit = maxSize;
 #endif
   MOZ_ASSERT(IsValidBoundsCheckImmediate(boundsCheckLimit));
 
@@ -619,7 +634,7 @@ size_t wasm::ComputeMappedSize(uint32_t maxSize) {
 
 /* static */
 DebugFrame* DebugFrame::from(Frame* fp) {
-  MOZ_ASSERT(fp->tls->instance->code().metadata().debugEnabled);
+  MOZ_ASSERT(fp->instance()->code().metadata().debugEnabled);
   auto* df =
       reinterpret_cast<DebugFrame*>((uint8_t*)fp - DebugFrame::offsetOfFrame());
   MOZ_ASSERT(fp->instance() == df->instance());
@@ -658,12 +673,20 @@ JSObject* DebugFrame::environmentChain() const {
 bool DebugFrame::getLocal(uint32_t localIndex, MutableHandleValue vp) {
   ValTypeVector locals;
   size_t argsLength;
-  if (!instance()->debug().debugGetLocalTypes(funcIndex(), &locals,
-                                              &argsLength)) {
+  StackResults stackResults;
+  if (!instance()->debug().debugGetLocalTypes(funcIndex(), &locals, &argsLength,
+                                              &stackResults)) {
     return false;
   }
 
-  BaseLocalIter iter(locals, argsLength, /* debugEnabled = */ true);
+  ValTypeVector args;
+  MOZ_ASSERT(argsLength <= locals.length());
+  if (!args.append(locals.begin(), argsLength)) {
+    return false;
+  }
+  ArgTypeVector abiArgs(args, stackResults);
+
+  BaseLocalIter iter(locals, abiArgs, /* debugEnabled = */ true);
   while (!iter.done() && iter.index() < localIndex) {
     iter++;
   }
@@ -688,67 +711,58 @@ bool DebugFrame::getLocal(uint32_t localIndex, MutableHandleValue vp) {
     case jit::MIRType::RefOrNull:
       vp.set(ObjectOrNullValue(*(JSObject**)dataPtr));
       break;
+#ifdef ENABLE_WASM_SIMD
+    case jit::MIRType::Simd128:
+      vp.set(NumberValue(0));
+      break;
+#endif
     default:
       MOZ_CRASH("local type");
   }
   return true;
 }
 
-void DebugFrame::updateReturnJSValue() {
-  hasCachedReturnJSValue_ = true;
-  ExprType returnType = instance()->debug().debugGetResultType(funcIndex());
-  switch (returnType.code()) {
-    case ExprType::Void:
-      cachedReturnJSValue_.setUndefined();
-      break;
-    case ExprType::I32:
-      cachedReturnJSValue_.setInt32(resultI32_);
-      break;
-    case ExprType::I64:
-      // Just display as a Number; it's ok if we lose some precision
-      cachedReturnJSValue_.setDouble((double)resultI64_);
-      break;
-    case ExprType::F32:
-      cachedReturnJSValue_.setDouble(JS::CanonicalizeNaN(resultF32_));
-      break;
-    case ExprType::F64:
-      cachedReturnJSValue_.setDouble(JS::CanonicalizeNaN(resultF64_));
-      break;
-    case ExprType::Ref:
-      cachedReturnJSValue_ = ObjectOrNullValue((JSObject*)resultRef_);
-      break;
-    case ExprType::FuncRef:
-    case ExprType::AnyRef:
-      cachedReturnJSValue_ = UnboxAnyRef(resultAnyRef_);
-      break;
-    default:
-      MOZ_CRASH("result type");
+bool DebugFrame::updateReturnJSValue(JSContext* cx) {
+  MutableHandleValue rval =
+      MutableHandleValue::fromMarkedLocation(&cachedReturnJSValue_);
+  rval.setUndefined();
+  flags_.hasCachedReturnJSValue = true;
+  ResultType resultType = instance()->debug().debugGetResultType(funcIndex());
+  Maybe<char*> stackResultsLoc;
+  if (ABIResultIter::HasStackResults(resultType)) {
+    stackResultsLoc = Some(static_cast<char*>(stackResultsPointer_));
   }
+  DebugCodegen(DebugChannel::Function,
+               "wasm-function[%d] updateReturnJSValue [", funcIndex());
+  bool ok =
+      ResultsToJSValue(cx, resultType, registerResults_, stackResultsLoc, rval);
+  DebugCodegen(DebugChannel::Function, "]\n");
+  return ok;
 }
 
 HandleValue DebugFrame::returnValue() const {
-  MOZ_ASSERT(hasCachedReturnJSValue_);
+  MOZ_ASSERT(flags_.hasCachedReturnJSValue);
   return HandleValue::fromMarkedLocation(&cachedReturnJSValue_);
 }
 
 void DebugFrame::clearReturnJSValue() {
-  hasCachedReturnJSValue_ = true;
+  flags_.hasCachedReturnJSValue = true;
   cachedReturnJSValue_.setUndefined();
 }
 
 void DebugFrame::observe(JSContext* cx) {
-  if (!observing_) {
+  if (!flags_.observing) {
     instance()->debug().adjustEnterAndLeaveFrameTrapsState(
         cx, /* enabled = */ true);
-    observing_ = true;
+    flags_.observing = true;
   }
 }
 
 void DebugFrame::leave(JSContext* cx) {
-  if (observing_) {
+  if (flags_.observing) {
     instance()->debug().adjustEnterAndLeaveFrameTrapsState(
         cx, /* enabled = */ false);
-    observing_ = false;
+    flags_.observing = false;
   }
 }
 
@@ -774,9 +788,9 @@ void TrapSiteVectorArray::swap(TrapSiteVectorArray& rhs) {
   }
 }
 
-void TrapSiteVectorArray::podResizeToFit() {
+void TrapSiteVectorArray::shrinkStorageToFit() {
   for (Trap trap : MakeEnumeratedRange(Trap::Limit)) {
-    (*this)[trap].podResizeToFit();
+    (*this)[trap].shrinkStorageToFit();
   }
 }
 
@@ -834,7 +848,7 @@ CodeRange::CodeRange(Kind kind, uint32_t funcIndex, Offsets offsets)
     : begin_(offsets.begin), ret_(0), end_(offsets.end), kind_(kind) {
   u.funcIndex_ = funcIndex;
   u.func.lineOrBytecode_ = 0;
-  u.func.beginToNormalEntry_ = 0;
+  u.func.beginToUncheckedCallEntry_ = 0;
   u.func.beginToTierEntry_ = 0;
   MOZ_ASSERT(isEntry());
   MOZ_ASSERT(begin_ <= end_);
@@ -863,7 +877,7 @@ CodeRange::CodeRange(Kind kind, uint32_t funcIndex, CallableOffsets offsets)
   MOZ_ASSERT(ret_ < end_);
   u.funcIndex_ = funcIndex;
   u.func.lineOrBytecode_ = 0;
-  u.func.beginToNormalEntry_ = 0;
+  u.func.beginToUncheckedCallEntry_ = 0;
   u.func.beginToTierEntry_ = 0;
 }
 
@@ -890,11 +904,11 @@ CodeRange::CodeRange(uint32_t funcIndex, uint32_t funcLineOrBytecode,
       kind_(Function) {
   MOZ_ASSERT(begin_ < ret_);
   MOZ_ASSERT(ret_ < end_);
-  MOZ_ASSERT(offsets.normalEntry - begin_ <= UINT8_MAX);
+  MOZ_ASSERT(offsets.uncheckedCallEntry - begin_ <= UINT8_MAX);
   MOZ_ASSERT(offsets.tierEntry - begin_ <= UINT8_MAX);
   u.funcIndex_ = funcIndex;
   u.func.lineOrBytecode_ = funcLineOrBytecode;
-  u.func.beginToNormalEntry_ = offsets.normalEntry - begin_;
+  u.func.beginToUncheckedCallEntry_ = offsets.uncheckedCallEntry - begin_;
   u.func.beginToTierEntry_ = offsets.tierEntry - begin_;
 }
 
@@ -950,8 +964,7 @@ void wasm::Log(JSContext* cx, const char* fmt, ...) {
   va_start(args, fmt);
 
   if (UniqueChars chars = JS_vsmprintf(fmt, args)) {
-    JS_ReportErrorFlagsAndNumberASCII(cx, JSREPORT_WARNING, GetErrorMessage,
-                                      nullptr, JSMSG_WASM_VERBOSE, chars.get());
+    WarnNumberASCII(cx, JSMSG_WASM_VERBOSE, chars.get());
     if (cx->isExceptionPending()) {
       cx->clearPendingException();
     }
@@ -982,4 +995,38 @@ void wasm::DebugCodegen(DebugChannel channel, const char* fmt, ...) {
   vfprintf(stderr, fmt, ap);
   va_end(ap);
 #endif
+}
+
+UniqueChars wasm::ToString(ValType type) {
+  const char* literal = nullptr;
+  switch (type.kind()) {
+    case ValType::I32:
+      literal = "i32";
+      break;
+    case ValType::I64:
+      literal = "i64";
+      break;
+    case ValType::V128:
+      literal = "v128";
+      break;
+    case ValType::F32:
+      literal = "f32";
+      break;
+    case ValType::F64:
+      literal = "f64";
+      break;
+    case ValType::Ref:
+      switch (type.refTypeKind()) {
+        case RefType::Any:
+          literal = "externref";
+          break;
+        case RefType::Func:
+          literal = "funcref";
+          break;
+        case RefType::TypeIndex:
+          return JS_smprintf("optref %d", type.refType().typeIndex());
+      }
+      break;
+  }
+  return JS_smprintf("%s", literal);
 }

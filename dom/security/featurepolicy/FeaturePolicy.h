@@ -7,11 +7,9 @@
 #ifndef mozilla_dom_FeaturePolicy_h
 #define mozilla_dom_FeaturePolicy_h
 
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/Feature.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsString.h"
+#include "nsIPrincipal.h"
+#include "nsStringFwd.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
 
@@ -55,12 +53,12 @@
  * HTTP header support.
  **/
 
-class nsIHttpChannel;
 class nsINode;
 
 namespace mozilla {
 namespace dom {
 class Document;
+class Feature;
 
 class FeaturePolicyUtils;
 
@@ -79,6 +77,8 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   void SetDefaultOrigin(nsIPrincipal* aPrincipal) {
     mDefaultOrigin = aPrincipal;
   }
+
+  void SetSrcOrigin(nsIPrincipal* aPrincipal) { mSrcOrigin = aPrincipal; }
 
   nsIPrincipal* DefaultOrigin() const { return mDefaultOrigin; }
 
@@ -101,6 +101,22 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   // policy.
   void ResetDeclaredPolicy();
 
+  // This method appends a feature to in-chain declared allowlist. If the name's
+  // feature existed in the list, we only need to append the allowlist of new
+  // feature to the existed one.
+  void AppendToDeclaredAllowInAncestorChain(const Feature& aFeature);
+
+  // This method returns true if aFeatureName is declared as "*" (allow all)
+  // in parent.
+  bool HasFeatureUnsafeAllowsAll(const nsAString& aFeatureName) const;
+
+  // This method returns true if the aFeatureName is allowed for aOrigin
+  // explicitly in ancestor chain,
+  bool AllowsFeatureExplicitlyInAncestorChain(const nsAString& aFeatureName,
+                                              nsIPrincipal* aOrigin) const;
+
+  bool IsSameOriginAsSrc(nsIPrincipal* aPrincipal) const;
+
   // WebIDL internal methods.
 
   JSObject* WrapObject(JSContext* aCx,
@@ -120,6 +136,22 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   void GetAllowlistForFeature(const nsAString& aFeatureName,
                               nsTArray<nsString>& aList) const;
 
+  void GetInheritedDeniedFeatureNames(
+      nsTArray<nsString>& aInheritedDeniedFeatureNames) {
+    aInheritedDeniedFeatureNames = mInheritedDeniedFeatureNames.Clone();
+  }
+
+  void SetInheritedDeniedFeatureNames(
+      const nsTArray<nsString>& aInheritedDeniedFeatureNames) {
+    mInheritedDeniedFeatureNames = aInheritedDeniedFeatureNames.Clone();
+  }
+
+  void GetDeclaredString(nsAString& aDeclaredString) {
+    aDeclaredString = mDeclaredString;
+  }
+  nsIPrincipal* GetSelfOrigin() const { return mSelfOrigin; }
+  nsIPrincipal* GetSrcOrigin() const { return mSrcOrigin; }
+
  private:
   ~FeaturePolicy() = default;
 
@@ -137,16 +169,29 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   // This returns true if we have a declared feature policy for aFeatureName.
   bool HasDeclaredFeature(const nsAString& aFeatureName) const;
 
-  nsCOMPtr<nsINode> mParentNode;
+  nsINode* mParentNode;
 
   // This is set in sub-contexts when the parent blocks some feature for the
   // current context.
   nsTArray<nsString> mInheritedDeniedFeatureNames;
 
+  // This is set of feature names when the parent allows all for that feature.
+  nsTArray<nsString> mParentAllowedAllFeatures;
+
+  // The explicitly declared policy contains allowlist as a set of origins
+  // except 'none' and '*'. This set contains all explicitly declared policies
+  // in ancestor chain
+  nsTArray<Feature> mDeclaredFeaturesInAncestorChain;
+
   // Feature policy for the current context.
   nsTArray<Feature> mFeatures;
 
+  // Declared string represents Feature policy.
+  nsString mDeclaredString;
+
   nsCOMPtr<nsIPrincipal> mDefaultOrigin;
+  nsCOMPtr<nsIPrincipal> mSelfOrigin;
+  nsCOMPtr<nsIPrincipal> mSrcOrigin;
 };
 
 }  // namespace dom

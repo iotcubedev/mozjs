@@ -4,24 +4,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGTransform_h
-#define mozilla_dom_SVGTransform_h
+#ifndef DOM_SVG_DOMSVGTRANSFORM_H_
+#define DOM_SVG_DOMSVGTRANSFORM_H_
 
 #include "DOMSVGTransformList.h"
 #include "gfxMatrix.h"
-#include "nsAutoPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDebug.h"
 #include "nsID.h"
 #include "SVGTransform.h"
 #include "nsWrapperCache.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/UniquePtr.h"
 
 #define MOZ_SVG_LIST_INDEX_BIT_COUNT 31  // supports > 2 billion list items
 
 namespace mozilla {
 namespace dom {
 
+struct DOMMatrix2DInit;
 class SVGElement;
 class SVGMatrix;
 
@@ -44,12 +45,13 @@ class DOMSVGTransform final : public nsWrapperCache {
   /**
    * Ctors for creating the objects returned by:
    *   SVGSVGElement.createSVGTransform(),
-   *   SVGSVGElement.createSVGTransformFromMatrix(in SVGMatrix matrix),
-   *   SVGTransformList.createSVGTransformFromMatrix(in SVGMatrix matrix)
+   *   SVGSVGElement.createSVGTransformFromMatrix(in DOMMatrix2DInit  matrix),
+   *   SVGTransformList.createSVGTransformFromMatrix(in DOMMatrix2DInit  matrix)
    * which do not initially belong to an attribute.
    */
   explicit DOMSVGTransform();
   explicit DOMSVGTransform(const gfxMatrix& aMatrix);
+  explicit DOMSVGTransform(const DOMMatrix2DInit& aMatrix, ErrorResult& rv);
 
   /**
    * Ctor for creating an unowned copy. Used with Clone().
@@ -110,7 +112,7 @@ class DOMSVGTransform final : public nsWrapperCache {
   uint16_t Type() const;
   dom::SVGMatrix* GetMatrix();
   float Angle() const;
-  void SetMatrix(dom::SVGMatrix& matrix, ErrorResult& rv);
+  void SetMatrix(const DOMMatrix2DInit& matrix, ErrorResult& rv);
   void SetTranslate(float tx, float ty, ErrorResult& rv);
   void SetScale(float sx, float sy, ErrorResult& rv);
   void SetRotate(float angle, float cx, float cy, ErrorResult& rv);
@@ -162,7 +164,7 @@ class DOMSVGTransform final : public nsWrapperCache {
   // with any particular list and thus, no internal SVGTransform object. In
   // that case we allocate an SVGTransform object on the heap to store the
   // data.
-  nsAutoPtr<SVGTransform> mTransform;
+  UniquePtr<SVGTransform> mTransform;
 };
 
 }  // namespace dom
@@ -170,4 +172,4 @@ class DOMSVGTransform final : public nsWrapperCache {
 
 #undef MOZ_SVG_LIST_INDEX_BIT_COUNT
 
-#endif  // mozilla_dom_SVGTransform_h
+#endif  // DOM_SVG_DOMSVGTRANSFORM_H_

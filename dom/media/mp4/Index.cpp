@@ -11,7 +11,6 @@
 #include "mozilla/RefPtr.h"
 #include "MP4Interval.h"
 #include "MP4Metadata.h"
-#include "nsAutoPtr.h"
 #include "SinfParser.h"
 
 using namespace mozilla::media;
@@ -36,7 +35,7 @@ class MOZ_STACK_CLASS RangeFinder {
 };
 
 bool RangeFinder::Contains(MediaByteRange aByteRange) {
-  if (!mRanges.Length()) {
+  if (mRanges.IsEmpty()) {
     return false;
   }
 
@@ -130,7 +129,7 @@ already_AddRefed<MediaRawData> SampleIterator::GetNext() {
       // the init data on the Moof's first sample, to avoid reporting it more
       // than once per Moof.
       writer->mCrypto.mInitDatas.AppendElements(currentMoof->mPsshes);
-      writer->mCrypto.mInitDataType = NS_LITERAL_STRING("cenc");
+      writer->mCrypto.mInitDataType = u"cenc"_ns;
     }
   }
 
@@ -313,7 +312,7 @@ Result<CryptoScheme, const nsCString> SampleIterator::GetEncryptionScheme() {
     // entry.
     // If we encounter this error often, we may consider using the first
     // sample description entry if the index is out of bounds.
-    return mozilla::Err(NS_LITERAL_CSTRING(
+    return mozilla::Err(nsLiteralCString(
         "Could not determine encryption scheme due to bad index for sample "
         "description entry."));
   }
@@ -326,7 +325,7 @@ Result<CryptoScheme, const nsCString> SampleIterator::GetEncryptionScheme() {
     // The sample description entry says this sample is encrypted, but we
     // don't have a valid sinf box. This shouldn't happen as the sinf box is
     // part of the sample description entry. Suggests a malformed file, bail.
-    return mozilla::Err(NS_LITERAL_CSTRING(
+    return mozilla::Err(nsLiteralCString(
         "Could not determine encryption scheme. Sample description entry "
         "indicates encryption, but could not find associated sinf box."));
   }
@@ -335,7 +334,7 @@ Result<CryptoScheme, const nsCString> SampleIterator::GetEncryptionScheme() {
   if (sampleInfo && !sampleInfo->mIsEncrypted) {
     // May not have sample encryption info, but if we do, it should match other
     // metadata.
-    return mozilla::Err(NS_LITERAL_CSTRING(
+    return mozilla::Err(nsLiteralCString(
         "Could not determine encryption scheme. Sample description entry "
         "indicates encryption, but sample encryption entry indicates sample is "
         "not encrypted. These should be consistent."));
@@ -346,7 +345,7 @@ Result<CryptoScheme, const nsCString> SampleIterator::GetEncryptionScheme() {
   } else if (moofParser->mSinf.mDefaultEncryptionType == AtomType("cbcs")) {
     return CryptoScheme::Cbcs;
   }
-  return mozilla::Err(NS_LITERAL_CSTRING(
+  return mozilla::Err(nsLiteralCString(
       "Could not determine encryption scheme. Sample description entry "
       "reports sample is encrypted, but no scheme, or an unsupported scheme "
       "is in use."));
@@ -418,7 +417,8 @@ Index::Index(const IndiceWrapper& aIndices, ByteStream* aSource,
              uint32_t aTrackId, bool aIsAudio)
     : mSource(aSource), mIsAudio(aIsAudio) {
   if (!aIndices.Length()) {
-    mMoofParser = new MoofParser(aSource, AsVariant(aTrackId), aIsAudio);
+    mMoofParser =
+        MakeUnique<MoofParser>(aSource, AsVariant(aTrackId), aIsAudio);
   } else {
     if (!mIndex.SetCapacity(aIndices.Length(), fallible)) {
       // OOM.
@@ -495,7 +495,7 @@ Index::Index(const IndiceWrapper& aIndices, ByteStream* aSource,
   }
 }
 
-Index::~Index() {}
+Index::~Index() = default;
 
 void Index::UpdateMoofIndex(const MediaByteRangeSet& aByteRanges) {
   UpdateMoofIndex(aByteRanges, false);

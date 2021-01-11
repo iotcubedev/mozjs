@@ -28,6 +28,7 @@
 
 #include "gc/GC-inl.h"
 #include "gc/Marking-inl.h"
+#include "gc/WeakMap-inl.h"
 #include "vm/JSAtom-inl.h"
 #include "vm/JSFunction-inl.h"
 #include "vm/JSObject-inl.h"
@@ -85,6 +86,16 @@ bool Compartment::putWrapper(JSContext* cx, JSString* wrapped,
   return true;
 }
 
+void Compartment::removeWrapper(js::ObjectWrapperMap::Ptr p) {
+  JSObject* key = p->key();
+  JSObject* value = p->value().unbarrieredGet();
+  if (js::gc::detail::GetDelegate(value) == key) {
+    key->zone()->beforeClearDelegate(value, key);
+  }
+
+  crossCompartmentObjectWrappers.remove(p);
+}
+
 static JSString* CopyStringPure(JSContext* cx, JSString* str) {
   /*
    * Directly allocate the copy in the destination compartment, rather than
@@ -121,7 +132,7 @@ static JSString* CopyStringPure(JSContext* cx, JSString* str) {
 
   if (str->hasLatin1Chars()) {
     UniquePtr<Latin1Char[], JS::FreePolicy> copiedChars =
-        str->asRope().copyLatin1CharsZ(cx, js::StringBufferArena);
+        str->asRope().copyLatin1Chars(cx, js::StringBufferArena);
     if (!copiedChars) {
       return nullptr;
     }
@@ -130,7 +141,7 @@ static JSString* CopyStringPure(JSContext* cx, JSString* str) {
   }
 
   UniqueTwoByteChars copiedChars =
-      str->asRope().copyTwoByteCharsZ(cx, js::StringBufferArena);
+      str->asRope().copyTwoByteChars(cx, js::StringBufferArena);
   if (!copiedChars) {
     return nullptr;
   }
@@ -199,8 +210,8 @@ bool Compartment::getNonWrapperObjectForCurrentCompartment(
   // associated with the self-hosting zone. We don't want to create
   // wrappers for objects in other runtimes, which may be the case for the
   // self-hosting zone.
-  MOZ_ASSERT(!cx->runtime()->isSelfHostingZone(cx->zone()));
-  MOZ_ASSERT(!cx->runtime()->isSelfHostingZone(obj->zone()));
+  MOZ_ASSERT(!cx->zone()->isSelfHostingZone());
+  MOZ_ASSERT(!obj->zone()->isSelfHostingZone());
 
   // The object is already in the right compartment. Normally same-
   // compartment returns the object itself, however, windows are always
@@ -244,7 +255,7 @@ bool Compartment::getNonWrapperObjectForCurrentCompartment(
       return !!obj;
     }
 
-    MOZ_ASSERT(IsWindowProxy(obj));
+    MOZ_ASSERT(IsWindowProxy(obj) || IsDOMRemoteProxyObject(obj));
 
     // We crossed a compartment boundary there, so may now have a gray object.
     // This function is not allowed to return gray objects, so don't do that.
@@ -419,34 +430,62 @@ bool Compartment::wrap(JSContext* cx, MutableHandle<GCVector<Value>> vec) {
   return true;
 }
 
-void Compartment::traceOutgoingCrossCompartmentWrappers(JSTracer* trc) {
+static inline bool ShouldTraceWrapper(JSObject* wrapper,
+                                      Compartment::EdgeSelector whichEdges) {
+  if (whichEdges == Compartment::AllEdges) {
+    return true;
+  }
+
+  bool isGray = wrapper->isMarkedGray();
+  return (whichEdges == Compartment::NonGrayEdges && !isGray) ||
+         (whichEdges == Compartment::GrayEdges && isGray);
+}
+
+void Compartment::traceWrapperTargetsInCollectedZones(JSTracer* trc,
+                                                      EdgeSelector whichEdges) {
+  // Trace cross compartment wrapper private pointers into collected zones to
+  // either mark or update them. Wrapped object pointers are updated by
+  // sweepCrossCompartmentObjectWrappers().
+
   MOZ_ASSERT(JS::RuntimeHeapIsMajorCollecting());
   MOZ_ASSERT(!zone()->isCollectingFromAnyThread() ||
              trc->runtime()->gc.isHeapCompacting());
 
-  for (ObjectWrapperEnum e(this); !e.empty(); e.popFront()) {
-    JSObject* obj = e.front().value().unbarrieredGet();
-    ProxyObject* wrapper = &obj->as<ProxyObject>();
+  for (WrappedObjectCompartmentEnum c(this); !c.empty(); c.popFront()) {
+    Zone* zone = c.front()->zone();
+    if (!zone->isCollectingFromAnyThread()) {
+      continue;
+    }
 
-    /*
-     * We have a cross-compartment wrapper. Its private pointer may
-     * point into the compartment being collected, so we should mark it.
-     */
-    ProxyObject::traceEdgeToTarget(trc, wrapper);
+    for (ObjectWrapperEnum e(this, c); !e.empty(); e.popFront()) {
+      JSObject* obj = e.front().value().unbarrieredGet();
+      ProxyObject* wrapper = &obj->as<ProxyObject>();
+      if (ShouldTraceWrapper(wrapper, whichEdges)) {
+        ProxyObject::traceEdgeToTarget(trc, wrapper);
+      }
+    }
   }
 }
 
 /* static */
-void Compartment::traceIncomingCrossCompartmentEdgesForZoneGC(JSTracer* trc) {
-  gcstats::AutoPhase ap(trc->runtime()->gc.stats(),
-                        gcstats::PhaseKind::MARK_CCWS);
+void Compartment::traceIncomingCrossCompartmentEdgesForZoneGC(
+    JSTracer* trc, EdgeSelector whichEdges) {
   MOZ_ASSERT(JS::RuntimeHeapIsMajorCollecting());
-  for (CompartmentsIter c(trc->runtime()); !c.done(); c.next()) {
-    if (!c->zone()->isCollecting()) {
-      c->traceOutgoingCrossCompartmentWrappers(trc);
+
+  for (ZonesIter zone(trc->runtime(), SkipAtoms); !zone.done(); zone.next()) {
+    if (zone->isCollectingFromAnyThread()) {
+      continue;
+    }
+
+    for (CompartmentsInZoneIter c(zone); !c.done(); c.next()) {
+      c->traceWrapperTargetsInCollectedZones(trc, whichEdges);
     }
   }
-  DebugAPI::traceCrossCompartmentEdges(trc);
+
+  // Currently we trace all debugger edges as black.
+  if (whichEdges != GrayEdges) {
+    DebugAPI::traceCrossCompartmentEdges(trc);
+  }
 }
 
 void Compartment::sweepAfterMinorGC(JSTracer* trc) {
@@ -457,11 +496,7 @@ void Compartment::sweepAfterMinorGC(JSTracer* trc) {
   }
 }
 
-/*
- * Remove dead wrappers from the table. We must sweep all compartments, since
- * string entries in the crossCompartmentWrappers table are not marked during
- * markCrossCompartmentWrappers.
- */
+// Remove dead wrappers from the table or update pointers to moved objects.
 void Compartment::sweepCrossCompartmentObjectWrappers() {
   crossCompartmentObjectWrappers.sweep();
 }
@@ -476,7 +511,7 @@ void Compartment::fixupCrossCompartmentObjectWrappersAfterMovingGC(
 
   // Trace the wrappers in the map to update their cross-compartment edges
   // to wrapped values in other compartments that may have been moved.
-  traceOutgoingCrossCompartmentWrappers(trc);
+  traceWrapperTargetsInCollectedZones(trc, AllEdges);
 }
 
 void Compartment::fixupAfterMovingGC(JSTracer* trc) {

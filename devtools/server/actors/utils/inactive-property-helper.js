@@ -5,11 +5,45 @@
 "use strict";
 
 const Services = require("Services");
+const InspectorUtils = require("InspectorUtils");
+
+loader.lazyRequireGetter(
+  this,
+  "CssLogic",
+  "devtools/server/actors/inspector/css-logic",
+  true
+);
 
 const INACTIVE_CSS_ENABLED = Services.prefs.getBoolPref(
   "devtools.inspector.inactive.css.enabled",
   false
 );
+
+const VISITED_MDN_LINK = "https://developer.mozilla.org/docs/Web/CSS/:visited";
+const VISITED_INVALID_PROPERTIES = allCssPropertiesExcept([
+  "all",
+  "color",
+  "background",
+  "background-color",
+  "border",
+  "border-color",
+  "border-bottom-color",
+  "border-left-color",
+  "border-right-color",
+  "border-top-color",
+  "border-block",
+  "border-block-color",
+  "border-block-start-color",
+  "border-block-end-color",
+  "border-inline",
+  "border-inline-color",
+  "border-inline-start-color",
+  "border-inline-end-color",
+  "column-rule",
+  "column-rule-color",
+  "outline",
+  "outline-color",
+]);
 
 class InactivePropertyHelper {
   /**
@@ -27,10 +61,8 @@ class InactivePropertyHelper {
    * This file contains "rules" in the form of objects with the following
    * properties:
    * {
-   *   invalidProperties (see note):
+   *   invalidProperties:
    *     Array of CSS property names that are inactive if the rule matches.
-   *   validProperties (see note):
-   *     Array of CSS property names that are active if the rule matches.
    *   when:
    *     The rule itself, a JS function used to identify the conditions
    *     indicating whether a property is valid or not.
@@ -44,10 +76,8 @@ class InactivePropertyHelper {
    *     The number of properties we suggest in the fixId string.
    * }
    *
-   * NOTE: validProperties and invalidProperties are mutually exclusive.
-   *
    * If you add a new rule, also add a test for it in:
-   * server/tests/mochitest/test_inspector-inactive-property-helper.html
+   * server/tests/chrome/test_inspector-inactive-property-helper.html
    *
    * The main export is `isPropertyUsed()`, which can be used to check if a
    * property is used or not, and why.
@@ -72,7 +102,7 @@ class InactivePropertyHelper {
           "order",
         ],
         when: () => !this.flexItem,
-        fixId: "inactive-css-not-flex-item-fix",
+        fixId: "inactive-css-not-flex-item-fix-2",
         msgId: "inactive-css-not-flex-item",
         numFixProps: 2,
       },
@@ -83,7 +113,6 @@ class InactivePropertyHelper {
           "grid-auto-flow",
           "grid-auto-rows",
           "grid-template",
-          "grid-gap",
           "justify-items",
         ],
         when: () => !this.gridContainer,
@@ -103,37 +132,60 @@ class InactivePropertyHelper {
           "grid-row-start",
           "justify-self",
         ],
-        when: () => !this.gridItem,
-        fixId: "inactive-css-not-grid-item-fix",
+        when: () => !this.gridItem && !this.isAbsPosGridElement(),
+        fixId: "inactive-css-not-grid-item-fix-2",
         msgId: "inactive-css-not-grid-item",
         numFixProps: 2,
       },
       // Grid and flex item properties used on non-grid or non-flex item.
       {
         invalidProperties: ["align-self", "place-self"],
-        when: () => !this.gridItem && !this.flexItem,
-        fixId: "inactive-css-not-grid-or-flex-item-fix",
+        when: () =>
+          !this.gridItem && !this.flexItem && !this.isAbsPosGridElement(),
+        fixId: "inactive-css-not-grid-or-flex-item-fix-2",
         msgId: "inactive-css-not-grid-or-flex-item",
         numFixProps: 4,
       },
       // Grid and flex container properties used on non-grid or non-flex container.
       {
         invalidProperties: [
-          "align-content",
           "align-items",
           "justify-content",
           "place-content",
           "place-items",
           "row-gap",
+          // grid-*-gap are supported legacy shorthands for the corresponding *-gap properties.
+          // See https://drafts.csswg.org/css-align-3/#gap-legacy for more information.
+          "grid-gap",
+          "grid-row-gap",
         ],
         when: () => !this.gridContainer && !this.flexContainer,
         fixId: "inactive-css-not-grid-or-flex-container-fix",
         msgId: "inactive-css-not-grid-or-flex-container",
         numFixProps: 2,
       },
-      // column-gap and shorthand used on non-grid or non-flex or non-multi-col container.
+      // align-content is special as align-content:baseline does have an effect on all
+      // grid items, flex items and table cells, regardless of what type of box they are.
+      // See https://bugzilla.mozilla.org/show_bug.cgi?id=1598730
       {
-        invalidProperties: ["column-gap", "gap"],
+        invalidProperties: ["align-content"],
+        when: () =>
+          !this.style["align-content"].includes("baseline") &&
+          !this.gridContainer &&
+          !this.flexContainer,
+        fixId: "inactive-css-not-grid-or-flex-container-fix",
+        msgId: "inactive-css-not-grid-or-flex-container",
+        numFixProps: 2,
+      },
+      // column-gap and shorthands used on non-grid or non-flex or non-multi-col container.
+      {
+        invalidProperties: [
+          "column-gap",
+          "gap",
+          // grid-*-gap are supported legacy shorthands for the corresponding *-gap properties.
+          // See https://drafts.csswg.org/css-align-3/#gap-legacy for more information.
+          "grid-column-gap",
+        ],
         when: () =>
           !this.gridContainer && !this.flexContainer && !this.multiColContainer,
         fixId:
@@ -161,7 +213,10 @@ class InactivePropertyHelper {
       // (max-|min-)width used on inline elements, table rows, or row groups.
       {
         invalidProperties: ["max-width", "min-width", "width"],
-        when: () => this.nonReplacedInlineBox || this.tableRow || this.rowGroup,
+        when: () =>
+          this.nonReplacedInlineBox ||
+          this.horizontalTableTrack ||
+          this.horizontalTableTrackGroup,
         fixId: "inactive-css-non-replaced-inline-or-table-row-or-row-group-fix",
         msgId: "inactive-css-property-because-of-display",
         numFixProps: 2,
@@ -170,10 +225,76 @@ class InactivePropertyHelper {
       {
         invalidProperties: ["max-height", "min-height", "height"],
         when: () =>
-          this.nonReplacedInlineBox || this.tableColumn || this.columnGroup,
+          this.nonReplacedInlineBox ||
+          this.verticalTableTrack ||
+          this.verticalTableTrackGroup,
         fixId:
           "inactive-css-non-replaced-inline-or-table-column-or-column-group-fix",
         msgId: "inactive-css-property-because-of-display",
+        numFixProps: 1,
+      },
+      {
+        invalidProperties: ["display"],
+        when: () =>
+          this.isFloated &&
+          this.checkResolvedStyle("display", [
+            "inline",
+            "inline-block",
+            "inline-table",
+            "inline-flex",
+            "inline-grid",
+            "table-cell",
+            "table-row",
+            "table-row-group",
+            "table-header-group",
+            "table-footer-group",
+            "table-column",
+            "table-column-group",
+            "table-caption",
+          ]),
+        fixId: "inactive-css-not-display-block-on-floated-fix",
+        msgId: "inactive-css-not-display-block-on-floated",
+        numFixProps: 2,
+      },
+      // The property is impossible to override due to :visited restriction.
+      {
+        invalidProperties: VISITED_INVALID_PROPERTIES,
+        when: () => this.isVisitedRule(),
+        fixId: "learn-more",
+        msgId: "inactive-css-property-is-impossible-to-override-in-visited",
+        numFixProps: 1,
+        learnMoreURL: VISITED_MDN_LINK,
+      },
+      // top, right, bottom, left properties used on non positioned boxes.
+      {
+        invalidProperties: ["top", "right", "bottom", "left"],
+        when: () => !this.isPositioned,
+        fixId: "inactive-css-position-property-on-unpositioned-box-fix",
+        msgId: "inactive-css-position-property-on-unpositioned-box",
+        numFixProps: 1,
+      },
+      // z-index property used on non positioned boxes that are not grid/flex items.
+      {
+        invalidProperties: ["z-index"],
+        when: () => !this.isPositioned && !this.gridItem && !this.flexItem,
+        fixId: "inactive-css-position-property-on-unpositioned-box-fix",
+        msgId: "inactive-css-position-property-on-unpositioned-box",
+        numFixProps: 1,
+      },
+      // text-overflow property used on elements for which overflow is not set to hidden.
+      // Note that this validator only checks if overflow:hidden is set on the element.
+      // In theory, we should also be checking if the element is a block as this doesn't
+      // normally work on inline element. However there are many edge cases that made it
+      // impossible for the JS code to determine whether the type of box would support
+      // text-overflow. So, rather than risking to show invalid warnings, we decided to
+      // only warn when overflow:hidden wasn't set. There is more information about this
+      // in this discussion https://phabricator.services.mozilla.com/D62407 and on the bug
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1551578
+      {
+        invalidProperties: ["text-overflow"],
+        when: () => !this.checkComputedStyle("overflow", ["hidden"]),
+        fixId: "inactive-text-overflow-when-no-overflow-fix",
+        msgId: "inactive-text-overflow-when-no-overflow",
         numFixProps: 1,
       },
     ];
@@ -220,6 +341,9 @@ class InactivePropertyHelper {
    *         The number of properties we suggest in the fixId string.
    * @return {String} object.property
    *         The inactive property name.
+   * @return {String} object.learnMoreURL
+   *         An optional link if we need to open an other link than
+   *         the default MDN property one.
    * @return {Boolean} object.used
    *         true if the property is used.
    */
@@ -234,6 +358,7 @@ class InactivePropertyHelper {
     let fixId = "";
     let msgId = "";
     let numFixProps = 0;
+    let learnMoreURL = null;
     let used = true;
 
     this.VALIDATORS.some(validator => {
@@ -241,11 +366,7 @@ class InactivePropertyHelper {
       let isRuleConcerned = false;
 
       if (validator.invalidProperties) {
-        isRuleConcerned =
-          validator.invalidProperties === "*" ||
-          validator.invalidProperties.includes(property);
-      } else if (validator.validProperties) {
-        isRuleConcerned = !validator.validProperties.includes(property);
+        isRuleConcerned = validator.invalidProperties.includes(property);
       }
 
       if (!isRuleConcerned) {
@@ -260,6 +381,7 @@ class InactivePropertyHelper {
         fixId = validator.fixId;
         msgId = validator.msgId;
         numFixProps = validator.numFixProps;
+        learnMoreURL = validator.learnMoreURL;
         used = false;
 
         return true;
@@ -283,6 +405,7 @@ class InactivePropertyHelper {
       msgId,
       numFixProps,
       property,
+      learnMoreURL,
       used,
     };
   }
@@ -340,22 +463,7 @@ class InactivePropertyHelper {
    * @param {Array} values
    *        Values to compare against.
    */
-  checkStyle(propName, values) {
-    return this.checkStyleForNode(this.node, propName, values);
-  }
-
-  /**
-   * Check if a node's propName is set to one of the values passed in the values
-   * array.
-   *
-   * @param {DOMNode} node
-   *        The node to check.
-   * @param {String} propName
-   *        Property name to check.
-   * @param {Array} values
-   *        Values to compare against.
-   */
-  checkStyleForNode(node, propName, values) {
+  checkComputedStyle(propName, values) {
     if (!this.style) {
       return false;
     }
@@ -363,10 +471,28 @@ class InactivePropertyHelper {
   }
 
   /**
+   * Check if a rule's propName is set to one of the values passed in the values
+   * array.
+   *
+   * @param {String} propName
+   *        Property name to check.
+   * @param {Array} values
+   *        Values to compare against.
+   */
+  checkResolvedStyle(propName, values) {
+    if (!(this.cssRule && this.cssRule.style)) {
+      return false;
+    }
+    const { style } = this.cssRule;
+
+    return values.some(value => style[propName] === value);
+  }
+
+  /**
    *  Check if the current node is an inline-level box.
    */
   isInlineLevel() {
-    return this.checkStyle("display", [
+    return this.checkComputedStyle("display", [
       "inline",
       "inline-block",
       "inline-table",
@@ -385,7 +511,7 @@ class InactivePropertyHelper {
    * of `display:flex` or `display:inline-flex`.
    */
   get flexContainer() {
-    return this.checkStyle("display", ["flex", "inline-flex"]);
+    return this.checkComputedStyle("display", ["flex", "inline-flex"]);
   }
 
   /**
@@ -400,7 +526,7 @@ class InactivePropertyHelper {
    * of `display:grid` or `display:inline-grid`.
    */
   get gridContainer() {
-    return this.checkStyle("display", ["grid", "inline-grid"]);
+    return this.checkComputedStyle("display", ["grid", "inline-grid"]);
   }
 
   /**
@@ -415,8 +541,8 @@ class InactivePropertyHelper {
    * `column-width` or `column-count` property is not `auto`.
    */
   get multiColContainer() {
-    const autoColumnWidth = this.checkStyle("column-width", ["auto"]);
-    const autoColumnCount = this.checkStyle("column-count", ["auto"]);
+    const autoColumnWidth = this.checkComputedStyle("column-width", ["auto"]);
+    const autoColumnCount = this.checkComputedStyle("column-count", ["auto"]);
 
     return !autoColumnWidth || !autoColumnCount;
   }
@@ -429,18 +555,6 @@ class InactivePropertyHelper {
   }
 
   /**
-   * Check if the current node is a row group.
-   */
-  get rowGroup() {
-    return (
-      this.style &&
-      (this.style.display === "table-row-group" ||
-        this.style.display === "table-header-group" ||
-        this.style.display === "table-footer-group")
-    );
-  }
-
-  /**
    * Check if the current node is a table column.
    */
   get tableColumn() {
@@ -448,10 +562,87 @@ class InactivePropertyHelper {
   }
 
   /**
+   * Check if the curent node is a horizontal table track. That is: either a table row
+   * displayed in horizontal writing mode, or a table column displayed in vertical writing
+   * mode.
+   */
+  get horizontalTableTrack() {
+    if (!this.tableRow && !this.tableColumn) {
+      return false;
+    }
+
+    const wm = this.getTableTrackParentWritingMode();
+    const isVertical = wm.includes("vertical") || wm.includes("sideways");
+
+    return isVertical ? this.tableColumn : this.tableRow;
+  }
+
+  /**
+   * Check if the curent node is a vertical table track. That is: either a table row
+   * displayed in vertical writing mode, or a table column displayed in horizontal writing
+   * mode.
+   */
+  get verticalTableTrack() {
+    if (!this.tableRow && !this.tableColumn) {
+      return false;
+    }
+
+    const wm = this.getTableTrackParentWritingMode();
+    const isVertical = wm.includes("vertical") || wm.includes("sideways");
+
+    return isVertical ? this.tableRow : this.tableColumn;
+  }
+
+  /**
+   * Check if the current node is a row group.
+   */
+  get rowGroup() {
+    return this.isRowGroup(this.node);
+  }
+
+  /**
    * Check if the current node is a table column group.
    */
   get columnGroup() {
-    return this.style && this.style.display === "table-column-group";
+    return this.isColumnGroup(this.node);
+  }
+
+  /**
+   * Check if the curent node is a horizontal table track group. That is: either a table
+   * row group displayed in horizontal writing mode, or a table column group displayed in
+   * vertical writing mode.
+   */
+  get horizontalTableTrackGroup() {
+    if (!this.rowGroup && !this.columnGroup) {
+      return false;
+    }
+
+    const wm = this.getTableTrackParentWritingMode(true);
+    const isVertical = wm.includes("vertical") || wm.includes("sideways");
+
+    const isHorizontalRowGroup = this.rowGroup && !isVertical;
+    const isHorizontalColumnGroup = this.columnGroup && isVertical;
+
+    return isHorizontalRowGroup || isHorizontalColumnGroup;
+  }
+
+  /**
+   * Check if the curent node is a vertical table track group. That is: either a table row
+   * group displayed in vertical writing mode, or a table column group displayed in
+   * horizontal writing mode.
+   */
+  get verticalTableTrackGroup() {
+    if (!this.rowGroup && !this.columnGroup) {
+      return false;
+    }
+
+    const wm = this.getTableTrackParentWritingMode(true);
+    const isVertical = wm.includes("vertical") || wm.includes("sideways");
+
+    const isVerticalRowGroup = this.rowGroup && isVertical;
+    const isVerticalColumnGroup = this.columnGroup && !isVertical;
+
+    return isVerticalRowGroup || isVerticalColumnGroup;
   }
 
   /**
@@ -482,6 +673,33 @@ class InactivePropertyHelper {
   }
 
   /**
+   * Check if the current node is an absolutely-positioned element.
+   */
+  get isAbsolutelyPositioned() {
+    return this.checkComputedStyle("position", ["absolute", "fixed"]);
+  }
+
+  /**
+   * Check if the current node is positioned (i.e. its position property has a value other
+   * than static).
+   */
+  get isPositioned() {
+    return this.checkComputedStyle("position", [
+      "relative",
+      "absolute",
+      "fixed",
+      "sticky",
+    ]);
+  }
+
+  /**
+   * Check if the current node is floated
+   */
+  get isFloated() {
+    return this.style && this.style.cssFloat !== "none";
+  }
+
+  /**
    * Check if the current node is a replaced element i.e. an element with
    * content that will be replaced e.g. <img>, <audio>, <video> or <object>
    * elements.
@@ -499,7 +717,7 @@ class InactivePropertyHelper {
         "hr",
         "iframe",
         // Inputs are generally replaced elements. E.g. checkboxes and radios are replaced
-        // unless they have `-moz-appearance: none`. However unconditionally treating them
+        // unless they have `appearance: none`. However unconditionally treating them
         // as replaced is enough for our purpose here, and avoids extra complexity that
         // will likely not be necessary in most cases.
         "input",
@@ -561,6 +779,23 @@ class InactivePropertyHelper {
   }
 
   /**
+   * Check if the current node is an absolutely-positioned grid element.
+   * See: https://drafts.csswg.org/css-grid/#abspos-items
+   *
+   * @return {Boolean} whether or not the current node is absolutely-positioned by a
+   *                   grid container.
+   */
+  isAbsPosGridElement() {
+    if (!this.isAbsolutelyPositioned) {
+      return false;
+    }
+
+    const containingBlock = this.getContainingBlock();
+
+    return containingBlock !== null && this.isGridContainer(containingBlock);
+  }
+
+  /**
    * Check if a node is a flex item.
    *
    * @param {DOMNode} node
@@ -587,7 +822,7 @@ class InactivePropertyHelper {
    *        The node to check.
    */
   isGridContainer(node) {
-    return !!node.getGridFragments().length > 0;
+    return node.hasGridFragments();
   }
 
   /**
@@ -598,6 +833,46 @@ class InactivePropertyHelper {
    */
   isGridItem(node) {
     return !!this.getParentGridElement(this.node);
+  }
+
+  isVisitedRule() {
+    if (!CssLogic.hasVisitedState(this.node)) {
+      return false;
+    }
+
+    const selectors = CssLogic.getSelectors(this.cssRule);
+    if (!selectors.some(s => s.endsWith(":visited"))) {
+      return false;
+    }
+
+    const { bindingElement, pseudo } = CssLogic.getBindingElementAndPseudo(
+      this.node
+    );
+
+    for (let i = 0; i < selectors.length; i++) {
+      if (
+        !selectors[i].endsWith(":visited") &&
+        InspectorUtils.selectorMatchesElement(
+          bindingElement,
+          this.cssRule,
+          i,
+          pseudo,
+          true
+        )
+      ) {
+        // Match non :visited selector.
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Return the current node's ancestor that generates its containing block.
+   */
+  getContainingBlock() {
+    return this.node ? InspectorUtils.containingBlockOf(this.node) : null;
   }
 
   getParentGridElement(node) {
@@ -613,9 +888,7 @@ class InactivePropertyHelper {
         // Doesn't generate a box, not a grid item.
         return null;
       }
-      const position = this.style ? this.style.position : null;
-      const cssFloat = this.style ? this.style.cssFloat : null;
-      if (position === "fixed" || cssFloat !== "none") {
+      if (this.isAbsolutelyPositioned) {
         // Out of flow, not a grid item.
         return null;
       }
@@ -628,13 +901,14 @@ class InactivePropertyHelper {
       p;
       p = p.flattenedTreeParentNode
     ) {
-      const style = node.ownerGlobal.getComputedStyle(p);
-      const display = style.display;
-
-      if (display.includes("grid") && !!p.getGridFragments().length > 0) {
+      if (this.isGridContainer(p)) {
         // It's a grid item!
         return p;
       }
+
+      const style = computedStyle(p, node.ownerGlobal);
+      const display = style.display;
+
       if (display !== "contents") {
         return null; // Not a grid item, for sure.
       }
@@ -642,6 +916,88 @@ class InactivePropertyHelper {
     }
     return null;
   }
+
+  isRowGroup(node) {
+    const style = node === this.node ? this.style : computedStyle(node);
+
+    return (
+      style &&
+      (style.display === "table-row-group" ||
+        style.display === "table-header-group" ||
+        style.display === "table-footer-group")
+    );
+  }
+
+  isColumnGroup(node) {
+    const style = node === this.node ? this.style : computedStyle(node);
+
+    return style && style.display === "table-column-group";
+  }
+
+  /**
+   * Assuming the current element is a table track (row or column) or table track group,
+   * get the parent table writing mode.
+   * This is either going to be the table element if there is one, or the parent element.
+   * If the current element is not a table track, this returns its own writing mode.
+   *
+   * @param  {Boolean} isGroup
+   *         Whether the element is a table track group, instead of a table track.
+   * @return {String}
+   *         The writing-mode value
+   */
+  getTableTrackParentWritingMode(isGroup) {
+    let current = this.node.parentNode;
+
+    // Skip over unrendered elements.
+    while (computedStyle(current).display === "contents") {
+      current = current.parentNode;
+    }
+
+    // Skip over groups if the initial element wasn't already one.
+    if (!isGroup && (this.isRowGroup(current) || this.isColumnGroup(current))) {
+      current = current.parentNode;
+    }
+
+    // Once more over unrendered elements above the group.
+    while (computedStyle(current).display === "contents") {
+      current = current.parentNode;
+    }
+
+    return computedStyle(current).writingMode;
+  }
 }
 
 exports.inactivePropertyHelper = new InactivePropertyHelper();
+
+/**
+ * Returns all CSS property names except given properties.
+ *
+ * @param {Array} - propertiesToIgnore
+ *        Array of property ignored.
+ * @return {Array}
+ *        Array of all CSS property name except propertiesToIgnore.
+ */
+function allCssPropertiesExcept(propertiesToIgnore) {
+  const properties = new Set(
+    InspectorUtils.getCSSPropertyNames({ includeAliases: true })
+  );
+
+  for (const name of propertiesToIgnore) {
+    properties.delete(name);
+  }
+
+  return [...properties];
+}
+
+/**
+ * Helper for getting an element's computed styles.
+ *
+ * @param  {DOMNode} node
+ *         The node to get the styles for.
+ * @param  {Window} window
+ *         Optional window object. If omitted, will get the node's window.
+ * @return {Object}
+ */
+function computedStyle(node, window = node.ownerGlobal) {
+  return window.getComputedStyle(node);
+}

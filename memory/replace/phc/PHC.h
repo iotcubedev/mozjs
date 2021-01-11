@@ -57,23 +57,34 @@ class AddrInfo {
     // The address is within a PHC guard page. A crash involving such an
     // address most likely indicates a buffer overflow. (Again, a sufficiently
     // wild write could unluckily trigger it, but this is less likely.)
-    //
-    // NOTE: guard pages are not yet implemented. This value is present so they
-    // can be added easily in the future.
     GuardPage = 4,
   };
 
+  // The page kind.
   Kind mKind;
 
-  // The base address of the containing PHC allocation, if there is one.
+  // The starting address of the allocation.
+  // - Unknown | NeverAllocatedPage: nullptr.
+  // - InUsePage | FreedPage: the address of the allocation within the page.
+  // - GuardPage: the mBaseAddr value from the preceding allocation page.
   const void* mBaseAddr;
 
-  // The usable size of the containing PHC allocation, if there is one.
+  // The usable size, which could be bigger than the requested size.
+  // - Unknown | NeverAllocatePage: 0.
+  // - InUsePage | FreedPage: the usable size of the allocation within the page.
+  // - GuardPage: the mUsableSize value from the preceding allocation page.
   size_t mUsableSize;
 
-  // The allocation and free stack traces of the containing PHC allocation, if
-  // there is one.
+  // The allocation stack.
+  // - Unknown | NeverAllocatedPage: Nothing.
+  // - InUsePage | FreedPage: Some.
+  // - GuardPage: the mAllocStack value from the preceding allocation page.
   mozilla::Maybe<StackTrace> mAllocStack;
+
+  // The free stack.
+  // - Unknown | NeverAllocatedPage | InUsePage: Nothing.
+  // - FreedPage: Some.
+  // - GuardPage: the mFreeStack value from the preceding allocation page.
   mozilla::Maybe<StackTrace> mFreeStack;
 
   // Default to no PHC info.

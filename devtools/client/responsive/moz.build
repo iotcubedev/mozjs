@@ -6,25 +6,22 @@
 
 DIRS += [
     'actions',
-    'browser',
     'components',
-    'images',
     'reducers',
     'utils',
 ]
 
 DevToolsModules(
     'constants.js',
-    'index.css',
     'index.js',
     'manager.js',
     'reducers.js',
-    'setting-onboarding-tooltip.js',
     'store.js',
     'types.js',
+    'ui.js',
 )
 
-XPCSHELL_TESTS_MANIFESTS += ['test/unit/xpcshell.ini']
+XPCSHELL_TESTS_MANIFESTS += ['test/xpcshell/xpcshell.ini']
 BROWSER_CHROME_MANIFESTS += ['test/browser/browser.ini']
 
 with Files('**'):

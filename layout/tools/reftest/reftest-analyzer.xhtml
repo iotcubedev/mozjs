@@ -119,6 +119,7 @@ function load() {
     req.send();
   }
   window.addEventListener('keypress', handle_keyboard_shortcut);
+  window.addEventListener('keydown',  handle_keydown);
   ID("image1").addEventListener('error', image_load_error);
   ID("image2").addEventListener('error', image_load_error);
 }
@@ -312,6 +313,27 @@ SUITE-END | took 2s`,
       "expected": { "pass": 0, "unexpected": 1, "random": 0, "skip": 0 },
       "expected_images": 2,
     },
+    { "name": "wpt reftests (taskcluster log from macOS CI)",
+      "log": `[task 2020-06-26T01:35:29.065Z] 01:35:29     INFO - TEST-START | /html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html
+[task 2020-06-26T01:35:29.065Z] 01:35:29     INFO - PID 1353 | 1593135329040    Marionette  INFO    Testing http://web-platform.test:8000/html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html == http://web-platform.test:8000/html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values-ref.html
+[task 2020-06-26T01:35:29.673Z] 01:35:29     INFO - PID 1353 | 1593135329633    Marionette  INFO    No differences allowed
+[task 2020-06-26T01:35:29.726Z] 01:35:29     INFO - TEST-KNOWN-INTERMITTENT-FAIL | /html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html | took 649ms
+[task 2020-06-26T01:35:29.726Z] 01:35:29     INFO - REFTEST   IMAGE 1 (TEST): data:image/png;
+[task 2020-06-26T01:35:29.726Z] 01:35:29     INFO - REFTEST   IMAGE 2 (REFERENCE): data:image/png;`,
+      "expected": { "pass": 0, "unexpected": 0, "random": 1, "skip": 0 },
+      "expected_images": 2,
+    },
+    { "name": "wpt reftests (taskcluster log from Windows CI)",
+      "log": `[task 2020-06-26T01:41:19.205Z] 01:41:19     INFO - TEST-START | /html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html
+[task 2020-06-26T01:41:19.214Z] 01:41:19     INFO - PID 5920 | 1593135679202    Marionette  WARN    [24] http://web-platform.test:8000/css/WOFF2/metadatadisplay-schema-license-022-ref.xht overflows viewport (width: 783, height: 731)
+[task 2020-06-26T01:41:19.214Z] 01:41:19     INFO - PID 9692 | 1593135679208    Marionette  INFO    Testing http://web-platform.test:8000/html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html == http://web-platform.test:8000/html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values-ref.html
+[task 2020-06-26T01:41:19.638Z] 01:41:19     INFO - PID 9692 | 1593135679627    Marionette  INFO    No differences allowed
+[task 2020-06-26T01:41:19.688Z] 01:41:19     INFO - TEST-KNOWN-INTERMITTENT-PASS | /html/rendering/non-replaced-elements/the-page/iframe-scrolling-attribute-values.html | took 474ms
+[task 2020-06-26T01:41:19.688Z] 01:41:19     INFO - REFTEST   IMAGE 1 (TEST): data:image/png;
+[task 2020-06-26T01:41:19.689Z] 01:41:19     INFO - REFTEST   IMAGE 2 (REFERENCE): data:image/png;`,
+      "expected": { "pass": 1, "unexpected": 0, "random": 1, "skip": 0 },
+      "expected_images": 2,
+    },
     { "name": "local reftest run with timestamps (Linux; Bug 1167712)",
       "log": ` 0:05.21 REFTEST TEST-START | a
  0:05.21 REFTEST REFTEST TEST-LOAD | a | 0 / 1 (0%)
@@ -402,7 +424,7 @@ function process_log(contents) {
     }
     if (match)
       line = match[1];
-    match = line.match(/^(TEST-PASS|TEST-UNEXPECTED-PASS|TEST-FAIL|TEST-KNOWN-FAIL|TEST-UNEXPECTED-FAIL|TEST-DEBUG-INFO)(\(EXPECTED RANDOM\)|) \| ([^\|]+)(?: \|(.*)|$)/);
+    match = line.match(/^(TEST-PASS|TEST-UNEXPECTED-PASS|TEST-FAIL|TEST-KNOWN-FAIL|TEST-UNEXPECTED-FAIL|TEST-DEBUG-INFO|TEST-KNOWN-INTERMITTENT-FAIL|TEST-KNOWN-INTERMITTENT-PASS)(\(EXPECTED RANDOM\)|) \| ([^\|]+)(?: \|(.*)|$)/);
     if (match) {
       var state = match[1];
       var random = match[2];
@@ -413,7 +435,7 @@ function process_log(contents) {
           pass: !state.match(/DEBUG-INFO$|FAIL$/),
           // only one of the following three should ever be true
           unexpected: !!state.match(/^TEST-UNEXPECTED/),
-          random: (random == "(EXPECTED RANDOM)"),
+          random: (random == "(EXPECTED RANDOM)" || state == "TEST-KNOWN-INTERMITTENT-FAIL" || state == "TEST-KNOWN-INTERMITTENT-PASS"),
           skip: (extra == " (SKIP)"),
           url: url,
           images: [],
@@ -532,6 +554,7 @@ function show_images(i) {
   ID("image2").style.display = "none";
   ID("diffrect").style.display = "none";
   ID("imgcontrols").reset();
+  ID("pixel-differences").textContent = "";
 
   ID("image1").setAttributeNS(XLINK_NS, "xlink:href", item.images[0]);
   // Making the href be #image1 doesn't seem to work
@@ -551,8 +574,61 @@ function show_images(i) {
 
   cell.style.display = "";
 
-  get_image_data(item.images[0], function(data) { gImage1Data = data; sync_svg_size(gImage1Data); });
-  get_image_data(item.images[1], function(data) { gImage2Data = data });
+  let loaded = [false, false];
+
+  function images_loaded(id) {
+    loaded[id] = true;
+    if (loaded.every(x => x)) {
+      update_pixel_difference_text()
+    }
+  }
+
+  get_image_data(item.images[0], function(data) { gImage1Data = data; sync_svg_size(gImage1Data); images_loaded(0)});
+  get_image_data(item.images[1], function(data) { gImage2Data = data; images_loaded(1)});
+
+}
+
+function update_pixel_difference_text() {
+  let differenceText;
+  if (gImage1Data.height !== gImage2Data.height ||
+      gImage1Data.width !== gImage2Data.width) {
+    differenceText = "Images are different sizes"
+  } else {
+    let [numPixels, maxPerChannel] = get_pixel_differences();
+    if (!numPixels) {
+      differenceText = "Images are identical";
+    } else {
+      differenceText = `Maximum difference per channel ${maxPerChannel}, ${numPixels} pixels differ`;
+    }
+  }
+  // Disable this for now, because per bug 1633504, the numbers may be
+  // inaccurate and dependent on the browser's configuration.
+  // ID("pixel-differences").textContent = differenceText;
+}
+
+function get_pixel_differences() {
+  let numPixels = 0;
+  let maxPerChannel = 0;
+  for (var i=0; i<gImage1Data.data.length; i+=4) {
+    let r1 = gImage1Data.data[i];
+    let r2 = gImage2Data.data[i];
+    let g1 = gImage1Data.data[i+1];
+    let g2 = gImage2Data.data[i+1];
+    let b1 = gImage1Data.data[i+2];
+    let b2 = gImage2Data.data[i+2];
+    // Ignore alpha.
+    if (r1 == r2 && g1 == g2 && b1 == b2) {
+      continue;
+    }
+    numPixels += 1;
+    let maxDiff = Math.max(Math.abs(r1-r2),
+                           Math.abs(g1-g2),
+                           Math.abs(b1-b2));
+    if (maxDiff > maxPerChannel) {
+      maxPerChannel = maxDiff
+    }
+  }
+  return [numPixels, maxPerChannel];
 }
 
 function show_image(i) {
@@ -583,6 +659,23 @@ function handle_keyboard_shortcut(event) {
     break;
   case 110: // "n" key
     shift_images(1);
+    break;
+  }
+}
+
+function handle_keydown(event) {
+  switch (event.keyCode) {
+  case 37:  // left arrow
+    move_pixel(-1, 0);
+    break;
+  case 38:  // up arrow
+    move_pixel(0,-1);
+    break;
+  case 39:  // right arrow
+    move_pixel(1, 0);
+    break;
+  case 40:  // down arrow
+    move_pixel(0, 1);
     break;
   }
 }
@@ -644,6 +737,10 @@ function hex_as_rgb(hex) {
 
 function magnify(evt) {
   var { x: x, y: y } = cursor_point(evt);
+  do_magnify(x, y);
+}
+
+function do_magnify(x, y) {
   var centerPixelColor1, centerPixelColor2;
 
   var dx_lo = -Math.floor(gMagWidth / 2);
@@ -692,6 +789,20 @@ function show_pixelinfo(x, y, pix1rgb, pix1hex, pix2rgb, pix2hex) {
   ID("pix1rgb").textContent = pix1rgb;
   ID("pix2hex").textContent = pix2hex;
   ID("pix2rgb").textContent = pix2rgb;
+}
+
+function move_pixel(deltax, deltay) {
+  coords = ID("coords").textContent.split(',');
+  x = parseInt(coords[0]);
+  y = parseInt(coords[1]);
+  if (isNaN(x) || isNaN(y)) {
+    return;
+  }
+  x = x + deltax;
+  y = y + deltay;
+  if (x >= 0 && y >= 0 && x < gImage1Data.width && y < gImage1Data.height) {
+    do_magnify(x, y);
+  }
 }
 
   ]]></script>
@@ -815,6 +926,7 @@ function show_pixelinfo(x, y, pix1rgb, pix1hex, pix2rgb, pix2hex) {
       </g>
       <rect id="diffrect" filter="url(#showDifferences)" pointer-events="none" x="0" y="0" width="100%" height="100%" />
     </svg>
+    <div id="pixel-differences"></div>
   </div>
 </div>
 

@@ -9,9 +9,11 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
   PlacesTestUtils: "resource://testing-common/PlacesTestUtils.jsm",
   Preferences: "resource://gre/modules/Preferences.jsm",
-  SearchTestUtils: "resource://testing-common/SearchTestUtils.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
+  UrlbarProvider: "resource:///modules/UrlbarUtils.jsm",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
+  UrlbarResult: "resource:///modules/UrlbarResult.jsm",
   UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.jsm",
+  UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(this, "TEST_BASE_URL", () =>
@@ -28,7 +30,21 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsIClipboardHelper"
 );
 
-SearchTestUtils.init(Assert, registerCleanupFunction);
+XPCOMUtils.defineLazyGetter(this, "UrlbarTestUtils", () => {
+  const { UrlbarTestUtils: module } = ChromeUtils.import(
+    "resource://testing-common/UrlbarTestUtils.jsm"
+  );
+  module.init(this);
+  return module;
+});
+
+XPCOMUtils.defineLazyGetter(this, "SearchTestUtils", () => {
+  const { SearchTestUtils: module } = ChromeUtils.import(
+    "resource://testing-common/SearchTestUtils.jsm"
+  );
+  module.init(Assert, registerCleanupFunction);
+  return module;
+});
 
 /**
  * Initializes an HTTP Server, and runs a task with it.
@@ -66,29 +82,4 @@ async function withHttpServer(
     } catch (ex) {}
     server = null;
   }
-}
-
-function promiseSearchComplete(win = window, dontAnimate = false) {
-  return UrlbarTestUtils.promiseSearchComplete(win, dontAnimate);
-}
-
-function promiseAutocompleteResultPopup(
-  value,
-  win = window,
-  fireInputEvent = false
-) {
-  return UrlbarTestUtils.promiseAutocompleteResultPopup({
-    window: win,
-    waitForFocus,
-    value,
-    fireInputEvent,
-  });
-}
-
-async function waitForAutocompleteResultAt(index) {
-  return UrlbarTestUtils.waitForAutocompleteResultAt(window, index);
-}
-
-function promiseSuggestionsPresent(msg = "") {
-  return UrlbarTestUtils.promiseSuggestionsPresent(window, msg);
 }

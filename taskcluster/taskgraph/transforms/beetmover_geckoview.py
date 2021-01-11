@@ -9,6 +9,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 
 from copy import deepcopy
 
+from six import text_type
 from taskgraph.loader.single_dep import schema
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.transforms.beetmover import \
@@ -20,21 +21,19 @@ from taskgraph.util.declarative_artifacts import (
     get_geckoview_artifact_id,
 )
 from taskgraph.util.schema import resolve_keyed_by, optionally_keyed_by
-from taskgraph.util.scriptworker import (generate_beetmover_artifact_map,
-                                         get_worker_type_for_scope)
+from taskgraph.util.scriptworker import generate_beetmover_artifact_map
 from taskgraph.transforms.task import task_description_schema
 from voluptuous import Required, Optional
 
 
 beetmover_description_schema = schema.extend({
-    Required('depname', default='build'): basestring,
-    Optional('label'): basestring,
+    Optional('label'): text_type,
     Optional('treeherder'): task_description_schema['treeherder'],
 
     Required('run-on-projects'): task_description_schema['run-on-projects'],
     Required('run-on-hg-branches'): task_description_schema['run-on-hg-branches'],
 
-    Optional('bucket-scope'): optionally_keyed_by('release-level', basestring),
+    Optional('bucket-scope'): optionally_keyed_by('release-level', text_type),
     Optional('shipping-phase'): optionally_keyed_by(
         'project', task_description_schema['shipping-phase']
     ),
@@ -97,7 +96,7 @@ def make_task_description(config, jobs):
         task = {
             'label': label,
             'description': description,
-            'worker-type': get_worker_type_for_scope(config, job['bucket-scope']),
+            'worker-type': 'beetmover',
             'scopes': [job['bucket-scope'], 'project:releng:beetmover:action:push-to-maven'],
             'dependencies': dependencies,
             'attributes': attributes,
@@ -112,15 +111,6 @@ def make_task_description(config, jobs):
 @transforms.add
 def make_task_worker(config, jobs):
     for job in jobs:
-        valid_beetmover_job = set(job['dependencies'].keys()) == {'build', 'build-signing'}
-        if not valid_beetmover_job:
-            raise NotImplementedError(
-                'Beetmover-geckoview must have 2 dependencies: build and build-signing. '
-                'Got: {}'.format(
-                    job['dependencies']
-                )
-            )
-
         job['worker'] = {
             'artifact-map': generate_beetmover_artifact_map(
                 config,
@@ -143,7 +133,7 @@ def craft_release_properties(config, job):
     release_properties = beetmover_craft_release_properties(config, job)
 
     release_properties['artifact-id'] = get_geckoview_artifact_id(
-        job['attributes']['build_platform'], job['attributes'].get('update-channel')
+        config, job['attributes']['build_platform'], job['attributes'].get('update-channel')
     )
     release_properties['app-name'] = 'geckoview'
 

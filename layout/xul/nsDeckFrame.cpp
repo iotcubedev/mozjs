@@ -139,8 +139,9 @@ nsIFrame* nsDeckFrame::GetSelectedBox() {
 void nsDeckFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                    const nsDisplayListSet& aLists) {
   // if a tab is hidden all its children are too.
-  if (!StyleVisibility()->mVisible) return;
-
+  if (StyleVisibility()->mVisible == StyleVisibility::Hidden) {
+    return;
+  }
   nsBoxFrame::BuildDisplayList(aBuilder, aLists);
 }
 
@@ -199,9 +200,8 @@ void nsDeckFrame::Animate(nsIFrame* aParentBox, bool start) {
       imgFrame->StopAnimation();
   }
 
-  for (nsIFrame::ChildListIterator childLists(aParentBox); !childLists.IsDone();
-       childLists.Next()) {
-    for (nsIFrame* child : childLists.CurrentList()) {
+  for (const auto& childList : aParentBox->ChildLists()) {
+    for (nsIFrame* child : childList.mList) {
       Animate(child, start);
     }
   }
@@ -212,14 +212,13 @@ nsDeckFrame::DoXULLayout(nsBoxLayoutState& aState) {
   // Make sure we tweak the state so it does not resize our children.
   // We will do that.
   ReflowChildFlags oldFlags = aState.LayoutFlags();
-  aState.SetLayoutFlags(ReflowChildFlags::NoSizeView |
-                        ReflowChildFlags::NoVisibility);
+  aState.SetLayoutFlags(ReflowChildFlags::NoSizeView);
 
   // do a normal layout
   nsresult rv = nsBoxFrame::DoXULLayout(aState);
 
   // run though each child. Hide all but the selected one
-  nsIFrame* box = nsBox::GetChildXULBox(this);
+  nsIFrame* box = nsIFrame::GetChildXULBox(this);
 
   nscoord count = 0;
   while (box) {

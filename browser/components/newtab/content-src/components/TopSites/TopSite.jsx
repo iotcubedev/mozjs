@@ -271,7 +271,7 @@ export class TopSiteLink extends React.PureComponent {
           {children}
           {link.type === SPOC_TYPE ? (
             <ImpressionStats
-              campaignId={link.campaignId}
+              flightId={link.flightId}
               rows={[
                 {
                   id: link.id,
@@ -315,6 +315,9 @@ export class TopSite extends React.PureComponent {
       // Set the card_type as "search" regardless of its pinning status
       value.card_type = "search";
       value.search_vendor = this.props.link.hostname;
+    }
+    if (this.props.link.type === SPOC_TYPE) {
+      value.card_type = "spoc";
     }
     return { value };
   }
@@ -364,6 +367,17 @@ export class TopSite extends React.PureComponent {
                 shim: this.props.link.shim && this.props.link.shim.click,
               },
             ],
+          })
+        );
+      }
+      if (this.props.link.overriddenSearchTopSite) {
+        this.props.dispatch(
+          ac.OnlyToMain({
+            type: at.TOP_SITES_ATTRIBUTION,
+            data: {
+              targetURL: this.props.link.url,
+              source: "newtab",
+            },
           })
         );
       }

@@ -8,13 +8,11 @@
 
 "use strict";
 
-let pm = Cc["@mozilla.org/permissionmanager;1"].getService(
-  Ci.nsIPermissionManager
-);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(
-  Ci.nsIScriptSecurityManager
-);
+let pm = Services.perms;
+
+let secMan = Services.scriptSecurityManager;
 
 const EXPORTED_SYMBOLS = ["PermissionTestUtils"];
 
@@ -31,7 +29,7 @@ function convertToPrincipal(subject) {
   if (typeof subject === "string") {
     return secMan.createContentPrincipalFromOrigin(subject);
   }
-  if (subject == null || subject instanceof Ci.nsIURI) {
+  if (subject === null || subject instanceof Ci.nsIURI) {
     return secMan.createContentPrincipal(subject, {});
   }
   throw new Error(

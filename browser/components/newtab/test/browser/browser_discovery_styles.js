@@ -75,7 +75,7 @@ test_newtab({
     );
     const styles = content.getComputedStyle(hr);
     is(styles.color, "rgb(255, 0, 0)", "applied and normalized color");
-    is(styles.fontSize, "46.65px", "applied and normalized font size");
+    is(styles.fontSize, "46.6583px", "applied and normalized font size");
     is(styles.fontWeight, "400", "applied and normalized font weight");
   },
 });
@@ -164,7 +164,7 @@ test_newtab({
     );
     is(
       content.getComputedStyle(hr).content,
-      "none",
+      "normal",
       "filtered out attempted @media query"
     );
   },

@@ -9,11 +9,8 @@
 
 #include "nsISystemProxySettings.h"
 #include "mozilla/Components.h"
-#include "nsIServiceManager.h"
 #include "nsPrintfCString.h"
 #include "nsNetCID.h"
-#include "nsISupportsPrimitives.h"
-#include "nsIURI.h"
 #include "nsObjCExceptions.h"
 #include "mozilla/Attributes.h"
 #include "ProxyUtils.h"
@@ -264,9 +261,9 @@ nsresult nsOSXSystemProxySettings::GetProxyForURI(const nsACString& aSpec,
   if (NS_FAILED(rv) || IsInExceptionList(aHost)) {
     aResult.AssignLiteral("DIRECT");
   } else if (proxySocks) {
-    aResult.Assign(NS_LITERAL_CSTRING("SOCKS ") + proxyHost + nsPrintfCString(":%d", proxyPort));
+    aResult.Assign("SOCKS "_ns + proxyHost + nsPrintfCString(":%d", proxyPort));
   } else {
-    aResult.Assign(NS_LITERAL_CSTRING("PROXY ") + proxyHost + nsPrintfCString(":%d", proxyPort));
+    aResult.Assign("PROXY "_ns + proxyHost + nsPrintfCString(":%d", proxyPort));
   }
 
   return NS_OK;

@@ -17,12 +17,12 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
  */
 navigator.plugins.refresh(false);
 
-RPMAddMessageListener("PluginList", function({ data: aPlugins }) {
+RPMSendQuery("RequestPlugins", {}).then(aPlugins => {
   var fragment = document.createDocumentFragment();
 
   // "Installed plugins"
   var id, label;
-  if (aPlugins.length > 0) {
+  if (aPlugins.length) {
     id = "plugs";
     label = "installed-plugins-label";
   } else {
@@ -195,5 +195,3 @@ RPMAddMessageListener("PluginList", function({ data: aPlugins }) {
 
   document.getElementById("outside").appendChild(fragment);
 });
-
-RPMSendAsyncMessage("RequestPlugins");

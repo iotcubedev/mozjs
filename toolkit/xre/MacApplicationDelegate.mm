@@ -20,7 +20,6 @@
 #include "nsAppRunner.h"
 #include "nsAppShell.h"
 #include "nsComponentManagerUtils.h"
-#include "nsIServiceManager.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIAppStartup.h"
 #include "nsIObserverService.h"
@@ -300,7 +299,13 @@ void ProcessPendingGetURLAppleEvents() {
   if (abortQuit) return NSTerminateCancel;
 
   nsCOMPtr<nsIAppStartup> appService = do_GetService("@mozilla.org/toolkit/app-startup;1");
-  if (appService) appService->Quit(nsIAppStartup::eForceQuit);
+  if (appService) {
+    bool userAllowedQuit = true;
+    appService->Quit(nsIAppStartup::eForceQuit, &userAllowedQuit);
+    if (!userAllowedQuit) {
+      return NSTerminateCancel;
+    }
+  }
 
   return NSTerminateNow;
 }

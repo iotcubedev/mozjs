@@ -7,6 +7,8 @@
 #ifndef util_Unicode_h
 #define util_Unicode_h
 
+#include "mozilla/Casting.h"  // mozilla::AssertedCast
+
 #include "jspubtd.h"
 
 #include "util/UnicodeNonBMP.h"
@@ -66,8 +68,6 @@ const uint8_t UNICODE_ID_CONTINUE = UNICODE_ID_START + UNICODE_ID_CONTINUE_ONLY;
 
 constexpr char16_t NO_BREAK_SPACE = 0x00A0;
 constexpr char16_t MICRO_SIGN = 0x00B5;
-constexpr char16_t LATIN_CAPITAL_LETTER_A_WITH_GRAVE = 0x00C0;
-constexpr char16_t MULTIPLICATION_SIGN = 0x00D7;
 constexpr char16_t LATIN_SMALL_LETTER_SHARP_S = 0x00DF;
 constexpr char16_t LATIN_SMALL_LETTER_A_WITH_GRAVE = 0x00E0;
 constexpr char16_t DIVISION_SIGN = 0x00F7;
@@ -241,6 +241,7 @@ inline bool IsSpace(char ch) {
   return IsSpace(static_cast<JS::Latin1Char>(ch));
 }
 
+// IsSpace(char32_t) must additionally exclude everything non-BMP.
 inline bool IsSpace(char32_t ch) {
   if (ch < 128) {
     return js_isspace[ch];
@@ -250,11 +251,13 @@ inline bool IsSpace(char32_t ch) {
     return true;
   }
 
+  // An assertion in make_unicode.py:make_unicode_file guarantees that there are
+  // no Space_Separator (Zs) code points outside the BMP.
   if (ch >= NonBMPMin) {
     return false;
   }
 
-  return CharInfo(ch).isSpace();
+  return CharInfo(mozilla::AssertedCast<char16_t>(ch)).isSpace();
 }
 
 /*
@@ -291,6 +294,27 @@ inline char16_t ToLowerCase(char16_t ch) {
   const CharacterInfo& info = CharInfo(ch);
 
   return uint16_t(ch) + info.lowerCase;
+}
+
+extern const JS::Latin1Char latin1ToLowerCaseTable[];
+
+/*
+ * Returns the simple lower case mapping (possibly the identity mapping; see
+ * ChangesWhenUpperCasedSpecialCasing for details) of the given Latin-1 code
+ * point.
+ */
+inline JS::Latin1Char ToLowerCase(JS::Latin1Char ch) {
+  return latin1ToLowerCaseTable[ch];
+}
+
+/*
+ * Returns the simple lower case mapping (possibly the identity mapping; see
+ * ChangesWhenUpperCasedSpecialCasing for details) of the given ASCII code
+ * point.
+ */
+inline char ToLowerCase(char ch) {
+  MOZ_ASSERT(static_cast<unsigned char>(ch) < 128);
+  return latin1ToLowerCaseTable[uint8_t(ch)];
 }
 
 /**
@@ -339,15 +363,7 @@ inline bool ChangesWhenLowerCased(char16_t ch) {
 
 // Returns true iff ToLowerCase(ch) != ch.
 inline bool ChangesWhenLowerCased(JS::Latin1Char ch) {
-  if (MOZ_LIKELY(ch < 128)) {
-    return ch >= 'A' && ch <= 'Z';
-  }
-
-  // U+00C0 to U+00DE, except U+00D7, have a lowercase form.
-  bool hasLower = ((ch & ~0x1F) == LATIN_CAPITAL_LETTER_A_WITH_GRAVE) &&
-                  ((ch & MULTIPLICATION_SIGN) != MULTIPLICATION_SIGN);
-  MOZ_ASSERT(hasLower == ChangesWhenLowerCased(char16_t(ch)));
-  return hasLower;
+  return latin1ToLowerCaseTable[ch] != ch;
 }
 
 #define CHECK_RANGE(FROM, TO, LEAD, TRAIL_FROM, TRAIL_TO, DIFF) \

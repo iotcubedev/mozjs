@@ -14,14 +14,16 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Casting.h"
 
-#include "nsCSSKeywords.h"
+#include "gfxPlatform.h"
 #include "nsLayoutUtils.h"
 #include "nsIWidget.h"
 #include "nsStyleConsts.h"  // For system widget appearance types
 
 #include "mozilla/dom/Animation.h"
 #include "mozilla/dom/AnimationEffectBinding.h"  // for PlaybackDirection
-#include "mozilla/LookAndFeel.h"                 // for system colors
+#include "mozilla/gfx/gfxVars.h"                 // for UseWebRender
+#include "mozilla/gfx/gfxVarReceiver.h"
+#include "mozilla/LookAndFeel.h"  // for system colors
 
 #include "nsString.h"
 #include "nsStaticNameTable.h"
@@ -30,8 +32,6 @@
 #include "mozilla/StaticPrefs_layout.h"
 
 using namespace mozilla;
-
-typedef nsCSSProps::KTableEntry KTableEntry;
 
 static int32_t gPropertyTableRefCount;
 static nsStaticCaseInsensitiveNameTable* gFontDescTable;
@@ -65,6 +65,23 @@ static nsStaticCaseInsensitiveNameTable* CreateStaticTable(
   return table;
 }
 
+void nsCSSProps::RecomputeEnabledState(const char* aPref, void*) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  DebugOnly<bool> foundPref = false;
+  for (const PropertyPref* pref = kPropertyPrefTable;
+       pref->mPropID != eCSSProperty_UNKNOWN; pref++) {
+    if (!aPref || !strcmp(aPref, pref->mPref)) {
+      foundPref = true;
+      gPropertyEnabled[pref->mPropID] = Preferences::GetBool(pref->mPref);
+      if (pref->mPropID == eCSSProperty_backdrop_filter) {
+        gPropertyEnabled[pref->mPropID] &=
+            gfx::gfxVars::GetUseWebRenderOrDefault();
+      }
+    }
+  }
+  MOZ_ASSERT(foundPref);
+}
+
 void nsCSSProps::AddRefTable(void) {
   if (0 == gPropertyTableRefCount++) {
     MOZ_ASSERT(!gFontDescTable, "pre existing array!");
@@ -89,11 +106,16 @@ void nsCSSProps::AddRefTable(void) {
       prefObserversInited = true;
       for (const PropertyPref* pref = kPropertyPrefTable;
            pref->mPropID != eCSSProperty_UNKNOWN; pref++) {
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=1472523
+        // We need to use nsCString instead of substring because the preference
+        // callback code stores them. Using AssignLiteral prevents any
+        // unnecessary allocations.
         nsCString prefName;
         prefName.AssignLiteral(pref->mPref, strlen(pref->mPref));
-        bool* enabled = &gPropertyEnabled[pref->mPropID];
-        Preferences::AddBoolVarCache(enabled, prefName);
+        Preferences::RegisterCallback(nsCSSProps::RecomputeEnabledState,
+                                      prefName);
       }
+      RecomputeEnabledState(/* aPrefName = */ nullptr);
     }
   }
 }
@@ -114,13 +136,14 @@ void nsCSSProps::ReleaseTable(void) {
 }
 
 /* static */
-bool nsCSSProps::IsCustomPropertyName(const nsAString& aProperty) {
+bool nsCSSProps::IsCustomPropertyName(const nsACString& aProperty) {
   return aProperty.Length() >= CSS_CUSTOM_NAME_PREFIX_LENGTH &&
-         StringBeginsWith(aProperty, NS_LITERAL_STRING("--"));
+         StringBeginsWith(aProperty, "--"_ns);
 }
 
 nsCSSPropertyID nsCSSProps::LookupPropertyByIDLName(
     const nsACString& aPropertyIDLName, EnabledState aEnabled) {
+  MOZ_ASSERT(gPropertyIDLNameTable, "no lookup table, needs addref");
   nsCSSPropertyID res;
   if (!gPropertyIDLNameTable->Get(aPropertyIDLName, &res)) {
     return eCSSProperty_UNKNOWN;
@@ -132,14 +155,7 @@ nsCSSPropertyID nsCSSProps::LookupPropertyByIDLName(
   return res;
 }
 
-nsCSSPropertyID nsCSSProps::LookupPropertyByIDLName(
-    const nsAString& aPropertyIDLName, EnabledState aEnabled) {
-  MOZ_ASSERT(gPropertyIDLNameTable, "no lookup table, needs addref");
-  return LookupPropertyByIDLName(NS_ConvertUTF16toUTF8(aPropertyIDLName),
-                                 aEnabled);
-}
-
-nsCSSFontDesc nsCSSProps::LookupFontDesc(const nsAString& aFontDesc) {
+nsCSSFontDesc nsCSSProps::LookupFontDesc(const nsACString& aFontDesc) {
   MOZ_ASSERT(gFontDescTable, "no lookup table, needs addref");
   nsCSSFontDesc which = nsCSSFontDesc(gFontDescTable->Lookup(aFontDesc));
 
@@ -169,143 +185,6 @@ const nsCString& nsCSSProps::GetStringValue(nsCSSCounterDesc aCounterDesc) {
     return sNullStr;
   }
 }
-
-/***************************************************************************/
-
-const KTableEntry nsCSSProps::kCursorKTable[] = {
-    // CSS 2.0
-    {eCSSKeyword_auto, StyleCursorKind::Auto},
-    {eCSSKeyword_crosshair, StyleCursorKind::Crosshair},
-    {eCSSKeyword_default, StyleCursorKind::Default},
-    {eCSSKeyword_pointer, StyleCursorKind::Pointer},
-    {eCSSKeyword_move, StyleCursorKind::Move},
-    {eCSSKeyword_e_resize, StyleCursorKind::EResize},
-    {eCSSKeyword_ne_resize, StyleCursorKind::NeResize},
-    {eCSSKeyword_nw_resize, StyleCursorKind::NwResize},
-    {eCSSKeyword_n_resize, StyleCursorKind::NResize},
-    {eCSSKeyword_se_resize, StyleCursorKind::SeResize},
-    {eCSSKeyword_sw_resize, StyleCursorKind::SwResize},
-    {eCSSKeyword_s_resize, StyleCursorKind::SResize},
-    {eCSSKeyword_w_resize, StyleCursorKind::WResize},
-    {eCSSKeyword_text, StyleCursorKind::Text},
-    {eCSSKeyword_wait, StyleCursorKind::Wait},
-    {eCSSKeyword_help, StyleCursorKind::Help},
-    // CSS 2.1
-    {eCSSKeyword_progress, StyleCursorKind::Progress},
-    // CSS3 basic user interface module
-    {eCSSKeyword_copy, StyleCursorKind::Copy},
-    {eCSSKeyword_alias, StyleCursorKind::Alias},
-    {eCSSKeyword_context_menu, StyleCursorKind::ContextMenu},
-    {eCSSKeyword_cell, StyleCursorKind::Cell},
-    {eCSSKeyword_not_allowed, StyleCursorKind::NotAllowed},
-    {eCSSKeyword_col_resize, StyleCursorKind::ColResize},
-    {eCSSKeyword_row_resize, StyleCursorKind::RowResize},
-    {eCSSKeyword_no_drop, StyleCursorKind::NoDrop},
-    {eCSSKeyword_vertical_text, StyleCursorKind::VerticalText},
-    {eCSSKeyword_all_scroll, StyleCursorKind::AllScroll},
-    {eCSSKeyword_nesw_resize, StyleCursorKind::NeswResize},
-    {eCSSKeyword_nwse_resize, StyleCursorKind::NwseResize},
-    {eCSSKeyword_ns_resize, StyleCursorKind::NsResize},
-    {eCSSKeyword_ew_resize, StyleCursorKind::EwResize},
-    {eCSSKeyword_none, StyleCursorKind::None},
-    {eCSSKeyword_grab, StyleCursorKind::Grab},
-    {eCSSKeyword_grabbing, StyleCursorKind::Grabbing},
-    {eCSSKeyword_zoom_in, StyleCursorKind::ZoomIn},
-    {eCSSKeyword_zoom_out, StyleCursorKind::ZoomOut},
-    // -moz- prefixed vendor specific
-    {eCSSKeyword__moz_grab, StyleCursorKind::Grab},
-    {eCSSKeyword__moz_grabbing, StyleCursorKind::Grabbing},
-    {eCSSKeyword__moz_zoom_in, StyleCursorKind::ZoomIn},
-    {eCSSKeyword__moz_zoom_out, StyleCursorKind::ZoomOut},
-    {eCSSKeyword_UNKNOWN, nsCSSKTableEntry::SENTINEL_VALUE}};
-
-const KTableEntry nsCSSProps::kFontSmoothingKTable[] = {
-    {eCSSKeyword_auto, NS_FONT_SMOOTHING_AUTO},
-    {eCSSKeyword_grayscale, NS_FONT_SMOOTHING_GRAYSCALE},
-    {eCSSKeyword_UNKNOWN, nsCSSKTableEntry::SENTINEL_VALUE}};
-
-const KTableEntry nsCSSProps::kTextAlignKTable[] = {
-    {eCSSKeyword_left, NS_STYLE_TEXT_ALIGN_LEFT},
-    {eCSSKeyword_right, NS_STYLE_TEXT_ALIGN_RIGHT},
-    {eCSSKeyword_center, NS_STYLE_TEXT_ALIGN_CENTER},
-    {eCSSKeyword_justify, NS_STYLE_TEXT_ALIGN_JUSTIFY},
-    {eCSSKeyword__moz_center, NS_STYLE_TEXT_ALIGN_MOZ_CENTER},
-    {eCSSKeyword__moz_right, NS_STYLE_TEXT_ALIGN_MOZ_RIGHT},
-    {eCSSKeyword__moz_left, NS_STYLE_TEXT_ALIGN_MOZ_LEFT},
-    {eCSSKeyword_start, NS_STYLE_TEXT_ALIGN_START},
-    {eCSSKeyword_end, NS_STYLE_TEXT_ALIGN_END},
-    {eCSSKeyword_UNKNOWN, nsCSSKTableEntry::SENTINEL_VALUE}};
-
-const KTableEntry nsCSSProps::kTextDecorationStyleKTable[] = {
-    {eCSSKeyword__moz_none, NS_STYLE_TEXT_DECORATION_STYLE_NONE},
-    {eCSSKeyword_solid, NS_STYLE_TEXT_DECORATION_STYLE_SOLID},
-    {eCSSKeyword_double, NS_STYLE_TEXT_DECORATION_STYLE_DOUBLE},
-    {eCSSKeyword_dotted, NS_STYLE_TEXT_DECORATION_STYLE_DOTTED},
-    {eCSSKeyword_dashed, NS_STYLE_TEXT_DECORATION_STYLE_DASHED},
-    {eCSSKeyword_wavy, NS_STYLE_TEXT_DECORATION_STYLE_WAVY},
-    {eCSSKeyword_UNKNOWN, nsCSSKTableEntry::SENTINEL_VALUE}};
-
-int32_t nsCSSProps::FindIndexOfKeyword(nsCSSKeyword aKeyword,
-                                       const KTableEntry aTable[]) {
-  if (eCSSKeyword_UNKNOWN == aKeyword) {
-    // NOTE: we can have keyword tables where eCSSKeyword_UNKNOWN is used
-    // not only for the sentinel, but also in the middle of the table to
-    // knock out values that have been disabled by prefs, e.g. kDisplayKTable.
-    // So we deal with eCSSKeyword_UNKNOWN up front to avoid returning a valid
-    // index in the loop below.
-    return -1;
-  }
-  for (int32_t i = 0;; ++i) {
-    const KTableEntry& entry = aTable[i];
-    if (entry.IsSentinel()) {
-      break;
-    }
-    if (aKeyword == entry.mKeyword) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-bool nsCSSProps::FindKeyword(nsCSSKeyword aKeyword, const KTableEntry aTable[],
-                             int32_t& aResult) {
-  int32_t index = FindIndexOfKeyword(aKeyword, aTable);
-  if (index >= 0) {
-    aResult = aTable[index].mValue;
-    return true;
-  }
-  return false;
-}
-
-nsCSSKeyword nsCSSProps::ValueToKeywordEnum(int32_t aValue,
-                                            const KTableEntry aTable[]) {
-#ifdef DEBUG
-  typedef decltype(aTable[0].mValue) table_value_type;
-  NS_ASSERTION(table_value_type(aValue) == aValue, "Value out of range");
-#endif
-  for (int32_t i = 0;; ++i) {
-    const KTableEntry& entry = aTable[i];
-    if (entry.IsSentinel()) {
-      break;
-    }
-    if (aValue == entry.mValue) {
-      return entry.mKeyword;
-    }
-  }
-  return eCSSKeyword_UNKNOWN;
-}
-
-const nsCString& nsCSSProps::ValueToKeyword(int32_t aValue,
-                                            const KTableEntry aTable[]) {
-  nsCSSKeyword keyword = ValueToKeywordEnum(aValue, aTable);
-  if (keyword == eCSSKeyword_UNKNOWN) {
-    static nsDependentCString sNullStr("");
-    return sNullStr;
-  } else {
-    return nsCSSKeywords::GetStringValue(keyword);
-  }
-}
-
 const CSSPropFlags nsCSSProps::kFlagsTable[eCSSProperty_COUNT] = {
 #define CSS_PROP_LONGHAND(name_, id_, method_, flags_, ...) flags_,
 #define CSS_PROP_SHORTHAND(name_, id_, method_, flags_, ...) flags_,
@@ -336,5 +215,41 @@ bool nsCSSProps::gPropertyEnabled[eCSSProperty_COUNT_with_aliases] = {
 
 #undef IS_ENABLED_BY_DEFAULT
 };
+
+/**
+ * A singleton class to register as a receiver for gfxVars.
+ * Updates the state of backdrop-filter's pref if the gfx
+ * WebRender var changes state.
+ */
+class nsCSSPropsGfxVarReceiver final : public gfx::gfxVarReceiver {
+  constexpr nsCSSPropsGfxVarReceiver() = default;
+
+  // WebRender's last known enabled state.
+  static bool sLastKnownUseWebRender;
+  static nsCSSPropsGfxVarReceiver sInstance;
+
+ public:
+  static gfx::gfxVarReceiver& GetInstance() { return sInstance; }
+
+  void OnVarChanged(const gfx::GfxVarUpdate&) override {
+    bool enabled = gfxVars::UseWebRender();
+    if (sLastKnownUseWebRender != enabled) {
+      sLastKnownUseWebRender = enabled;
+      nsCSSProps::RecomputeEnabledState("layout.css.backdrop-filter.enabled");
+    }
+  }
+};
+
+/* static */
+nsCSSPropsGfxVarReceiver nsCSSPropsGfxVarReceiver::sInstance =
+    nsCSSPropsGfxVarReceiver();
+
+/* static */
+bool nsCSSPropsGfxVarReceiver::sLastKnownUseWebRender = false;
+
+/* static */
+gfx::gfxVarReceiver& nsCSSProps::GfxVarReceiver() {
+  return nsCSSPropsGfxVarReceiver::GetInstance();
+}
 
 #include "nsCSSPropsGenerated.inc"

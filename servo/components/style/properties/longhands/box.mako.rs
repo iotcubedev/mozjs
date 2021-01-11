@@ -24,7 +24,7 @@ ${helpers.single_keyword(
     "-moz-top-layer",
     "none top",
     engines="gecko",
-    gecko_constant_prefix="NS_STYLE_TOP_LAYER",
+    gecko_enum_prefix="StyleTopLayer",
     gecko_ffi_name="mTopLayer",
     animation_value_type="none",
     enabled_in="ua",
@@ -42,15 +42,25 @@ ${helpers.single_keyword(
     spec="Internal (not web-exposed)",
 )}
 
-${helpers.single_keyword(
-    "position",
-    "static absolute relative fixed" + (" sticky" if engine in ["gecko", "servo-2013"] else ""),
-    engines="gecko servo-2013 servo-2020",
-    animation_value_type="discrete",
-    flags="CREATES_STACKING_CONTEXT ABSPOS_CB",
-    spec="https://drafts.csswg.org/css-position/#position-property",
-    servo_restyle_damage="rebuild_and_reflow",
-)}
+<%helpers:single_keyword
+    name="position"
+    values="static absolute relative fixed ${'sticky' if engine in ['gecko', 'servo-2013'] else ''}"
+    engines="gecko servo-2013 servo-2020"
+    animation_value_type="discrete"
+    gecko_enum_prefix="StylePositionProperty"
+    flags="CREATES_STACKING_CONTEXT ABSPOS_CB"
+    spec="https://drafts.csswg.org/css-position/#position-property"
+    servo_restyle_damage="rebuild_and_reflow"
+>
+impl computed_value::T {
+    pub fn is_absolutely_positioned(self) -> bool {
+        matches!(self, Self::Absolute | Self::Fixed)
+    }
+    pub fn is_relative(self) -> bool {
+        self == Self::Relative
+    }
+}
+</%helpers:single_keyword>
 
 ${helpers.predefined_type(
     "float",
@@ -122,7 +132,6 @@ ${helpers.single_keyword(
         "Overflow",
         "computed::Overflow::Visible",
         engines="gecko servo-2013 servo-2020",
-        servo_2020_pref="layout.2020.unimplemented",
         logical_group="overflow",
         logical=logical,
         animation_value_type="discrete",
@@ -152,7 +161,6 @@ ${helpers.predefined_type(
     "Time",
     "computed::Time::zero()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::Time::zero()",
     parse_method="parse_non_negative",
     vector=True,
@@ -167,7 +175,6 @@ ${helpers.predefined_type(
     "TimingFunction",
     "computed::TimingFunction::ease()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::TimingFunction::ease()",
     vector=True,
     need_index=True,
@@ -181,7 +188,6 @@ ${helpers.predefined_type(
     "TransitionProperty",
     "computed::TransitionProperty::all()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::TransitionProperty::all()",
     vector=True,
     allow_empty="NotInitial",
@@ -196,7 +202,6 @@ ${helpers.predefined_type(
     "Time",
     "computed::Time::zero()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::Time::zero()",
     vector=True,
     need_index=True,
@@ -212,7 +217,6 @@ ${helpers.predefined_type(
     "AnimationName",
     "computed::AnimationName::none()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::AnimationName::none()",
     vector=True,
     need_index=True,
@@ -227,7 +231,6 @@ ${helpers.predefined_type(
     "Time",
     "computed::Time::zero()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::Time::zero()",
     parse_method="parse_non_negative",
     vector=True,
@@ -244,7 +247,6 @@ ${helpers.predefined_type(
     "TimingFunction",
     "computed::TimingFunction::ease()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::TimingFunction::ease()",
     vector=True,
     need_index=True,
@@ -259,7 +261,6 @@ ${helpers.predefined_type(
     "AnimationIterationCount",
     "computed::AnimationIterationCount::one()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::AnimationIterationCount::one()",
     vector=True,
     need_index=True,
@@ -274,7 +275,6 @@ ${helpers.single_keyword(
     "animation-direction",
     "normal reverse alternate alternate-reverse",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     need_index=True,
     animation_value_type="none",
     vector=True,
@@ -290,7 +290,6 @@ ${helpers.single_keyword(
     "animation-play-state",
     "running paused",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     need_index=True,
     animation_value_type="none",
     vector=True,
@@ -303,7 +302,7 @@ ${helpers.single_keyword(
 ${helpers.single_keyword(
     "animation-fill-mode",
     "none forwards backwards both",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
     need_index=True,
     animation_value_type="none",
     vector=True,
@@ -319,7 +318,6 @@ ${helpers.predefined_type(
     "Time",
     "computed::Time::zero()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_specified_value="specified::Time::zero()",
     vector=True,
     need_index=True,
@@ -336,7 +334,6 @@ ${helpers.predefined_type(
     "Transform",
     "generics::transform::Transform::none()",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     extra_prefixes=transform_extra_prefixes,
     animation_value_type="ComputedValue",
     flags="CREATES_STACKING_CONTEXT FIXPOS_CB CAN_ANIMATE_ON_COMPOSITOR",
@@ -391,7 +388,7 @@ ${helpers.predefined_type(
     engines="gecko",
     animation_value_type="ComputedValue",
     gecko_pref="layout.css.motion-path.enabled",
-    flags="CREATES_STACKING_CONTEXT FIXPOS_CB",
+    flags="CREATES_STACKING_CONTEXT FIXPOS_CB CAN_ANIMATE_ON_COMPOSITOR",
     spec="https://drafts.fxtf.org/motion-1/#offset-path-property",
     servo_restyle_damage="reflow_out_of_flow"
 )}
@@ -404,6 +401,7 @@ ${helpers.predefined_type(
     engines="gecko",
     animation_value_type="ComputedValue",
     gecko_pref="layout.css.motion-path.enabled",
+    flags="CAN_ANIMATE_ON_COMPOSITOR",
     spec="https://drafts.fxtf.org/motion-1/#offset-distance-property",
     servo_restyle_damage="reflow_out_of_flow"
 )}
@@ -416,6 +414,7 @@ ${helpers.predefined_type(
     engines="gecko",
     animation_value_type="ComputedValue",
     gecko_pref="layout.css.motion-path.enabled",
+    flags="CAN_ANIMATE_ON_COMPOSITOR",
     spec="https://drafts.fxtf.org/motion-1/#offset-rotate-property",
     servo_restyle_damage="reflow_out_of_flow"
 )}
@@ -428,6 +427,7 @@ ${helpers.predefined_type(
     engines="gecko",
     animation_value_type="ComputedValue",
     gecko_pref="layout.css.motion-path.enabled",
+    flags="CAN_ANIMATE_ON_COMPOSITOR",
     spec="https://drafts.fxtf.org/motion-1/#offset-anchor-property",
     servo_restyle_damage="reflow_out_of_flow",
     boxed=True
@@ -441,6 +441,7 @@ ${helpers.single_keyword(
     engines="gecko",
     spec="https://drafts.csswg.org/cssom-view/#propdef-scroll-behavior",
     animation_value_type="discrete",
+    gecko_enum_prefix="StyleScrollBehavior",
 )}
 
 ${helpers.predefined_type(
@@ -448,7 +449,6 @@ ${helpers.predefined_type(
     "ScrollSnapAlign",
     "computed::ScrollSnapAlign::none()",
     engines="gecko",
-    gecko_pref="layout.css.scroll-snap-v1.enabled",
     spec="https://drafts.csswg.org/css-scroll-snap-1/#scroll-snap-align",
     animation_value_type="discrete",
 )}
@@ -462,13 +462,15 @@ ${helpers.predefined_type(
     animation_value_type="discrete",
 )}
 
-% for axis in ["x", "y"]:
+% for (axis, logical) in ALL_AXES:
     ${helpers.predefined_type(
         "overscroll-behavior-" + axis,
         "OverscrollBehavior",
         "computed::OverscrollBehavior::Auto",
         engines="gecko",
         needs_context=False,
+        logical_group="overscroll-behavior",
+        logical=logical,
         gecko_pref="layout.css.overscroll-behavior.enabled",
         spec="https://wicg.github.io/overscroll-behavior/#overscroll-behavior-properties",
         animation_value_type="discrete",
@@ -483,6 +485,7 @@ ${helpers.single_keyword(
     engines="gecko",
     spec="https://drafts.fxtf.org/compositing/#isolation",
     flags="CREATES_STACKING_CONTEXT",
+    gecko_enum_prefix="StyleIsolation",
     animation_value_type="discrete",
 )}
 
@@ -534,7 +537,7 @@ ${helpers.predefined_type(
     "perspective",
     "Perspective",
     "computed::Perspective::none()",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
     gecko_ffi_name="mChildPerspective",
     spec="https://drafts.csswg.org/css-transforms/#perspective",
     extra_prefixes=transform_extra_prefixes,
@@ -547,7 +550,7 @@ ${helpers.predefined_type(
     "perspective-origin",
     "Position",
     "computed::position::Position::center()",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
     boxed=True,
     extra_prefixes=transform_extra_prefixes,
     spec="https://drafts.csswg.org/css-transforms-2/#perspective-origin-property",
@@ -558,7 +561,8 @@ ${helpers.predefined_type(
 ${helpers.single_keyword(
     "backface-visibility",
     "visible hidden",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    gecko_enum_prefix="StyleBackfaceVisibility",
     spec="https://drafts.csswg.org/css-transforms/#backface-visibility-property",
     extra_prefixes=transform_extra_prefixes,
     animation_value_type="discrete",
@@ -578,9 +582,8 @@ ${helpers.single_keyword(
 ${helpers.predefined_type(
     "transform-style",
     "TransformStyle",
-    "computed::TransformStyle::" + ("Flat" if engine == "gecko" else "Auto"),
+    "computed::TransformStyle::Flat",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     spec="https://drafts.csswg.org/css-transforms-2/#transform-style-property",
     needs_context=False,
     extra_prefixes=transform_extra_prefixes,
@@ -593,7 +596,7 @@ ${helpers.predefined_type(
     "transform-origin",
     "TransformOrigin",
     "computed::TransformOrigin::initial_value()",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
     animation_value_type="ComputedValue",
     extra_prefixes=transform_extra_prefixes,
     gecko_ffi_name="mTransformOrigin",
@@ -609,33 +612,50 @@ ${helpers.predefined_type(
     engines="gecko",
     animation_value_type="none",
     flags="CREATES_STACKING_CONTEXT FIXPOS_CB",
-    gecko_pref="layout.css.contain.enabled",
     spec="https://drafts.csswg.org/css-contain/#contain-property",
-    enabled_in="chrome",
 )}
 
-// Non-standard
 ${helpers.predefined_type(
-    "-moz-appearance",
+    "appearance",
     "Appearance",
     "computed::Appearance::None",
     engines="gecko",
-    alias="-webkit-appearance:layout.css.webkit-appearance.enabled",
-    spec="Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-appearance)",
+    alias="-moz-appearance -webkit-appearance",
+    spec="https://drafts.csswg.org/css-ui-4/#propdef-appearance",
     animation_value_type="discrete",
     gecko_ffi_name="mAppearance",
 )}
 
+// The inherent widget type of an element, selected by specifying
+// `appearance: auto`.
 ${helpers.predefined_type(
-    "-moz-binding",
-    "url::UrlOrNone",
-    "computed::url::UrlOrNone::none()",
+    "-moz-default-appearance",
+    "Appearance",
+    "computed::Appearance::None",
     engines="gecko",
     animation_value_type="none",
-    gecko_ffi_name="mBinding",
-    gecko_pref="layout.css.moz-binding.content.enabled",
+    spec="Internal (not web-exposed)",
     enabled_in="chrome",
-    spec="Nonstandard (https://developer.mozilla.org/en-US/docs/Web/CSS/-moz-binding)",
+    gecko_ffi_name="mDefaultAppearance",
+)}
+
+// A UA-sheet only property that controls the effect of `appearance: button`
+// on the element: `-moz-button-appearance: allow` means the element is rendered
+// with button appearance, and `-moz-button-appearance: disallow` is treated
+// like `appearance: auto`.
+//
+// https://github.com/w3c/csswg-drafts/issues/5174 proposes to simplify `button`
+// to mean `auto` unconditionally, at which point this property can be removed.
+${helpers.predefined_type(
+    "-moz-button-appearance",
+    "ButtonAppearance",
+    "computed::ButtonAppearance::Allow",
+    engines="gecko",
+    animation_value_type="none",
+    needs_context=False,
+    spec="Internal (not web-exposed)",
+    enabled_in="ua",
+    gecko_ffi_name="mButtonAppearance",
 )}
 
 ${helpers.single_keyword(
@@ -678,10 +698,10 @@ ${helpers.predefined_type(
 
 ${helpers.predefined_type(
     "shape-outside",
-    "basic_shape::FloatAreaShape",
-    "generics::basic_shape::ShapeSource::None",
+    "basic_shape::ShapeOutside",
+    "generics::basic_shape::ShapeOutside::None",
     engines="gecko",
-    animation_value_type="basic_shape::FloatAreaShape",
+    animation_value_type="basic_shape::ShapeOutside",
     spec="https://drafts.csswg.org/css-shapes/#shape-outside-property",
 )}
 

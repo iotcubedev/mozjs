@@ -5,7 +5,6 @@
 
 #include "nsISupports.idl"
 
-interface nsIDOMWindow;
 interface nsIRequest;
 interface nsIRequestObserver;
 interface nsISimpleEnumerator;
@@ -442,7 +441,7 @@ interface nsIUpdateManager : nsISupports
   /**
    * Gets the total number of updates in the history list.
    */
-  readonly attribute long updateCount;
+  long getUpdateCount();
 
   /**
    * The active (current) update. The active update is not in the history list.

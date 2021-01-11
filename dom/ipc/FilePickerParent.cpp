@@ -8,7 +8,6 @@
 #include "nsComponentManagerUtils.h"
 #include "nsNetCID.h"
 #include "mozilla/dom/Document.h"
-#include "nsIDOMWindow.h"
 #include "nsIFile.h"
 #include "nsISimpleEnumerator.h"
 #include "mozilla/Unused.h"
@@ -37,7 +36,7 @@ void FilePickerParent::FilePickerShownCallback::Destroy() {
   mFilePickerParent = nullptr;
 }
 
-FilePickerParent::~FilePickerParent() {}
+FilePickerParent::~FilePickerParent() = default;
 
 // We run code in three places:
 // 1. The main thread calls Dispatch() to start the runnable.

@@ -26,10 +26,11 @@
 #include "nsISupportsPrimitives.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/BrowserParent.h"
 
 #include "mozilla/Preferences.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
-#include "mozilla/SystemGroup.h"
 
 #if defined(ANDROID)
 #  include <android/log.h>
@@ -61,7 +62,7 @@ static const bool gLoggingBuffered = true;
 static bool gLoggingToDebugger = true;
 #endif  // XP_WIN
 
-nsConsoleService::MessageElement::~MessageElement() {}
+nsConsoleService::MessageElement::~MessageElement() = default;
 
 nsConsoleService::nsConsoleService()
     : mCurrentSize(0),
@@ -159,29 +160,11 @@ nsresult nsConsoleService::Init() {
   return NS_OK;
 }
 
-namespace {
-
-class LogMessageRunnable : public Runnable {
- public:
-  LogMessageRunnable(nsIConsoleMessage* aMessage, nsConsoleService* aService)
-      : mozilla::Runnable("LogMessageRunnable"),
-        mMessage(aMessage),
-        mService(aService) {}
-
-  NS_DECL_NSIRUNNABLE
-
- private:
-  nsCOMPtr<nsIConsoleMessage> mMessage;
-  RefPtr<nsConsoleService> mService;
-
-  NS_IMETHODIMP maybeForwardScriptError(bool* sent);
-};
-
-NS_IMETHODIMP
-LogMessageRunnable::maybeForwardScriptError(bool* sent) {
+nsresult nsConsoleService::MaybeForwardScriptError(nsIConsoleMessage* aMessage,
+                                                   bool* sent) {
   *sent = false;
 
-  nsCOMPtr<nsIScriptError> scriptError = do_QueryInterface(mMessage);
+  nsCOMPtr<nsIScriptError> scriptError = do_QueryInterface(aMessage);
   if (!scriptError) {
     // Not an nsIScriptError
     return NS_OK;
@@ -248,22 +231,24 @@ LogMessageRunnable::maybeForwardScriptError(bool* sent) {
   return NS_OK;
 }
 
+namespace {
+
+class LogMessageRunnable : public Runnable {
+ public:
+  LogMessageRunnable(nsIConsoleMessage* aMessage, nsConsoleService* aService)
+      : mozilla::Runnable("LogMessageRunnable"),
+        mMessage(aMessage),
+        mService(aService) {}
+
+  NS_DECL_NSIRUNNABLE
+
+ private:
+  nsCOMPtr<nsIConsoleMessage> mMessage;
+  RefPtr<nsConsoleService> mService;
+};
+
 NS_IMETHODIMP
 LogMessageRunnable::Run() {
-  MOZ_ASSERT(NS_IsMainThread());
-
-  if (XRE_IsParentProcess()) {
-    // If mMessage is a scriptError with an innerWindowId set,
-    // forward it to the matching ContentParent
-    // This enables logging from parent to content process
-    bool sent;
-    nsresult rv = LogMessageRunnable::maybeForwardScriptError(&sent);
-    NS_ENSURE_SUCCESS(rv, rv);
-    if (sent) {
-      return NS_OK;
-    }
-  }
-
   // Snapshot of listeners so that we don't reenter this hash during
   // enumeration.
   nsCOMArray<nsIConsoleListener> listeners;
@@ -310,6 +295,18 @@ nsresult nsConsoleService::LogMessageWithMode(
             msg.get())
             .get());
     return NS_ERROR_FAILURE;
+  }
+
+  if (XRE_IsParentProcess() && NS_IsMainThread()) {
+    // If mMessage is a scriptError with an innerWindowId set,
+    // forward it to the matching ContentParent
+    // This enables logging from parent to content process
+    bool sent;
+    nsresult rv = MaybeForwardScriptError(aMessage, &sent);
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (sent) {
+      return NS_OK;
+    }
   }
 
   RefPtr<LogMessageRunnable> r;
@@ -401,15 +398,15 @@ nsresult nsConsoleService::LogMessageWithMode(
     // Release |retiredMessage| on the main thread in case it is an instance of
     // a mainthread-only class like nsScriptErrorWithStack and we're off the
     // main thread.
-    NS_ReleaseOnMainThreadSystemGroup("nsConsoleService::retiredMessage",
-                                      retiredMessage.forget());
+    NS_ReleaseOnMainThread("nsConsoleService::retiredMessage",
+                           retiredMessage.forget());
   }
 
   if (r) {
     // avoid failing in XPCShell tests
     nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
     if (mainThread) {
-      SystemGroup::Dispatch(TaskCategory::Other, r.forget());
+      SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
     }
   }
 

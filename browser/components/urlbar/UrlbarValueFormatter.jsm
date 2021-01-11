@@ -12,6 +12,7 @@ const { XPCOMUtils } = ChromeUtils.import(
 
 XPCOMUtils.defineLazyModuleGetters(this, {
   AppConstants: "resource://gre/modules/AppConstants.jsm",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   Services: "resource://gre/modules/Services.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
@@ -37,10 +38,6 @@ class UrlbarValueFormatter {
     this.window.addEventListener("resize", this);
   }
 
-  uninit() {
-    this.window.removeEventListener("resize", this);
-  }
-
   get inputField() {
     return this.urlbarInput.inputField;
   }
@@ -49,7 +46,30 @@ class UrlbarValueFormatter {
     return this.urlbarInput.querySelector("#urlbar-scheme");
   }
 
-  update() {
+  async update() {
+    // _getUrlMetaData does URI fixup, which depends on the search service, so
+    // make sure it's initialized.  It can be uninitialized here on session
+    // restore.  Skip this if the service is already initialized in order to
+    // avoid the async call in the common case.  However, we can't access
+    // Service.search before first paint (delayed startup) because there's a
+    // performance test that prohibits it, so first bail if delayed startup
+    // isn't finished.
+    if (!this.window.gBrowserInit.delayedStartupFinished) {
+      return;
+    }
+    if (!Services.search.isInitialized) {
+      let instance = (this._updateInstance = {});
+      await Services.search.init();
+      if (this._updateInstance != instance) {
+        return;
+      }
+      delete this._updateInstance;
+    }
+
+    // Cleanup that must be done in any case, even if there's no value.
+    this.urlbarInput.removeAttribute("domaindir");
+    this.scheme.value = "";
+
     if (!this.inputField.value) {
       return;
     }
@@ -84,6 +104,7 @@ class UrlbarValueFormatter {
       // scroll to the left.
       urlMetaData = urlMetaData || this._getUrlMetaData();
       if (!urlMetaData) {
+        this.urlbarInput.removeAttribute("domaindir");
         return;
       }
       let { url, preDomain, domain } = urlMetaData;
@@ -92,7 +113,11 @@ class UrlbarValueFormatter {
         directionality == this.window.windowUtils.DIRECTION_RTL &&
         url[preDomain.length + domain.length] != "\u200E"
       ) {
+        this.urlbarInput.setAttribute("domaindir", "rtl");
         this.inputField.scrollLeft = this.inputField.scrollLeftMax;
+      } else {
+        this.urlbarInput.setAttribute("domaindir", "ltr");
+        this.inputField.scrollLeft = 0;
       }
     });
   }
@@ -103,11 +128,23 @@ class UrlbarValueFormatter {
     }
 
     let url = this.inputField.value;
+    let browser = this.window.gBrowser.selectedBrowser;
+
+    // Since doing a full URIFixup and offset calculations is expensive, we
+    // keep the metadata cached in the browser itself, so when switching tabs
+    // we can skip most of this.
+    if (browser._urlMetaData && browser._urlMetaData.url == url) {
+      return browser._urlMetaData.data;
+    }
+    browser._urlMetaData = { url, data: null };
 
     // Get the URL from the fixup service:
     let flags =
       Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS |
       Services.uriFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
+    if (PrivateBrowsingUtils.isWindowPrivate(this.window)) {
+      flags |= Services.uriFixup.FIXUP_FLAG_PRIVATE_CONTEXT;
+    }
     let uriInfo;
     try {
       uriInfo = Services.uriFixup.getFixupURIInfo(url, flags);
@@ -164,18 +201,24 @@ class UrlbarValueFormatter {
       try {
         this._inGetUrlMetaData = true;
         this.window.gBrowser.userTypedValue = null;
-        this.window.URLBarSetURI(uriInfo.fixedURI);
+        this.urlbarInput.setURI(uriInfo.fixedURI);
         return this._getUrlMetaData();
       } finally {
         this._inGetUrlMetaData = false;
       }
     }
 
-    return { preDomain, schemeWSlashes, domain, url, uriInfo, trimmedLength };
+    return (browser._urlMetaData.data = {
+      domain,
+      origin: uriInfo.fixedURI.host,
+      preDomain,
+      schemeWSlashes,
+      trimmedLength,
+      url,
+    });
   }
 
   _removeURLFormat() {
-    this.scheme.value = "";
     if (!this._formattingApplied) {
       return;
     }
@@ -205,12 +248,12 @@ class UrlbarValueFormatter {
     }
 
     let {
-      url,
-      uriInfo,
+      domain,
+      origin,
       preDomain,
       schemeWSlashes,
-      domain,
       trimmedLength,
+      url,
     } = urlMetaData;
     // We strip http, so we should not show the scheme box for it.
     if (!UrlbarPrefs.get("trimURLs") || schemeWSlashes != "http://") {
@@ -254,7 +297,7 @@ class UrlbarValueFormatter {
     let baseDomain = domain;
     let subDomain = "";
     try {
-      baseDomain = Services.eTLD.getBaseDomainFromHost(uriInfo.fixedURI.host);
+      baseDomain = Services.eTLD.getBaseDomainFromHost(origin);
       if (!domain.endsWith(baseDomain)) {
         // getBaseDomainFromHost converts its resultant to ACE.
         let IDNService = Cc["@mozilla.org/network/idn-service;1"].getService(

@@ -11,7 +11,7 @@
 #include "xpcAccessibleDocument.h"
 #include "xpcAccEvents.h"
 #include "nsAccUtils.h"
-#include "nsCoreUtils.h"
+#include "TextRange.h"
 
 #if defined(XP_WIN)
 #  include "AccessibleWrap.h"
@@ -20,9 +20,25 @@
 #  include "mozilla/mscom/Ptr.h"
 #  include "nsWinUtils.h"
 #  include "RootAccessible.h"
+#else
+#  include "mozilla/a11y/DocAccessiblePlatformExtParent.h"
 #endif
 
 namespace mozilla {
+
+#if defined(XP_WIN)
+namespace mscom {
+namespace detail {
+// Needed by mscom::PassthruProxy::Wrap<IAccessible>.
+template <>
+struct VTableSizer<IAccessible> {
+  // 3 methods in IUnknown + 4 in IDispatch + 21 in IAccessible = 28 total
+  enum { Size = 28 };
+};
+}  // namespace detail
+}  // namespace mscom
+#endif  // defined (XP_WIN)
+
 namespace a11y {
 uint64_t DocAccessibleParent::sMaxDocID = 0;
 
@@ -137,6 +153,7 @@ uint32_t DocAccessibleParent::AddSubtree(
       break;
     }
   }
+  DebugOnly<bool> isOuterDoc = newProxy->ChildrenCount() == 1;
 
   uint32_t accessibles = 1;
   uint32_t kids = newChild.ChildrenCount();
@@ -147,7 +164,7 @@ uint32_t DocAccessibleParent::AddSubtree(
     accessibles += consumed;
   }
 
-  MOZ_ASSERT(newProxy->ChildrenCount() == kids);
+  MOZ_ASSERT((isOuterDoc && kids == 0) || newProxy->ChildrenCount() == kids);
 
   return accessibles;
 }
@@ -272,7 +289,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
 #if defined(XP_WIN)
     const LayoutDeviceIntRect& aCaretRect,
 #endif  // defined (XP_WIN)
-    const int32_t& aOffset) {
+    const int32_t& aOffset, const bool& aIsSelectionCollapsed) {
   if (mShutdown) {
     return IPC_OK();
   }
@@ -286,7 +303,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
 #if defined(XP_WIN)
   ProxyCaretMoveEvent(proxy, aCaretRect);
 #else
-  ProxyCaretMoveEvent(proxy, aOffset);
+  ProxyCaretMoveEvent(proxy, aOffset, aIsSelectionCollapsed);
 #endif
 
   if (!nsCoreUtils::AccEventObserversExist()) {
@@ -298,8 +315,8 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
   nsINode* node = nullptr;
   bool fromUser = true;  // XXX fix me
   uint32_t type = nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED;
-  RefPtr<xpcAccCaretMoveEvent> event =
-      new xpcAccCaretMoveEvent(type, xpcAcc, doc, node, fromUser, aOffset);
+  RefPtr<xpcAccCaretMoveEvent> event = new xpcAccCaretMoveEvent(
+      type, xpcAcc, doc, node, fromUser, aOffset, aIsSelectionCollapsed);
   nsCoreUtils::DispatchAccEvent(std::move(event));
 
   return IPC_OK();
@@ -378,6 +395,10 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvVirtualCursorChangeEvent(
     const uint64_t& aNewPositionID, const int32_t& aNewStartOffset,
     const int32_t& aNewEndOffset, const int16_t& aReason,
     const int16_t& aBoundaryType, const bool& aFromUser) {
+  if (mShutdown) {
+    return IPC_OK();
+  }
+
   ProxyAccessible* target = GetAccessible(aID);
   ProxyAccessible* oldPosition = GetAccessible(aOldPositionID);
   ProxyAccessible* newPosition = GetAccessible(aNewPositionID);
@@ -414,8 +435,11 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvScrollingEvent(
     const uint64_t& aID, const uint64_t& aType, const uint32_t& aScrollX,
     const uint32_t& aScrollY, const uint32_t& aMaxScrollX,
     const uint32_t& aMaxScrollY) {
-  ProxyAccessible* target = GetAccessible(aID);
+  if (mShutdown) {
+    return IPC_OK();
+  }
 
+  ProxyAccessible* target = GetAccessible(aID);
   if (!target) {
     NS_ERROR("no proxy for event!");
     return IPC_OK();
@@ -448,8 +472,11 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvScrollingEvent(
 mozilla::ipc::IPCResult DocAccessibleParent::RecvAnnouncementEvent(
     const uint64_t& aID, const nsString& aAnnouncement,
     const uint16_t& aPriority) {
-  ProxyAccessible* target = GetAccessible(aID);
+  if (mShutdown) {
+    return IPC_OK();
+  }
 
+  ProxyAccessible* target = GetAccessible(aID);
   if (!target) {
     NS_ERROR("no proxy for event!");
     return IPC_OK();
@@ -472,6 +499,28 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvAnnouncementEvent(
 
   return IPC_OK();
 }
+
+mozilla::ipc::IPCResult DocAccessibleParent::RecvTextSelectionChangeEvent(
+    const uint64_t& aID, nsTArray<TextRangeData>&& aSelection) {
+#  ifdef MOZ_WIDGET_COCOA
+  if (mShutdown) {
+    return IPC_OK();
+  }
+
+  ProxyAccessible* target = GetAccessible(aID);
+  if (!target) {
+    NS_ERROR("no proxy for event!");
+    return IPC_OK();
+  }
+
+  ProxyTextSelectionChangeEvent(target, aSelection);
+
+  return IPC_OK();
+#  else
+  return RecvEvent(aID, nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED);
+#  endif
+}
+
 #endif
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvRoleChangedEvent(
@@ -566,7 +615,6 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
     ProxyCreated(aChildDoc, Interfaces::DOCUMENT | Interfaces::HYPERTEXT);
   }
 
-#if defined(XP_WIN)
   if (aChildDoc->IsTopLevelInContentProcess()) {
     // aChildDoc is an embedded document in a different content process to
     // this document.
@@ -575,6 +623,7 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
     dom::BrowserBridgeParent* bridge =
         embeddedBrowser->GetBrowserBridgeParent();
     if (bridge) {
+#if defined(XP_WIN)
       // Send a COM proxy for the embedded document to the embedder process
       // hosting the iframe. This will be returned as the child of the
       // embedder OuterDocAccessible.
@@ -587,7 +636,7 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
       IDispatchHolder docHolder(std::move(docPtr));
       if (bridge->SendSetEmbeddedDocAccessibleCOMProxy(docHolder)) {
 #  if defined(MOZ_SANDBOX)
-        mDocProxyStream = docHolder.GetPreservedStream();
+        aChildDoc->mDocProxyStream = docHolder.GetPreservedStream();
 #  endif  // defined(MOZ_SANDBOX)
       }
       // Send a COM proxy for the embedder OuterDocAccessible to the embedded
@@ -603,6 +652,28 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
         Unused << aChildDoc->SendEmulatedWindow(
             reinterpret_cast<uintptr_t>(mEmulatedWindowHandle), nullptr);
       }
+      // Send a COM proxy for the top level document to the embedded document
+      // process. This will be returned when the client calls QueryService
+      // with SID_IAccessibleContentDocument on an accessible in the embedded
+      // document.
+      DocAccessibleParent* topDoc = this;
+      while (DocAccessibleParent* parentDoc = topDoc->ParentDoc()) {
+        topDoc = parentDoc;
+      }
+      MOZ_ASSERT(topDoc && topDoc->IsTopLevel());
+      RefPtr<IAccessible> topDocAcc;
+      topDoc->GetCOMInterface((void**)getter_AddRefs(topDocAcc));
+      RefPtr<IAccessible> topDocWrapped(
+          mscom::PassthruProxy::Wrap<IAccessible>(WrapNotNull(topDocAcc)));
+      IAccessibleHolder::COMPtrType topDocPtr(
+          mscom::ToProxyUniquePtr(std::move(topDocWrapped)));
+      IAccessibleHolder topDocHolder(std::move(topDocPtr));
+      if (aChildDoc->SendTopLevelDocCOMProxy(topDocHolder)) {
+#  if defined(MOZ_SANDBOX)
+        aChildDoc->mTopLevelDocProxyStream = topDocHolder.GetPreservedStream();
+#  endif  // defined(MOZ_SANDBOX)
+      }
+#endif  // defined(XP_WIN)
       // We need to fire a reorder event on the outer doc accessible.
       // For same-process documents, this is fired by the content process, but
       // this isn't possible when the document is in a different process to its
@@ -611,7 +682,6 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
       Unused << RecvEvent(aParentID, nsIAccessibleEvent::EVENT_REORDER);
     }
   }
-#endif  // defined(XP_WIN)
 
   return IPC_OK();
 }
@@ -916,6 +986,23 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvBatch(
 #  endif  // defined(XP_WIN)
   return IPC_OK();
 }
+
+bool DocAccessibleParent::DeallocPDocAccessiblePlatformExtParent(
+    PDocAccessiblePlatformExtParent* aActor) {
+  delete aActor;
+  return true;
+}
+
+PDocAccessiblePlatformExtParent*
+DocAccessibleParent::AllocPDocAccessiblePlatformExtParent() {
+  return new DocAccessiblePlatformExtParent();
+}
+
+DocAccessiblePlatformExtParent* DocAccessibleParent::GetPlatformExtension() {
+  return static_cast<DocAccessiblePlatformExtParent*>(
+      SingleManagedOrNull(ManagedPDocAccessiblePlatformExtParent()));
+}
+
 #endif  // !defined(XP_WIN)
 
 Tuple<DocAccessibleParent*, uint64_t> DocAccessibleParent::GetRemoteEmbedder() {

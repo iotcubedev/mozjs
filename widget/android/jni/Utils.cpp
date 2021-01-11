@@ -11,8 +11,9 @@
 #include <pthread.h>
 
 #include "mozilla/Assertions.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
+#include "mozilla/java/GeckoThreadWrappers.h"
 
-#include "GeneratedJNIWrappers.h"
 #include "AndroidBuild.h"
 #include "nsAppShell.h"
 #include "nsExceptionHandler.h"
@@ -112,7 +113,6 @@ pthread_key_t sThreadEnvKey;
 jclass sOOMErrorClass;
 jobject sClassLoader;
 jmethodID sClassLoaderLoadClass;
-bool sIsFennec;
 
 void UnregisterThreadEnv(void* env) {
   if (!env) {
@@ -154,17 +154,6 @@ void SetGeckoThreadEnv(JNIEnv* aEnv) {
       Class::LocalRef::Adopt(aEnv->GetObjectClass(sClassLoader)).Get(),
       "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
   MOZ_ASSERT(sClassLoader && sClassLoaderLoadClass);
-
-  if (java::GeckoThread::IsChildProcess()) {
-    // Disallow Fennec-only classes from being used in child processes.
-    sIsFennec = false;
-    return;
-  }
-
-  auto geckoAppClass =
-      Class::LocalRef::Adopt(aEnv->FindClass("org/mozilla/gecko/GeckoApp"));
-  aEnv->ExceptionClear();
-  sIsFennec = !!geckoAppClass;
 }
 
 JNIEnv* GetEnvForThread() {
@@ -241,8 +230,7 @@ bool ReportException(JNIEnv* aEnv, jthrowable aExc, jstring aStack) {
     aEnv->ExceptionDescribe();
     aEnv->ExceptionClear();
   } else if (appNotes) {
-    CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("\n") +
-                                               appNotes->ToCString());
+    CrashReporter::AppendAppNotesToCrashReport("\n"_ns + appNotes->ToCString());
   }
 
   if (sOOMErrorClass && aEnv->IsInstanceOf(aExc, sOOMErrorClass)) {
@@ -266,7 +254,8 @@ bool EnsureJNIObject(JNIEnv* env, jobject instance) {
     sJNIObjectHandleField = env->GetFieldID(sJNIObjectClass, "mHandle", "J");
   }
 
-  MOZ_ASSERT(env->IsInstanceOf(instance, sJNIObjectClass));
+  MOZ_ASSERT(env->IsInstanceOf(instance, sJNIObjectClass),
+             "Java class is not derived from JNIObject");
   return true;
 }
 
@@ -331,8 +320,6 @@ void DispatchToGeckoPriorityQueue(already_AddRefed<nsIRunnable> aCall) {
 
   nsAppShell::PostEvent(MakeUnique<RunnableEvent>(std::move(aCall)));
 }
-
-bool IsFennec() { return sIsFennec; }
 
 int GetAPIVersion() {
   static int32_t apiVersion = 0;

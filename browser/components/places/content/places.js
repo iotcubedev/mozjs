@@ -62,9 +62,7 @@ var PlacesOrganizer = {
   _places: null,
 
   _initFolderTree() {
-    this._places.place = `place:type=${
-      Ci.nsINavHistoryQueryOptions.RESULTS_AS_LEFT_PANE_QUERY
-    }&excludeItems=1&expandQueries=0`;
+    this._places.place = `place:type=${Ci.nsINavHistoryQueryOptions.RESULTS_AS_LEFT_PANE_QUERY}&excludeItems=1&expandQueries=0`;
   },
 
   /**
@@ -255,12 +253,12 @@ var PlacesOrganizer = {
     aEvent.stopPropagation();
     switch (aEvent.command) {
       case "Back":
-        if (this._backHistory.length > 0) {
+        if (this._backHistory.length) {
           this.back();
         }
         break;
       case "Forward":
-        if (this._forwardHistory.length > 0) {
+        if (this._forwardHistory.length) {
           this.forward();
         }
         break;
@@ -297,7 +295,7 @@ var PlacesOrganizer = {
     this.updateDetailsPane();
 
     // update navigation commands
-    if (this._backHistory.length == 0) {
+    if (!this._backHistory.length) {
       document
         .getElementById("OrganizerCommand:Back")
         .setAttribute("disabled", true);
@@ -306,7 +304,7 @@ var PlacesOrganizer = {
         .getElementById("OrganizerCommand:Back")
         .removeAttribute("disabled");
     }
-    if (this._forwardHistory.length == 0) {
+    if (!this._forwardHistory.length) {
       document
         .getElementById("OrganizerCommand:Forward")
         .setAttribute("disabled", true);
@@ -377,7 +375,11 @@ var PlacesOrganizer = {
     // At this point, resetSearchBox is true, because the left pane selection
     // has changed; otherwise we would have returned earlier.
 
-    PlacesSearchBox.searchFilter.reset();
+    let input = PlacesSearchBox.searchFilter;
+    input.value = "";
+    try {
+      input.editor.transactionManager.clear();
+    } catch (e) {}
     this._setSearchScopeForNode(node);
     this.updateDetailsPane();
   },
@@ -543,7 +545,7 @@ var PlacesOrganizer = {
 
     (async function() {
       let backupFiles = await PlacesBackups.getBackupFiles();
-      if (backupFiles.length == 0) {
+      if (!backupFiles.length) {
         return;
       }
 
@@ -724,7 +726,7 @@ var PlacesOrganizer = {
     infoBox.hidden = false;
     let selectedNode = aNodeList.length == 1 ? aNodeList[0] : null;
 
-    // If a textbox within a panel is focused, force-blur it so its contents
+    // If an input within a panel is focused, force-blur it so its contents
     // are saved
     if (gEditItemOverlay.itemId != -1) {
       var focusedElement = document.commandDispatcher.focusedElement;
@@ -829,7 +831,7 @@ var PlacesSearchBox = {
    */
   _folders: [],
   get folders() {
-    if (this._folders.length == 0) {
+    if (!this._folders.length) {
       this._folders = PlacesUtils.bookmarks.userContentRoots;
     }
     return this._folders;

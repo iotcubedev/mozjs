@@ -15,7 +15,8 @@
 #include "mozilla/layers/AnimationHelper.h"  // for GetAnimatedPropValue
 #include "mozilla/layers/CanvasLayerComposite.h"
 #include "mozilla/layers/ColorLayerComposite.h"
-#include "mozilla/layers/Compositor.h"  // for Compositor
+#include "mozilla/layers/Compositor.h"                  // for Compositor
+#include "mozilla/layers/CompositorAnimationStorage.h"  // for CompositorAnimationStorage
 #include "mozilla/layers/ContainerLayerComposite.h"
 #include "mozilla/layers/ImageBridgeParent.h"  // for ImageBridgeParent
 #include "mozilla/layers/ImageLayerComposite.h"
@@ -65,7 +66,7 @@ LayerTransactionParent::LayerTransactionParent(
   MOZ_ASSERT(mId.IsValid());
 }
 
-LayerTransactionParent::~LayerTransactionParent() {}
+LayerTransactionParent::~LayerTransactionParent() = default;
 
 void LayerTransactionParent::SetLayerManager(
     HostLayerManager* aLayerManager, CompositorAnimationStorage* aAnimStorage) {
@@ -147,13 +148,7 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvPaintTime(
 
 mozilla::ipc::IPCResult LayerTransactionParent::RecvUpdate(
     const TransactionInfo& aInfo) {
-  auto guard = MakeScopeExit([&] {
-    if (recordreplay::IsRecordingOrReplaying()) {
-      recordreplay::child::NotifyPaintComplete();
-    }
-  });
-
-  AUTO_PROFILER_TRACING("Paint", "LayerTransaction", GRAPHICS);
+  AUTO_PROFILER_TRACING_MARKER("Paint", "LayerTransaction", GRAPHICS);
   AUTO_PROFILER_LABEL("LayerTransactionParent::RecvUpdate", GRAPHICS);
   PerfStats::AutoMetricRecording<PerfStats::Metric::LayerTransactions>
       autoRecording;
@@ -261,10 +256,6 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvUpdate(
       case Edit::TOpSetDiagnosticTypes: {
         mLayerManager->SetDiagnosticTypes(
             edit.get_OpSetDiagnosticTypes().diagnostics());
-        break;
-      }
-      case Edit::TOpWindowOverlayChanged: {
-        mLayerManager->SetWindowOverlayChanged();
         break;
       }
       // Tree ops
@@ -502,11 +493,6 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvUpdate(
         (TimeStamp::Now() - updateStart).ToMilliseconds());
   }
 
-  // Compose after every update when recording/replaying.
-  if (recordreplay::IsRecordingOrReplaying()) {
-    mCompositorBridge->ForceComposeToTarget(nullptr);
-  }
-
   return IPC_OK();
 }
 
@@ -538,7 +524,7 @@ bool LayerTransactionParent::SetLayerAttributes(
   } else {
     layer->SetMaskLayer(nullptr);
   }
-  layer->SetCompositorAnimations(common.compositorAnimations());
+  layer->SetCompositorAnimations(mId, common.compositorAnimations());
   // Clean up the Animations by id in the CompositorAnimationStorage
   // if there are no active animations on the layer
   if (mAnimStorage && layer->GetCompositorAnimationsId() &&
@@ -632,7 +618,9 @@ bool LayerTransactionParent::SetLayerAttributes(
       refLayer->SetReferentId(specific.get_RefLayerAttributes().id());
       refLayer->SetEventRegionsOverride(
           specific.get_RefLayerAttributes().eventRegionsOverride());
-      UpdateHitTestingTree(layer, "event regions override changed");
+      refLayer->SetRemoteDocumentSize(
+          specific.get_RefLayerAttributes().remoteDocumentSize());
+      UpdateHitTestingTree(layer, "ref layer attributes changed");
       break;
     }
     case Specific::TImageLayerAttributes: {
@@ -730,19 +718,12 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvGetTransform(
   }
   float scale = 1;
   Point3D scaledOrigin;
-  Point3D transformOrigin;
-  for (const PropertyAnimationGroup& group :
-       layer->GetPropertyAnimationGroups()) {
-    if (group.mAnimationData.isNothing()) {
-      continue;
-    }
-    const TransformData& data = group.mAnimationData.ref();
+  if (layer->GetTransformData()) {
+    const TransformData& data = *layer->GetTransformData();
     scale = data.appUnitsPerDevPixel();
     scaledOrigin = Point3D(
         NS_round(NSAppUnitsToFloatPixels(data.origin().x, scale)),
         NS_round(NSAppUnitsToFloatPixels(data.origin().y, scale)), 0.0f);
-    transformOrigin = data.transformOrigin();
-    break;
   }
 
   // If our parent isn't a perspective layer, then the offset into reference
@@ -750,16 +731,6 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvGetTransform(
   // to cancel it out.
   if (!layer->GetParent() || !layer->GetParent()->GetTransformIsPerspective()) {
     transform.PostTranslate(-scaledOrigin.x, -scaledOrigin.y, -scaledOrigin.z);
-  }
-
-  // This function is supposed to include the APZ transform, but if root scroll
-  // containers are enabled, then the APZ transform might not be on |layer| but
-  // instead would be on the parent of |layer|, if that is the root scrollable
-  // metrics. So we special-case that behaviour.
-  if (StaticPrefs::layout_scroll_root_frame_containers() &&
-      !layer->HasScrollableFrameMetrics() && layer->GetParent() &&
-      layer->GetParent()->HasRootScrollableFrameMetrics()) {
-    transform *= layer->GetParent()->AsHostLayer()->GetShadowBaseTransform();
   }
 
   *aTransform = Some(transform);
@@ -774,8 +745,8 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvSetAsyncScrollOffset(
     return IPC_FAIL_NO_REASON(this);
   }
 
-  mCompositorBridge->SetTestAsyncScrollOffset(WRRootId::NonWebRender(GetId()),
-                                              aScrollID, CSSPoint(aX, aY));
+  mCompositorBridge->SetTestAsyncScrollOffset(GetId(), aScrollID,
+                                              CSSPoint(aX, aY));
   return IPC_OK();
 }
 
@@ -785,20 +756,19 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvSetAsyncZoom(
     return IPC_FAIL_NO_REASON(this);
   }
 
-  mCompositorBridge->SetTestAsyncZoom(WRRootId::NonWebRender(GetId()),
-                                      aScrollID,
+  mCompositorBridge->SetTestAsyncZoom(GetId(), aScrollID,
                                       LayerToParentLayerScale(aValue));
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult LayerTransactionParent::RecvFlushApzRepaints() {
-  mCompositorBridge->FlushApzRepaints(WRRootId::NonWebRender(GetId()));
+  mCompositorBridge->FlushApzRepaints(GetId());
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult LayerTransactionParent::RecvGetAPZTestData(
     APZTestData* aOutData) {
-  mCompositorBridge->GetAPZTestData(WRRootId::NonWebRender(GetId()), aOutData);
+  mCompositorBridge->GetAPZTestData(GetId(), aOutData);
   return IPC_OK();
 }
 
@@ -809,16 +779,10 @@ mozilla::ipc::IPCResult LayerTransactionParent::RecvRequestProperty(
 }
 
 mozilla::ipc::IPCResult LayerTransactionParent::RecvSetConfirmedTargetAPZC(
-    const uint64_t& aBlockId, nsTArray<SLGuidAndRenderRoot>&& aTargets) {
+    const uint64_t& aBlockId, nsTArray<ScrollableLayerGuid>&& aTargets) {
   for (size_t i = 0; i < aTargets.Length(); i++) {
     // Guard against bad data from hijacked child processes
-    if (aTargets[i].mRenderRoot != wr::RenderRoot::Default) {
-      NS_ERROR(
-          "Unexpected render root in RecvSetConfirmedTargetAPZC; dropping "
-          "message...");
-      return IPC_FAIL(this, "Bad render root");
-    }
-    if (aTargets[i].mScrollableLayerGuid.mLayersId != GetId()) {
+    if (aTargets[i].mLayersId != GetId()) {
       NS_ERROR(
           "Unexpected layers id in RecvSetConfirmedTargetAPZC; dropping "
           "message...");
@@ -897,11 +861,11 @@ bool LayerTransactionParent::AllocUnsafeShmem(
   return PLayerTransactionParent::AllocUnsafeShmem(aSize, aType, aShmem);
 }
 
-void LayerTransactionParent::DeallocShmem(ipc::Shmem& aShmem) {
+bool LayerTransactionParent::DeallocShmem(ipc::Shmem& aShmem) {
   if (!mIPCOpen || mDestroyed) {
-    return;
+    return false;
   }
-  PLayerTransactionParent::DeallocShmem(aShmem);
+  return PLayerTransactionParent::DeallocShmem(aShmem);
 }
 
 bool LayerTransactionParent::IsSameProcess() const {

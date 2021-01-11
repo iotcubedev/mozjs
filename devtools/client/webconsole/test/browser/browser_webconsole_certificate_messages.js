@@ -17,17 +17,23 @@ const TRIGGER_MSG = "If you haven't seen ssl warnings yet, you won't";
 const TLS_1_0_URL = "https://tls1.example.com" + TEST_URI_PATH;
 
 const TLS_expected_message =
-  "This site uses a deprecated version of TLS that" +
-  " will be disabled in March 2020. Please upgrade" +
-  " to TLS 1.2 or 1.3.";
+  "This site uses a deprecated version of TLS. " +
+  "Please upgrade to TLS 1.2 or 1.3.";
+
+registerCleanupFunction(function() {
+  // Set preferences back to their original values
+  Services.prefs.clearUserPref("security.tls.version.min");
+  Services.prefs.clearUserPref("security.tls.version.max");
+});
 
 add_task(async function() {
+  await pushPref("devtools.target-switching.enabled", true);
   const hud = await openNewTabAndConsole(TEST_URI);
 
   info("Test SHA1 warnings");
   let onContentLog = waitForMessage(hud, TRIGGER_MSG);
   const onSha1Warning = waitForMessage(hud, "SHA-1");
-  await loadDocument(SHA1_URL);
+  await navigateTo(SHA1_URL);
   await Promise.all([onContentLog, onSha1Warning]);
 
   let { textContent } = hud.ui.outputNode;
@@ -39,7 +45,7 @@ add_task(async function() {
 
   info("Test SSL warnings appropriately not present");
   onContentLog = waitForMessage(hud, TRIGGER_MSG);
-  await loadDocument(SHA256_URL);
+  await navigateTo(SHA256_URL);
   await onContentLog;
 
   textContent = hud.ui.outputNode.textContent;
@@ -55,8 +61,11 @@ add_task(async function() {
   );
 
   info("Test TLS warnings");
+  // Run with all versions enabled for this test.
+  Services.prefs.setIntPref("security.tls.version.min", 1);
+  Services.prefs.setIntPref("security.tls.version.max", 4);
   onContentLog = waitForMessage(hud, TRIGGER_MSG);
-  await loadDocument(TLS_1_0_URL);
+  await navigateTo(TLS_1_0_URL);
   await onContentLog;
 
   textContent = hud.ui.outputNode.textContent;

@@ -10,7 +10,7 @@
 // protocol.  It also implements the persist() method.  JS consumers should use
 // this module rather than accessing nsIXULStore directly.
 
-const EXPORTED_SYMBOLS = ["XULStore"];
+const EXPORTED_SYMBOLS = ["XULStore", "getXULStore"];
 
 // Services.xulStore loads this module and returns its `XULStore` symbol
 // when this implementation of XULStore is enabled, so using it here
@@ -39,7 +39,7 @@ const XULStore = {
 
   /**
    * Sets a value for a specified node's attribute, except in
-   * the case below (following the original XULDocument::persist):
+   * the case below:
    * If the value is empty and if calling `hasValue` with the node's
    * document and ID and `attr` would return true, then the
    * value instead gets removed from the store (see Bug 1476680).
@@ -56,7 +56,7 @@ const XULStore = {
     const value = node.getAttribute(attr);
 
     if (node.localName == "window") {
-      log("Persisting attributes to windows is handled by nsXULWindow.");
+      log("Persisting attributes to windows is handled by AppWindow.");
       return;
     }
 
@@ -98,4 +98,10 @@ class XULStoreEnumerator {
       yield this.enumerator.getNext();
     }
   }
+}
+
+// Only here for the sake of component registration, which requires a
+// callable function.
+function getXULStore() {
+  return XULStore;
 }

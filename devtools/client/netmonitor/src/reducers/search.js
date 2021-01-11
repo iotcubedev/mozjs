@@ -9,11 +9,11 @@ const {
   ADD_SEARCH_RESULT,
   CLEAR_SEARCH_RESULTS,
   ADD_ONGOING_SEARCH,
-  OPEN_SEARCH,
-  CLOSE_SEARCH,
   SEARCH_STATUS,
+  TOGGLE_SEARCH_CASE_SENSITIVE_SEARCH,
   UPDATE_SEARCH_STATUS,
-} = require("../constants");
+  SET_TARGET_SEARCH_RESULT,
+} = require("devtools/client/netmonitor/src/constants");
 
 /**
  * Search reducer stores the following data:
@@ -29,7 +29,8 @@ function Search(overrideParams = {}) {
       results: [],
       ongoingSearch: null,
       status: SEARCH_STATUS.INITIAL,
-      panelOpen: false,
+      caseSensitive: false,
+      targetSearchResult: null,
     },
     overrideParams
   );
@@ -45,12 +46,12 @@ function search(state = new Search(), action) {
       return onClearSearchResults(state);
     case ADD_ONGOING_SEARCH:
       return onAddOngoingSearch(state, action);
-    case CLOSE_SEARCH:
-      return onCloseSearch(state);
-    case OPEN_SEARCH:
-      return onOpenSearch(state);
+    case TOGGLE_SEARCH_CASE_SENSITIVE_SEARCH:
+      return onToggleCaseSensitiveSearch(state);
     case UPDATE_SEARCH_STATUS:
       return onUpdateSearchStatus(state, action);
+    case SET_TARGET_SEARCH_RESULT:
+      return onSetTargetSearchResult(state, action);
   }
   return state;
 }
@@ -90,17 +91,10 @@ function onAddOngoingSearch(state, action) {
   };
 }
 
-function onCloseSearch(state) {
+function onToggleCaseSensitiveSearch(state) {
   return {
     ...state,
-    panelOpen: false,
-  };
-}
-
-function onOpenSearch(state) {
-  return {
-    ...state,
-    panelOpen: true,
+    caseSensitive: !state.caseSensitive,
   };
 }
 
@@ -108,6 +102,13 @@ function onUpdateSearchStatus(state, action) {
   return {
     ...state,
     status: action.status,
+  };
+}
+
+function onSetTargetSearchResult(state, action) {
+  return {
+    ...state,
+    targetSearchResult: action.searchResult,
   };
 }
 

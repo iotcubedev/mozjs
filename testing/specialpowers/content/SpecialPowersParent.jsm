@@ -6,6 +6,9 @@
 
 var EXPORTED_SYMBOLS = ["SpecialPowersParent"];
 
+const { AppConstants } = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm"
+);
 var { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
@@ -24,53 +27,6 @@ class SpecialPowersError extends Error {
   get name() {
     return "SpecialPowersError";
   }
-}
-
-function parseKeyValuePairs(text) {
-  var lines = text.split("\n");
-  var data = {};
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i] == "") {
-      continue;
-    }
-
-    // can't just .split() because the value might contain = characters
-    let eq = lines[i].indexOf("=");
-    if (eq != -1) {
-      let [key, value] = [
-        lines[i].substring(0, eq),
-        lines[i].substring(eq + 1),
-      ];
-      if (key && value) {
-        data[key] = value.replace(/\\n/g, "\n").replace(/\\\\/g, "\\");
-      }
-    }
-  }
-  return data;
-}
-
-function parseKeyValuePairsFromFile(file) {
-  var fstream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(
-    Ci.nsIFileInputStream
-  );
-  fstream.init(file, -1, 0, 0);
-  var is = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(
-    Ci.nsIConverterInputStream
-  );
-  is.init(
-    fstream,
-    "UTF-8",
-    1024,
-    Ci.nsIConverterInputStream.DEFAULT_REPLACEMENT_CHARACTER
-  );
-  var str = {};
-  var contents = "";
-  while (is.readString(4096, str) != 0) {
-    contents += str.value;
-  }
-  is.close();
-  fstream.close();
-  return parseKeyValuePairs(contents);
 }
 
 function getTestPlugin(pluginName) {
@@ -113,6 +69,55 @@ function doPrefEnvOp(fn) {
   } finally {
     inPrefEnvOp = false;
   }
+}
+
+async function createWindowlessBrowser({ isPrivate = false } = {}) {
+  const {
+    promiseDocumentLoaded,
+    promiseEvent,
+    promiseObserved,
+  } = ChromeUtils.import(
+    "resource://gre/modules/ExtensionUtils.jsm"
+  ).ExtensionUtils;
+
+  let windowlessBrowser = Services.appShell.createWindowlessBrowser(true);
+
+  if (isPrivate) {
+    let loadContext = windowlessBrowser.docShell.QueryInterface(
+      Ci.nsILoadContext
+    );
+    loadContext.usePrivateBrowsing = true;
+  }
+
+  let chromeShell = windowlessBrowser.docShell.QueryInterface(
+    Ci.nsIWebNavigation
+  );
+
+  const system = Services.scriptSecurityManager.getSystemPrincipal();
+  chromeShell.createAboutBlankContentViewer(system, system);
+  windowlessBrowser.browsingContext.useGlobalHistory = false;
+  chromeShell.loadURI("chrome://extensions/content/dummy.xhtml", {
+    triggeringPrincipal: system,
+  });
+
+  await promiseObserved(
+    "chrome-document-global-created",
+    win => win.document == chromeShell.document
+  );
+
+  let chromeDoc = await promiseDocumentLoaded(chromeShell.document);
+
+  let browser = chromeDoc.createXULElement("browser");
+  browser.setAttribute("type", "content");
+  browser.setAttribute("disableglobalhistory", "true");
+  browser.setAttribute("remote", "true");
+
+  let promise = promiseEvent(browser, "XULFrameLoaderCreated");
+  chromeDoc.documentElement.appendChild(browser);
+
+  await promise;
+
+  return { windowlessBrowser, browser };
 }
 
 // Supplies the unique IDs for tasks created by SpecialPowers.spawn(),
@@ -160,7 +165,37 @@ class SpecialPowersParent extends JSWindowActorParent {
               },
               type: permission.type,
             };
-          // fall through
+            this._self.sendAsyncMessage("specialpowers-" + aTopic, msg);
+            return;
+          case "csp-on-violate-policy":
+            // the subject is either an nsIURI or an nsISupportsCString
+            let subject = null;
+            if (aSubject instanceof Ci.nsIURI) {
+              subject = aSubject.asciiSpec;
+            } else if (aSubject instanceof Ci.nsISupportsCString) {
+              subject = aSubject.data;
+            } else {
+              throw new Error("Subject must be nsIURI or nsISupportsCString");
+            }
+            msg = {
+              subject,
+              data: aData,
+            };
+            this._self.sendAsyncMessage("specialpowers-" + aTopic, msg);
+            return;
+          case "xfo-on-violate-policy":
+            let uriSpec = null;
+            if (aSubject instanceof Ci.nsIURI) {
+              uriSpec = aSubject.asciiSpec;
+            } else {
+              throw new Error("Subject must be nsIURI");
+            }
+            msg = {
+              subject: uriSpec,
+              data: aData,
+            };
+            this._self.sendAsyncMessage("specialpowers-" + aTopic, msg);
+            return;
           default:
             this._self.sendAsyncMessage("specialpowers-" + aTopic, msg);
         }
@@ -248,12 +283,13 @@ class SpecialPowersParent extends JSWindowActorParent {
         aSubject = aSubject.QueryInterface(Ci.nsIPropertyBag2);
         if (aTopic == "plugin-crashed") {
           addDumpIDToMessage("pluginDumpID");
-          addDumpIDToMessage("browserDumpID");
 
           let pluginID = aSubject.getPropertyAsAString("pluginDumpID");
-          let extra = this._getExtraData(pluginID);
-          if (extra && "additional_minidumps" in extra) {
-            let dumpNames = extra.additional_minidumps.split(",");
+          let additionalMinidumps = aSubject.getPropertyAsACString(
+            "additionalMinidumps"
+          );
+          if (additionalMinidumps.length != 0) {
+            let dumpNames = additionalMinidumps.split(",");
             for (let name of dumpNames) {
               message.dumpIDs.push({
                 id: pluginID + "-" + name,
@@ -289,15 +325,6 @@ class SpecialPowersParent extends JSWindowActorParent {
       this._pendingCrashDumpDir.append("pending");
     }
     return this._pendingCrashDumpDir;
-  }
-
-  _getExtraData(dumpId) {
-    let extraFile = this._getCrashDumpDir().clone();
-    extraFile.append(dumpId + ".extra");
-    if (!extraFile.exists()) {
-      return null;
-    }
-    return parseKeyValuePairsFromFile(extraFile);
   }
 
   _deleteCrashDumpFiles(aFilenames) {
@@ -581,12 +608,38 @@ class SpecialPowersParent extends JSWindowActorParent {
     }
   }
 
+  _spawnChrome(task, args, caller, imports) {
+    let sb = new SpecialPowersSandbox(
+      null,
+      data => {
+        this.sendAsyncMessage("Assert", data);
+      },
+      { imports }
+    );
+
+    for (let [global, prop] of Object.entries({
+      windowGlobalParent: "manager",
+      browsingContext: "browsingContext",
+    })) {
+      Object.defineProperty(sb.sandbox, global, {
+        get: () => {
+          return this[prop];
+        },
+        enumerable: true,
+      });
+    }
+
+    return sb.execute(task, args, caller);
+  }
+
   /**
    * messageManager callback function
    * This will get requests from our API in the window and process them in chrome for it
    **/
   // eslint-disable-next-line complexity
   receiveMessage(aMessage) {
+    ChromeUtils.addProfilerMarker("SpecialPowers", undefined, aMessage.name);
+
     // We explicitly return values in the below code so that this function
     // doesn't trigger a flurry of warnings about "does not always return
     // a value".
@@ -598,11 +651,23 @@ class SpecialPowersParent extends JSWindowActorParent {
         return undefined;
 
       case "SpecialPowers.Quit":
-        Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
+        if (
+          !AppConstants.RELEASE_OR_BETA &&
+          !AppConstants.DEBUG &&
+          !AppConstants.MOZ_CODE_COVERAGE &&
+          !AppConstants.ASAN &&
+          !AppConstants.TSAN
+        ) {
+          Cu.exitIfInAutomation();
+        } else {
+          Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
+        }
         return undefined;
 
       case "SpecialPowers.Focus":
-        this.manager.rootFrameLoader.ownerElement.focus();
+        if (this.manager.rootFrameLoader) {
+          this.manager.rootFrameLoader.ownerElement.focus();
+        }
         return undefined;
 
       case "SpecialPowers.CreateFiles":
@@ -841,6 +906,7 @@ class SpecialPowersParent extends JSWindowActorParent {
         );
 
         Object.assign(sb.sandbox, {
+          createWindowlessBrowser,
           sendAsyncMessage: (name, message) => {
             this.sendAsyncMessage("SPChromeScriptMessage", {
               id,
@@ -982,11 +1048,10 @@ class SpecialPowersParent extends JSWindowActorParent {
         // This is either an Extension, or (if useAddonManager is set) a MockExtension.
         let extension = this._extensions.get(id);
         extension.on("startup", (eventName, ext) => {
-          if (!ext) {
-            // ext is only set by the "startup" event from Extension.jsm.
-            // Unfortunately ext-backgroundPage.js emits an event with the same
-            // name, but without the extension object as parameter.
-            return;
+          if (AppConstants.platform === "android") {
+            // We need a way to notify the embedding layer that a new extension
+            // has been installed, so that the java layer can be updated too.
+            Services.obs.notifyObservers(null, "testing-installed-addon", id);
           }
           // ext is always the "real" Extension object, even when "extension"
           // is a MockExtension.
@@ -1056,7 +1121,14 @@ class SpecialPowersParent extends JSWindowActorParent {
       }
 
       case "Spawn": {
-        let { browsingContext, task, args, caller, hasHarness } = aMessage.data;
+        let {
+          browsingContext,
+          task,
+          args,
+          caller,
+          hasHarness,
+          imports,
+        } = aMessage.data;
 
         let spParent = browsingContext.currentWindowGlobal.getActor(
           "SpecialPowers"
@@ -1068,10 +1140,14 @@ class SpecialPowersParent extends JSWindowActorParent {
         }
 
         return spParent
-          .sendQuery("Spawn", { task, args, caller, taskId })
-          .finally(() => {
-            spParent._taskActors.delete(taskId);
-          });
+          .sendQuery("Spawn", { task, args, caller, taskId, imports })
+          .finally(() => spParent._taskActors.delete(taskId));
+      }
+
+      case "SpawnChrome": {
+        let { task, args, caller, imports } = aMessage.data;
+
+        return this._spawnChrome(task, args, caller, imports);
       }
 
       case "Snapshot": {
@@ -1096,6 +1172,11 @@ class SpecialPowersParent extends JSWindowActorParent {
           });
       }
 
+      case "SecurityState": {
+        let { browsingContext } = aMessage.data;
+        return browsingContext.secureBrowserUI.state;
+      }
+
       case "ProxiedAssert": {
         let { taskId, data } = aMessage.data;
 
@@ -1111,6 +1192,11 @@ class SpecialPowersParent extends JSWindowActorParent {
 
       case "SPRemoveServiceWorkerDataForExampleDomain": {
         return ServiceWorkerCleanUp.removeFromHost("example.com");
+      }
+
+      case "SPGenerateMediaControlKeyTestEvent": {
+        ChromeUtils.generateMediaControlKey(aMessage.data.event);
+        return undefined;
       }
 
       default:

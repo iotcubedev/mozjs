@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGPOINT_H__
-#define MOZILLA_DOMSVGPOINT_H__
+#ifndef DOM_SVG_DOMSVGPOINT_H_
+#define DOM_SVG_DOMSVGPOINT_H_
 
 #include "DOMSVGPointList.h"
 #include "mozilla/gfx/2D.h"
@@ -18,9 +18,8 @@
 namespace mozilla {
 
 namespace dom {
+struct DOMMatrix2DInit;
 class SVGElement;
-class SVGMatrix;
-}  // namespace dom
 
 /**
  * Class DOMSVGPoint
@@ -39,7 +38,7 @@ class SVGMatrix;
 class DOMSVGPoint final : public nsISVGPoint {
   friend class AutoChangePointNotifier;
 
-  typedef mozilla::gfx::Point Point;
+  using Point = gfx::Point;
 
  public:
   /**
@@ -63,11 +62,6 @@ class DOMSVGPoint final : public nsISVGPoint {
     }
   }
 
-  DOMSVGPoint(float aX, float aY) : nsISVGPoint() {
-    mPt.mX = aX;
-    mPt.mY = aY;
-  }
-
   explicit DOMSVGPoint(const Point& aPt) : nsISVGPoint() {
     mPt.mX = aPt.x;
     mPt.mY = aPt.y;
@@ -81,15 +75,16 @@ class DOMSVGPoint final : public nsISVGPoint {
   virtual float Y() override;
   virtual void SetY(float aY, ErrorResult& rv) override;
   virtual already_AddRefed<nsISVGPoint> MatrixTransform(
-      dom::SVGMatrix& matrix) override;
+      const DOMMatrix2DInit& aMatrix, ErrorResult& aRv) override;
   nsISupports* GetParentObject() override { return mList; }
 
   virtual DOMSVGPoint* Copy() override { return new DOMSVGPoint(this); }
 
  protected:
-  dom::SVGElement* Element() { return mList->Element(); }
+  SVGElement* Element() { return mList->Element(); }
 };
 
+}  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGPOINT_H__
+#endif  // DOM_SVG_DOMSVGPOINT_H_

@@ -8,11 +8,14 @@
 #define MOZILLA_GFX_VIDEOBRIDGECHILD_H
 
 #include "mozilla/layers/PVideoBridgeChild.h"
+#include "mozilla/layers/VideoBridgeUtils.h"
 #include "ISurfaceAllocator.h"
 #include "TextureForwarder.h"
 
 namespace mozilla {
 namespace layers {
+
+class SynchronousTask;
 
 class VideoBridgeChild final : public PVideoBridgeChild,
                                public TextureForwarder {
@@ -22,8 +25,7 @@ class VideoBridgeChild final : public PVideoBridgeChild,
   static void StartupForGPUProcess();
   static void Shutdown();
 
-  static VideoBridgeChild* GetSingletonToParentProcess();
-  static VideoBridgeChild* GetSingletonToGPUProcess();
+  static VideoBridgeChild* GetSingleton();
 
   // PVideoBridgeChild
   PTextureChild* AllocPTextureChild(const SurfaceDescriptor& aSharedData,
@@ -46,16 +48,15 @@ class VideoBridgeChild final : public PVideoBridgeChild,
   bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override;
 
   // TextureForwarder
-  PTextureChild* CreateTexture(const SurfaceDescriptor& aSharedData,
-                               const ReadLockDescriptor& aReadLock,
-                               LayersBackend aLayersBackend,
-                               TextureFlags aFlags, uint64_t aSerial,
-                               wr::MaybeExternalImageId& aExternalImageId,
-                               nsIEventTarget* aTarget = nullptr) override;
+  PTextureChild* CreateTexture(
+      const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
+      LayersBackend aLayersBackend, TextureFlags aFlags, uint64_t aSerial,
+      wr::MaybeExternalImageId& aExternalImageId,
+      nsISerialEventTarget* aTarget = nullptr) override;
 
   // ClientIPCAllocator
   base::ProcessId GetParentPid() const override { return OtherPid(); }
-  MessageLoop* GetMessageLoop() const override { return mMessageLoop; }
+  nsISerialEventTarget* GetThread() const override { return mThread; }
   void CancelWaitForNotifyNotUsed(uint64_t aTextureId) override {
     MOZ_ASSERT(false, "NO RECYCLING HERE");
   }
@@ -65,15 +66,26 @@ class VideoBridgeChild final : public PVideoBridgeChild,
 
   bool CanSend() { return mCanSend; }
 
-  static void OpenToParentProcess(Endpoint<PVideoBridgeChild>&& aEndpoint);
-  static void OpenToGPUProcess(Endpoint<PVideoBridgeChild>&& aEndpoint);
+  static void Open(Endpoint<PVideoBridgeChild>&& aEndpoint);
+
+ protected:
+  void HandleFatalError(const char* aMsg) const override;
+  bool DispatchAllocShmemInternal(size_t aSize,
+                                  SharedMemory::SharedMemoryType aType,
+                                  mozilla::ipc::Shmem* aShmem, bool aUnsafe);
+  void ProxyAllocShmemNow(SynchronousTask* aTask, size_t aSize,
+                          SharedMemory::SharedMemoryType aType,
+                          mozilla::ipc::Shmem* aShmem, bool aUnsafe,
+                          bool* aSuccess);
+  void ProxyDeallocShmemNow(SynchronousTask* aTask, mozilla::ipc::Shmem* aShmem,
+                            bool* aResult);
 
  private:
   VideoBridgeChild();
   virtual ~VideoBridgeChild();
 
   RefPtr<VideoBridgeChild> mIPDLSelfRef;
-  MessageLoop* mMessageLoop;
+  nsCOMPtr<nsISerialEventTarget> mThread;
   bool mCanSend;
 };
 

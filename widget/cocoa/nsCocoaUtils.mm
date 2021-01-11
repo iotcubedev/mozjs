@@ -7,6 +7,7 @@
 
 #include <cmath>
 
+#include "AppleUtils.h"
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
@@ -21,21 +22,21 @@
 #include "nsIAppShellService.h"
 #include "nsIOSPermissionRequest.h"
 #include "nsIRunnable.h"
-#include "nsIXULWindow.h"
+#include "nsIAppWindow.h"
 #include "nsIBaseWindow.h"
-#include "nsIServiceManager.h"
 #include "nsMenuUtilsX.h"
 #include "nsToolkit.h"
 #include "nsCRT.h"
-#include "SVGImageContext.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/gfx/2D.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -273,7 +274,7 @@ nsIWidget* nsCocoaUtils::GetHiddenWindowWidget() {
     return nullptr;
   }
 
-  nsCOMPtr<nsIXULWindow> hiddenWindow;
+  nsCOMPtr<nsIAppWindow> hiddenWindow;
   appShell->GetHiddenWindow(getter_AddRefs(hiddenWindow));
   if (!hiddenWindow) {
     // Don't warn, this happens during shutdown, bug 358607.
@@ -283,7 +284,7 @@ nsIWidget* nsCocoaUtils::GetHiddenWindowWidget() {
   nsCOMPtr<nsIBaseWindow> baseHiddenWindow;
   baseHiddenWindow = do_GetInterface(hiddenWindow);
   if (!baseHiddenWindow) {
-    NS_WARNING("Couldn't get nsIBaseWindow from hidden window (nsIXULWindow)");
+    NS_WARNING("Couldn't get nsIBaseWindow from hidden window (nsIAppWindow)");
     return nullptr;
   }
 
@@ -500,7 +501,8 @@ nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer* aImage, ui
 
     surface = drawTarget->Snapshot();
   } else {
-    surface = aImage->GetFrame(aWhichFrame, imgIContainer::FLAG_SYNC_DECODE);
+    surface = aImage->GetFrame(aWhichFrame,
+                               imgIContainer::FLAG_SYNC_DECODE | imgIContainer::FLAG_ASYNC_NOTIFY);
   }
 
   NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
@@ -569,7 +571,8 @@ void nsCocoaUtils::GetStringForNSString(const NSString* aSrc, nsAString& aDist) 
   }
 
   aDist.SetLength([aSrc length]);
-  [aSrc getCharacters:reinterpret_cast<unichar*>(aDist.BeginWriting())];
+  [aSrc getCharacters:reinterpret_cast<unichar*>(aDist.BeginWriting())
+                range:NSMakeRange(0, [aSrc length])];
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
@@ -1226,6 +1229,104 @@ nsresult nsCocoaUtils::GetAudioCapturePermissionState(uint16_t& aPermissionState
   return GetPermissionState(AVMediaTypeAudio, aPermissionState);
 }
 
+// Set |aPermissionState| to PERMISSION_STATE_AUTHORIZED if this application
+// has already been granted permission to record the screen in macOS Security
+// and Privacy system settings. If we do not have permission (because the user
+// hasn't yet been asked yet or the user previously denied the prompt), use
+// PERMISSION_STATE_DENIED. Returns NS_ERROR_NOT_IMPLEMENTED on macOS 10.14
+// and earlier.
+nsresult nsCocoaUtils::GetScreenCapturePermissionState(uint16_t& aPermissionState) {
+  aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_NOTDETERMINED;
+
+  // Only attempt to check screen recording authorization status on 10.15+.
+  // On earlier macOS versions, screen recording is allowed by default.
+  if (@available(macOS 10.15, *)) {
+    if (!StaticPrefs::media_macos_screenrecording_oscheck_enabled()) {
+      aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
+      LOG("screen authorization status: authorized (test disabled via pref)");
+      return NS_OK;
+    }
+
+    // Unlike with camera and microphone capture, there is no support for
+    // checking the screen recording permission status. Instead, an application
+    // can use the presence of window names (which are privacy sensitive) in
+    // the window info list as an indication. The list only includes window
+    // names if the calling application has been authorized to record the
+    // screen. We use the window name, window level, and owning PID as
+    // heuristics to determine if we have screen recording permission.
+    AutoCFRelease<CFArrayRef> windowArray =
+        CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    if (!windowArray) {
+      LOG("GetScreenCapturePermissionState() ERROR: got NULL window info list");
+      return NS_ERROR_UNEXPECTED;
+    }
+
+    int32_t windowLevelDock = CGWindowLevelForKey(kCGDockWindowLevelKey);
+    int32_t windowLevelNormal = CGWindowLevelForKey(kCGNormalWindowLevelKey);
+    LOG("GetScreenCapturePermissionState(): DockWindowLevel: %d, "
+        "NormalWindowLevel: %d",
+        windowLevelDock, windowLevelNormal);
+
+    int32_t thisPid = [[NSProcessInfo processInfo] processIdentifier];
+
+    CFIndex windowCount = CFArrayGetCount(windowArray);
+    LOG("GetScreenCapturePermissionState() returned %ld windows", windowCount);
+    if (windowCount == 0) {
+      return NS_ERROR_UNEXPECTED;
+    }
+
+    for (CFIndex i = 0; i < windowCount; i++) {
+      CFDictionaryRef windowDict =
+          reinterpret_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(windowArray, i));
+
+      // Get the window owner's PID
+      int32_t windowOwnerPid = -1;
+      CFNumberRef windowPidRef =
+          reinterpret_cast<CFNumberRef>(CFDictionaryGetValue(windowDict, kCGWindowOwnerPID));
+      if (!windowPidRef || !CFNumberGetValue(windowPidRef, kCFNumberIntType, &windowOwnerPid)) {
+        LOG("GetScreenCapturePermissionState() ERROR: failed to get window owner");
+        continue;
+      }
+
+      // Our own window names are always readable and
+      // therefore not relevant to the heuristic.
+      if (thisPid == windowOwnerPid) {
+        continue;
+      }
+
+      CFStringRef windowName =
+          reinterpret_cast<CFStringRef>(CFDictionaryGetValue(windowDict, kCGWindowName));
+      if (!windowName) {
+        continue;
+      }
+
+      CFNumberRef windowLayerRef =
+          reinterpret_cast<CFNumberRef>(CFDictionaryGetValue(windowDict, kCGWindowLayer));
+      int32_t windowLayer;
+      if (!windowLayerRef || !CFNumberGetValue(windowLayerRef, kCFNumberIntType, &windowLayer)) {
+        LOG("GetScreenCapturePermissionState() ERROR: failed to get layer");
+        continue;
+      }
+
+      // If we have a window name and the window is in the dock or normal window
+      // level, and for another process, assume we have screen recording access.
+      LOG("GetScreenCapturePermissionState(): windowLayer: %d", windowLayer);
+      if (windowLayer == windowLevelDock || windowLayer == windowLevelNormal) {
+        aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_AUTHORIZED;
+        LOG("screen authorization status: authorized");
+        return NS_OK;
+      }
+    }
+
+    aPermissionState = nsIOSPermissionRequest::PERMISSION_STATE_DENIED;
+    LOG("screen authorization status: not authorized");
+    return NS_OK;
+  }
+
+  LOG("GetScreenCapturePermissionState(): nothing to do, not on 10.15+");
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 nsresult nsCocoaUtils::RequestVideoCapturePermission(RefPtr<Promise>& aPromise) {
   MOZ_ASSERT(NS_IsMainThread());
   return nsCocoaUtils::RequestCapturePermission(AVMediaTypeVideo, aPromise, sVideoCapturePromises,
@@ -1320,8 +1421,7 @@ void nsCocoaUtils::ResolveMediaCapturePromises(bool aGranted, PromiseArray& aPro
 
   // Remove each promise from the list and resolve it.
   while (aPromiseList->Length() > 0) {
-    RefPtr<Promise> promise = aPromiseList->LastElement();
-    aPromiseList->RemoveLastElement();
+    RefPtr<Promise> promise = aPromiseList->PopLastElement();
 
     // Resolve on main thread
     nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
@@ -1337,6 +1437,22 @@ void nsCocoaUtils::ResolveAudioCapturePromises(bool aGranted) {
     ResolveMediaCapturePromises(aGranted, sAudioCapturePromises);
   }));
   NS_DispatchToMainThread(runnable.forget());
+}
+
+//
+// Attempt to trigger a dialog requesting permission to record the screen.
+// Unlike with the camera and microphone, there is no API to request permission
+// to record the screen or to receive a callback when permission is explicitly
+// allowed or denied. Here we attempt to trigger the dialog by attempting to
+// capture a 1x1 pixel section of the screen. The permission dialog is not
+// guaranteed to be displayed because the user may have already been prompted
+// in which case macOS does not display the dialog again.
+//
+nsresult nsCocoaUtils::MaybeRequestScreenCapturePermission() {
+  LOG("MaybeRequestScreenCapturePermission()");
+  AutoCFRelease<CGImageRef> image =
+      CGDisplayCreateImageForRect(kCGDirectMainDisplay, CGRectMake(0, 0, 1, 1));
+  return NS_OK;
 }
 
 void nsCocoaUtils::ResolveVideoCapturePromises(bool aGranted) {

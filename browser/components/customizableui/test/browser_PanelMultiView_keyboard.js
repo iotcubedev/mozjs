@@ -20,6 +20,7 @@ let gMainView;
 let gMainContext;
 let gMainButton1;
 let gMainMenulist;
+let gMainRadiogroup;
 let gMainTextbox;
 let gMainButton2;
 let gMainButton3;
@@ -108,7 +109,17 @@ add_task(async function setup() {
   item = document.createXULElement("menuitem");
   item.setAttribute("value", "2");
   menuPopup.appendChild(item);
-  gMainTextbox = document.createXULElement("textbox");
+  gMainRadiogroup = document.createXULElement("radiogroup");
+  gMainRadiogroup.id = "gMainRadiogroup";
+  gMainView.appendChild(gMainRadiogroup);
+  let radio = document.createXULElement("radio");
+  radio.setAttribute("value", "1");
+  radio.setAttribute("selected", "true");
+  gMainRadiogroup.appendChild(radio);
+  radio = document.createXULElement("radio");
+  radio.setAttribute("value", "2");
+  gMainRadiogroup.appendChild(radio);
+  gMainTextbox = document.createElement("input");
   gMainTextbox.id = "gMainTextbox";
   gMainView.appendChild(gMainTextbox);
   gMainTextbox.setAttribute("value", "value");
@@ -121,6 +132,7 @@ add_task(async function setup() {
   gMainTabOrder = [
     gMainButton1,
     gMainMenulist,
+    gMainRadiogroup,
     gMainTextbox,
     gMainButton2,
     gMainButton3,
@@ -284,6 +296,67 @@ add_task(async function testTabOpenMenulist() {
   await panelHidden;
 });
 
+if (AppConstants.platform == "macosx") {
+  // Test that using the mouse to open a menulist still allows keyboard navigation
+  // inside it.
+  add_task(async function testNavigateMouseOpenedMenulist() {
+    await openPopup();
+    let popup = gMainMenulist.menupopup;
+    let shown = BrowserTestUtils.waitForEvent(popup, "popupshown");
+    gMainMenulist.open = true;
+    await shown;
+    ok(gMainMenulist.open, "menulist open");
+    let oldFocus = document.activeElement;
+    let oldSelectedItem = gMainMenulist.selectedItem;
+    ok(
+      oldSelectedItem.hasAttribute("_moz-menuactive"),
+      "Selected item should show up as active"
+    );
+    EventUtils.synthesizeKey("KEY_ArrowDown");
+    await TestUtils.waitForCondition(
+      () => !oldSelectedItem.hasAttribute("_moz-menuactive")
+    );
+    is(oldFocus, document.activeElement, "Focus should not move on mac");
+    ok(
+      !oldSelectedItem.hasAttribute("_moz-menuactive"),
+      "Selected item should change"
+    );
+
+    let menuHidden = BrowserTestUtils.waitForEvent(popup, "popuphidden");
+    let panelHidden = BrowserTestUtils.waitForEvent(gPanel, "popuphidden");
+    EventUtils.synthesizeKey("KEY_Tab");
+    await menuHidden;
+    ok(!gMainMenulist.open, "menulist closed after Tab");
+    // Tab in an open menulist closes the menulist, but also dismisses the panel
+    // above it (bug 1566673). So, we just wait for the panel to hide rather than
+    // using hidePopup().
+    await panelHidden;
+  });
+}
+
+// Test that the up/down arrow keys work as expected in radiogroups.
+add_task(async function testArrowsRadiogroup() {
+  await openPopup();
+  gMainRadiogroup.focus();
+  is(document.activeElement, gMainRadiogroup, "radiogroup focused");
+  is(gMainRadiogroup.value, "1", "radiogroup initial value 1");
+  EventUtils.synthesizeKey("KEY_ArrowDown");
+  is(
+    document.activeElement,
+    gMainRadiogroup,
+    "radiogroup still focused after ArrowDown"
+  );
+  is(gMainRadiogroup.value, "2", "radiogroup value 2 after ArrowDown");
+  EventUtils.synthesizeKey("KEY_ArrowUp");
+  is(
+    document.activeElement,
+    gMainRadiogroup,
+    "radiogroup still focused after ArrowUp"
+  );
+  is(gMainRadiogroup.value, "1", "radiogroup value 1 after ArrowUp");
+  await hidePopup();
+});
+
 // Test that pressing space in a textbox inserts a space (instead of trying to
 // activate the control).
 add_task(async function testSpaceTextbox() {
@@ -383,10 +456,29 @@ add_task(async function testActivationMousedown() {
 async function testTabArrowsEmbeddedDoc(aView, aEmbedder) {
   await openPopup();
   await showSubView(aView);
+  let doc = aEmbedder.contentDocument;
+  if (doc.readyState != "complete" || doc.location.href != kEmbeddedDocUrl) {
+    info(`Embedded doc readyState ${doc.readyState}, location ${doc.location}`);
+    info("Waiting for load on embedder");
+    if (aEmbedder.tagName == "browser") {
+      // We can't use BrowserTestUtils.browserLoaded because it assumes the
+      // browser is linked to a tab.
+      await BrowserTestUtils.waitForEvent(
+        aEmbedder,
+        "BrowserTestUtils:ContentEvent:load"
+      );
+    } else {
+      // iframe
+      await BrowserTestUtils.waitForEvent(aEmbedder, "load");
+    }
+    // The original doc might have been a temporary about:blank, so fetch it
+    // again.
+    doc = aEmbedder.contentDocument;
+  }
+  is(doc.location.href, kEmbeddedDocUrl, "Embedded doc has correct URl");
   let backButton = aView.querySelector(".subviewbutton-back");
   backButton.id = "docBack";
   await expectFocusAfterKey("Tab", backButton);
-  let doc = aEmbedder.contentDocument;
   // Documents don't have an id property, but expectFocusAfterKey wants one.
   doc.id = "doc";
   await expectFocusAfterKey("Tab", doc);

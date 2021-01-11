@@ -2,6 +2,7 @@
 
 ChromeUtils.import("resource://gre/modules/Services.jsm", this);
 ChromeUtils.import("resource://testing-common/TestUtils.jsm", this);
+ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
 ChromeUtils.import(
   "resource://normandy/actions/BranchedAddonStudyAction.jsm",
   this
@@ -19,6 +20,7 @@ function branchedAddonStudyRecipeFactory(overrides = {}) {
     slug: "fake-slug",
     userFacingName: "Fake name",
     userFacingDescription: "fake description",
+    isEnrollmentPaused: false,
     branches: [
       {
         slug: "a",
@@ -46,6 +48,7 @@ function recipeFromStudy(study, overrides = {}) {
   let args = {
     slug: study.slug,
     userFacingName: study.userFacingName,
+    isEnrollmentPaused: false,
     branches: [
       {
         slug: "a",
@@ -97,7 +100,7 @@ decorate_task(
     const action = new BranchedAddonStudyAction();
     const enrollSpy = sinon.spy(action, "enroll");
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(!enrollSpy.called, "enroll should not be called");
     ok(updateSpy.called, "update should be called");
@@ -126,7 +129,7 @@ decorate_task(
       }),
     };
     const action = new BranchedAddonStudyAction();
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
     const studies = await AddonStudies.getAll();
@@ -164,7 +167,7 @@ decorate_task(
       }),
     };
     const action = new BranchedAddonStudyAction();
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
     const studies = await AddonStudies.getAll();
@@ -203,7 +206,7 @@ decorate_task(
       }),
     };
     const action = new BranchedAddonStudyAction();
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
     const studies = await AddonStudies.getAll();
@@ -251,7 +254,7 @@ decorate_task(
       }),
     };
     const action = new BranchedAddonStudyAction();
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
     const addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
@@ -316,7 +319,7 @@ decorate_task(
     const action = new BranchedAddonStudyAction();
     const enrollSpy = sinon.spy(action, "enroll");
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(!enrollSpy.called, "enroll should not be called");
     ok(updateSpy.called, "update should be called");
@@ -329,6 +332,7 @@ decorate_task(
           addonId: FIXTURE_ADDON_ID,
           addonVersion: "2.0",
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -382,7 +386,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -393,6 +397,7 @@ decorate_task(
         {
           reason: "addon-id-mismatch",
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -435,7 +440,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -446,6 +451,7 @@ decorate_task(
         {
           reason: "addon-does-not-exist",
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -492,7 +498,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -504,6 +510,7 @@ decorate_task(
           branch: "a",
           reason: "download-failure",
           detail: "ERROR_NETWORK_FAILURE",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -548,7 +555,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -560,6 +567,7 @@ decorate_task(
           branch: "a",
           reason: "download-failure",
           detail: "ERROR_INCORRECT_HASH",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -604,7 +612,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -615,6 +623,7 @@ decorate_task(
         {
           reason: "no-downgrade",
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -662,7 +671,7 @@ decorate_task(
     };
     const action = new BranchedAddonStudyAction();
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(updateSpy.called, "update should be called");
     sendEventStub.assertEvents([
@@ -673,6 +682,7 @@ decorate_task(
         {
           branch: "a",
           reason: "metadata-mismatch",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -711,7 +721,7 @@ decorate_task(
   }
 );
 
-// Test that unenrolling an inactive experiment fails
+// Test that unenrolling an inactive study fails
 decorate_task(
   withStudiesEnabled,
   ensureAddonCleanup,
@@ -770,6 +780,7 @@ decorate_task(
           addonId,
           addonVersion: study.addonVersion,
           reason: "test-reason",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -807,6 +818,7 @@ decorate_task(
           addonId: study.addonId,
           addonVersion: study.addonVersion,
           reason: "unknown",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -833,7 +845,7 @@ decorate_task(
         id: recipe.arguments.branches[0].extensionApiId,
       }),
     };
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(
       action.state,
       BranchedAddonStudyAction.STATE_DISABLED,
@@ -871,7 +883,7 @@ decorate_task(
     mockApi.extensionDetails = {
       [recipe.arguments.extensionApiId]: extensionDetails,
     };
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     const addon = await AddonManager.getAddonByID(
       extensionDetails.extension_id
     );
@@ -920,7 +932,7 @@ decorate_task(
     const action = new BranchedAddonStudyAction();
     const enrollSpy = sinon.spy(action, "enroll");
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
     ok(!enrollSpy.called, "enroll should not be called");
     ok(updateSpy.called, "update should be called");
@@ -932,6 +944,7 @@ decorate_task(
         {
           addonId: FIXTURE_ADDON_ID,
           addonVersion: "2.0",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -1024,9 +1037,10 @@ const successEnrollBranchedTest = decorate(
     chooseBranchStub.callsFake(async ({ branches }) =>
       branches.find(b => b.slug === branch)
     );
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
+    const study = await AddonStudies.get(recipe.id);
     sendEventStub.assertEvents([
       [
         "enroll",
@@ -1036,13 +1050,20 @@ const successEnrollBranchedTest = decorate(
           addonId,
           addonVersion: "1.0",
           branch,
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
 
     Assert.deepEqual(
       setExperimentActiveStub.args,
-      [[recipe.arguments.slug, branch, { type: "normandy-addonstudy" }]],
+      [
+        [
+          recipe.arguments.slug,
+          branch,
+          { type: "normandy-addonstudy", enrollmentId: study.enrollmentId },
+        ],
+      ],
       "setExperimentActive should be called"
     );
 
@@ -1054,7 +1075,6 @@ const successEnrollBranchedTest = decorate(
       "The other branch's add-on should not be installed"
     );
 
-    const study = await AddonStudies.get(recipe.id);
     Assert.deepEqual(
       study,
       {
@@ -1072,6 +1092,8 @@ const successEnrollBranchedTest = decorate(
         extensionApiId: extensionDetails.id,
         extensionHash: extensionDetails.hash,
         extensionHashAlgorithm: extensionDetails.hash_algorithm,
+        enrollmentId: study.enrollmentId,
+        temporaryErrorDeadline: null,
       },
       "the correct study data should be stored"
     );
@@ -1128,7 +1150,7 @@ decorate_task(
     const enrollSpy = sinon.spy(action, "enroll");
     const unenrollSpy = sinon.spy(action, "unenroll");
     const updateSpy = sinon.spy(action, "update");
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     is(action.lastError, null, "lastError should be null");
 
     ok(!enrollSpy.called, "Enroll should not be called");
@@ -1145,6 +1167,7 @@ decorate_task(
           addonVersion: study.addonVersion,
           reason: "branch-removed",
           branch: "a", // the original study branch
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -1182,10 +1205,11 @@ decorate_task(
     });
 
     let action = new BranchedAddonStudyAction();
-    await action.runRecipe(recipe);
+    await action.processRecipe(recipe, BaseAction.suitability.FILTER_MATCH);
     await action.finalize();
     is(action.lastError, null, "lastError should be null");
 
+    let study = await AddonStudies.get(recipe.id);
     sendEventStub.assertEvents([
       [
         "enroll",
@@ -1195,6 +1219,7 @@ decorate_task(
           addonId: AddonStudies.NO_ADDON_MARKER,
           addonVersion: AddonStudies.NO_ADDON_MARKER,
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -1205,7 +1230,6 @@ decorate_task(
       "No add-on should be installed for the study"
     );
 
-    let study = await AddonStudies.get(recipe.id);
     Assert.deepEqual(
       study,
       {
@@ -1223,10 +1247,13 @@ decorate_task(
         extensionApiId: null,
         extensionHash: null,
         extensionHashAlgorithm: null,
+        enrollmentId: study.enrollmentId,
+        temporaryErrorDeadline: null,
       },
       "the correct study data should be stored"
     );
     ok(study.studyStartDate, "studyStartDate should have a value");
+    NormandyTestUtils.isUuid(study.enrollmentId);
 
     // Now unenroll
     action = new BranchedAddonStudyAction();
@@ -1243,6 +1270,7 @@ decorate_task(
           addonId: AddonStudies.NO_ADDON_MARKER,
           addonVersion: AddonStudies.NO_ADDON_MARKER,
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
       // And a new unenroll event
@@ -1254,6 +1282,7 @@ decorate_task(
           addonId: AddonStudies.NO_ADDON_MARKER,
           addonVersion: AddonStudies.NO_ADDON_MARKER,
           branch: "a",
+          enrollmentId: study.enrollmentId,
         },
       ],
     ]);
@@ -1282,10 +1311,268 @@ decorate_task(
         extensionApiId: null,
         extensionHash: null,
         extensionHashAlgorithm: null,
+        enrollmentId: study.enrollmentId,
+        temporaryErrorDeadline: null,
       },
       "the correct study data should be stored"
     );
     ok(study.studyStartDate, "studyStartDate should have a value");
     ok(study.studyEndDate, "studyEndDate should have a value");
+    NormandyTestUtils.isUuid(study.enrollmentId);
+  }
+);
+
+// Check that the appropriate set of suitabilities are considered temporary errors
+decorate_task(
+  withStudiesEnabled,
+  async function test_temporary_errors_set_deadline() {
+    let suitabilities = [
+      {
+        suitability: BaseAction.suitability.SIGNATURE_ERROR,
+        isTemporaryError: true,
+      },
+      {
+        suitability: BaseAction.suitability.CAPABILITES_MISMATCH,
+        isTemporaryError: false,
+      },
+      {
+        suitability: BaseAction.suitability.FILTER_MATCH,
+        isTemporaryError: false,
+      },
+      {
+        suitability: BaseAction.suitability.FILTER_MISMATCH,
+        isTemporaryError: false,
+      },
+      {
+        suitability: BaseAction.suitability.FILTER_ERROR,
+        isTemporaryError: true,
+      },
+      {
+        suitability: BaseAction.suitability.ARGUMENTS_INVALID,
+        isTemporaryError: false,
+      },
+    ];
+
+    Assert.deepEqual(
+      suitabilities.map(({ suitability }) => suitability).sort(),
+      Array.from(Object.values(BaseAction.suitability)).sort(),
+      "This test covers all suitabilities"
+    );
+
+    // The action should set a deadline 1 week from now. To avoid intermittent
+    // failures, give this a generous bound of 2 hours on either side.
+    let now = Date.now();
+    let hour = 60 * 60 * 1000;
+    let expectedDeadline = now + 7 * 24 * hour;
+    let minDeadline = new Date(expectedDeadline - 2 * hour);
+    let maxDeadline = new Date(expectedDeadline + 2 * hour);
+
+    // For each suitability, build a decorator that sets up a suitabilty
+    // environment, and then call that decorator with a sub-test that asserts
+    // the suitability is handled correctly.
+    for (const { suitability, isTemporaryError } of suitabilities) {
+      const decorator = AddonStudies.withStudies([
+        branchedAddonStudyFactory({
+          slug: `test-for-suitability-${suitability}`,
+        }),
+      ]);
+      await decorator(async ([study]) => {
+        let action = new BranchedAddonStudyAction();
+        let recipe = recipeFromStudy(study);
+        await action.processRecipe(recipe, suitability);
+        let modifiedStudy = await AddonStudies.get(recipe.id);
+
+        if (isTemporaryError) {
+          ok(
+            // The constructor of this object is a Date, but is not the same as
+            // the Date that we have in our global scope, because it got sent
+            // through IndexedDB. Check the name of the constructor instead.
+            modifiedStudy.temporaryErrorDeadline.constructor.name == "Date",
+            `A temporary failure deadline should be set as a date for suitability ${suitability}`
+          );
+          let deadline = modifiedStudy.temporaryErrorDeadline;
+          ok(
+            deadline >= minDeadline && deadline <= maxDeadline,
+            `The temporary failure deadline should be in the expected range for ` +
+              `suitability ${suitability} (got ${deadline}, expected between ${minDeadline} and ${maxDeadline})`
+          );
+        } else {
+          ok(
+            !modifiedStudy.temporaryErrorDeadline,
+            `No temporary failure deadline should be set for suitability ${suitability}`
+          );
+        }
+      })();
+    }
+  }
+);
+
+// Check that if there is an existing deadline, temporary errors don't overwrite it
+decorate_task(
+  withStudiesEnabled,
+  async function test_temporary_errors_dont_overwrite_deadline() {
+    let temporaryFailureSuitabilities = [
+      BaseAction.suitability.SIGNATURE_ERROR,
+      BaseAction.suitability.FILTER_ERROR,
+    ];
+
+    // A deadline two hours in the future won't be hit during the test.
+    let now = Date.now();
+    let hour = 2 * 60 * 60 * 1000;
+    let unhitDeadline = new Date(now + hour);
+
+    // For each suitability, build a decorator that sets up a suitabilty
+    // environment, and then call that decorator with a sub-test that asserts
+    // the suitability is handled correctly.
+    for (const suitability of temporaryFailureSuitabilities) {
+      const decorator = AddonStudies.withStudies([
+        branchedAddonStudyFactory({
+          slug: `test-for-suitability-${suitability}`,
+          active: true,
+          temporaryErrorDeadline: unhitDeadline,
+        }),
+      ]);
+      await decorator(async ([study]) => {
+        let action = new BranchedAddonStudyAction();
+        let recipe = recipeFromStudy(study);
+        await action.processRecipe(recipe, suitability);
+        let modifiedStudy = await AddonStudies.get(recipe.id);
+        is(
+          modifiedStudy.temporaryErrorDeadline.toJSON(),
+          unhitDeadline.toJSON(),
+          `The temporary failure deadline should not be cleared for suitability ${suitability}`
+        );
+      })();
+    }
+  }
+);
+
+// Check that if the deadline is past, temporary errors end the study.
+decorate_task(
+  withStudiesEnabled,
+  async function test_temporary_errors_hit_deadline() {
+    let temporaryFailureSuitabilities = [
+      BaseAction.suitability.SIGNATURE_ERROR,
+      BaseAction.suitability.FILTER_ERROR,
+    ];
+
+    // Set a deadline of two hours in the past, so that the deadline is triggered.
+    let now = Date.now();
+    let hour = 60 * 60 * 1000;
+    let hitDeadline = new Date(now - 2 * hour);
+
+    // For each suitability, build a decorator that sets up a suitabilty
+    // environment, and then call that decorator with a sub-test that asserts
+    // the suitability is handled correctly.
+    for (const suitability of temporaryFailureSuitabilities) {
+      const decorator = AddonStudies.withStudies([
+        branchedAddonStudyFactory({
+          slug: `test-for-suitability-${suitability}`,
+          active: true,
+          temporaryErrorDeadline: hitDeadline,
+        }),
+      ]);
+      await decorator(async ([study]) => {
+        let action = new BranchedAddonStudyAction();
+        let recipe = recipeFromStudy(study);
+        await action.processRecipe(recipe, suitability);
+        let modifiedStudy = await AddonStudies.get(recipe.id);
+        ok(
+          !modifiedStudy.active,
+          `The study should end for suitability ${suitability}`
+        );
+      })();
+    }
+  }
+);
+
+// Check that non-temporary-error suitabilities clear the temporary deadline
+decorate_task(
+  withStudiesEnabled,
+  async function test_non_temporary_error_clears_temporary_error_deadline() {
+    let suitabilitiesThatShouldClearDeadline = [
+      BaseAction.suitability.CAPABILITES_MISMATCH,
+      BaseAction.suitability.FILTER_MATCH,
+      BaseAction.suitability.FILTER_MISMATCH,
+      BaseAction.suitability.ARGUMENTS_INVALID,
+    ];
+
+    // Use a deadline in the past to demonstrate that even if the deadline has
+    // passed, only a temporary error suitability ends the study.
+    let now = Date.now();
+    let hour = 60 * 60 * 1000;
+    let hitDeadline = new Date(now - 2 * hour);
+
+    // For each suitability, build a decorator that sets up a suitabilty
+    // environment, and then call that decorator with a sub-test that asserts
+    // the suitability is handled correctly.
+    for (const suitability of suitabilitiesThatShouldClearDeadline) {
+      const decorator = AddonStudies.withStudies([
+        branchedAddonStudyFactory({
+          slug: `test-for-suitability-${suitability}`.toLocaleLowerCase(),
+          active: true,
+          temporaryErrorDeadline: hitDeadline,
+        }),
+      ]);
+      await decorator(async ([study]) => {
+        let action = new BranchedAddonStudyAction();
+        let recipe = recipeFromStudy(study);
+        await action.processRecipe(recipe, suitability);
+        let modifiedStudy = await AddonStudies.get(recipe.id);
+        ok(
+          !modifiedStudy.temporaryErrorDeadline,
+          `The temporary failure deadline should be cleared for suitabilitiy ${suitability}`
+        );
+      })();
+    }
+  }
+);
+
+// Check that invalid deadlines are reset
+decorate_task(
+  withStudiesEnabled,
+  async function test_non_temporary_error_clears_temporary_error_deadline() {
+    let temporaryFailureSuitabilities = [
+      BaseAction.suitability.SIGNATURE_ERROR,
+      BaseAction.suitability.FILTER_ERROR,
+    ];
+
+    // The action should set a deadline 1 week from now. To avoid intermittent
+    // failures, give this a generous bound of 2 hours on either side.
+    let invalidDeadline = new Date("not a valid date");
+    let now = Date.now();
+    let hour = 60 * 60 * 1000;
+    let expectedDeadline = now + 7 * 24 * hour;
+    let minDeadline = new Date(expectedDeadline - 2 * hour);
+    let maxDeadline = new Date(expectedDeadline + 2 * hour);
+
+    // For each suitability, build a decorator that sets up a suitabilty
+    // environment, and then call that decorator with a sub-test that asserts
+    // the suitability is handled correctly.
+    for (const suitability of temporaryFailureSuitabilities) {
+      const decorator = AddonStudies.withStudies([
+        branchedAddonStudyFactory({
+          slug: `test-for-suitability-${suitability}`.toLocaleLowerCase(),
+          active: true,
+          temporaryErrorDeadline: invalidDeadline,
+        }),
+      ]);
+      await decorator(async ([study]) => {
+        let action = new BranchedAddonStudyAction();
+        let recipe = recipeFromStudy(study);
+        await action.processRecipe(recipe, suitability);
+        is(action.lastError, null, "No errors should be reported");
+        let modifiedStudy = await AddonStudies.get(recipe.id);
+        ok(
+          modifiedStudy.temporaryErrorDeadline != invalidDeadline,
+          `The temporary failure deadline should be reset for suitabilitiy ${suitability}`
+        );
+        let deadline = new Date(modifiedStudy.temporaryErrorDeadline);
+        ok(
+          deadline >= minDeadline && deadline <= maxDeadline,
+          `The temporary failure deadline should be reset to a valid deadline for ${suitability}`
+        );
+      })();
+    }
   }
 );

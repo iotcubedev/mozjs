@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGPATHSEGLIST_H__
-#define MOZILLA_DOMSVGPATHSEGLIST_H__
+#ifndef DOM_SVG_DOMSVGPATHSEGLIST_H_
+#define DOM_SVG_DOMSVGPATHSEGLIST_H_
 
 #include "nsCycleCollectionParticipant.h"
 #include "nsDebug.h"
@@ -18,8 +18,11 @@
 
 namespace mozilla {
 
-class DOMSVGPathSeg;
 class SVGAnimatedPathSegList;
+
+namespace dom {
+
+class DOMSVGPathSeg;
 
 /**
  * Class DOMSVGPathSegList
@@ -197,6 +200,8 @@ class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
 
   DOMSVGPathSeg*& ItemAt(uint32_t aIndex) { return mItems[aIndex].mItem; }
 
+  void RemoveFromTearoffTable();
+
   /**
    * This struct is used in our array of mItems to provide us with somewhere to
    * store the indexes into the internal SVGPathData of the internal seg data
@@ -226,6 +231,7 @@ class DOMSVGPathSegList final : public nsISupports, public nsWrapperCache {
   bool mIsAnimValList;
 };
 
+}  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGPATHSEGLIST_H__
+#endif  // DOM_SVG_DOMSVGPATHSEGLIST_H_

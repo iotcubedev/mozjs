@@ -51,7 +51,8 @@ bool nsCycleCollector_doDeferredDeletionWithBudget(js::SliceBudget& aBudget);
 already_AddRefed<nsICycleCollectorLogSink> nsCycleCollector_createLogSink();
 already_AddRefed<nsICycleCollectorListener> nsCycleCollector_createLogger();
 
-void nsCycleCollector_collect(nsICycleCollectorListener* aManualListener);
+// Run a cycle collection and return whether anything was collected.
+bool nsCycleCollector_collect(nsICycleCollectorListener* aManualListener);
 
 void nsCycleCollector_collectSlice(js::SliceBudget& budget,
                                    bool aPreferShorterSlices = false);
@@ -66,10 +67,5 @@ void nsCycleCollector_shutdown(bool aDoCollect = true);
 // Helpers for interacting with JS
 void nsCycleCollector_registerJSContext(mozilla::CycleCollectedJSContext* aCx);
 void nsCycleCollector_forgetJSContext();
-
-// Helpers for cooperative threads.
-void nsCycleCollector_registerNonPrimaryContext(
-    mozilla::CycleCollectedJSContext* aCx);
-void nsCycleCollector_forgetNonPrimaryContext();
 
 #endif  // nsCycleCollector_h__

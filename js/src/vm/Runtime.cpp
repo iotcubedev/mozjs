@@ -25,22 +25,19 @@
 #include "jsfriendapi.h"
 #include "jsmath.h"
 
-#include "builtin/Promise.h"
 #include "gc/FreeOp.h"
-#include "gc/GCInternals.h"
 #include "gc/PublicIterators.h"
 #include "jit/arm/Simulator-arm.h"
 #include "jit/arm64/vixl/Simulator-vixl.h"
-#include "jit/IonBuilder.h"
+#include "jit/IonCompileTask.h"
 #include "jit/JitRealm.h"
 #include "jit/mips32/Simulator-mips32.h"
 #include "jit/mips64/Simulator-mips64.h"
 #include "js/Date.h"
 #include "js/MemoryMetrics.h"
 #include "js/SliceBudget.h"
-#include "js/StableStringChars.h"
 #include "js/Wrapper.h"
-#if ENABLE_INTL_API
+#if JS_HAS_INTL_API
 #  include "unicode/uloc.h"
 #endif
 #include "util/Windows.h"
@@ -48,8 +45,10 @@
 #include "vm/JSAtom.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
+#include "vm/PromiseObject.h"  // js::PromiseObject
 #include "vm/TraceLogging.h"
 #include "vm/TraceLoggingGraph.h"
+#include "vm/Warnings.h"  // js::WarnNumberUC
 #include "wasm/WasmSignalHandlers.h"
 
 #include "debugger/DebugAPI-inl.h"
@@ -59,11 +58,9 @@
 
 using namespace js;
 
-using JS::AutoStableStringChars;
 using mozilla::Atomic;
 using mozilla::DebugOnly;
 using mozilla::NegativeInfinity;
-using mozilla::PodZero;
 using mozilla::PositiveInfinity;
 
 /* static */ MOZ_THREAD_LOCAL(JSContext*) js::TlsContext;
@@ -71,8 +68,10 @@ using mozilla::PositiveInfinity;
 Atomic<size_t> JSRuntime::liveRuntimesCount;
 Atomic<JS::LargeAllocationFailureCallback> js::OnLargeAllocationFailure;
 
+JS::FilenameValidationCallback js::gFilenameValidationCallback = nullptr;
+
 namespace js {
-void (*HelperThreadTaskCallback)(js::RunnableTask*);
+bool (*HelperThreadTaskCallback)(js::UniquePtr<RunnableTask>);
 
 bool gCanUseExtraThreads = true;
 }  // namespace js
@@ -103,7 +102,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       sizeOfIncludingThisCompartmentCallback(nullptr),
       destroyRealmCallback(nullptr),
       realmNameCallback(nullptr),
-      externalStringSizeofCallback(nullptr),
       securityCallbacks(&NullSecurityCallbacks),
       DOMcallbacks(nullptr),
       destroyPrincipals(nullptr),
@@ -122,7 +120,6 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       activeThreadHasScriptDataAccess(false),
 #endif
       numActiveHelperThreadZones(0),
-      heapState_(JS::HeapState::Idle),
       numRealms(0),
       numDebuggeeRealms_(0),
       numDebuggeeRealmsObservingCoverage_(0),
@@ -137,7 +134,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       gcInitialized(false),
       emptyString(nullptr),
       defaultFreeOp_(nullptr),
-#if !ENABLE_INTL_API
+#if !JS_HAS_INTL_API
       thousandsSeparator(nullptr),
       decimalSeparator(nullptr),
       numGrouping(nullptr),
@@ -150,6 +147,9 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
       staticStrings(nullptr),
       commonNames(nullptr),
       wellKnownSymbols(nullptr),
+      liveSABs(0),
+      beforeWaitCallback(nullptr),
+      afterWaitCallback(nullptr),
       offthreadIonCompilationEnabled_(true),
       parallelParsingEnabled_(true),
 #ifdef DEBUG
@@ -191,8 +191,7 @@ JSRuntime::~JSRuntime() {
   MOZ_ASSERT(numDebuggeeRealmsObservingCoverage_ == 0);
 }
 
-bool JSRuntime::init(JSContext* cx, uint32_t maxbytes,
-                     uint32_t maxNurseryBytes) {
+bool JSRuntime::init(JSContext* cx, uint32_t maxbytes) {
 #ifdef DEBUG
   MOZ_ASSERT(!initialized_);
   initialized_ = true;
@@ -206,16 +205,17 @@ bool JSRuntime::init(JSContext* cx, uint32_t maxbytes,
 
   defaultFreeOp_ = cx->defaultFreeOp();
 
-  if (!gc.init(maxbytes, maxNurseryBytes)) {
+  if (!gc.init(maxbytes)) {
     return false;
   }
 
   UniquePtr<Zone> atomsZone = MakeUnique<Zone>(this);
-  if (!atomsZone || !atomsZone->init(true)) {
+  if (!atomsZone || !atomsZone->init()) {
     return false;
   }
 
   gc.atomsZone = atomsZone.release();
+  gc.atomsZone->setIsAtomsZone();
 
   // The garbage collector depends on everything before this point being
   // initialized.
@@ -244,7 +244,7 @@ void JSRuntime::destroyRuntime() {
   MOZ_ASSERT(childRuntimeCount == 0);
   MOZ_ASSERT(initialized_);
 
-#ifdef ENABLE_INTL_API
+#ifdef JS_HAS_INTL_API
   sharedIntlData.ref().destroyInstance();
 #endif
 
@@ -298,7 +298,7 @@ void JSRuntime::destroyRuntime() {
   }
 #endif
 
-#if !ENABLE_INTL_API
+#if !JS_HAS_INTL_API
   FinishRuntimeNumberState(this);
 #endif
 
@@ -321,6 +321,11 @@ void JSRuntime::addTelemetry(int id, uint32_t sample, const char* key) {
 void JSRuntime::setTelemetryCallback(
     JSRuntime* rt, JSAccumulateTelemetryDataCallback callback) {
   rt->telemetryCallback = callback;
+}
+
+void JSRuntime::setElementCallback(JSRuntime* rt,
+                                   JSGetElementCallback callback) {
+  rt->getElementCallback = callback;
 }
 
 void JSRuntime::setUseCounter(JSObject* obj, JSUseCounter counter) {
@@ -348,8 +353,7 @@ void JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
   }
 
   JSContext* cx = mainContextFromAnyThread();
-  rtSizes->contexts += mallocSizeOf(cx);
-  rtSizes->contexts += cx->sizeOfExcludingThis(mallocSizeOf);
+  rtSizes->contexts += cx->sizeOfIncludingThis(mallocSizeOf);
   rtSizes->temporary += cx->tempLifoAlloc().sizeOfExcludingThis(mallocSizeOf);
   rtSizes->interpreterStack +=
       cx->interpreterStack().sizeOfExcludingThis(mallocSizeOf);
@@ -372,7 +376,7 @@ void JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
         sharedImmutableStrings_->sizeOfExcludingThis(mallocSizeOf);
   }
 
-#ifdef ENABLE_INTL_API
+#ifdef JS_HAS_INTL_API
   rtSizes->sharedIntlData +=
       sharedIntlData.ref().sizeOfExcludingThis(mallocSizeOf);
 #endif
@@ -388,8 +392,6 @@ void JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
   }
 
   if (jitRuntime_) {
-    jitRuntime_->execAlloc().addSizeOfCode(&rtSizes->code);
-
     // Sizes of the IonBuilders we are holding for lazy linking
     for (auto builder : jitRuntime_->ionLazyLinkList(this)) {
       rtSizes->jitLazyLink += builder->sizeOfExcludingThis(mallocSizeOf);
@@ -402,13 +404,6 @@ void JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
 
 static bool HandleInterrupt(JSContext* cx, bool invokeCallback) {
   MOZ_ASSERT(!cx->zone()->isAtomsZone());
-
-  // Interrupts can occur at different points between recording and replay,
-  // so no recorded behaviors should occur while handling an interrupt.
-  // Additionally, returning false here will change subsequent behavior, so
-  // such an event cannot occur during recording or replay without
-  // invalidating the recording.
-  mozilla::recordreplay::AutoDisallowThreadEvents d;
 
   cx->runtime()->gc.gcIfRequested();
 
@@ -442,26 +437,8 @@ static bool HandleInterrupt(JSContext* cx, bool invokeCallback) {
       ScriptFrameIter iter(cx);
       if (!iter.done() && cx->compartment() == iter.compartment() &&
           DebugAPI::stepModeEnabled(iter.script())) {
-        RootedValue rval(cx);
-        switch (DebugAPI::onSingleStep(cx, &rval)) {
-          case ResumeMode::Terminate:
-            mozilla::recordreplay::InvalidateRecording(
-                "Debugger single-step produced an error");
-            return false;
-          case ResumeMode::Continue:
-            return true;
-          case ResumeMode::Return:
-            // See note in DebugAPI::propagateForcedReturn.
-            DebugAPI::propagateForcedReturn(cx, iter.abstractFramePtr(), rval);
-            mozilla::recordreplay::InvalidateRecording(
-                "Debugger single-step forced return");
-            return false;
-          case ResumeMode::Throw:
-            cx->setPendingExceptionAndCaptureStack(rval);
-            mozilla::recordreplay::InvalidateRecording(
-                "Debugger single-step threw an exception");
-            return false;
-          default:;
+        if (!DebugAPI::onSingleStep(cx)) {
+          return false;
         }
       }
     }
@@ -472,20 +449,22 @@ static bool HandleInterrupt(JSContext* cx, bool invokeCallback) {
   // No need to set aside any pending exception here: ComputeStackString
   // already does that.
   JSString* stack = ComputeStackString(cx);
-  JSFlatString* flat = stack ? stack->ensureFlat(cx) : nullptr;
+
+  UniqueTwoByteChars stringChars;
+  if (stack) {
+    stringChars = JS_CopyStringCharsZ(cx, stack);
+    if (!stringChars) {
+      cx->recoverFromOutOfMemory();
+    }
+  }
 
   const char16_t* chars;
-  AutoStableStringChars stableChars(cx);
-  if (flat && stableChars.initTwoByte(cx, flat)) {
-    chars = stableChars.twoByteRange().begin().get();
+  if (stringChars) {
+    chars = stringChars.get();
   } else {
     chars = u"(stack not available)";
   }
-  JS_ReportErrorFlagsAndNumberUC(cx, JSREPORT_WARNING, GetErrorMessage, nullptr,
-                                 JSMSG_TERMINATED, chars);
-
-  mozilla::recordreplay::InvalidateRecording(
-      "Interrupt callback forced return");
+  WarnNumberUC(cx, JSMSG_TERMINATED, chars);
   return false;
 }
 
@@ -542,7 +521,7 @@ const char* JSRuntime::getDefaultLocale() {
 
   // Use ICU if available to retrieve the default locale, this ensures ICU's
   // default locale matches our default locale.
-#if ENABLE_INTL_API
+#if JS_HAS_INTL_API
   const char* locale = uloc_getDefault();
 #else
   const char* locale = setlocale(LC_ALL, nullptr);
@@ -570,7 +549,7 @@ const char* JSRuntime::getDefaultLocale() {
   return defaultLocale.ref().get();
 }
 
-#ifdef ENABLE_INTL_API
+#ifdef JS_HAS_INTL_API
 void JSRuntime::traceSharedIntlData(JSTracer* trc) {
   sharedIntlData.ref().trace(trc);
 }

@@ -17,7 +17,7 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
   (define sandbox-level-1 (param "SANDBOX_LEVEL_1"))
   (define sandbox-level-2 (param "SANDBOX_LEVEL_2"))
   (define sandbox-level-3 (param "SANDBOX_LEVEL_3"))
-  (define macosMinorVersion (string->number (param "MAC_OS_MINOR")))
+  (define macosVersion (string->number (param "MAC_OS_VERSION")))
   (define appPath (param "APP_PATH"))
   (define hasProfileDir (param "HAS_SANDBOXED_PROFILE"))
   (define profileDir (param "PROFILE_DIR"))
@@ -69,15 +69,15 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
         (subpath "/Library/Filesystems/NetFSPlugins")
         (subpath "/usr/share"))))
 
+  ; For stat and symlink resolution
+  (allow file-read-metadata (subpath "/"))
+
   ; Timezone
   (allow file-read*
     (subpath "/private/var/db/timezone")
     (subpath "/usr/share/zoneinfo")
     (subpath "/usr/share/zoneinfo.default")
     (literal "/private/etc/localtime"))
-
-  ; Top-level directory metadata access (bug 1404298)
-  (allow file-read-metadata (regex #"^/[^/]+$"))
 
   ; Allow read access to standard special files.
   (allow file-read*
@@ -98,56 +98,51 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
   ; Needed for things like getpriority()/setpriority()
   (allow process-info-pidinfo process-info-setcontrol (target self))
 
-  ; macOS 10.9 does not support the |sysctl-name| predicate, so unfortunately
-  ; we need to allow all sysctl-reads there.
-  (if (= macosMinorVersion 9)
-    (allow sysctl-read)
-    (allow sysctl-read
-      (sysctl-name-regex #"^sysctl\.")
-      (sysctl-name "kern.ostype")
-      (sysctl-name "kern.osversion")
-      (sysctl-name "kern.osrelease")
-      (sysctl-name "kern.version")
-      (sysctl-name "kern.tcsm_available")
-      (sysctl-name "kern.tcsm_enable")
-      ; TODO: remove "kern.hostname". Without it the tests hang, but the hostname
-      ; is arguably sensitive information, so we should see what can be done about
-      ; removing it.
-      (sysctl-name "kern.hostname")
-      (sysctl-name "hw.machine")
-      (sysctl-name "hw.model")
-      (sysctl-name "hw.ncpu")
-      (sysctl-name "hw.activecpu")
-      (sysctl-name "hw.byteorder")
-      (sysctl-name "hw.pagesize_compat")
-      (sysctl-name "hw.logicalcpu_max")
-      (sysctl-name "hw.physicalcpu_max")
-      (sysctl-name "hw.busfrequency_compat")
-      (sysctl-name "hw.busfrequency_max")
-      (sysctl-name "hw.cpufrequency")
-      (sysctl-name "hw.cpufrequency_compat")
-      (sysctl-name "hw.cpufrequency_max")
-      (sysctl-name "hw.l2cachesize")
-      (sysctl-name "hw.l3cachesize")
-      (sysctl-name "hw.cachelinesize")
-      (sysctl-name "hw.cachelinesize_compat")
-      (sysctl-name "hw.tbfrequency_compat")
-      (sysctl-name "hw.vectorunit")
-      (sysctl-name "hw.optional.sse2")
-      (sysctl-name "hw.optional.sse3")
-      (sysctl-name "hw.optional.sse4_1")
-      (sysctl-name "hw.optional.sse4_2")
-      (sysctl-name "hw.optional.avx1_0")
-      (sysctl-name "hw.optional.avx2_0")
-      (sysctl-name "machdep.cpu.vendor")
-      (sysctl-name "machdep.cpu.family")
-      (sysctl-name "machdep.cpu.model")
-      (sysctl-name "machdep.cpu.stepping")
-      (sysctl-name "debug.intel.gstLevelGST")
-      (sysctl-name "debug.intel.gstLoaderControl")))
-  (if (> macosMinorVersion 9)
-    (allow sysctl-write
-      (sysctl-name "kern.tcsm_enable")))
+  (allow sysctl-read
+    (sysctl-name-regex #"^sysctl\.")
+    (sysctl-name "kern.ostype")
+    (sysctl-name "kern.osversion")
+    (sysctl-name "kern.osrelease")
+    (sysctl-name "kern.version")
+    (sysctl-name "kern.tcsm_available")
+    (sysctl-name "kern.tcsm_enable")
+    ; TODO: remove "kern.hostname". Without it the tests hang, but the hostname
+    ; is arguably sensitive information, so we should see what can be done about
+    ; removing it.
+    (sysctl-name "kern.hostname")
+    (sysctl-name "hw.machine")
+    (sysctl-name "hw.model")
+    (sysctl-name "hw.ncpu")
+    (sysctl-name "hw.activecpu")
+    (sysctl-name "hw.byteorder")
+    (sysctl-name "hw.pagesize_compat")
+    (sysctl-name "hw.logicalcpu_max")
+    (sysctl-name "hw.physicalcpu_max")
+    (sysctl-name "hw.busfrequency_compat")
+    (sysctl-name "hw.busfrequency_max")
+    (sysctl-name "hw.cpufrequency")
+    (sysctl-name "hw.cpufrequency_compat")
+    (sysctl-name "hw.cpufrequency_max")
+    (sysctl-name "hw.l2cachesize")
+    (sysctl-name "hw.l3cachesize")
+    (sysctl-name "hw.cachelinesize")
+    (sysctl-name "hw.cachelinesize_compat")
+    (sysctl-name "hw.tbfrequency_compat")
+    (sysctl-name "hw.vectorunit")
+    (sysctl-name "hw.optional.sse2")
+    (sysctl-name "hw.optional.sse3")
+    (sysctl-name "hw.optional.sse4_1")
+    (sysctl-name "hw.optional.sse4_2")
+    (sysctl-name "hw.optional.avx1_0")
+    (sysctl-name "hw.optional.avx2_0")
+    (sysctl-name "machdep.cpu.vendor")
+    (sysctl-name "machdep.cpu.family")
+    (sysctl-name "machdep.cpu.model")
+    (sysctl-name "machdep.cpu.stepping")
+    (sysctl-name "debug.intel.gstLevelGST")
+    (sysctl-name "debug.intel.gstLoaderControl"))
+  (allow sysctl-write
+    (sysctl-name "kern.tcsm_enable"))
 
   (define (home-regex home-relative-regex)
     (regex (string-append "^" (regex-quote home-path) home-relative-regex)))
@@ -172,19 +167,21 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
   (if (string=? hasWindowServer "TRUE")
     (allow mach-lookup (global-name "com.apple.windowserver.active")))
   (allow mach-lookup
+    (global-name "com.apple.system.opendirectoryd.libinfo")
     (global-name "com.apple.CoreServices.coreservicesd")
     (global-name "com.apple.coreservices.launchservicesd")
     (global-name "com.apple.lsd.mapdb"))
 
-  (if (>= macosMinorVersion 13)
+  (if (>= macosVersion 1013)
     (allow mach-lookup
       ; bug 1392988
       (xpc-service-name "com.apple.coremedia.videodecoder")
       (xpc-service-name "com.apple.coremedia.videoencoder")))
 
-; bug 1312273
-  (if (= macosMinorVersion 9)
-     (allow mach-lookup (global-name "com.apple.xpcd")))
+  (if (>= macosVersion 1100)
+    (allow mach-lookup
+      ; bug 1655655
+      (global-name "com.apple.trustd.agent")))
 
   (allow iokit-open
      (iokit-user-client-class "IOHIDParamUserClient"))
@@ -205,12 +202,23 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
       (iokit-property "MetalPluginName")
       (iokit-property "MetalPluginClassName")))
 
-; depending on systems, the 1st, 2nd or both rules are necessary
+  ; depending on systems, the 1st, 2nd or both rules are necessary
   (allow user-preference-read (preference-domain "com.apple.HIToolbox"))
   (allow file-read-data (literal "/Library/Preferences/com.apple.HIToolbox.plist"))
 
   (allow user-preference-read (preference-domain "com.apple.ATS"))
-  (allow file-read-data (literal "/Library/Preferences/.GlobalPreferences.plist"))
+
+  ; Needed for some global preferences (such as scrolling behavior)
+  (allow file-read-data
+      (literal "/Library/Preferences/.GlobalPreferences.plist")
+      (home-literal "/Library/Preferences/.GlobalPreferences.plist")
+      (home-regex #"/Library/Preferences/ByHost/\.GlobalPreferences.*")
+      (home-literal "/Library/Preferences/com.apple.universalaccess.plist"))
+  (allow mach-lookup
+      (global-name "com.apple.cfprefsd.agent")
+      (global-name "com.apple.cfprefsd.daemon"))
+  (allow ipc-posix-shm-read-data
+      (ipc-posix-name-regex #"^apple\.cfprefs\..*"))
 
   (allow file-read*
       (subpath "/Library/ColorSync/Profiles")
@@ -245,10 +253,6 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
         (allow file-read* (subpath testingReadPath3)))
       (when testingReadPath4
         (allow file-read* (subpath testingReadPath4)))))
-
-  (allow file-read-metadata (home-subpath "/Library"))
-
-  (allow file-read-metadata (subpath "/private/var"))
 
   ; bug 1303987
   (if (string? debugWriteDir)
@@ -309,7 +313,7 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
   (allow user-preference-read (preference-domain "com.nvidia.OpenGL"))
   (allow mach-lookup
       (global-name "com.apple.cvmsServ"))
-  (if (>= macosMinorVersion 14)
+  (if (>= macosVersion 1014)
     (allow mach-lookup
       (global-name "com.apple.MTLCompilerService")))
   (allow iokit-open
@@ -343,28 +347,8 @@ static const char SandboxPolicyContent[] = R"SANDBOX_LITERAL(
   (allow mach-lookup
     (global-name "com.apple.fonts")
     (global-name "com.apple.FontObjectsServer"))
-  (if (<= macosMinorVersion 11)
-    (allow mach-lookup (global-name "com.apple.FontServer")))
 
-  ; Fonts
-  ; Workaround for sandbox extensions not being automatically
-  ; issued for fonts on 10.11 and earlier versions (bug 1460917).
-  (if (<= macosMinorVersion 11)
-    (allow file-read*
-      (regex #"\.[oO][tT][fF]$"          ; otf
-             #"\.[tT][tT][fF]$"          ; ttf
-             #"\.[tT][tT][cC]$"          ; ttc
-             #"\.[oO][tT][cC]$"          ; otc
-             #"\.[dD][fF][oO][nN][tT]$") ; dfont
-      (home-subpath "/Library/FontCollections")
-      (home-subpath "/Library/Application Support/Adobe/CoreSync/plugins/livetype")
-      (home-subpath "/Library/Application Support/FontAgent")
-      (home-subpath "/Library/Extensis/UTC") ; bug 1469657
-      (subpath "/Library/Extensis/UTC")      ; bug 1469657
-      (regex #"\.fontvault/")
-      (home-subpath "/FontExplorer X/Font Library")))
-
-  (if (>= macosMinorVersion 13)
+  (if (>= macosVersion 1013)
    (allow mach-lookup
     ; bug 1565575
     (global-name "com.apple.audio.AudioComponentRegistrar")))

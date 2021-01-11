@@ -4,20 +4,36 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#include "SameBinary.h"
+#include <stdio.h>
+#include <stdlib.h>
 
+#include <utility>
+
+#include "SameBinary.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CmdLineAndEnvUtils.h"
-#include "mozilla/Move.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/Unused.h"
 #include "mozilla/Vector.h"
 #include "mozilla/WinHeaderOnlyUtils.h"
 #include "nsWindowsHelpers.h"
 
-#include <stdio.h>
-#include <stdlib.h>
+#define EXPECT_SAMEBINARY_IS(expected, option, message)                \
+  do {                                                                 \
+    mozilla::LauncherResult<bool> isSame =                             \
+        mozilla::IsSameBinaryAsParentProcess(option);                  \
+    if (isSame.isErr()) {                                              \
+      PrintLauncherError(isSame,                                       \
+                         "IsSameBinaryAsParentProcess returned error " \
+                         "when we were expecting success.");           \
+      return 1;                                                        \
+    }                                                                  \
+    if (isSame.unwrap() != expected) {                                 \
+      PrintErrorMsg(message);                                          \
+      return 1;                                                        \
+    }                                                                  \
+  } while (0)
 
 /**
  * This test involves three processes:
@@ -68,25 +84,21 @@ static int ChildMain(DWORD aExpectedParentPid) {
   }
 
   const DWORD kAccess = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
-  nsAutoHandle parentProcess(::OpenProcess(kAccess, FALSE, parentPid.inspect()));
+  nsAutoHandle parentProcess(
+      ::OpenProcess(kAccess, FALSE, parentPid.inspect()));
   if (!parentProcess) {
     PrintWinError("Unexpectedly failed to call OpenProcess on parent");
     return 1;
   }
 
-  mozilla::LauncherResult<bool> expectedSameBinary =
-      mozilla::IsSameBinaryAsParentProcess();
-  if (expectedSameBinary.isErr()) {
-    PrintLauncherError(expectedSameBinary);
-    return 1;
-  }
-
-  if (!expectedSameBinary.unwrap()) {
-    PrintErrorMsg(
-        "IsSameBinaryAsParentProcess returned incorrect result for identical "
-        "binaries");
-    return 1;
-  }
+  EXPECT_SAMEBINARY_IS(
+      true, mozilla::ImageFileCompareOption::Default,
+      "IsSameBinaryAsParentProcess returned incorrect result for identical "
+      "binaries");
+  EXPECT_SAMEBINARY_IS(
+      true, mozilla::ImageFileCompareOption::CompareNtPathsOnly,
+      "IsSameBinaryAsParentProcess(CompareNtPathsOnly) returned incorrect "
+      "result for identical binaries");
 
   // Total hack, but who cares? We'll set the parent's exit code as our PID
   // so that the monitor process knows who to wait for!
@@ -115,21 +127,14 @@ static int ChildMain(DWORD aExpectedParentPid) {
     }
   }
 
-  mozilla::LauncherResult<bool> expectedDifferentBinary =
-      mozilla::IsSameBinaryAsParentProcess();
-  if (expectedDifferentBinary.isErr()) {
-    PrintLauncherError(expectedDifferentBinary,
-                       "IsSameBinaryAsParentProcess returned error when we "
-                       "were expecting success");
-    return 1;
-  }
-
-  if (expectedDifferentBinary.unwrap()) {
-    PrintErrorMsg(
-        "IsSameBinaryAsParentProcess returned incorrect result for dead parent "
-        "process");
-    return 1;
-  }
+  EXPECT_SAMEBINARY_IS(
+      false, mozilla::ImageFileCompareOption::Default,
+      "IsSameBinaryAsParentProcess returned incorrect result for dead parent "
+      "process");
+  EXPECT_SAMEBINARY_IS(
+      false, mozilla::ImageFileCompareOption::CompareNtPathsOnly,
+      "IsSameBinaryAsParentProcess(CompareNtPathsOnly) returned incorrect "
+      "result for dead parent process");
 
   return 0;
 }

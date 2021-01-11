@@ -8,6 +8,17 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/Preferences.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "AddonManager",
+  "resource://gre/modules/AddonManager.jsm"
+);
+
+// The test extension uses an insecure update url.
+Services.prefs.setBoolPref("extensions.checkUpdateSecurity", false);
+
+const SETTINGS_ID = "test_settings_staged_restart_webext@tests.mozilla.org";
+
 const {
   createAppInfo,
   promiseShutdownManager,
@@ -15,8 +26,9 @@ const {
 } = AddonTestUtils;
 
 AddonTestUtils.init(this);
+AddonTestUtils.overrideCertDB();
 
-createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "42");
+createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "42", "42");
 
 add_task(async function test_browser_settings() {
   const PERM_DENY_ACTION = Services.perms.DENY_ACTION;
@@ -37,11 +49,25 @@ add_task(async function test_browser_settings() {
     "browser.tabs.insertAfterCurrent": false,
     "browser.display.document_color_use": 1,
     "browser.display.use_document_fonts": 1,
+    "browser.zoom.full": true,
+    "browser.zoom.siteSpecific": true,
   };
 
   async function background() {
+    let listeners = new Set([]);
     browser.test.onMessage.addListener(async (msg, apiName, value) => {
       let apiObj = browser.browserSettings[apiName];
+      // Don't add more than one listner per apiName.  We leave the
+      // listener to ensure we do not get more calls than we expect.
+      if (!listeners.has(apiName)) {
+        apiObj.onChange.addListener(details => {
+          browser.test.sendMessage("onChange", {
+            details,
+            setting: apiName,
+          });
+        });
+        listeners.add(apiName);
+      }
       let result = await apiObj.set({ value });
       if (msg === "set") {
         browser.test.assertTrue(result, "set returns true.");
@@ -79,6 +105,13 @@ add_task(async function test_browser_settings() {
   async function testSetting(setting, value, expected, expectedValue = value) {
     extension.sendMessage("set", setting, value);
     let data = await extension.awaitMessage("settingData");
+    let dataChange = await extension.awaitMessage("onChange");
+    equal(setting, dataChange.setting, "onChange fired");
+    equal(
+      data.value,
+      dataChange.details.value,
+      "onChange fired with correct value"
+    );
     deepEqual(
       data.value,
       expectedValue,
@@ -174,6 +207,13 @@ add_task(async function test_browser_settings() {
     });
   }
 
+  await testSetting("ftpProtocolEnabled", false, {
+    "network.ftp.enabled": false,
+  });
+  await testSetting("ftpProtocolEnabled", true, {
+    "network.ftp.enabled": true,
+  });
+
   await testSetting("newTabPosition", "afterCurrent", {
     "browser.tabs.insertRelatedAfterCurrent": false,
     "browser.tabs.insertAfterCurrent": true,
@@ -223,6 +263,20 @@ add_task(async function test_browser_settings() {
   });
   await testSetting("useDocumentFonts", true, {
     "browser.display.use_document_fonts": 1,
+  });
+
+  await testSetting("zoomFullPage", true, {
+    "browser.zoom.full": true,
+  });
+  await testSetting("zoomFullPage", false, {
+    "browser.zoom.full": false,
+  });
+
+  await testSetting("zoomSiteSpecific", true, {
+    "browser.zoom.siteSpecific": true,
+  });
+  await testSetting("zoomSiteSpecific", false, {
+    "browser.zoom.siteSpecific": false,
   });
 
   await extension.unload();
@@ -301,4 +355,100 @@ add_task(async function test_bad_value_android() {
   await extension.startup();
   await extension.awaitMessage("done");
   await extension.unload();
+});
+
+// Verifies settings remain after a staged update on restart.
+add_task(async function delay_updates_settings_after_restart() {
+  let server = AddonTestUtils.createHttpServer({ hosts: ["example.com"] });
+  AddonTestUtils.registerJSON(server, "/test_update.json", {
+    addons: {
+      "test_settings_staged_restart_webext@tests.mozilla.org": {
+        updates: [
+          {
+            version: "2.0",
+            update_link:
+              "http://example.com/addons/test_settings_staged_restart_v2.xpi",
+          },
+        ],
+      },
+    },
+  });
+  const update_xpi = AddonTestUtils.createTempXPIFile({
+    "manifest.json": {
+      manifest_version: 2,
+      name: "Delay Upgrade",
+      version: "2.0",
+      applications: {
+        gecko: { id: SETTINGS_ID },
+      },
+      permissions: ["browserSettings"],
+    },
+  });
+  server.registerFile(
+    `/addons/test_settings_staged_restart_v2.xpi`,
+    update_xpi
+  );
+
+  await AddonTestUtils.promiseStartupManager();
+
+  let extension = ExtensionTestUtils.loadExtension({
+    useAddonManager: "permanent",
+    manifest: {
+      version: "1.0",
+      applications: {
+        gecko: {
+          id: SETTINGS_ID,
+          update_url: `http://example.com/test_update.json`,
+        },
+      },
+      permissions: ["browserSettings"],
+    },
+    background() {
+      browser.runtime.onUpdateAvailable.addListener(async details => {
+        if (details) {
+          await browser.browserSettings.webNotificationsDisabled.set({
+            value: true,
+          });
+          if (details.version) {
+            // This should be the version of the pending update.
+            browser.test.assertEq("2.0", details.version, "correct version");
+            browser.test.notifyPass("delay");
+          }
+        } else {
+          browser.test.fail("no details object passed");
+        }
+      });
+      browser.test.sendMessage("ready");
+    },
+  });
+
+  await Promise.all([extension.startup(), extension.awaitMessage("ready")]);
+
+  let prefname = "permissions.default.desktop-notification";
+  let val = Services.prefs.getIntPref(prefname);
+  Assert.notEqual(val, 2, "webNotificationsDisabled pref not set");
+
+  let update = await AddonTestUtils.promiseFindAddonUpdates(extension.addon);
+  let install = update.updateAvailable;
+  Assert.ok(install, `install is available ${update.error}`);
+
+  await AddonTestUtils.promiseCompleteAllInstalls([install]);
+
+  Assert.equal(install.state, AddonManager.STATE_POSTPONED);
+  await extension.awaitFinish("delay");
+
+  // restarting allows upgrade to proceed
+  await AddonTestUtils.promiseRestartManager();
+
+  await extension.awaitStartup();
+
+  // If an update is not handled correctly we would fail here.  Bug 1639705.
+  val = Services.prefs.getIntPref(prefname);
+  Assert.equal(val, 2, "webNotificationsDisabled pref set");
+
+  await extension.unload();
+  await AddonTestUtils.promiseShutdownManager();
+
+  val = Services.prefs.getIntPref(prefname);
+  Assert.notEqual(val, 2, "webNotificationsDisabled pref not set");
 });

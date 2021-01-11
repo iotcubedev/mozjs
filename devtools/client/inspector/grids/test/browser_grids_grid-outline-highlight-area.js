@@ -35,7 +35,7 @@ add_task(async function() {
   const { highlighters, store } = inspector;
 
   // Don't track reflows since this might cause intermittent failures.
-  inspector.reflowTracker.untrackReflows(gridInspector, gridInspector.onReflow);
+  inspector.off("reflow-in-selected-target", gridInspector.onReflow);
 
   const gridList = doc.getElementById("grid-list");
   const checkbox = gridList.children[0].querySelector("input");
@@ -65,9 +65,9 @@ add_task(async function() {
       const { showGridCell, showGridArea } = options;
       const { gridFragmentIndex, rowNumber, columnNumber } = showGridCell;
 
-      is(gridFragmentIndex, 0, "Should be the first grid fragment index.");
-      is(rowNumber, 1, "Should be the first grid row.");
-      is(columnNumber, 1, "Should be the first grid column.");
+      is(gridFragmentIndex, "0", "Should be the first grid fragment index.");
+      is(rowNumber, "1", "Should be the first grid row.");
+      is(columnNumber, "1", "Should be the first grid column.");
       is(showGridArea, "header", "Grid area name should be 'header'.");
     }
   );

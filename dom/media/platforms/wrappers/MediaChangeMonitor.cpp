@@ -35,20 +35,10 @@ class H264ChangeMonitor : public MediaChangeMonitor::CodecChangeMonitor {
   }
 
   bool CanBeInstantiated() const override {
-    // Found encrypted content, let the CDM handle it.
-    if ((mTrackInfo && (*mTrackInfo)->mCrypto.IsEncrypted()) ||
-        mGotEncryptedContent) {
-      return true;
-    }
     return H264::HasSPS(mCurrentConfig.mExtraData);
   }
 
   MediaResult CheckForChange(MediaRawData* aSample) override {
-    // Don't look at encrypted content.
-    if (aSample->mCrypto.IsEncrypted()) {
-      mGotEncryptedContent = true;
-      return NS_OK;
-    }
     // To be usable we need to convert the sample to 4 bytes NAL size AVCC.
     if (!AnnexB::ConvertSampleToAVCC(aSample)) {
       // We need AVCC content to be able to later parse the SPS.
@@ -153,7 +143,6 @@ class H264ChangeMonitor : public MediaChangeMonitor::CodecChangeMonitor {
   uint32_t mStreamID = 0;
   const bool mFullParsing;
   bool mGotSPS = false;
-  bool mGotEncryptedContent = false;
   RefPtr<TrackInfoSharedPtr> mTrackInfo;
   RefPtr<MediaByteBuffer> mPreviousExtraData;
 };
@@ -257,7 +246,7 @@ MediaChangeMonitor::MediaChangeMonitor(PlatformDecoderModule* aPDM,
   mInConstructor = false;
 }
 
-MediaChangeMonitor::~MediaChangeMonitor() {}
+MediaChangeMonitor::~MediaChangeMonitor() = default;
 
 RefPtr<MediaDataDecoder::InitPromise> MediaChangeMonitor::Init() {
   RefPtr<MediaChangeMonitor> self = this;
@@ -412,7 +401,7 @@ RefPtr<ShutdownPromise> MediaChangeMonitor::Shutdown() {
     if (mShutdownPromise) {
       // We have a shutdown in progress, return that promise instead as we can't
       // shutdown a decoder twice.
-      RefPtr<ShutdownPromise> p = mShutdownPromise.forget();
+      RefPtr<ShutdownPromise> p = std::move(mShutdownPromise);
       return p;
     }
     return ShutdownDecoder();
@@ -424,7 +413,7 @@ RefPtr<ShutdownPromise> MediaChangeMonitor::ShutdownDecoder() {
   return InvokeAsync(mTaskQueue, __func__, [self, this]() {
     mConversionRequired.reset();
     if (mDecoder) {
-      RefPtr<MediaDataDecoder> decoder = mDecoder.forget();
+      RefPtr<MediaDataDecoder> decoder = std::move(mDecoder);
       return decoder->Shutdown();
     }
     return ShutdownPromise::CreateAndResolve(true, __func__);

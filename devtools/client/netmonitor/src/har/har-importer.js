@@ -4,7 +4,7 @@
 
 "use strict";
 
-const { TIMING_KEYS } = require("../constants");
+const { TIMING_KEYS } = require("devtools/client/netmonitor/src/constants");
 
 var guid = 0;
 
@@ -112,7 +112,7 @@ HarImporter.prototype = {
       };
 
       if (entry.cache.afterRequest) {
-        const afterRequest = entry.cache.afterRequest;
+        const { afterRequest } = entry.cache;
         data.responseCache = {
           cache: {
             expires: afterRequest.expires,

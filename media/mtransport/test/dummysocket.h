@@ -91,8 +91,6 @@ class DummySocket : public NrSocketBase {
     return 0;
   }
 
-  virtual bool IsProxied() const override { return false; }
-
   virtual int write(const void* msg, size_t len, size_t* written) override {
     size_t to_write = std::min(len, writable_);
 
@@ -198,7 +196,7 @@ class DummySocket : public NrSocketBase {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DummySocket, override);
 
  private:
-  ~DummySocket() {}
+  ~DummySocket() = default;
 
   DISALLOW_COPY_ASSIGN(DummySocket);
 

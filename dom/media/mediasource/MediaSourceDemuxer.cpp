@@ -24,7 +24,7 @@ using media::TimeIntervals;
 using media::TimeUnit;
 
 MediaSourceDemuxer::MediaSourceDemuxer(AbstractThread* aAbstractMainThread)
-    : mTaskQueue(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
+    : mTaskQueue(new TaskQueue(GetMediaThreadPool(MediaThreadType::CONTROLLER),
                                "MediaSourceDemuxer::mTaskQueue")),
       mMonitor("MediaSourceDemuxer") {
   MOZ_ASSERT(NS_IsMainThread());
@@ -407,7 +407,7 @@ MediaSourceTrackDemuxer::DoGetSamples(int32_t aNumSamples) {
     TimeIntervals buffered = mManager->Buffered(mType);
     buffered.SetFuzz(MediaSourceDemuxer::EOS_FUZZ / 2);
 
-    if (!buffered.Length() && mManager->IsEnded()) {
+    if (buffered.IsEmpty() && mManager->IsEnded()) {
       return SamplesPromise::CreateAndReject(NS_ERROR_DOM_MEDIA_END_OF_STREAM,
                                              __func__);
     }

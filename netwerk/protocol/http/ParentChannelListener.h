@@ -8,9 +8,13 @@
 #ifndef mozilla_net_ParentChannelListener_h
 #define mozilla_net_ParentChannelListener_h
 
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "nsIAuthPromptProvider.h"
 #include "nsIInterfaceRequestor.h"
+#include "nsIMultiPartChannel.h"
 #include "nsINetworkInterceptController.h"
 #include "nsIStreamListener.h"
+#include "nsIThreadRetargetableStreamListener.h"
 
 namespace mozilla {
 namespace net {
@@ -28,21 +32,30 @@ namespace net {
 
 class ParentChannelListener final : public nsIInterfaceRequestor,
                                     public nsIStreamListener,
-                                    public nsINetworkInterceptController {
+                                    public nsIMultiPartChannelListener,
+                                    public nsINetworkInterceptController,
+                                    public nsIThreadRetargetableStreamListener,
+                                    private nsIAuthPromptProvider {
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIINTERFACEREQUESTOR
   NS_DECL_NSIREQUESTOBSERVER
   NS_DECL_NSISTREAMLISTENER
+  NS_DECL_NSIMULTIPARTCHANNELLISTENER
   NS_DECL_NSINETWORKINTERCEPTCONTROLLER
+  NS_DECL_NSIAUTHPROMPTPROVIDER
+  NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
   NS_DECLARE_STATIC_IID_ACCESSOR(PARENT_CHANNEL_LISTENER)
 
-  explicit ParentChannelListener(nsIStreamListener* aListener);
+  explicit ParentChannelListener(
+      nsIStreamListener* aListener,
+      dom::CanonicalBrowsingContext* aBrowsingContext,
+      bool aUsePrivateBrowsing);
 
   // For channel diversion from child to parent.
-  MOZ_MUST_USE nsresult DivertTo(nsIStreamListener* aListener);
-  MOZ_MUST_USE nsresult SuspendForDiversion();
+  void DivertTo(nsIStreamListener* aListener);
+  [[nodiscard]] nsresult SuspendForDiversion();
 
   void SetupInterception(const nsHttpResponseHead& aResponseHead);
   void SetupInterceptionAfterRedirect(bool aShouldIntercept);
@@ -51,11 +64,15 @@ class ParentChannelListener final : public nsIInterfaceRequestor,
   // Called to set a new listener which replaces the old one after a redirect.
   void SetListenerAfterRedirect(nsIStreamListener* aListener);
 
+  dom::CanonicalBrowsingContext* GetBrowsingContext() const {
+    return mBrowsingContext;
+  }
+
  private:
   virtual ~ParentChannelListener();
 
   // Private partner function to SuspendForDiversion.
-  MOZ_MUST_USE nsresult ResumeForDiversion();
+  void ResumeForDiversion();
 
   // Can be the original HttpChannelParent that created this object (normal
   // case), a different {HTTP|FTP}ChannelParent that we've been redirected to,
@@ -75,7 +92,7 @@ class ParentChannelListener final : public nsIInterfaceRequestor,
   // the interception takes place.
   bool mInterceptCanceled;
 
-  nsAutoPtr<nsHttpResponseHead> mSynthesizedResponseHead;
+  UniquePtr<nsHttpResponseHead> mSynthesizedResponseHead;
 
   // Handle to the channel wrapper if this channel has been intercepted.
   nsCOMPtr<nsIInterceptedChannel> mInterceptedChannel;
@@ -83,9 +100,19 @@ class ParentChannelListener final : public nsIInterfaceRequestor,
   // This will be populated with a real network controller if parent-side
   // interception is enabled.
   nsCOMPtr<nsINetworkInterceptController> mInterceptController;
+
+  RefPtr<dom::CanonicalBrowsingContext> mBrowsingContext;
+
+  // True if we received OnStartRequest for a nsIMultiPartChannel, and are
+  // expected AllPartsStopped to be called when complete.
+  bool mIsMultiPart = false;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(ParentChannelListener, PARENT_CHANNEL_LISTENER)
+
+inline nsISupports* ToSupports(ParentChannelListener* aDoc) {
+  return static_cast<nsIInterfaceRequestor*>(aDoc);
+}
 
 }  // namespace net
 }  // namespace mozilla

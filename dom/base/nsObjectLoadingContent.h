@@ -15,14 +15,12 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "nsIFrame.h"  // for WeakFrame only
 #include "nsImageLoadingContent.h"
 #include "nsIStreamListener.h"
 #include "nsIChannelEventSink.h"
-#include "nsIContentPolicy.h"
 #include "nsIObjectLoadingContent.h"
 #include "nsIRunnable.h"
-#include "nsIThreadInternal.h"
-#include "nsIFrame.h"
 #include "nsFrameLoaderOwner.h"
 
 class nsAsyncInstantiateEvent;
@@ -308,7 +306,7 @@ class nsObjectLoadingContent : public nsImageLoadingContent,
   /**
    * Destroys all loaded documents/plugins and releases references
    */
-  void DestroyContent();
+  void Destroy();
 
   static void Traverse(nsObjectLoadingContent* tmp,
                        nsCycleCollectionTraversalCallback& cb);

@@ -8,8 +8,6 @@
 #include "nsString.h"
 #include "nsIStringBundle.h"
 #include "nsStringBundleService.h"
-#include "nsISupportsPrimitives.h"
-#include "nsIMutableArray.h"
 #include "nsArrayEnumerator.h"
 #include "nscore.h"
 #include "nsMemory.h"
@@ -22,7 +20,6 @@
 #include "nsCOMArray.h"
 #include "nsTextFormatter.h"
 #include "nsErrorService.h"
-#include "nsICategoryManager.h"
 #include "nsContentUtils.h"
 #include "nsPersistentProperties.h"
 #include "nsQueryObject.h"
@@ -69,7 +66,6 @@ static const char kContentBundles[][52] = {
     "chrome://global/locale/commonDialogs.properties",
     "chrome://global/locale/css.properties",
     "chrome://global/locale/dom/dom.properties",
-    "chrome://global/locale/intl.properties",
     "chrome://global/locale/layout/HtmlForm.properties",
     "chrome://global/locale/layout/htmlparser.properties",
     "chrome://global/locale/layout_errors.properties",
@@ -78,7 +74,6 @@ static const char kContentBundles[][52] = {
     "chrome://global/locale/security/csp.properties",
     "chrome://global/locale/security/security.properties",
     "chrome://global/locale/svg/svg.properties",
-    "chrome://global/locale/xbl.properties",
     "chrome://global/locale/xul.properties",
     "chrome://necko/locale/necko.properties",
 };
@@ -314,7 +309,7 @@ already_AddRefed<T> nsStringBundleBase::Create(Args... args) {
 nsStringBundle::nsStringBundle(const char* aURLSpec)
     : nsStringBundleBase(aURLSpec) {}
 
-nsStringBundle::~nsStringBundle() {}
+nsStringBundle::~nsStringBundle() = default;
 
 NS_IMETHODIMP
 nsStringBundleBase::AsyncPreload() {
@@ -389,11 +384,10 @@ nsStringBundleBase::CollectReports(nsIHandleReportCallback* aHandleReport,
 
   path.AppendLiteral(")");
 
-  NS_NAMED_LITERAL_CSTRING(
-      desc,
+  constexpr auto desc =
       "A StringBundle instance representing the data in a (probably "
       "localized) .properties file. Data may be shared between "
-      "processes.");
+      "processes."_ns;
 
   aHandleReport->Callback(EmptyCString(), path, KIND_HEAP, UNITS_BYTES,
                           heapSize, desc, aData);
@@ -450,13 +444,13 @@ nsresult nsStringBundleBase::ParseProperties(nsIPersistentProperties** aProps) {
     nsCOMPtr<nsIChannel> channel;
     rv = NS_NewChannel(getter_AddRefs(channel), uri,
                        nsContentUtils::GetSystemPrincipal(),
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER);
 
     if (NS_FAILED(rv)) return rv;
 
     // It's a string bundle.  We expect a text/plain type, so set that as hint
-    channel->SetContentType(NS_LITERAL_CSTRING("text/plain"));
+    channel->SetContentType("text/plain"_ns);
 
     rv = channel->Open(getter_AddRefs(in));
     if (NS_FAILED(rv)) return rv;
@@ -684,9 +678,9 @@ struct bundleCacheEntry_t final : public LinkedListElement<bundleCacheEntry_t> {
   nsCString mHashKey;
   nsCOMPtr<nsIStringBundle> mBundle;
 
-  bundleCacheEntry_t() { MOZ_COUNT_CTOR(bundleCacheEntry_t); }
+  MOZ_COUNTED_DEFAULT_CTOR(bundleCacheEntry_t)
 
-  ~bundleCacheEntry_t() { MOZ_COUNT_DTOR(bundleCacheEntry_t); }
+  MOZ_COUNTED_DTOR(bundleCacheEntry_t)
 };
 
 nsStringBundleService::nsStringBundleService()

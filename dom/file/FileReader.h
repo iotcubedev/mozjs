@@ -27,6 +27,7 @@ namespace dom {
 
 class Blob;
 class DOMException;
+class OwningStringOrArrayBuffer;
 class StrongWorkerRef;
 class WeakWorkerRef;
 
@@ -69,8 +70,7 @@ class FileReader final : public DOMEventTargetHelper,
                                JS::Handle<JSObject*> aGivenProto) override;
 
   // WebIDL
-  static already_AddRefed<FileReader> Constructor(const GlobalObject& aGlobal,
-                                                  ErrorResult& aRv);
+  static already_AddRefed<FileReader> Constructor(const GlobalObject& aGlobal);
   void ReadAsArrayBuffer(JSContext* aCx, Blob& aBlob, ErrorResult& aRv) {
     ReadFileContent(aBlob, EmptyString(), FILE_AS_ARRAYBUFFER, aRv);
   }
@@ -94,8 +94,7 @@ class FileReader final : public DOMEventTargetHelper,
 
   DOMException* GetError() const { return mError; }
 
-  void GetResult(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
-                 ErrorResult& aRv);
+  void GetResult(JSContext* aCx, Nullable<OwningStringOrArrayBuffer>& aResult);
 
   IMPL_EVENT_HANDLER(loadstart)
   IMPL_EVENT_HANDLER(progress)
@@ -118,6 +117,8 @@ class FileReader final : public DOMEventTargetHelper,
   eDataFormat DataFormat() const { return mDataFormat; }
   const nsString& Result() const { return mResult; }
 
+  void InitialAsyncWait();
+
  private:
   virtual ~FileReader();
 
@@ -134,7 +135,7 @@ class FileReader final : public DOMEventTargetHelper,
   nsresult GetAsDataURL(Blob* aBlob, const char* aFileData, uint32_t aDataLen,
                         nsAString& aResult);
 
-  nsresult OnLoadEnd(nsresult aStatus);
+  void OnLoadEnd(nsresult aStatus);
 
   void StartProgressEventTimer();
   void ClearProgressEventTimer();
@@ -192,6 +193,10 @@ class FileReader final : public DOMEventTargetHelper,
   // This value is set when the reading starts in order to keep the worker alive
   // during the process.
   RefPtr<StrongWorkerRef> mStrongWorkerRef;
+
+  // Runnable to start the reading asynchronous.
+  class AsyncWaitRunnable;
+  RefPtr<AsyncWaitRunnable> mAsyncWaitRunnable;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(FileReader, FILEREADER_ID)

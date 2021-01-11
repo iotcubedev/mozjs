@@ -14,14 +14,12 @@
 #include "nsNodeInfoManager.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentPolicyUtils.h"
-#include "nsIPropertyBag2.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/PresShell.h"
 #include "nsObjectLoadingContent.h"
 #include "GeckoProfiler.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class PluginDocument final : public MediaDocument, public nsIPluginDocument {
  public:
@@ -106,7 +104,7 @@ PluginStreamListener::OnStartRequest(nsIRequest* request) {
   return MediaDocumentStreamListener::OnStartRequest(request);
 }
 
-PluginDocument::PluginDocument() {}
+PluginDocument::PluginDocument() = default;
 
 PluginDocument::~PluginDocument() = default;
 
@@ -155,7 +153,7 @@ nsresult PluginDocument::StartDocumentLoad(const char* aCommand,
   nsCOMPtr<nsIDocShellTreeItem> dsti(do_QueryInterface(aContainer));
   if (dsti) {
     bool isMsgPane = false;
-    dsti->NameEquals(NS_LITERAL_STRING("messagepane"), &isMsgPane);
+    dsti->NameEquals(u"messagepane"_ns, &isMsgPane);
     if (isMsgPane) {
       return NS_ERROR_FAILURE;
     }
@@ -197,7 +195,7 @@ nsresult PluginDocument::CreateSyntheticPluginDocument() {
   }
 
   // remove margins from body
-  NS_NAMED_LITERAL_STRING(zero, "0");
+  constexpr auto zero = u"0"_ns;
   body->SetAttr(kNameSpaceID_None, nsGkAtoms::marginwidth, zero, false);
   body->SetAttr(kNameSpaceID_None, nsGkAtoms::marginheight, zero, false);
 
@@ -210,11 +208,11 @@ nsresult PluginDocument::CreateSyntheticPluginDocument() {
   NS_ENSURE_SUCCESS(rv, rv);
 
   // make it a named element
-  mPluginContent->SetAttr(kNameSpaceID_None, nsGkAtoms::name,
-                          NS_LITERAL_STRING("plugin"), false);
+  mPluginContent->SetAttr(kNameSpaceID_None, nsGkAtoms::name, u"plugin"_ns,
+                          false);
 
   // fill viewport and auto-resize
-  NS_NAMED_LITERAL_STRING(percent100, "100%");
+  constexpr auto percent100 = u"100%"_ns;
   mPluginContent->SetAttr(kNameSpaceID_None, nsGkAtoms::width, percent100,
                           false);
   mPluginContent->SetAttr(kNameSpaceID_None, nsGkAtoms::height, percent100,
@@ -259,8 +257,7 @@ PluginDocument::Print() {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 nsresult NS_NewPluginDocument(mozilla::dom::Document** aResult) {
   auto* doc = new mozilla::dom::PluginDocument();

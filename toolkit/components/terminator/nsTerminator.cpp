@@ -28,10 +28,10 @@
 #include "nsAppDirectoryServiceDefs.h"
 
 #include "nsIObserverService.h"
-#include "nsIPrefService.h"
 #include "nsExceptionHandler.h"
 #include "GeckoProfiler.h"
 #include "nsThreadUtils.h"
+#include "nsXULAppAPI.h"
 
 #if defined(XP_WIN)
 #  include <windows.h>
@@ -43,6 +43,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/IntentionalCrash.h"
 #include "mozilla/MemoryChecking.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
@@ -50,6 +51,7 @@
 #include "mozilla/Unused.h"
 #include "mozilla/Telemetry.h"
 
+#include "mozilla/dom/IOUtils.h"
 #include "mozilla/dom/workerinternals/RuntimeService.h"
 
 // Normally, the number of milliseconds that AsyncShutdown waits until
@@ -177,6 +179,8 @@ void RunWatchdog(void* arg) {
       continue;
     }
 
+    NoteIntentionalCrash(XRE_GetProcessTypeString());
+
     // The shutdown steps are not completed yet. Let's report the last one.
     if (!sShutdownNotified) {
       const char* lastStep = nullptr;
@@ -223,16 +227,6 @@ void RunWatchdog(void* arg) {
 // thread rather than usual XPCOM I/O simply because we outlive XPCOM and its
 // threads.
 //
-
-// Utility class, used by UniquePtr<> to close nspr files.
-class PR_CloseDelete {
- public:
-  constexpr PR_CloseDelete() = default;
-
-  PR_CloseDelete(const PR_CloseDelete& aOther) = default;
-
-  void operator()(PRFileDesc* aPtr) const { PR_Close(aPtr); }
-};
 
 //
 // Communication between the main thread and the writer thread.
@@ -447,7 +441,7 @@ void nsTerminator::StartWriter() {
     return;
   }
 
-  rv = profLD->Append(NS_LITERAL_STRING("ShutdownDuration.json"));
+  rv = profLD->Append(u"ShutdownDuration.json"_ns);
   if (NS_FAILED(rv)) {
     return;
   }

@@ -11,10 +11,11 @@
 #include "nsStyleTransformMatrix.h"
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
-#include "nsSVGUtils.h"
+#include "mozilla/MotionPathUtils.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/StaticPrefs_svg.h"
 #include "mozilla/StyleAnimationValue.h"
+#include "mozilla/SVGUtils.h"
 #include "gfxMatrix.h"
 #include "gfxQuaternion.h"
 
@@ -47,11 +48,11 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
 
   mIsCached = true;
 
-  if (mFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT) {
+  if (mFrame->HasAnyStateBits(NS_FRAME_SVG_LAYOUT)) {
     if (!StaticPrefs::svg_transform_box_enabled()) {
       mX = -mFrame->GetPosition().x;
       mY = -mFrame->GetPosition().y;
-      Size contextSize = nsSVGUtils::GetContextSize(mFrame);
+      Size contextSize = SVGUtils::GetContextSize(mFrame);
       mWidth = nsPresContext::CSSPixelsToAppUnits(contextSize.width);
       mHeight = nsPresContext::CSSPixelsToAppUnits(contextSize.height);
     } else if (mFrame->StyleDisplay()->mTransformBox ==
@@ -80,7 +81,7 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
       // transform is relative to {0,0} in current user space.
       mX = -mFrame->GetPosition().x;
       mY = -mFrame->GetPosition().y;
-      Size contextSize = nsSVGUtils::GetContextSize(mFrame);
+      Size contextSize = SVGUtils::GetContextSize(mFrame);
       mWidth = nsPresContext::CSSPixelsToAppUnits(contextSize.width);
       mHeight = nsPresContext::CSSPixelsToAppUnits(contextSize.height);
     }
@@ -115,11 +116,11 @@ void TransformReferenceBox::EnsureDimensionsAreCached() {
   mHeight = rect.Height();
 }
 
-void TransformReferenceBox::Init(const nsSize& aDimensions) {
+void TransformReferenceBox::Init(const nsRect& aDimensions) {
   MOZ_ASSERT(!mFrame && !mIsCached);
 
-  mX = 0;
-  mY = 0;
+  mX = aDimensions.x;
+  mY = aDimensions.y;
   mWidth = aDimensions.width;
   mHeight = aDimensions.height;
   mIsCached = true;
@@ -492,19 +493,15 @@ static void ProcessTranslate(Matrix4x4& aMatrix,
     case StyleTranslate::Tag::None:
       return;
     case StyleTranslate::Tag::Translate:
-      return ProcessTranslate(aMatrix, aTranslate.AsTranslate()._0,
-                              aTranslate.AsTranslate()._1, aRefBox);
-    case StyleTranslate::Tag::Translate3D:
-      return ProcessTranslate3D(aMatrix, aTranslate.AsTranslate3D()._0,
-                                aTranslate.AsTranslate3D()._1,
-                                aTranslate.AsTranslate3D()._2, aRefBox);
+      return ProcessTranslate3D(aMatrix, aTranslate.AsTranslate()._0,
+                                aTranslate.AsTranslate()._1,
+                                aTranslate.AsTranslate()._2, aRefBox);
     default:
       MOZ_ASSERT_UNREACHABLE("Huh?");
   }
 }
 
-static void ProcessRotate(Matrix4x4& aMatrix, const StyleRotate& aRotate,
-                          TransformReferenceBox& aRefBox) {
+static void ProcessRotate(Matrix4x4& aMatrix, const StyleRotate& aRotate) {
   switch (aRotate.tag) {
     case StyleRotate::Tag::None:
       return;
@@ -520,17 +517,13 @@ static void ProcessRotate(Matrix4x4& aMatrix, const StyleRotate& aRotate,
   }
 }
 
-static void ProcessScale(Matrix4x4& aMatrix, const StyleScale& aScale,
-                         TransformReferenceBox& aRefBox) {
+static void ProcessScale(Matrix4x4& aMatrix, const StyleScale& aScale) {
   switch (aScale.tag) {
     case StyleScale::Tag::None:
       return;
     case StyleScale::Tag::Scale:
       return ProcessScaleHelper(aMatrix, aScale.AsScale()._0,
-                                aScale.AsScale()._1, 1.0f);
-    case StyleScale::Tag::Scale3D:
-      return ProcessScaleHelper(aMatrix, aScale.AsScale3D()._0,
-                                aScale.AsScale3D()._1, aScale.AsScale3D()._2);
+                                aScale.AsScale()._1, aScale.AsScale()._2);
     default:
       MOZ_ASSERT_UNREACHABLE("Huh?");
   }
@@ -538,15 +531,15 @@ static void ProcessScale(Matrix4x4& aMatrix, const StyleScale& aScale,
 
 Matrix4x4 ReadTransforms(const StyleTranslate& aTranslate,
                          const StyleRotate& aRotate, const StyleScale& aScale,
-                         const Maybe<MotionPathData>& aMotion,
+                         const Maybe<ResolvedMotionPathData>& aMotion,
                          const StyleTransform& aTransform,
                          TransformReferenceBox& aRefBox,
                          float aAppUnitsPerMatrixUnit) {
   Matrix4x4 result;
 
   ProcessTranslate(result, aTranslate, aRefBox);
-  ProcessRotate(result, aRotate, aRefBox);
-  ProcessScale(result, aScale, aRefBox);
+  ProcessRotate(result, aRotate);
+  ProcessScale(result, aScale);
 
   if (aMotion.isSome()) {
     // Create the equivalent translate and rotate function, according to the
@@ -574,6 +567,15 @@ Matrix4x4 ReadTransforms(const StyleTranslate& aTranslate,
   result.PostScale(scale, scale, scale);
 
   return result;
+}
+
+mozilla::CSSPoint Convert2DPosition(const mozilla::LengthPercentage& aX,
+                                    const mozilla::LengthPercentage& aY,
+                                    const CSSSize& aSize) {
+  return {
+      aX.ResolveToCSSPixels(aSize.width),
+      aY.ResolveToCSSPixels(aSize.height),
+  };
 }
 
 CSSPoint Convert2DPosition(const LengthPercentage& aX,

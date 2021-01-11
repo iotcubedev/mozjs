@@ -19,12 +19,17 @@
 #include "js/AllocPolicy.h"
 #include "js/MemoryMetrics.h"
 #include "js/UniquePtr.h"
+#include "threading/Mutex.h"
 
 namespace js {
 namespace gc {
 
 class Arena;
 class ArenaCellSet;
+
+#ifdef DEBUG
+extern bool CurrentThreadHasLockedGC();
+#endif
 
 /*
  * BufferableRef represents an abstract reference for use in the generational
@@ -127,9 +132,6 @@ class StoreBuffer {
     /* Trace the source of all edges in the store buffer. */
     void trace(TenuringTracer& mover);
 
-    template <typename CellType>
-    void traceTyped(TenuringTracer& mover);
-
     size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
       return stores_.shallowSizeOfExcludingThis(mallocSizeOf);
     }
@@ -143,11 +145,15 @@ class StoreBuffer {
 
   struct WholeCellBuffer {
     UniquePtr<LifoAlloc> storage_;
-    ArenaCellSet* head_;
+    ArenaCellSet* stringHead_;
+    ArenaCellSet* nonStringHead_;
     StoreBuffer* owner_;
 
     explicit WholeCellBuffer(StoreBuffer* owner)
-        : storage_(nullptr), head_(nullptr), owner_(owner) {}
+        : storage_(nullptr),
+          stringHead_(nullptr),
+          nonStringHead_(nullptr),
+          owner_(owner) {}
 
     MOZ_MUST_USE bool init();
 
@@ -167,8 +173,9 @@ class StoreBuffer {
     }
 
     bool isEmpty() const {
-      MOZ_ASSERT_IF(!head_, !storage_ || storage_->isEmpty());
-      return !head_;
+      MOZ_ASSERT_IF(!stringHead_ && !nonStringHead_,
+                    !storage_ || storage_->isEmpty());
+      return !stringHead_ && !nonStringHead_;
     }
 
    private:
@@ -239,20 +246,19 @@ class StoreBuffer {
 
   template <typename Edge>
   struct PointerEdgeHasher {
-    typedef Edge Lookup;
+    using Lookup = Edge;
     static HashNumber hash(const Lookup& l) {
       return mozilla::HashGeneric(l.edge);
     }
     static bool match(const Edge& k, const Lookup& l) { return k == l; }
   };
 
+  template <typename T>
   struct CellPtrEdge {
-    Cell** edge;
+    T** edge = nullptr;
 
-    CellPtrEdge() : edge(nullptr) {}
-    explicit CellPtrEdge(Cell** v) : edge(v) {}
-    explicit CellPtrEdge(JSString** v) : edge(reinterpret_cast<Cell**>(v)) {}
-    explicit CellPtrEdge(JSObject** v) : edge(reinterpret_cast<Cell**>(v)) {}
+    CellPtrEdge() = default;
+    explicit CellPtrEdge(T** v) : edge(v) {}
     bool operator==(const CellPtrEdge& other) const {
       return edge == other.edge;
     }
@@ -265,21 +271,16 @@ class StoreBuffer {
       return !nursery.isInside(edge);
     }
 
-    template <typename CellType>
-    void traceTyped(TenuringTracer& mover) const;
-
-    CellPtrEdge tagged() const {
-      return CellPtrEdge((Cell**)(uintptr_t(edge) | 1));
-    }
-    CellPtrEdge untagged() const {
-      return CellPtrEdge((Cell**)(uintptr_t(edge) & ~1));
-    }
-    bool isTagged() const { return bool(uintptr_t(edge) & 1); }
+    void trace(TenuringTracer& mover) const;
 
     explicit operator bool() const { return edge != nullptr; }
 
-    typedef PointerEdgeHasher<CellPtrEdge> Hasher;
+    using Hasher = PointerEdgeHasher<CellPtrEdge<T>>;
   };
+
+  using ObjectPtrEdge = CellPtrEdge<JSObject>;
+  using StringPtrEdge = CellPtrEdge<JSString>;
+  using BigIntPtrEdge = CellPtrEdge<JS::BigInt>;
 
   struct ValueEdge {
     JS::Value* edge;
@@ -301,17 +302,9 @@ class StoreBuffer {
 
     void trace(TenuringTracer& mover) const;
 
-    ValueEdge tagged() const {
-      return ValueEdge((JS::Value*)(uintptr_t(edge) | 1));
-    }
-    ValueEdge untagged() const {
-      return ValueEdge((JS::Value*)(uintptr_t(edge) & ~1));
-    }
-    bool isTagged() const { return bool(uintptr_t(edge) & 1); }
-
     explicit operator bool() const { return edge != nullptr; }
 
-    typedef PointerEdgeHasher<ValueEdge> Hasher;
+    using Hasher = PointerEdgeHasher<ValueEdge>;
   };
 
   struct SlotsEdge {
@@ -373,8 +366,8 @@ class StoreBuffer {
     // overlap.
     void merge(const SlotsEdge& other) {
       MOZ_ASSERT(overlaps(other));
-      uint32_t end = Max(start_ + count_, other.start_ + other.count_);
-      start_ = Min(start_, other.start_);
+      uint32_t end = std::max(start_ + count_, other.start_ + other.count_);
+      start_ = std::min(start_, other.start_);
       count_ = end - start_;
     }
 
@@ -386,8 +379,8 @@ class StoreBuffer {
 
     explicit operator bool() const { return objectAndKind_ != 0; }
 
-    typedef struct {
-      typedef SlotsEdge Lookup;
+    typedef struct Hasher {
+      using Lookup = SlotsEdge;
       static HashNumber hash(const Lookup& l) {
         return mozilla::HashGeneric(l.objectAndKind_, l.start_, l.count_);
       }
@@ -395,10 +388,22 @@ class StoreBuffer {
     } Hasher;
   };
 
+  // The GC runs tasks that may access the storebuffer in parallel and so must
+  // take a lock. The mutator may only access the storebuffer from the main
+  // thread.
+  inline void CheckAccess() const {
+#ifdef DEBUG
+    if (JS::RuntimeHeapIsBusy()) {
+      MOZ_ASSERT(lock_.ownedByCurrentThread());
+    } else {
+      MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
+    }
+#endif
+  }
+
   template <typename Buffer, typename Edge>
   void unput(Buffer& buffer, const Edge& edge) {
-    MOZ_ASSERT(!JS::RuntimeHeapIsBusy());
-    MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
+    CheckAccess();
     if (!isEnabled()) {
       return;
     }
@@ -408,8 +413,7 @@ class StoreBuffer {
 
   template <typename Buffer, typename Edge>
   void put(Buffer& buffer, const Edge& edge) {
-    MOZ_ASSERT(!JS::RuntimeHeapIsBusy());
-    MOZ_ASSERT(CurrentThreadCanAccessRuntime(runtime_));
+    CheckAccess();
     if (!isEnabled()) {
       return;
     }
@@ -419,24 +423,33 @@ class StoreBuffer {
     }
   }
 
+  Mutex lock_;
+
   MonoTypeBuffer<ValueEdge> bufferVal;
-  MonoTypeBuffer<CellPtrEdge> bufStrCell;
-  MonoTypeBuffer<CellPtrEdge> bufObjCell;
+  MonoTypeBuffer<StringPtrEdge> bufStrCell;
+  MonoTypeBuffer<BigIntPtrEdge> bufBigIntCell;
+  MonoTypeBuffer<ObjectPtrEdge> bufObjCell;
   MonoTypeBuffer<SlotsEdge> bufferSlot;
   WholeCellBuffer bufferWholeCell;
   GenericBuffer bufferGeneric;
-  bool cancelIonCompilations_;
 
   JSRuntime* runtime_;
   const Nursery& nursery_;
 
   bool aboutToOverflow_;
   bool enabled_;
+  bool cancelIonCompilations_;
+  bool hasTypeSetPointers_;
+  bool mayHavePointersToDeadCells_;
 #ifdef DEBUG
   bool mEntered; /* For ReentrancyGuard. */
 #endif
 
  public:
+#ifdef DEBUG
+  bool markingNondeduplicatable;
+#endif
+
   explicit StoreBuffer(JSRuntime* rt, const Nursery& nursery);
   MOZ_MUST_USE bool enable();
 
@@ -452,15 +465,33 @@ class StoreBuffer {
 
   bool cancelIonCompilations() const { return cancelIonCompilations_; }
 
+  /*
+   * Type inference data structures are moved during sweeping, so if we we are
+   * to sweep them then we must make sure that the storebuffer has no pointers
+   * into them.
+   */
+  bool hasTypeSetPointers() const { return hasTypeSetPointers_; }
+
+  /*
+   * Brain transplants may add whole cell buffer entires for dead cells. We must
+   * evict the nursery prior to sweeping arenas if any such entries are present.
+   */
+  bool mayHavePointersToDeadCells() const {
+    return mayHavePointersToDeadCells_;
+  }
+
   /* Insert a single edge into the buffer/remembered set. */
   void putValue(JS::Value* vp) { put(bufferVal, ValueEdge(vp)); }
   void unputValue(JS::Value* vp) { unput(bufferVal, ValueEdge(vp)); }
 
-  void putCell(JSString** strp) { put(bufStrCell, CellPtrEdge(strp)); }
-  void unputCell(JSString** strp) { unput(bufStrCell, CellPtrEdge(strp)); }
+  void putCell(JSString** strp) { put(bufStrCell, StringPtrEdge(strp)); }
+  void unputCell(JSString** strp) { unput(bufStrCell, StringPtrEdge(strp)); }
 
-  void putCell(JSObject** strp) { put(bufObjCell, CellPtrEdge(strp)); }
-  void unputCell(JSObject** strp) { unput(bufObjCell, CellPtrEdge(strp)); }
+  void putCell(JS::BigInt** bip) { put(bufBigIntCell, BigIntPtrEdge(bip)); }
+  void unputCell(JS::BigInt** bip) { unput(bufBigIntCell, BigIntPtrEdge(bip)); }
+
+  void putCell(JSObject** strp) { put(bufObjCell, ObjectPtrEdge(strp)); }
+  void unputCell(JSObject** strp) { unput(bufObjCell, ObjectPtrEdge(strp)); }
 
   void putSlot(NativeObject* obj, int kind, uint32_t start, uint32_t count) {
     SlotsEdge edge(obj, kind, start, count);
@@ -480,12 +511,15 @@ class StoreBuffer {
   }
 
   void setShouldCancelIonCompilations() { cancelIonCompilations_ = true; }
+  void setHasTypeSetPointers() { hasTypeSetPointers_ = true; }
+  void setMayHavePointersToDeadCells() { mayHavePointersToDeadCells_ = true; }
 
   /* Methods to trace the source of all edges in the store buffer. */
   void traceValues(TenuringTracer& mover) { bufferVal.trace(mover); }
   void traceCells(TenuringTracer& mover) {
-    bufStrCell.traceTyped<JSString>(mover);
-    bufObjCell.traceTyped<JSObject>(mover);
+    bufStrCell.trace(mover);
+    bufBigIntCell.trace(mover);
+    bufObjCell.trace(mover);
   }
   void traceSlots(TenuringTracer& mover) { bufferSlot.trace(mover); }
   void traceWholeCells(TenuringTracer& mover) { bufferWholeCell.trace(mover); }
@@ -498,6 +532,10 @@ class StoreBuffer {
                               JS::GCSizes* sizes);
 
   void checkEmpty() const;
+
+  // For use by the GC only.
+  void lock() { lock_.lock(); }
+  void unlock() { lock_.unlock(); }
 };
 
 // A set of cells in an arena used to implement the whole cell store buffer.
@@ -554,6 +592,8 @@ class ArenaCellSet {
   void check() const;
 
   WordT getWord(size_t wordIndex) const { return bits.getWord(wordIndex); }
+
+  void trace(TenuringTracer& mover);
 
   // Sentinel object used for all empty sets.
   //

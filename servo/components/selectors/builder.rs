@@ -17,7 +17,7 @@
 //! is non-trivial. This module encapsulates those details and presents an
 //! easy-to-use API for the parser.
 
-use crate::parser::{Combinator, Component, SelectorImpl};
+use crate::parser::{Combinator, Component, NonTSPseudoClass, SelectorImpl};
 use crate::sink::Push;
 use servo_arc::{Arc, HeaderWithLength, ThinArc};
 use smallvec::{self, SmallVec};
@@ -142,7 +142,7 @@ impl<Impl: SelectorImpl> SelectorBuilder<Impl> {
         let iter = SelectorBuilderIter {
             current_simple_selectors: current.iter(),
             rest_of_simple_selectors: rest,
-            combinators: self.combinators.drain().rev(),
+            combinators: self.combinators.drain(..).rev(),
         };
 
         Arc::into_thin(Arc::from_header_and_iter(header, iter))
@@ -152,7 +152,7 @@ impl<Impl: SelectorImpl> SelectorBuilder<Impl> {
 struct SelectorBuilderIter<'a, Impl: SelectorImpl> {
     current_simple_selectors: slice::Iter<'a, Component<Impl>>,
     rest_of_simple_selectors: &'a [Component<Impl>],
-    combinators: iter::Rev<smallvec::Drain<'a, (Combinator, usize)>>,
+    combinators: iter::Rev<smallvec::Drain<'a, [(Combinator, usize); 16]>>,
 }
 
 impl<'a, Impl: SelectorImpl> ExactSizeIterator for SelectorBuilderIter<'a, Impl> {
@@ -322,10 +322,27 @@ where
             Component::NthLastOfType(..) |
             Component::FirstOfType |
             Component::LastOfType |
-            Component::OnlyOfType |
-            Component::NonTSPseudoClass(..) => {
+            Component::OnlyOfType => {
                 specificity.class_like_selectors += 1;
             },
+            Component::NonTSPseudoClass(ref pseudo) => {
+                if !pseudo.has_zero_specificity() {
+                    specificity.class_like_selectors += 1;
+                }
+            },
+            Component::Is(ref list) => {
+                // https://drafts.csswg.org/selectors/#specificity-rules:
+                //
+                //     The specificity of an :is() pseudo-class is replaced by the
+                //     specificity of the most specific complex selector in its
+                //     selector list argument.
+                let mut max = 0;
+                for selector in &**list {
+                    max = std::cmp::max(selector.specificity(), max);
+                }
+                *specificity += Specificity::from(max);
+            },
+            Component::Where(..) |
             Component::ExplicitUniversalType |
             Component::ExplicitAnyNamespace |
             Component::ExplicitNoNamespace |

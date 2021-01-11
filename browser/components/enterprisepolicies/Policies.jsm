@@ -14,6 +14,15 @@ const { AppConstants } = ChromeUtils.import(
 
 XPCOMUtils.defineLazyServiceGetters(this, {
   gCertDB: ["@mozilla.org/security/x509certdb;1", "nsIX509CertDB"],
+  gExternalProtocolService: [
+    "@mozilla.org/uriloader/external-protocol-service;1",
+    "nsIExternalProtocolService",
+  ],
+  gHandlerService: [
+    "@mozilla.org/uriloader/handler-service;1",
+    "nsIHandlerService",
+  ],
+  gMIMEService: ["@mozilla.org/mime;1", "nsIMIMEService"],
   gXulStore: ["@mozilla.org/xul/xulstore;1", "nsIXULStore"],
 });
 
@@ -77,59 +86,89 @@ var Policies = {
     },
   },
 
-  AppUpdateURL: {
-    onBeforeAddons(manager, param) {
-      setDefaultPref("app.update.url", param.href);
+  AppAutoUpdate: {
+    onBeforeUIStartup(manager, param) {
+      // Logic feels a bit reversed here, but it's correct. If AppAutoUpdate is
+      // true, we disallow turning off auto updating, and visa versa.
+      if (param) {
+        manager.disallowFeature("app-auto-updates-off");
+      } else {
+        manager.disallowFeature("app-auto-updates-on");
+      }
     },
+  },
+
+  AppUpdateURL: {
+    // No implementation needed here. UpdateService.jsm will check for this
+    // policy directly when determining the update URL.
   },
 
   Authentication: {
     onBeforeAddons(manager, param) {
+      let locked = true;
+      if ("Locked" in param) {
+        locked = param.Locked;
+      }
+
       if ("SPNEGO" in param) {
-        setAndLockPref(
+        setDefaultPref(
           "network.negotiate-auth.trusted-uris",
-          param.SPNEGO.join(", ")
+          param.SPNEGO.join(", "),
+          locked
         );
       }
       if ("Delegated" in param) {
-        setAndLockPref(
+        setDefaultPref(
           "network.negotiate-auth.delegation-uris",
-          param.Delegated.join(", ")
+          param.Delegated.join(", "),
+          locked
         );
       }
       if ("NTLM" in param) {
-        setAndLockPref(
+        setDefaultPref(
           "network.automatic-ntlm-auth.trusted-uris",
-          param.NTLM.join(", ")
+          param.NTLM.join(", "),
+          locked
         );
       }
       if ("AllowNonFQDN" in param) {
         if ("NTLM" in param.AllowNonFQDN) {
-          setAndLockPref(
+          setDefaultPref(
             "network.automatic-ntlm-auth.allow-non-fqdn",
-            param.AllowNonFQDN.NTLM
+            param.AllowNonFQDN.NTLM,
+            locked
           );
         }
         if ("SPNEGO" in param.AllowNonFQDN) {
-          setAndLockPref(
+          setDefaultPref(
             "network.negotiate-auth.allow-non-fqdn",
-            param.AllowNonFQDN.SPNEGO
+            param.AllowNonFQDN.SPNEGO,
+            locked
           );
         }
       }
       if ("AllowProxies" in param) {
         if ("NTLM" in param.AllowProxies) {
-          setAndLockPref(
+          setDefaultPref(
             "network.automatic-ntlm-auth.allow-proxies",
-            param.AllowProxies.NTLM
+            param.AllowProxies.NTLM,
+            locked
           );
         }
         if ("SPNEGO" in param.AllowProxies) {
-          setAndLockPref(
+          setDefaultPref(
             "network.negotiate-auth.allow-proxies",
-            param.AllowProxies.SPNEGO
+            param.AllowProxies.SPNEGO,
+            locked
           );
         }
+      }
+      if ("PrivateBrowsing" in param) {
+        setDefaultPref(
+          "network.auth.private-browsing-sso",
+          param.PrivateBrowsing,
+          locked
+        );
       }
     },
   },
@@ -239,41 +278,41 @@ var Policies = {
                 return;
               }
               let certFile = reader.result;
+              let certFileArray = [];
+              for (let i = 0; i < certFile.length; i++) {
+                certFileArray.push(certFile.charCodeAt(i));
+              }
               let cert;
               try {
-                cert = gCertDB.constructX509(certFile);
+                cert = gCertDB.constructX509(certFileArray);
               } catch (e) {
+                log.debug(
+                  `constructX509 failed with error '${e}' - trying constructX509FromBase64.`
+                );
                 try {
                   // It might be PEM instead of DER.
                   cert = gCertDB.constructX509FromBase64(pemToBase64(certFile));
                 } catch (ex) {
-                  log.error(`Unable to add certificate - ${certfile.path}`);
+                  log.error(`Unable to add certificate - ${certfile.path}`, ex);
                 }
               }
-              let now = Date.now() / 1000;
               if (cert) {
-                gCertDB.asyncVerifyCertAtTime(
-                  cert,
-                  0x0008 /* certificateUsageSSLCA */,
-                  0,
-                  null,
-                  now,
-                  (aPRErrorCode, aVerifiedChain, aHasEVPolicy) => {
-                    if (aPRErrorCode == Cr.NS_OK) {
-                      // Certificate is already installed.
-                      return;
-                    }
-                    try {
-                      gCertDB.addCert(certFile, "CT,CT,");
-                    } catch (e) {
-                      // It might be PEM instead of DER.
-                      gCertDB.addCertFromBase64(
-                        pemToBase64(certFile),
-                        "CT,CT,"
-                      );
-                    }
-                  }
-                );
+                if (
+                  gCertDB.isCertTrusted(
+                    cert,
+                    Ci.nsIX509Cert.CA_CERT,
+                    Ci.nsIX509CertDB.TRUSTED_SSL
+                  )
+                ) {
+                  // Certificate is already installed.
+                  return;
+                }
+                try {
+                  gCertDB.addCert(certFile, "CT,CT,");
+                } catch (e) {
+                  // It might be PEM instead of DER.
+                  gCertDB.addCertFromBase64(pemToBase64(certFile), "CT,CT,");
+                }
               }
             };
             reader.readAsBinaryString(file);
@@ -286,6 +325,25 @@ var Policies = {
   Cookies: {
     onBeforeUIStartup(manager, param) {
       addAllowDenyPermissions("cookie", param.Allow, param.Block);
+
+      if (param.AllowSession) {
+        for (let origin of param.AllowSession) {
+          try {
+            Services.perms.addFromPrincipal(
+              Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+                origin
+              ),
+              "cookie",
+              Ci.nsICookiePermission.ACCESS_SESSION,
+              Ci.nsIPermissionManager.EXPIRE_POLICY
+            );
+          } catch (ex) {
+            log.error(
+              `Unable to add cookie session permission - ${origin.href}`
+            );
+          }
+        }
+      }
 
       if (param.Block) {
         const hosts = param.Block.map(url => url.hostname)
@@ -375,6 +433,83 @@ var Policies = {
     },
   },
 
+  DisabledCiphers: {
+    onBeforeAddons(manager, param) {
+      if ("TLS_DHE_RSA_WITH_AES_128_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.dhe_rsa_aes_128_sha",
+          !param.TLS_DHE_RSA_WITH_AES_128_CBC_SHA
+        );
+      }
+      if ("TLS_DHE_RSA_WITH_AES_256_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.dhe_rsa_aes_256_sha",
+          !param.TLS_DHE_RSA_WITH_AES_256_CBC_SHA
+        );
+      }
+      if ("TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.ecdhe_rsa_aes_128_sha",
+          !param.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+        );
+      }
+      if ("TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.ecdhe_rsa_aes_256_sha",
+          !param.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+        );
+      }
+      if ("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256" in param) {
+        setAndLockPref(
+          "security.ssl3.ecdhe_rsa_aes_128_gcm_sha256",
+          !param.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        );
+      }
+      if ("TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256" in param) {
+        setAndLockPref(
+          "security.ssl3.ecdhe_ecdsa_aes_128_gcm_sha256",
+          !param.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        );
+      }
+      if ("TLS_RSA_WITH_AES_128_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.rsa_aes_128_sha",
+          !param.TLS_RSA_WITH_AES_128_CBC_SHA
+        );
+      }
+      if ("TLS_RSA_WITH_AES_256_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.rsa_aes_256_sha",
+          !param.TLS_RSA_WITH_AES_256_CBC_SHA
+        );
+      }
+      if ("TLS_RSA_WITH_3DES_EDE_CBC_SHA" in param) {
+        setAndLockPref(
+          "security.ssl3.rsa_des_ede3_sha",
+          !param.TLS_RSA_WITH_3DES_EDE_CBC_SHA
+        );
+      }
+      if ("TLS_RSA_WITH_AES_128_GCM_SHA256" in param) {
+        setAndLockPref(
+          "security.ssl3.rsa_aes_128_gcm_sha256",
+          !param.TLS_RSA_WITH_AES_128_GCM_SHA256
+        );
+      }
+      if ("TLS_RSA_WITH_AES_256_GCM_SHA384" in param) {
+        setAndLockPref(
+          "security.ssl3.rsa_aes_256_gcm_sha384",
+          !param.TLS_RSA_WITH_AES_256_GCM_SHA384
+        );
+      }
+    },
+  },
+
+  DisableDefaultBrowserAgent: {
+    // The implementation of this policy is in the default browser agent itself
+    // (/toolkit/mozapps/defaultagent); we need an entry for it here so that it
+    // shows up in about:policies as a real policy and not as an error.
+  },
+
   DisableDeveloperTools: {
     onBeforeAddons(manager, param) {
       if (param) {
@@ -385,6 +520,7 @@ var Policies = {
         blockAboutPage(manager, "about:devtools");
         blockAboutPage(manager, "about:debugging");
         blockAboutPage(manager, "about:devtools-toolbox");
+        blockAboutPage(manager, "about:profiling");
       }
     },
   },
@@ -401,7 +537,8 @@ var Policies = {
     onBeforeAddons(manager, param) {
       if (param) {
         setAndLockPref("identity.fxaccounts.enabled", false);
-        setAndLockPref("trailhead.firstrun.branches", "nofirstrun");
+        setAndLockPref("trailhead.firstrun.branches", "nofirstrun-empty");
+        setAndLockPref("browser.aboutwelcome.enabled", false);
       }
     },
   },
@@ -450,6 +587,14 @@ var Policies = {
     onBeforeUIStartup(manager, param) {
       if (param) {
         manager.disallowFeature("createMasterPassword");
+      }
+    },
+  },
+
+  DisablePasswordReveal: {
+    onBeforeUIStartup(manager, param) {
+      if (param) {
+        manager.disallowFeature("passwordReveal");
       }
     },
   },
@@ -564,29 +709,75 @@ var Policies = {
 
   DisplayMenuBar: {
     onBeforeUIStartup(manager, param) {
-      let value = (!param).toString();
-      // This policy is meant to change the default behavior, not to force it.
-      // If this policy was alreay applied and the user chose to re-hide the
-      // menu bar, do not show it again.
-      runOncePerModification("displayMenuBar", value, () => {
+      let value;
+      if (
+        typeof param === "boolean" ||
+        param == "default-on" ||
+        param == "default-off"
+      ) {
+        switch (param) {
+          case "default-on":
+            value = "false";
+            break;
+          case "default-off":
+            value = "true";
+            break;
+          default:
+            value = (!param).toString();
+            break;
+        }
+        // This policy is meant to change the default behavior, not to force it.
+        // If this policy was already applied and the user chose to re-hide the
+        // menu bar, do not show it again.
+        runOncePerModification("displayMenuBar", value, () => {
+          gXulStore.setValue(
+            BROWSER_DOCUMENT_URL,
+            "toolbar-menubar",
+            "autohide",
+            value
+          );
+        });
+      } else {
+        switch (param) {
+          case "always":
+            value = "false";
+            break;
+          case "never":
+            // Make sure Alt key doesn't show the menubar
+            setAndLockPref("ui.key.menuAccessKeyFocuses", false);
+            value = "true";
+            break;
+        }
         gXulStore.setValue(
           BROWSER_DOCUMENT_URL,
           "toolbar-menubar",
           "autohide",
           value
         );
-      });
+        manager.disallowFeature("hideShowMenuBar");
+      }
     },
   },
 
   DNSOverHTTPS: {
     onBeforeAddons(manager, param) {
+      let locked = false;
+      if ("Locked" in param) {
+        locked = param.Locked;
+      }
       if ("Enabled" in param) {
         let mode = param.Enabled ? 2 : 5;
-        setDefaultPref("network.trr.mode", mode, param.Locked);
+        setDefaultPref("network.trr.mode", mode, locked);
       }
-      if (param.ProviderURL) {
-        setDefaultPref("network.trr.uri", param.ProviderURL.href, param.Locked);
+      if ("ProviderURL" in param) {
+        setDefaultPref("network.trr.uri", param.ProviderURL.href, locked);
+      }
+      if ("ExcludedDomains" in param) {
+        setDefaultPref(
+          "network.trr.excluded-domains",
+          param.ExcludedDomains.join(","),
+          locked
+        );
       }
     },
   },
@@ -638,6 +829,21 @@ var Policies = {
           param.Fingerprinting,
           param.Locked
         );
+      }
+      if ("Exceptions" in param) {
+        addAllowDenyPermissions("trackingprotection", param.Exceptions);
+      }
+    },
+  },
+
+  EncryptedMediaExtensions: {
+    onBeforeAddons(manager, param) {
+      let locked = false;
+      if ("Locked" in param) {
+        locked = param.Locked;
+      }
+      if ("Enabled" in param) {
+        setDefaultPref("media.eme.enabled", param.Enabled, locked);
       }
     },
   },
@@ -719,11 +925,27 @@ var Policies = {
           blockAllExtensions = true;
           // Turn off discovery pane in about:addons
           setAndLockPref("extensions.getAddons.showPane", false);
+          // Turn off recommendations
+          setAndLockPref(
+            "extensions.htmlaboutaddons.recommendations.enable",
+            false
+          );
           // Block about:debugging
           blockAboutPage(manager, "about:debugging");
         }
+        if ("restricted_domains" in extensionSettings["*"]) {
+          let restrictedDomains = Services.prefs
+            .getCharPref("extensions.webextensions.restrictedDomains")
+            .split(",");
+          setAndLockPref(
+            "extensions.webextensions.restrictedDomains",
+            restrictedDomains
+              .concat(extensionSettings["*"].restricted_domains)
+              .join(",")
+          );
+        }
       }
-      let { addons } = await AddonManager.getActiveAddons();
+      let addons = await AddonManager.getAllAddons();
       let allowedExtensions = [];
       for (let extensionID in extensionSettings) {
         if (extensionID == "*") {
@@ -740,12 +962,11 @@ var Policies = {
             if (!extensionSettings[extensionID].install_url) {
               throw new Error(`Missing install_url for ${extensionID}`);
             }
-            if (!addons.find(addon => addon.id == extensionID)) {
-              installAddonFromURL(
-                extensionSettings[extensionID].install_url,
-                extensionID
-              );
-            }
+            installAddonFromURL(
+              extensionSettings[extensionID].install_url,
+              extensionID,
+              addons.find(addon => addon.id == extensionID)
+            );
             manager.disallowFeature(`uninstall-extension:${extensionID}`);
             if (
               extensionSettings[extensionID].installation_mode ==
@@ -832,7 +1053,7 @@ var Policies = {
       }
       if ("Pocket" in param) {
         setDefaultPref(
-          "browser.newtabpage.activity-stream.feeds.section.topstories",
+          "browser.newtabpage.activity-stream.feeds.system.topstories",
           param.Pocket,
           locked
         );
@@ -868,6 +1089,41 @@ var Policies = {
     },
   },
 
+  Handlers: {
+    onBeforeAddons(manager, param) {
+      if ("mimeTypes" in param) {
+        for (let mimeType in param.mimeTypes) {
+          let mimeInfo = param.mimeTypes[mimeType];
+          let realMIMEInfo = gMIMEService.getFromTypeAndExtension(mimeType, "");
+          processMIMEInfo(mimeInfo, realMIMEInfo);
+        }
+      }
+      if ("extensions" in param) {
+        for (let extension in param.extensions) {
+          let mimeInfo = param.extensions[extension];
+          try {
+            let realMIMEInfo = gMIMEService.getFromTypeAndExtension(
+              "",
+              extension
+            );
+            processMIMEInfo(mimeInfo, realMIMEInfo);
+          } catch (e) {
+            log.error(`Invalid file extension (${extension})`);
+          }
+        }
+      }
+      if ("schemes" in param) {
+        for (let scheme in param.schemes) {
+          let handlerInfo = param.schemes[scheme];
+          let realHandlerInfo = gExternalProtocolService.getProtocolHandlerInfo(
+            scheme
+          );
+          processMIMEInfo(handlerInfo, realHandlerInfo);
+        }
+      }
+    },
+  },
+
   HardwareAcceleration: {
     onBeforeAddons(manager, param) {
       if (!param) {
@@ -878,12 +1134,17 @@ var Policies = {
 
   Homepage: {
     onBeforeUIStartup(manager, param) {
+      if ("StartPage" in param && param.StartPage == "none") {
+        // For blank startpage, we use about:blank rather
+        // than messing with browser.startup.page
+        param.URL = new URL("about:blank");
+      }
       // |homepages| will be a string containing a pipe-separated ('|') list of
       // URLs because that is what the "Home page" section of about:preferences
       // (and therefore what the pref |browser.startup.homepage|) accepts.
-      if (param.URL) {
+      if ("URL" in param) {
         let homepages = param.URL.href;
-        if (param.Additional && param.Additional.length > 0) {
+        if (param.Additional && param.Additional.length) {
           homepages += "|" + param.Additional.map(url => url.href).join("|");
         }
         setDefaultPref("browser.startup.homepage", homepages, param.Locked);
@@ -908,17 +1169,20 @@ var Policies = {
       if (param.StartPage) {
         let prefValue;
         switch (param.StartPage) {
-          case "none":
-            prefValue = 0;
-            break;
           case "homepage":
+          case "homepage-locked":
+          case "none":
             prefValue = 1;
             break;
           case "previous-session":
             prefValue = 3;
             break;
         }
-        setDefaultPref("browser.startup.page", prefValue, param.Locked);
+        setDefaultPref(
+          "browser.startup.page",
+          prefValue,
+          param.StartPage == "homepage-locked"
+        );
       }
     },
   },
@@ -948,6 +1212,21 @@ var Policies = {
 
   LegacyProfiles: {
     // Handled in nsToolkitProfileService.cpp (Windows only)
+  },
+
+  LegacySameSiteCookieBehaviorEnabled: {
+    onBeforeAddons(manager, param) {
+      setDefaultPref("network.cookie.sameSite.laxByDefault", !param);
+    },
+  },
+
+  LegacySameSiteCookieBehaviorEnabledForDomainList: {
+    onBeforeAddons(manager, param) {
+      setDefaultPref(
+        "network.cookie.sameSite.laxByDefault.disabledHosts",
+        param.join(",")
+      );
+    },
   },
 
   LocalFileLinks: {
@@ -1006,7 +1285,8 @@ var Policies = {
     onProfileAfterChange(manager, param) {
       let url = param ? param.href : "";
       setAndLockPref("startup.homepage_welcome_url", url);
-      setAndLockPref("trailhead.firstrun.branches", "nofirstrun");
+      setAndLockPref("trailhead.firstrun.branches", "nofirstrun-empty");
+      setAndLockPref("browser.aboutwelcome.enabled", false);
     },
   },
 
@@ -1025,10 +1305,20 @@ var Policies = {
     onBeforeUIStartup(manager, param) {
       if (!param) {
         blockAboutPage(manager, "about:logins", true);
-        gBlockedChromePages.push("passwordManager.xul");
         setAndLockPref("pref.privacy.disable_button.view_passwords", true);
       }
       setAndLockPref("signon.rememberSignons", param);
+    },
+  },
+
+  PDFjs: {
+    onBeforeAddons(manager, param) {
+      if ("Enabled" in param) {
+        setAndLockPref("pdfjs.disabled", !param.Enabled);
+      }
+      if ("EnablePermissions" in param) {
+        setAndLockPref("pdfjs.enablePermissions", !param.Enabled);
+      }
     },
   },
 
@@ -1052,6 +1342,33 @@ var Policies = {
         setDefaultPermission("microphone", param.Microphone);
       }
 
+      if (param.Autoplay) {
+        addAllowDenyPermissions(
+          "autoplay-media",
+          param.Autoplay.Allow,
+          param.Autoplay.Block
+        );
+        if ("Default" in param.Autoplay) {
+          let prefValue;
+          switch (param.Autoplay.Default) {
+            case "allow-audio-video":
+              prefValue = 0;
+              break;
+            case "block-audio":
+              prefValue = 1;
+              break;
+            case "block-audio-video":
+              prefValue = 5;
+              break;
+          }
+          setDefaultPref(
+            "media.autoplay.default",
+            prefValue,
+            param.Autoplay.Locked
+          );
+        }
+      }
+
       if (param.Location) {
         addAllowDenyPermissions(
           "geo",
@@ -1068,6 +1385,31 @@ var Policies = {
           param.Notifications.Block
         );
         setDefaultPermission("desktop-notification", param.Notifications);
+      }
+
+      if ("VirtualReality" in param) {
+        addAllowDenyPermissions(
+          "xr",
+          param.VirtualReality.Allow,
+          param.VirtualReality.Block
+        );
+        setDefaultPermission("xr", param.VirtualReality);
+      }
+    },
+  },
+
+  PictureInPicture: {
+    onBeforeAddons(manager, param) {
+      if ("Enabled" in param) {
+        setDefaultPref(
+          "media.videocontrols.picture-in-picture.video-toggle.enabled",
+          param.Enabled
+        );
+      }
+      if (param.Locked) {
+        Services.prefs.lockPref(
+          "media.videocontrols.picture-in-picture.video-toggle.enabled"
+        );
       }
     },
   },
@@ -1096,6 +1438,16 @@ var Policies = {
     },
   },
 
+  PrimaryPassword: {
+    onAllWindowsRestored(manager, param) {
+      if (param) {
+        manager.disallowFeature("removeMasterPassword");
+      } else {
+        manager.disallowFeature("createMasterPassword");
+      }
+    },
+  },
+
   PromptForDownloadLocation: {
     onBeforeAddons(manager, param) {
       setAndLockPref("browser.download.useDownloadDir", !param);
@@ -1115,11 +1467,21 @@ var Policies = {
 
   RequestedLocales: {
     onBeforeAddons(manager, param) {
+      let requestedLocales;
       if (Array.isArray(param)) {
-        Services.locale.requestedLocales = param;
+        requestedLocales = param;
+      } else if (param) {
+        requestedLocales = param.split(",");
       } else {
-        Services.locale.requestedLocales = param.split(",");
+        requestedLocales = [];
       }
+      runOncePerModification(
+        "requestedLocales",
+        JSON.stringify(requestedLocales),
+        () => {
+          Services.locale.requestedLocales = requestedLocales;
+        }
+      );
     },
   },
 
@@ -1138,47 +1500,100 @@ var Policies = {
           setAndLockPref("privacy.clearOnShutdown.offlineApps", true);
         }
       } else {
-        setAndLockPref("privacy.sanitize.sanitizeOnShutdown", true);
+        let locked = true;
+        // Needed to preserve original behavior in perpetuity.
+        let lockDefaultPrefs = true;
+        if ("Locked" in param) {
+          locked = param.Locked;
+          lockDefaultPrefs = false;
+        }
+        setDefaultPref("privacy.sanitize.sanitizeOnShutdown", true, locked);
         if ("Cache" in param) {
-          setAndLockPref("privacy.clearOnShutdown.cache", param.Cache);
+          setDefaultPref("privacy.clearOnShutdown.cache", param.Cache, locked);
         } else {
-          setAndLockPref("privacy.clearOnShutdown.cache", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.cache",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("Cookies" in param) {
-          setAndLockPref("privacy.clearOnShutdown.cookies", param.Cookies);
+          setDefaultPref(
+            "privacy.clearOnShutdown.cookies",
+            param.Cookies,
+            locked
+          );
         } else {
-          setAndLockPref("privacy.clearOnShutdown.cookies", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.cookies",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("Downloads" in param) {
-          setAndLockPref("privacy.clearOnShutdown.downloads", param.Downloads);
+          setDefaultPref(
+            "privacy.clearOnShutdown.downloads",
+            param.Downloads,
+            locked
+          );
         } else {
-          setAndLockPref("privacy.clearOnShutdown.downloads", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.downloads",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("FormData" in param) {
-          setAndLockPref("privacy.clearOnShutdown.formdata", param.FormData);
+          setDefaultPref(
+            "privacy.clearOnShutdown.formdata",
+            param.FormData,
+            locked
+          );
         } else {
-          setAndLockPref("privacy.clearOnShutdown.formdata", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.formdata",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("History" in param) {
-          setAndLockPref("privacy.clearOnShutdown.history", param.History);
+          setDefaultPref(
+            "privacy.clearOnShutdown.history",
+            param.History,
+            locked
+          );
         } else {
-          setAndLockPref("privacy.clearOnShutdown.history", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.history",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("Sessions" in param) {
-          setAndLockPref("privacy.clearOnShutdown.sessions", param.Sessions);
+          setDefaultPref(
+            "privacy.clearOnShutdown.sessions",
+            param.Sessions,
+            locked
+          );
         } else {
-          setAndLockPref("privacy.clearOnShutdown.sessions", false);
+          setDefaultPref(
+            "privacy.clearOnShutdown.sessions",
+            false,
+            lockDefaultPrefs
+          );
         }
         if ("SiteSettings" in param) {
-          setAndLockPref(
+          setDefaultPref(
             "privacy.clearOnShutdown.siteSettings",
-            param.SiteSettings
+            param.SiteSettings,
+            locked
           );
         }
         if ("OfflineApps" in param) {
-          setAndLockPref(
+          setDefaultPref(
             "privacy.clearOnShutdown.offlineApps",
-            param.OfflineApps
+            param.OfflineApps,
+            locked
           );
         }
       }
@@ -1239,22 +1654,26 @@ var Policies = {
             JSON.stringify(engineNameList),
             async function() {
               for (let newEngine of param.Add) {
-                let newEngineParameters = {
-                  template: newEngine.URLTemplate,
-                  iconURL: newEngine.IconURL ? newEngine.IconURL.href : null,
-                  alias: newEngine.Alias,
+                let manifest = {
                   description: newEngine.Description,
-                  method: newEngine.Method,
-                  postData: newEngine.PostData,
-                  suggestURL: newEngine.SuggestURLTemplate,
-                  extensionID: "set-via-policy",
-                  queryCharset: "UTF-8",
+                  iconURL: newEngine.IconURL ? newEngine.IconURL.href : null,
+                  chrome_settings_overrides: {
+                    search_provider: {
+                      name: newEngine.Name,
+                      // Policies currently only use this encoding, see bug 1649164.
+                      encoding: "windows-1252",
+                      search_url: encodeURI(newEngine.URLTemplate),
+                      keyword: newEngine.Alias,
+                      search_url_post_params:
+                        newEngine.Method == "POST"
+                          ? newEngine.PostData
+                          : undefined,
+                      suggestUrlGetParams: newEngine.SuggestURLTemplate,
+                    },
+                  },
                 };
                 try {
-                  await Services.search.addEngineWithDetails(
-                    newEngine.Name,
-                    newEngineParameters
-                  );
+                  await Services.search.addPolicyEngine(manifest);
                 } catch (ex) {
                   log.error("Unable to add search engine", ex);
                 }
@@ -1286,6 +1705,40 @@ var Policies = {
                   await Services.search.setDefault(defaultEngine);
                 } catch (ex) {
                   log.error("Unable to set the default search engine", ex);
+                }
+              }
+            }
+          );
+        }
+        if (param.DefaultPrivate) {
+          await runOncePerModification(
+            "setDefaultPrivateSearchEngine",
+            param.DefaultPrivate,
+            async () => {
+              let defaultPrivateEngine;
+              try {
+                defaultPrivateEngine = Services.search.getEngineByName(
+                  param.DefaultPrivate
+                );
+                if (!defaultPrivateEngine) {
+                  throw new Error("No engine by that name could be found");
+                }
+              } catch (ex) {
+                log.error(
+                  `Search engine lookup failed when attempting to set ` +
+                    `the default private engine. Requested engine was ` +
+                    `"${param.DefaultPrivate}".`,
+                  ex
+                );
+              }
+              if (defaultPrivateEngine) {
+                try {
+                  await Services.search.setDefaultPrivate(defaultPrivateEngine);
+                } catch (ex) {
+                  log.error(
+                    "Unable to set the default private search engine",
+                    ex
+                  );
                 }
               }
             }
@@ -1375,6 +1828,43 @@ var Policies = {
   SupportMenu: {
     onProfileAfterChange(manager, param) {
       manager.setSupportMenu(param);
+    },
+  },
+
+  UserMessaging: {
+    onBeforeAddons(manager, param) {
+      let locked = false;
+      if ("Locked" in param) {
+        locked = param.Locked;
+      }
+      if ("WhatsNew" in param) {
+        setDefaultPref(
+          "browser.messaging-system.whatsNewPanel.enabled",
+          param.WhatsNew,
+          locked
+        );
+      }
+      if ("ExtensionRecommendations" in param) {
+        setDefaultPref(
+          "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons",
+          param.ExtensionRecommendations,
+          locked
+        );
+      }
+      if ("FeatureRecommendations" in param) {
+        setDefaultPref(
+          "browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features",
+          param.FeatureRecommendations,
+          locked
+        );
+      }
+      if ("UrlbarInterventions" in param && !param.UrlbarInterventions) {
+        manager.disallowFeature("urlbarinterventions");
+      }
+      if ("SkipOnboarding") {
+        setAndLockPref("trailhead.firstrun.branches", "nofirstrun-empty");
+        setAndLockPref("browser.aboutwelcome.enabled", false);
+      }
     },
   },
 
@@ -1602,7 +2092,15 @@ function replacePathVariables(path) {
  * Helper function that installs an addon from a URL
  * and verifies that the addon ID matches.
  */
-function installAddonFromURL(url, extensionID) {
+function installAddonFromURL(url, extensionID, addon) {
+  if (
+    addon &&
+    addon.sourceURI.spec == url &&
+    !addon.sourceURI.schemeIs("file")
+  ) {
+    // It's the same addon, don't reinstall.
+    return;
+  }
   AddonManager.getInstallForURL(url, {
     telemetryInfo: { source: "enterprise-policy" },
   }).then(install => {
@@ -1616,15 +2114,21 @@ function installAddonFromURL(url, extensionID) {
       onDownloadEnded: install => {
         if (extensionID && install.addon.id != extensionID) {
           log.error(
-            `Add-on downloaded from ${url} had unexpected id (got ${
-              install.addon.id
-            } expected ${extensionID})`
+            `Add-on downloaded from ${url} had unexpected id (got ${install.addon.id} expected ${extensionID})`
           );
           install.removeListener(listener);
           install.cancel();
         }
         if (install.addon && install.addon.appDisabled) {
           log.error(`Incompatible add-on - ${url}`);
+          install.removeListener(listener);
+          install.cancel();
+        }
+        if (
+          addon &&
+          Services.vc.compare(addon.version, install.addon.version) == 0
+        ) {
+          log.debug("Installation cancelled because versions are the same");
           install.removeListener(listener);
           install.cancel();
         }
@@ -1680,7 +2184,7 @@ function blockAboutPage(manager, feature, neededOnContentProcess = false) {
   gBlockedChromePages.push(fileName);
   if (feature == "about:config") {
     // Hide old page until it is removed
-    gBlockedChromePages.push("config.xul");
+    gBlockedChromePages.push("config.xhtml");
   }
 }
 
@@ -1706,7 +2210,7 @@ let ChromeURLBlockPolicy = {
   classDescription: "Policy Engine Content Policy",
   contractID: "@mozilla-org/policy-engine-content-policy-service;1",
   classID: Components.ID("{ba7b9118-cabc-4845-8b26-4215d2a59ed7}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPolicy]),
+  QueryInterface: ChromeUtils.generateQI(["nsIContentPolicy"]),
   createInstance(outer, iid) {
     return this.QueryInterface(iid);
   },
@@ -1732,7 +2236,75 @@ function addChromeURLBlocker() {
 
 function pemToBase64(pem) {
   return pem
-    .replace(/-----BEGIN CERTIFICATE-----/, "")
-    .replace(/-----END CERTIFICATE-----/, "")
+    .replace(/(.*)-----BEGIN CERTIFICATE-----/, "")
+    .replace(/-----END CERTIFICATE-----(.*)/, "")
     .replace(/[\r\n]/g, "");
+}
+
+function processMIMEInfo(mimeInfo, realMIMEInfo) {
+  if ("handlers" in mimeInfo) {
+    let firstHandler = true;
+    for (let handler of mimeInfo.handlers) {
+      // handler can be null which means they don't
+      // want a preferred handler.
+      if (handler) {
+        let handlerApp;
+        if ("path" in handler) {
+          try {
+            let file = new FileUtils.File(handler.path);
+            handlerApp = Cc[
+              "@mozilla.org/uriloader/local-handler-app;1"
+            ].createInstance(Ci.nsILocalHandlerApp);
+            handlerApp.executable = file;
+          } catch (ex) {
+            log.error(`Unable to create handler executable (${handler.path})`);
+            continue;
+          }
+        } else if ("uriTemplate" in handler) {
+          let templateURL = new URL(handler.uriTemplate);
+          if (templateURL.protocol != "https:") {
+            log.error(`Web handler must be https (${handler.uriTemplate})`);
+            continue;
+          }
+          if (
+            !templateURL.pathname.includes("%s") &&
+            !templateURL.search.includes("%s")
+          ) {
+            log.error(`Web handler must contain %s (${handler.uriTemplate})`);
+            continue;
+          }
+          handlerApp = Cc[
+            "@mozilla.org/uriloader/web-handler-app;1"
+          ].createInstance(Ci.nsIWebHandlerApp);
+          handlerApp.uriTemplate = handler.uriTemplate;
+        } else {
+          log.error("Invalid handler");
+          continue;
+        }
+        if ("name" in handler) {
+          handlerApp.name = handler.name;
+        }
+        realMIMEInfo.possibleApplicationHandlers.appendElement(handlerApp);
+        if (firstHandler) {
+          realMIMEInfo.preferredApplicationHandler = handlerApp;
+        }
+      }
+      firstHandler = false;
+    }
+  }
+  if ("action" in mimeInfo) {
+    let action = realMIMEInfo[mimeInfo.action];
+    if (
+      action == realMIMEInfo.useHelperApp &&
+      !realMIMEInfo.possibleApplicationHandlers.length
+    ) {
+      log.error("useHelperApp requires a handler");
+      return;
+    }
+    realMIMEInfo.preferredAction = action;
+  }
+  if ("ask" in mimeInfo) {
+    realMIMEInfo.alwaysAskBeforeHandling = mimeInfo.ask;
+  }
+  gHandlerService.store(realMIMEInfo);
 }

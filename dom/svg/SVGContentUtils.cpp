@@ -17,6 +17,7 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SVGContextPaint.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/TextUtils.h"
 #include "nsComputedDOMStyle.h"
 #include "nsContainerFrame.h"
@@ -25,7 +26,6 @@
 #include "nsIScriptError.h"
 #include "nsLayoutUtils.h"
 #include "nsMathUtils.h"
-#include "nsSVGUtils.h"
 #include "nsWhitespaceTokenizer.h"
 #include "SVGAnimationElement.h"
 #include "SVGAnimatedPreserveAspectRatio.h"
@@ -166,7 +166,10 @@ static DashState GetStrokeDashData(
   Float totalLengthOfDashes = 0.0, totalLengthOfGaps = 0.0;
   Float pathScale = 1.0;
 
-  if (aContextPaint && aStyleSVG->StrokeDasharrayFromObject()) {
+  if (aStyleSVG->mStrokeDasharray.IsContextValue()) {
+    if (!aContextPaint) {
+      return eContinuousStroke;
+    }
     const FallibleTArray<Float>& dashSrc = aContextPaint->GetStrokeDashArray();
     dashArrayLength = dashSrc.Length();
     if (dashArrayLength <= 0) {
@@ -184,8 +187,8 @@ static DashState GetStrokeDashData(
       (i % 2 ? totalLengthOfGaps : totalLengthOfDashes) += dashSrc[i];
     }
   } else {
-    const auto& dasharray = aStyleSVG->mStrokeDasharray;
-    dashArrayLength = aStyleSVG->mStrokeDasharray.Length();
+    const auto dasharray = aStyleSVG->mStrokeDasharray.AsValues().AsSpan();
+    dashArrayLength = dasharray.Length();
     if (dashArrayLength <= 0) {
       return eContinuousStroke;
     }
@@ -239,15 +242,17 @@ static DashState GetStrokeDashData(
   // We can only return eNoStroke if the value of stroke-linecap isn't
   // adding caps to zero length dashes.
   if (totalLengthOfDashes <= 0 &&
-      aStyleSVG->mStrokeLinecap == NS_STYLE_STROKE_LINECAP_BUTT) {
+      aStyleSVG->mStrokeLinecap == StyleStrokeLinecap::Butt) {
     return eNoStroke;
   }
 
-  if (aContextPaint && aStyleSVG->StrokeDashoffsetFromObject()) {
-    aStrokeOptions->mDashOffset = Float(aContextPaint->GetStrokeDashOffset());
+  if (aStyleSVG->mStrokeDashoffset.IsContextValue()) {
+    aStrokeOptions->mDashOffset =
+        Float(aContextPaint ? aContextPaint->GetStrokeDashOffset() : 0);
   } else {
     aStrokeOptions->mDashOffset =
-        SVGContentUtils::CoordToFloat(aElement, aStyleSVG->mStrokeDashoffset) *
+        SVGContentUtils::CoordToFloat(
+            aElement, aStyleSVG->mStrokeDashoffset.AsLengthPercentage()) *
         pathScale;
   }
 
@@ -286,13 +291,13 @@ void SVGContentUtils::GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
     aStrokeOptions->mMiterLimit = Float(styleSVG->mStrokeMiterlimit);
 
     switch (styleSVG->mStrokeLinejoin) {
-      case NS_STYLE_STROKE_LINEJOIN_MITER:
+      case StyleStrokeLinejoin::Miter:
         aStrokeOptions->mLineJoin = JoinStyle::MITER_OR_BEVEL;
         break;
-      case NS_STYLE_STROKE_LINEJOIN_ROUND:
+      case StyleStrokeLinejoin::Round:
         aStrokeOptions->mLineJoin = JoinStyle::ROUND;
         break;
-      case NS_STYLE_STROKE_LINEJOIN_BEVEL:
+      case StyleStrokeLinejoin::Bevel:
         aStrokeOptions->mLineJoin = JoinStyle::BEVEL;
         break;
     }
@@ -304,13 +309,13 @@ void SVGContentUtils::GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
       aStrokeOptions->mLineCap = CapStyle::BUTT;
     } else {
       switch (styleSVG->mStrokeLinecap) {
-        case NS_STYLE_STROKE_LINECAP_BUTT:
+        case StyleStrokeLinecap::Butt:
           aStrokeOptions->mLineCap = CapStyle::BUTT;
           break;
-        case NS_STYLE_STROKE_LINECAP_ROUND:
+        case StyleStrokeLinecap::Round:
           aStrokeOptions->mLineCap = CapStyle::ROUND;
           break;
-        case NS_STYLE_STROKE_LINECAP_SQUARE:
+        case StyleStrokeLinecap::Square:
           aStrokeOptions->mLineCap = CapStyle::SQUARE;
           break;
       }
@@ -332,12 +337,12 @@ Float SVGContentUtils::GetStrokeWidth(SVGElement* aElement,
   auto doCompute = [&](ComputedStyle const* computedStyle) {
     const nsStyleSVG* styleSVG = computedStyle->StyleSVG();
 
-    if (aContextPaint && styleSVG->StrokeWidthFromObject()) {
-      res = aContextPaint->GetStrokeWidth();
-      return;
+    if (styleSVG->mStrokeWidth.IsContextValue()) {
+      res = aContextPaint ? aContextPaint->GetStrokeWidth() : 1.0;
+    } else {
+      res = SVGContentUtils::CoordToFloat(
+          aElement, styleSVG->mStrokeWidth.AsLengthPercentage());
     }
-
-    res = SVGContentUtils::CoordToFloat(aElement, styleSVG->mStrokeWidth);
   };
 
   if (aComputedStyle) {
@@ -383,8 +388,7 @@ float SVGContentUtils::GetFontSize(ComputedStyle* aComputedStyle,
   MOZ_ASSERT(aComputedStyle);
   MOZ_ASSERT(aPresContext);
 
-  nscoord fontSize = aComputedStyle->StyleFont()->mSize;
-  return nsPresContext::AppUnitsToFloatCSSPixels(fontSize) /
+  return aComputedStyle->StyleFont()->mSize.ToCSSPixels() /
          aPresContext->EffectiveTextZoom();
 }
 
@@ -437,9 +441,9 @@ float SVGContentUtils::GetFontXHeight(ComputedStyle* aComputedStyle,
 }
 nsresult SVGContentUtils::ReportToConsole(Document* doc, const char* aWarning,
                                           const nsTArray<nsString>& aParams) {
-  return nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("SVG"), doc,
-      nsContentUtils::eSVG_PROPERTIES, aWarning, aParams);
+  return nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "SVG"_ns,
+                                         doc, nsContentUtils::eSVG_PROPERTIES,
+                                         aWarning, aParams);
 }
 
 bool SVGContentUtils::EstablishesViewport(nsIContent* aContent) {
@@ -477,7 +481,7 @@ static gfx::Matrix GetCTMInternal(SVGElement* aElement, bool aScreenCTM,
     gfxMatrix ret;
 
     if (auto* f = e->GetPrimaryFrame()) {
-      ret = nsSVGUtils::GetTransformMatrixInUserSpace(f);
+      ret = SVGUtils::GetTransformMatrixInUserSpace(f);
     } else {
       // FIXME: Ideally we should also return the correct matrix
       // for display:none, but currently transform related code relies
@@ -809,10 +813,13 @@ float SVGContentUtils::CoordToFloat(SVGElement* aContent,
     SVGViewportElement* ctx = aContent->GetCtx();
     return CSSCoord(ctx ? ctx->GetLength(SVGContentUtils::XY) : 0.0f);
   });
-  if (aLength.clamping_mode == StyleAllowedNumericType::NonNegative) {
-    result = std::max(result, 0.0f);
-  } else {
-    MOZ_ASSERT(aLength.clamping_mode == StyleAllowedNumericType::All);
+  if (aLength.IsCalc()) {
+    const auto& calc = aLength.AsCalc();
+    if (calc.clamping_mode == StyleAllowedNumericType::NonNegative) {
+      result = std::max(result, 0.0f);
+    } else {
+      MOZ_ASSERT(calc.clamping_mode == StyleAllowedNumericType::All);
+    }
   }
   return result;
 }
@@ -830,7 +837,7 @@ already_AddRefed<gfx::Path> SVGContentUtils::GetPath(
   RefPtr<PathBuilder> builder =
       drawTarget->CreatePathBuilder(FillRule::FILL_WINDING);
 
-  return pathData.BuildPath(builder, NS_STYLE_STROKE_LINECAP_BUTT, 1);
+  return pathData.BuildPath(builder, StyleStrokeLinecap::Butt, 1);
 }
 
 bool SVGContentUtils::ShapeTypeHasNoCorners(const nsIContent* aContent) {

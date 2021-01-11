@@ -89,20 +89,21 @@ class TestMemoryUsage(AwsyTestCase):
         # Indicate that we're using tp6 in the perf data.
         self._extra_opts = ["tp6"]
 
+        if self.marionette.get_pref('fission.autostart'):
+            self._extra_opts.append("fission")
+
         # Now we setup the mitm proxy with our tp6 pageset.
         tp6_pageset_manifest = os.path.join(AWSY_PATH, 'tp6-pageset.manifest')
         config = {
             'playback_tool': 'mitmproxy',
             'playback_version': '4.0.4',
-            'playback_binary_manifest': 'mitmproxy-rel-bin-4.0.4-{platform}.manifest',
             'playback_pageset_manifest': tp6_pageset_manifest,
-            'playback_upstream_cert': False,
             'platform': mozinfo.os,
             'obj_path': self._webroot_dir,
             'binary': self._binary,
             'run_local': self._run_local,
             'app': 'firefox',
-            'host': 'localhost',
+            'host': '127.0.0.1',
             'ignore_mitmdump_exit_failure': True,
         }
 
@@ -162,19 +163,13 @@ class TestMemoryUsage(AwsyTestCase):
     def clear_preloaded_browser(self):
         """
         Clears out the preloaded browser.
-
-        Note: Does nothing on older builds that don't have a
-              `gBrowser.removePreloadedBrowser` method.
         """
         self.logger.info("closing preloaded browser")
         script = """
             if (window.NewTabPagePreloading) {
                 return NewTabPagePreloading.removePreloadedBrowser(window);
             }
-            if ("removePreloadedBrowser" in gBrowser) {
-                return gBrowser.removePreloadedBrowser();
-            }
-            return "gBrowser.removePreloadedBrowser not available";
+            return "NewTabPagePreloading.removePreloadedBrowser not available";
             """
         try:
             result = self.marionette.execute_script(script,

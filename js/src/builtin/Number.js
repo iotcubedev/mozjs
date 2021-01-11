@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#if ENABLE_INTL_API
+#if JS_HAS_INTL_API
 var numberFormatCache = new Record();
 
 /**
@@ -13,8 +13,8 @@ var numberFormatCache = new Record();
  * Spec: ECMAScript Internationalization API Specification, 13.2.1.
  */
 function Number_toLocaleString() {
-    // Steps 1-2.  Note that valueOf enforces "this Number value" restrictions.
-    var x = callFunction(std_Number_valueOf, this);
+    // Steps 1-2.
+    var x = callFunction(ThisNumberValueForToLocaleString, this);
 
     // Steps 2-3.
     var locales = arguments.length > 0 ? arguments[0] : undefined;
@@ -35,9 +35,9 @@ function Number_toLocaleString() {
     }
 
     // Step 5.
-    return intl_FormatNumber(numberFormat, x, /* formatToParts = */ false);
+    return intl_FormatNumber(numberFormat, x, /* formatToParts = */ false, /* unitStyle = */ false);
 }
-#endif  // ENABLE_INTL_API
+#endif  // JS_HAS_INTL_API
 
 // ES6 draft ES6 20.1.2.4
 function Number_isFinite(num) {

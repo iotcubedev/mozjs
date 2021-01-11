@@ -37,7 +37,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
   // Go ahead and init the transition table.
   if (!mTransitionTable) {
     // Automatic miss. Build the table
-    mTransitionTable = new TransitionTable();
+    mTransitionTable = MakeUnique<TransitionTable>();
   }
 
   // The first transition is always made off the supplied pseudo-element.
@@ -75,7 +75,7 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
         aPresContext->StyleSet()->ResolveXULTreePseudoStyle(
             aContent->AsElement(), aPseudoElement, aStyle, aInputWord);
 
-    // Normally we rely on nsFrame::Init / RestyleManager to call this, but
+    // Normally we rely on nsIFrame::Init / RestyleManager to call this, but
     // these are weird and don't use a frame, yet ::-moz-tree-twisty definitely
     // pokes at list-style-image.
     newResult->StartImageLoads(*aPresContext->Document());
@@ -92,10 +92,10 @@ ComputedStyle* nsTreeStyleCache::GetComputedStyle(
     // Put the ComputedStyle in our table, transferring the owning reference to
     // the table.
     if (!mCache) {
-      mCache = new ComputedStyleCache();
+      mCache = MakeUnique<ComputedStyleCache>();
     }
     result = newResult.get();
-    mCache->Put(currState, newResult.forget());
+    mCache->Put(currState, std::move(newResult));
   }
 
   return result;

@@ -64,11 +64,13 @@ class WebRenderTextureHost : public TextureHost {
 
   virtual void PrepareForUse() override;
 
-  wr::ExternalImageId GetExternalImageKey() { return mExternalImageId; }
+  wr::ExternalImageId GetExternalImageKey();
 
   int32_t GetRGBStride();
 
   bool HasIntermediateBuffer() const override;
+
+  bool NeedsDeferredDeletion() const override;
 
   uint32_t NumSubTextures() override;
 
@@ -80,18 +82,15 @@ class WebRenderTextureHost : public TextureHost {
   void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-                        const Range<wr::ImageKey>& aImageKeys) override;
+                        const Range<wr::ImageKey>& aImageKeys,
+                        const bool aPreferCompositorSurface) override;
 
   bool NeedsYFlip() const override;
 
   void MaybeNofityForUse(wr::TransactionBuilder& aTxn);
 
  protected:
-  void CreateRenderTextureHost(const SurfaceDescriptor& aDesc,
-                               TextureHost* aTexture);
-
   RefPtr<TextureHost> mWrappedTextureHost;
-  wr::ExternalImageId mExternalImageId;
 };
 
 }  // namespace layers

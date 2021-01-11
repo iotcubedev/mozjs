@@ -63,7 +63,10 @@ impl<Value> Spacing<Value> {
     where
         F: FnOnce(&ParserContext, &mut Parser<'i, 't>) -> Result<Value, ParseError<'i>>,
     {
-        if input.try(|i| i.expect_ident_matching("normal")).is_ok() {
+        if input
+            .try_parse(|i| i.expect_ident_matching("normal"))
+            .is_ok()
+        {
             return Ok(Spacing::Normal);
         }
         parse(context, input).map(Spacing::Value)
@@ -123,8 +126,8 @@ impl<N, L> LineHeight<N, L> {
     }
 }
 
-/// Implements type for text-underline-offset and text-decoration-thickness
-/// which take the grammar of auto | from-font | <length>
+/// Implements type for text-decoration-thickness
+/// which takes the grammar of auto | from-font | <length> | <percentage>
 ///
 /// https://drafts.csswg.org/css-text-decor-4/
 #[repr(C, u8)]
@@ -148,7 +151,7 @@ impl<N, L> LineHeight<N, L> {
 )]
 #[allow(missing_docs)]
 pub enum GenericTextDecorationLength<L> {
-    Length(L),
+    LengthPercentage(L),
     Auto,
     FromFont,
 }

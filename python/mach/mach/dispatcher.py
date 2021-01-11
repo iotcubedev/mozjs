@@ -124,7 +124,7 @@ class CommandAction(argparse.Action):
                     self._handle_command_help(parser, command, args)
                     sys.exit(0)
         else:
-            raise NoCommandError()
+            raise NoCommandError(namespace)
 
         # First see if the this is a user-defined alias
         if command in self._context.settings.alias:
@@ -137,8 +137,15 @@ class CommandAction(argparse.Action):
             # Try to find similar commands, may raise UnknownCommandError.
             command = self._suggest_command(command)
 
+        # This is used by the `mach` driver to find the command name amidst
+        # global arguments.
+        if getattr(self._context, 'get_command', False) is True:
+            setattr(namespace, 'command', command)
+            return
+
         handler = self._mach_registrar.command_handlers.get(command)
 
+        prog = command
         usage = '%(prog)s [global arguments] ' + command + \
             ' [command arguments]'
 
@@ -154,6 +161,7 @@ class CommandAction(argparse.Action):
             elif args[0] in handler.subcommand_handlers:
                 subcommand = args[0]
                 handler = handler.subcommand_handlers[subcommand]
+                prog = prog + ' ' + subcommand
                 usage = '%(prog)s [global arguments] ' + command + ' ' + \
                     subcommand + ' [command arguments]'
                 args.pop(0)
@@ -173,6 +181,7 @@ class CommandAction(argparse.Action):
         if handler.parser:
             subparser = handler.parser
             subparser.context = self._context
+            subparser.prog = subparser.prog + ' ' + prog
             for arg in subparser._actions[:]:
                 if arg.nargs == argparse.REMAINDER:
                     subparser._actions.remove(arg)
@@ -194,7 +203,7 @@ class CommandAction(argparse.Action):
                 # pick any extra argument, wherever they are.
                 # Assume a limited CommandArgument for those arguments.
                 assert len(arg[0]) == 1
-                assert all(k in ('default', 'nargs', 'help') for k in arg[1])
+                assert all(k in ('default', 'nargs', 'help', 'metavar') for k in arg[1])
                 remainder = arg
             else:
                 subparser.add_argument(*arg[0], **arg[1])
@@ -304,16 +313,7 @@ class CommandAction(argparse.Action):
                 group = extra_groups[group_name]
             group.add_argument(*arg[0], **arg[1])
 
-    def _handle_command_help(self, parser, command, args):
-        handler = self._mach_registrar.command_handlers.get(command)
-
-        if not handler:
-            raise UnknownCommandError(command, 'query')
-
-        if handler.subcommand_handlers:
-            self._handle_subcommand_help(parser, handler, args)
-            return
-
+    def _get_command_arguments_help(self, handler):
         # This code is worth explaining. Because we are doing funky things with
         # argument registration to allow the same option in both global and
         # command arguments, we can't simply put all arguments on the same
@@ -353,6 +353,20 @@ class CommandAction(argparse.Action):
 
         self._populate_command_group(c_parser, handler, group)
 
+        return c_parser
+
+    def _handle_command_help(self, parser, command, args):
+        handler = self._mach_registrar.command_handlers.get(command)
+
+        if not handler:
+            raise UnknownCommandError(command, 'query')
+
+        if handler.subcommand_handlers:
+            self._handle_subcommand_help(parser, handler, args)
+            return
+
+        c_parser = self._get_command_arguments_help(handler)
+
         # Set the long help of the command to the docstring (if present) or
         # the command decorator description argument (if present).
         if handler.docstring:
@@ -375,19 +389,30 @@ class CommandAction(argparse.Action):
             ' subcommand [subcommand arguments]'
         group = parser.add_argument_group('Sub Commands')
 
-        for subcommand, subhandler in sorted(handler.subcommand_handlers.iteritems()):
+        def by_decl_order(item): return item[1].decl_order
+        def by_name(item): return item[1].subcommand
+
+        subhandlers = handler.subcommand_handlers.items()
+        for subcommand, subhandler in sorted(
+                subhandlers,
+                key=by_decl_order if handler.order == 'declaration' else by_name
+        ):
             group.add_argument(subcommand, help=subhandler.description,
                                action='store_true')
 
         if handler.docstring:
             parser.description = format_docstring(handler.docstring)
 
+        c_parser = self._get_command_arguments_help(handler)
+
         parser.formatter_class = argparse.RawDescriptionHelpFormatter
 
         parser.print_help()
+        print('')
+        c_parser.print_help()
 
     def _handle_subcommand_help(self, parser, handler, args):
-        subcommand = set(args).intersection(handler.subcommand_handlers.keys())
+        subcommand = set(args).intersection(list(handler.subcommand_handlers.keys()))
         if not subcommand:
             return self._handle_subcommand_main_help(parser, handler)
 
@@ -415,20 +440,18 @@ class CommandAction(argparse.Action):
         # Make sure we don't suggest any deprecated commands.
         names = [h.name for h in self._mach_registrar.command_handlers.values()
                  if h.cls.__name__ != 'DeprecatedCommands']
-        # We first try to look for a valid command that is very similar to the given command.
-        suggested_commands = difflib.get_close_matches(command, names, cutoff=0.8)
-        # If we find more than one matching command, or no command at all,
-        # we give command suggestions instead (with a lower matching threshold).
-        # All commands that start with the given command (for instance:
-        # 'mochitest-plain', 'mochitest-chrome', etc. for 'mochitest-')
-        # are also included.
-        if len(suggested_commands) != 1:
-            suggested_commands = set(difflib.get_close_matches(command, names, cutoff=0.5))
-            suggested_commands |= {cmd for cmd in names if cmd.startswith(command)}
-            raise UnknownCommandError(command, 'run', suggested_commands)
-        sys.stderr.write("We're assuming the '%s' command is '%s' and we're "
-                         "executing it for you.\n\n" % (command, suggested_commands[0]))
-        return suggested_commands[0]
+
+        # Bug 1577908 - We used to automatically re-execute the suggested
+        # command with the proper spelling. But because the `mach` driver now
+        # uses a whitelist to determine which command to run with Python 2, all
+        # misspellings are automatically run with Python 3 (and would fail if
+        # we were to correct a Python 2 command here). So we now suggest the
+        # command instead. Once the Python 3 migration has completed, we can
+        # turn autosuggestions back on. We could alternatively figure out a way
+        # to compare the suggested command against the mach whitelist.
+        suggested_commands = set(difflib.get_close_matches(command, names, cutoff=0.5))
+        suggested_commands |= {cmd for cmd in names if cmd.startswith(command)}
+        raise UnknownCommandError(command, 'run', suggested_commands)
 
 
 class NoUsageFormatter(argparse.HelpFormatter):
@@ -444,13 +467,13 @@ def format_docstring(docstring):
     if not docstring:
         return ''
     lines = docstring.expandtabs().splitlines()
-    indent = sys.maxint
+    indent = sys.maxsize
     for line in lines[1:]:
         stripped = line.lstrip()
         if stripped:
             indent = min(indent, len(line) - len(stripped))
     trimmed = [lines[0].strip()]
-    if indent < sys.maxint:
+    if indent < sys.maxsize:
         for line in lines[1:]:
             trimmed.append(line[indent:].rstrip())
     while trimmed and not trimmed[-1]:

@@ -10,27 +10,23 @@
 #include <queue>
 
 #include "mozilla/Attributes.h"
-#include "mozilla/DeferredFinalize.h"
-#include "mozilla/LinkedList.h"
-#include "mozilla/mozalloc.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/AtomList.h"
 #include "mozilla/dom/Promise.h"
-#include "jsapi.h"
+#include "js/GCVector.h"
 #include "js/Promise.h"
 
 #include "nsCOMPtr.h"
-#include "nsCycleCollectionParticipant.h"
 #include "nsTArray.h"
 
 class nsCycleCollectionNoteRootCallback;
 class nsIRunnable;
 class nsThread;
-class nsWrapperCache;
 
 namespace mozilla {
 class AutoSlowOperation;
 
+class CycleCollectedJSContext;
 class CycleCollectedJSRuntime;
 
 namespace dom {
@@ -84,10 +80,41 @@ class MicroTaskRunnable {
   virtual ~MicroTaskRunnable() = default;
 };
 
-class CycleCollectedJSContext
-    : dom::PerThreadAtomCache,
-      public LinkedListElement<CycleCollectedJSContext>,
-      private JS::JobQueue {
+// Support for JS FinalizationRegistry objects, which allow a JS callback to be
+// registered that is called when objects die.
+//
+// We keep a vector of functions that call back into the JS engine along
+// with their associated incumbent globals, one per FinalizationRegistry object
+// that has pending cleanup work. These are run in their own task.
+class FinalizationRegistryCleanup {
+ public:
+  explicit FinalizationRegistryCleanup(CycleCollectedJSContext* aContext);
+  void Init();
+  void Destroy();
+  void QueueCallback(JSFunction* aDoCleanup, JSObject* aIncumbentGlobal);
+  MOZ_CAN_RUN_SCRIPT void DoCleanup();
+
+ private:
+  static void QueueCallback(JSFunction* aDoCleanup, JSObject* aIncumbentGlobal,
+                            void* aData);
+
+  class CleanupRunnable;
+
+  struct Callback {
+    JSFunction* mCallbackFunction;
+    JSObject* mIncumbentGlobal;
+    void trace(JSTracer* trc);
+  };
+
+  // This object is part of CycleCollectedJSContext, so it's safe to have a raw
+  // pointer to its containing context here.
+  CycleCollectedJSContext* mContext;
+
+  using CallbackVector = JS::GCVector<Callback, 0, InfallibleAllocPolicy>;
+  JS::PersistentRooted<CallbackVector> mCallbacks;
+};
+
+class CycleCollectedJSContext : dom::PerThreadAtomCache, private JS::JobQueue {
   friend class CycleCollectedJSRuntime;
 
  protected:
@@ -95,21 +122,13 @@ class CycleCollectedJSContext
   virtual ~CycleCollectedJSContext();
 
   MOZ_IS_CLASS_INIT
-  nsresult Initialize(JSRuntime* aParentRuntime, uint32_t aMaxBytes,
-                      uint32_t aMaxNurseryBytes);
-
-  // See explanation in mIsPrimaryContext.
-  MOZ_IS_CLASS_INIT
-  nsresult InitializeNonPrimary(CycleCollectedJSContext* aPrimaryContext);
+  nsresult Initialize(JSRuntime* aParentRuntime, uint32_t aMaxBytes);
 
   virtual CycleCollectedJSRuntime* CreateRuntime(JSContext* aCx) = 0;
 
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
  private:
-  MOZ_IS_CLASS_INIT
-  void InitializeCommon();
-
   static JSObject* GetIncumbentGlobalCallback(JSContext* aCx);
   static bool EnqueuePromiseJobCallback(JSContext* aCx,
                                         JS::HandleObject aPromise,
@@ -273,12 +292,6 @@ class CycleCollectedJSContext
   js::UniquePtr<SavedJobQueue> saveJobQueue(JSContext*) override;
 
  private:
-  // A primary context owns the mRuntime. Non-main-thread contexts should always
-  // be primary. On the main thread, the primary context should be the first one
-  // created and the last one destroyed. Non-primary contexts are used for
-  // cooperatively scheduled threads.
-  bool mIsPrimaryContext;
-
   CycleCollectedJSRuntime* mRuntime;
 
   JSContext* mJSContext;
@@ -351,6 +364,8 @@ class CycleCollectedJSContext
     CycleCollectedJSContext* mCx;
     PromiseArray mUnhandledRejections;
   };
+
+  FinalizationRegistryCleanup mFinalizationRegistryCleanup;
 };
 
 class MOZ_STACK_CLASS nsAutoMicroTask {

@@ -22,8 +22,10 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   ActionSchemas: "resource://normandy/actions/schemas/index.js",
   AddonManager: "resource://gre/modules/AddonManager.jsm",
   AddonStudies: "resource://normandy/lib/AddonStudies.jsm",
+  BaseAction: "resource://normandy/actions/BaseAction.jsm",
   ClientEnvironment: "resource://normandy/lib/ClientEnvironment.jsm",
   NormandyApi: "resource://normandy/lib/NormandyApi.jsm",
+  NormandyUtils: "resource://normandy/lib/NormandyUtils.jsm",
   PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
   Sampling: "resource://gre/modules/components-utils/Sampling.jsm",
   Services: "resource://gre/modules/Services.jsm",
@@ -123,23 +125,81 @@ class BranchedAddonStudyAction extends BaseStudyAction {
     this.seenRecipeIds = new Set();
   }
 
-  /**
-   * This hook is executed once for each recipe that currently applies to this
-   * client. It is responsible for:
-   *
-   *   - Enrolling studies the first time they are seen.
-   *   - Updating studies that have upgraded addons.
-   *   - Marking studies as having been seen in this session.
-   *
-   * If the recipe fails to enroll or update, it should throw to properly report its status.
-   */
   async _run(recipe) {
+    throw new Error("_run should not be called anymore");
+  }
+
+  /**
+   * This hook is executed once for every recipe currently enabled on the
+   * server. It is responsible for:
+   *
+   *   - Enrolling studies the first time they have a FILTER_MATCH suitability.
+   *   - Updating studies that have changed and still have a FILTER_MATCH suitability.
+   *   - Marking studies as having been seen in this session.
+   *   - Unenrolling studies when they have permanent errors.
+   *   - Unenrolling studies when temporary errors persist for too long.
+   *
+   * If the action fails to perform any of these tasks, it should throw to
+   * properly report its status.
+   */
+  async _processRecipe(recipe, suitability) {
     this.seenRecipeIds.add(recipe.id);
     const study = await AddonStudies.get(recipe.id);
-    if (study) {
-      await this.update(recipe, study);
-    } else {
-      await this.enroll(recipe);
+
+    switch (suitability) {
+      case BaseAction.suitability.FILTER_MATCH: {
+        if (study) {
+          await this.update(recipe, study);
+        } else {
+          await this.enroll(recipe);
+        }
+        break;
+      }
+
+      case BaseAction.suitability.SIGNATURE_ERROR: {
+        if (study) {
+          await this._considerTemporaryError({
+            study,
+            reason: "signature-error",
+          });
+        }
+        break;
+      }
+
+      case BaseAction.suitability.FILTER_ERROR: {
+        if (study) {
+          await this._considerTemporaryError({
+            study,
+            reason: "filter-error",
+          });
+        }
+        break;
+      }
+
+      case BaseAction.suitability.CAPABILITES_MISMATCH: {
+        if (study) {
+          await this.unenroll(recipe.id, "capability-mismatch");
+        }
+        break;
+      }
+
+      case BaseAction.suitability.FILTER_MISMATCH: {
+        if (study) {
+          await this.unenroll(recipe.id, "filter-mismatch");
+        }
+        break;
+      }
+
+      case BaseAction.suitability.ARGUMENTS_INVALID: {
+        if (study) {
+          await this.unenroll(recipe.id, "arguments-invalid");
+        }
+        break;
+      }
+
+      default: {
+        throw new Error(`Unknown recipe suitability "${suitability}".`);
+      }
     }
   }
 
@@ -177,6 +237,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
    * @param onFailedInstall A callback function that is run if the installation fails.
    * @param errorClass The class of error to be thrown when exceptions occur.
    * @param reportError A function that reports errors to Telemetry.
+   * @param [errorExtra] Optional, an object that will be merged into the
+   *                     `extra` field of the error generated, if any.
    */
   async downloadAndInstall({
     recipe,
@@ -187,6 +249,7 @@ class BranchedAddonStudyAction extends BaseStudyAction {
     onFailedInstall,
     errorClass,
     reportError,
+    errorExtra = {},
   }) {
     const { slug } = recipe.arguments;
     const { hash, hash_algorithm } = extensionDetails;
@@ -206,6 +269,7 @@ class BranchedAddonStudyAction extends BaseStudyAction {
             reason: "download-failure",
             branch: branchSlug,
             detail: AddonManager.errorToString(install.error),
+            ...errorExtra,
           })
         );
       },
@@ -315,6 +379,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
     });
     this.log.debug(`Enrolling in branch ${branch.slug}`);
 
+    const enrollmentId = NormandyUtils.generateUuid();
+
     if (branch.extensionApiId === null) {
       const study = {
         recipeId: recipe.id,
@@ -331,6 +397,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
         active: true,
         studyStartDate: new Date(),
         studyEndDate: null,
+        enrollmentId,
+        temporaryErrorDeadline: null,
       };
 
       try {
@@ -345,6 +413,7 @@ class BranchedAddonStudyAction extends BaseStudyAction {
         addonId: AddonStudies.NO_ADDON_MARKER,
         addonVersion: AddonStudies.NO_ADDON_MARKER,
         branch: branch.slug,
+        enrollmentId: enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
       });
     } else {
       const extensionDetails = await NormandyApi.fetchExtensionDetails(
@@ -376,8 +445,9 @@ class BranchedAddonStudyAction extends BaseStudyAction {
         return true;
       };
 
+      let study;
       const onComplete = async (install, listener) => {
-        const study = {
+        study = {
           recipeId: recipe.id,
           slug,
           userFacingName,
@@ -392,6 +462,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
           active: true,
           studyStartDate: new Date(),
           studyEndDate: null,
+          enrollmentId,
+          temporaryErrorDeadline: null,
         };
 
         try {
@@ -424,11 +496,13 @@ class BranchedAddonStudyAction extends BaseStudyAction {
         addonId: installedId,
         addonVersion: installedVersion,
         branch: branch.slug,
+        enrollmentId: enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
       });
     }
 
     TelemetryEnvironment.setExperimentActive(slug, branch.slug, {
       type: "normandy-addonstudy",
+      enrollmentId: enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
     });
   }
 
@@ -451,6 +525,10 @@ class BranchedAddonStudyAction extends BaseStudyAction {
       return;
     }
 
+    // Since we saw a non-error suitability, clear the temporary error deadline.
+    study.temporaryErrorDeadline = null;
+    await AddonStudies.update(study);
+
     const extensionDetails = await NormandyApi.fetchExtensionDetails(
       branch.extensionApiId
     );
@@ -461,6 +539,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
       error = new AddonStudyUpdateError(slug, {
         branch: branch.slug,
         reason: "addon-id-mismatch",
+        enrollmentId:
+          study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
       });
     }
 
@@ -472,6 +552,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
       error = new AddonStudyUpdateError(slug, {
         branch: branch.slug,
         reason: "no-downgrade",
+        enrollmentId:
+          study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
       });
     } else if (versionCompare === 0) {
       return; // Unchanged, do nothing
@@ -492,6 +574,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
           new AddonStudyUpdateError(slug, {
             branch: branch.slug,
             reason: "addon-does-not-exist",
+            enrollmentId:
+              study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
           })
         );
         return false; // cancel the installation, must upgrade an existing add-on
@@ -500,6 +584,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
           new AddonStudyUpdateError(slug, {
             branch: branch.slug,
             reason: "metadata-mismatch",
+            enrollmentId:
+              study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
           })
         );
         return false; // cancel the installation, server metadata do not match downloaded add-on
@@ -539,6 +625,10 @@ class BranchedAddonStudyAction extends BaseStudyAction {
       onFailedInstall,
       errorClass: AddonStudyUpdateError,
       reportError: this.reportUpdateError,
+      errorExtra: {
+        enrollmentId:
+          study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+      },
     });
 
     // All done, report success to Telemetry
@@ -546,6 +636,8 @@ class BranchedAddonStudyAction extends BaseStudyAction {
       addonId: installedId,
       addonVersion: installedVersion,
       branch: branch.slug,
+      enrollmentId:
+        study.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
     });
   }
 
@@ -566,9 +658,7 @@ class BranchedAddonStudyAction extends BaseStudyAction {
        * information that should still be helpful, and is less likely to be
        * unsafe.
        */
-      const safeErrorMessage = `${error.fileName}:${error.lineNumber}:${
-        error.columnNumber
-      } ${error.name}`;
+      const safeErrorMessage = `${error.fileName}:${error.lineNumber}:${error.columnNumber} ${error.name}`;
       TelemetryEvents.sendEvent(
         "enrollFailed",
         "addon_study",
@@ -597,9 +687,7 @@ class BranchedAddonStudyAction extends BaseStudyAction {
        * information that should still be helpful, and is less likely to be
        * unsafe.
        */
-      const safeErrorMessage = `${error.fileName}:${error.lineNumber}:${
-        error.columnNumber
-      } ${error.name}`;
+      const safeErrorMessage = `${error.fileName}:${error.lineNumber}:${error.columnNumber} ${error.name}`;
       TelemetryEvents.sendEvent(
         "updateFailed",
         "addon_study",
@@ -640,11 +728,49 @@ class BranchedAddonStudyAction extends BaseStudyAction {
         await addon.uninstall();
       } else {
         this.log.warn(
-          `Could not uninstall addon ${study.addonId} for recipe ${
-            study.recipeId
-          }: it is not installed.`
+          `Could not uninstall addon ${study.addonId} for recipe ${study.recipeId}: it is not installed.`
         );
       }
+    }
+  }
+
+  /**
+   * Given that a temporary error has occured for a study, check if it
+   * should be temporarily ignored, or if the deadline has passed. If the
+   * deadline is passed, the study will be ended. If this is the first
+   * temporary error, a deadline will be generated. Otherwise, nothing will
+   * happen.
+   *
+   * If a temporary deadline exists but cannot be parsed, a new one will be
+   * made.
+   *
+   * The deadline is 7 days from the first time that recipe failed, as
+   * reckoned by the client's clock.
+   *
+   * @param {Object} args
+   * @param {Study} args.study The enrolled study to potentially unenroll.
+   * @param {String} args.reason If the study should end, the reason it is ending.
+   */
+  async _considerTemporaryError({ study, reason }) {
+    let now = Date.now(); // milliseconds-since-epoch
+    let day = 24 * 60 * 60 * 1000;
+    let newDeadline = new Date(now + 7 * day);
+
+    if (study.temporaryErrorDeadline) {
+      // if deadline is an invalid date, set it to one week from now.
+      if (isNaN(study.temporaryErrorDeadline)) {
+        study.temporaryErrorDeadline = newDeadline;
+        await AddonStudies.update(study);
+        return;
+      }
+
+      if (now > study.temporaryErrorDeadline) {
+        await this.unenroll(study.recipeId, reason);
+      }
+    } else {
+      // there is no deadline, so set one
+      study.temporaryErrorDeadline = newDeadline;
+      await AddonStudies.update(study);
     }
   }
 }

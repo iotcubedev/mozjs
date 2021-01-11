@@ -35,7 +35,7 @@ add_task(async function() {
   // The easiest way to get the actual path is to request it from the content
   // process.
   const browser = gBrowser.selectedBrowser;
-  const actualPath = await ContentTask.spawn(browser, null, () => {
+  const actualPath = await SpecialPowers.spawn(browser, [], () => {
     return content.document.location.href;
   });
 
@@ -54,8 +54,14 @@ add_task(async function() {
       ["indexedDB", actualPath, "MyDatabase (default)", "MyObjectStore"],
       [12345, 54321, 67890, 98765],
     ],
-    [["localStorage", actualPath], ["test3", "test4"]],
-    [["sessionStorage", actualPath], ["test5", "test6"]],
+    [
+      ["localStorage", actualPath],
+      ["test3", "test4"],
+    ],
+    [
+      ["sessionStorage", actualPath],
+      ["test5", "test6"],
+    ],
   ]);
 
   await finishTests();

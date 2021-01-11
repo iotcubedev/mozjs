@@ -10,9 +10,7 @@
 #include "nsCRT.h"
 #include "nsScanner.h"
 #include "plstr.h"
-#include "nsIStringStream.h"
 #include "nsIChannel.h"
-#include "nsICachingChannel.h"
 #include "nsIInputStream.h"
 #include "CNavDTD.h"
 #include "prenv.h"
@@ -22,9 +20,6 @@
 #include "nsReadableUtils.h"
 #include "nsCOMPtr.h"
 #include "nsExpatDriver.h"
-#include "nsIServiceManager.h"
-#include "nsICategoryManager.h"
-#include "nsISupportsPrimitives.h"
 #include "nsIFragmentContentSink.h"
 #include "nsStreamUtils.h"
 #include "nsHTMLTokenizer.h"
@@ -176,6 +171,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsParser)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDTD)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSink)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mObserver)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsParser)
@@ -799,7 +795,7 @@ nsresult nsParser::Parse(const nsAString& aSourceBuffer, void* aKey,
       // end fix for 40143
 
       pc->mContextType = CParserContext::eCTString;
-      pc->SetMimeType(NS_LITERAL_CSTRING("application/xml"));
+      pc->SetMimeType("application/xml"_ns);
       pc->mDTDMode = eDTDMode_full_standards;
 
       mUnusedInput.Truncate();
@@ -880,7 +876,7 @@ nsParser::ParseFragment(const nsAString& aSourceBuffer,
   } else {
     // Add an end tag chunk, so expat will read the whole source buffer,
     // and not worry about ']]' etc.
-    result = Parse(aSourceBuffer + NS_LITERAL_STRING("</"), &theContext, false);
+    result = Parse(aSourceBuffer + u"</"_ns, &theContext, false);
     fragSink->DidBuildContent();
 
     if (NS_SUCCEEDED(result)) {
@@ -1303,7 +1299,7 @@ nsresult nsParser::OnDataAvailable(nsIRequest* request,
     ParserWriteStruct pws;
     pws.mNeedCharsetCheck = true;
     pws.mParser = this;
-    pws.mScanner = theContext->mScanner;
+    pws.mScanner = theContext->mScanner.get();
     pws.mRequest = request;
 
     rv = pIStream->ReadSegments(ParserWriteFunc, &pws, aLength, &totalRead);

@@ -11,11 +11,14 @@
 #include "LayersLogging.h"   // for AppendToString
 #include "mozilla/gfx/2D.h"  // for DataSourceSurface, Factory
 #include "mozilla/gfx/gfxVars.h"
-#include "mozilla/ipc/Shmem.h"                             // for Shmem
+#include "mozilla/ipc/Shmem.h"  // for Shmem
+#include "mozilla/layers/AsyncImagePipelineManager.h"
+#include "mozilla/layers/BufferTexture.h"
 #include "mozilla/layers/CompositableTransactionParent.h"  // for CompositableParentManager
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/Compositor.h"         // for Compositor
 #include "mozilla/layers/ISurfaceAllocator.h"  // for ISurfaceAllocator
+#include "mozilla/layers/ImageBridgeParent.h"  // for ImageBridgeParent
 #include "mozilla/layers/LayersSurfaces.h"     // for SurfaceDescriptor, etc
 #include "mozilla/layers/TextureHostBasic.h"
 #include "mozilla/layers/TextureHostOGL.h"  // for TextureHostOGL
@@ -26,7 +29,10 @@
 #endif
 #include "mozilla/layers/GPUVideoTextureHost.h"
 #include "mozilla/layers/WebRenderTextureHost.h"
+#include "mozilla/StaticPrefs_layers.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/webrender/RenderBufferTextureHost.h"
+#include "mozilla/webrender/RenderExternalTextureHost.h"
 #include "mozilla/webrender/RenderThread.h"
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "nsAString.h"
@@ -164,6 +170,25 @@ void TextureHost::SetLastFwdTransactionId(uint64_t aTransactionId) {
   mFwdTransactionId = aTransactionId;
 }
 
+already_AddRefed<TextureHost> CreateDummyBufferTextureHost(
+    mozilla::layers::LayersBackend aBackend,
+    mozilla::layers::TextureFlags aFlags) {
+  // Ensure that the host will delete the memory.
+  aFlags &= ~TextureFlags::DEALLOCATE_CLIENT;
+  UniquePtr<TextureData> textureData(BufferTextureData::Create(
+      gfx::IntSize(1, 1), gfx::SurfaceFormat::B8G8R8A8, gfx::BackendType::SKIA,
+      aBackend, aFlags, TextureAllocationFlags::ALLOC_DEFAULT, nullptr));
+  SurfaceDescriptor surfDesc;
+  textureData->Serialize(surfDesc);
+  const SurfaceDescriptorBuffer& bufferDesc =
+      surfDesc.get_SurfaceDescriptorBuffer();
+  const MemoryOrShmem& data = bufferDesc.data();
+  RefPtr<TextureHost> host =
+      new MemoryTextureHost(reinterpret_cast<uint8_t*>(data.get_uintptr_t()),
+                            bufferDesc.desc(), aFlags);
+  return host.forget();
+}
+
 already_AddRefed<TextureHost> TextureHost::Create(
     const SurfaceDescriptor& aDesc, const ReadLockDescriptor& aReadLock,
     ISurfaceAllocator* aDeallocator, LayersBackend aBackend,
@@ -181,7 +206,9 @@ already_AddRefed<TextureHost> TextureHost::Create(
 
     case SurfaceDescriptor::TEGLImageDescriptor:
     case SurfaceDescriptor::TSurfaceTextureDescriptor:
+    case SurfaceDescriptor::TSurfaceDescriptorAndroidHardwareBuffer:
     case SurfaceDescriptor::TSurfaceDescriptorSharedGLTexture:
+    case SurfaceDescriptor::TSurfaceDescriptorDMABuf:
       result = CreateTextureHostOGL(aDesc, aDeallocator, aBackend, aFlags);
       break;
 
@@ -222,6 +249,13 @@ already_AddRefed<TextureHost> TextureHost::Create(
       UniquePtr<SurfaceDescriptor> realDesc =
           aDeallocator->AsCompositorBridgeParentBase()
               ->LookupSurfaceDescriptorForClientDrawTarget(desc.drawTarget());
+      if (!realDesc) {
+        gfxCriticalNote << "Failed to get descriptor for recorded texture.";
+        // Create a dummy to prevent any crashes due to missing IPDL actors.
+        result = CreateDummyBufferTextureHost(aBackend, aFlags);
+        break;
+      }
+
       result = TextureHost::Create(*realDesc, aReadLock, aDeallocator, aBackend,
                                    aFlags, aExternalImageId);
       return result.forget();
@@ -322,6 +356,21 @@ already_AddRefed<TextureHost> CreateBackendIndependentTextureHost(
       break;
     }
     case SurfaceDescriptor::TSurfaceDescriptorGPUVideo: {
+      if (aDesc.get_SurfaceDescriptorGPUVideo().type() ==
+          SurfaceDescriptorGPUVideo::TSurfaceDescriptorPlugin) {
+        MOZ_ASSERT(aDeallocator && aDeallocator->UsesImageBridge());
+        auto ibpBase = static_cast<ImageBridgeParent*>(aDeallocator);
+        result =
+            ibpBase->LookupTextureHost(aDesc.get_SurfaceDescriptorGPUVideo());
+        if (!result) {
+          return nullptr;
+        }
+        MOZ_ASSERT(aFlags == result->GetFlags());
+        break;
+      }
+
+      MOZ_ASSERT(aDesc.get_SurfaceDescriptorGPUVideo().type() ==
+                 SurfaceDescriptorGPUVideo::TSurfaceDescriptorRemoteDecoder);
       result = GPUVideoTextureHost::CreateFromDescriptor(
           aFlags, aDesc.get_SurfaceDescriptorGPUVideo());
       break;
@@ -370,6 +419,8 @@ TextureHost::~TextureHost() {
 }
 
 void TextureHost::Finalize() {
+  MaybeDestroyRenderTexture();
+
   if (!(GetFlags() & TextureFlags::DEALLOCATE_CLIENT)) {
     DeallocateSharedData();
     DeallocateDeviceData();
@@ -431,6 +482,39 @@ void TextureHost::CallNotifyNotUsed() {
   static_cast<TextureParent*>(mActor)->NotifyNotUsed(mFwdTransactionId);
 }
 
+void TextureHost::MaybeDestroyRenderTexture() {
+  if (mExternalImageId.isNothing()) {
+    // RenderTextureHost was not created
+    return;
+  }
+  // When TextureHost created RenderTextureHost, delete it here.
+  TextureHost::DestroyRenderTexture(mExternalImageId.ref());
+}
+
+void TextureHost::DestroyRenderTexture(
+    const wr::ExternalImageId& aExternalImageId) {
+  wr::RenderThread::Get()->UnregisterExternalImage(
+      wr::AsUint64(aExternalImageId));
+}
+
+void TextureHost::EnsureRenderTexture(
+    const wr::MaybeExternalImageId& aExternalImageId) {
+  if (aExternalImageId.isNothing()) {
+    // TextureHost is wrapped by GPUVideoTextureHost.
+    if (mExternalImageId.isSome()) {
+      // RenderTextureHost was already created.
+      return;
+    }
+    mExternalImageId =
+        Some(AsyncImagePipelineManager::GetNextExternalImageId());
+  } else {
+    // TextureHost is wrapped by WebRenderTextureHost.
+    MOZ_ASSERT(mExternalImageId.isNothing());
+    mExternalImageId = aExternalImageId;
+  }
+  CreateRenderTexture(mExternalImageId.ref());
+}
+
 void TextureHost::PrintInfo(std::stringstream& aStream, const char* aPrefix) {
   aStream << aPrefix;
   aStream << nsPrintfCString("%s (0x%p)", Name(), this).get();
@@ -463,7 +547,7 @@ void TextureHost::Updated(const nsIntRegion* aRegion) {
 
 TextureSource::TextureSource() : mCompositableCount(0) {}
 
-TextureSource::~TextureSource() {}
+TextureSource::~TextureSource() = default;
 BufferTextureHost::BufferTextureHost(const BufferDescriptor& aDesc,
                                      TextureFlags aFlags)
     : TextureHost(aFlags),
@@ -497,9 +581,20 @@ BufferTextureHost::BufferTextureHost(const BufferDescriptor& aDesc,
     // See bug 1138934
     mNeedsFullUpdate = true;
   }
+
+#ifdef XP_MACOSX
+  const int kMinSize = 1024;
+  const int kMaxSize = 4096;
+  mUseExternalTextures =
+      kMaxSize >= mSize.width && mSize.width >= kMinSize &&
+      kMaxSize >= mSize.height && mSize.height >= kMinSize &&
+      StaticPrefs::gfx_webrender_enable_client_storage_AtStartup();
+#else
+  mUseExternalTextures = false;
+#endif
 }
 
-BufferTextureHost::~BufferTextureHost() {}
+BufferTextureHost::~BufferTextureHost() = default;
 
 void BufferTextureHost::UpdatedInternal(const nsIntRegion* aRegion) {
   ++mUpdateSerial;
@@ -534,6 +629,14 @@ void BufferTextureHost::SetTextureSourceProvider(
 
 void BufferTextureHost::DeallocateDeviceData() {
   if (mFirstSource && mFirstSource->NumCompositableRefs() > 0) {
+    // WrappingTextureSourceYCbCrBasic wraps YUV format BufferTextureHost.
+    // When BufferTextureHost is destroyed, data of
+    // WrappingTextureSourceYCbCrBasic becomes invalid.
+    if (mFirstSource->AsWrappingTextureSourceYCbCrBasic() &&
+        mFirstSource->IsOwnedBy(this)) {
+      mFirstSource->SetOwner(nullptr);
+      mFirstSource->DeallocateDeviceData();
+    }
     return;
   }
 
@@ -567,8 +670,15 @@ void BufferTextureHost::Unlock() {
 
 void BufferTextureHost::CreateRenderTexture(
     const wr::ExternalImageId& aExternalImageId) {
-  RefPtr<wr::RenderTextureHost> texture =
-      new wr::RenderBufferTextureHost(GetBuffer(), GetBufferDescriptor());
+  RefPtr<wr::RenderTextureHost> texture;
+
+  if (UseExternalTextures()) {
+    texture =
+        new wr::RenderExternalTextureHost(GetBuffer(), GetBufferDescriptor());
+  } else {
+    texture =
+        new wr::RenderBufferTextureHost(GetBuffer(), GetBufferDescriptor());
+  }
 
   wr::RenderThread::Get()->RegisterExternalImage(wr::AsUint64(aExternalImageId),
                                                  texture.forget());
@@ -588,7 +698,11 @@ void BufferTextureHost::PushResourceUpdates(
   auto method = aOp == TextureHost::ADD_IMAGE
                     ? &wr::TransactionBuilder::AddExternalImage
                     : &wr::TransactionBuilder::UpdateExternalImage;
-  auto imageType = wr::ExternalImageType::Buffer();
+
+  auto imageType =
+      UseExternalTextures()
+          ? wr::ExternalImageType::TextureHandle(wr::TextureTarget::Rect)
+          : wr::ExternalImageType::Buffer();
 
   if (GetFormat() != gfx::SurfaceFormat::YUV) {
     MOZ_ASSERT(aImageKeys.length() == 1);
@@ -614,22 +728,27 @@ void BufferTextureHost::PushResourceUpdates(
   }
 }
 
-void BufferTextureHost::PushDisplayItems(
-    wr::DisplayListBuilder& aBuilder, const wr::LayoutRect& aBounds,
-    const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-    const Range<wr::ImageKey>& aImageKeys) {
+void BufferTextureHost::PushDisplayItems(wr::DisplayListBuilder& aBuilder,
+                                         const wr::LayoutRect& aBounds,
+                                         const wr::LayoutRect& aClip,
+                                         wr::ImageRendering aFilter,
+                                         const Range<wr::ImageKey>& aImageKeys,
+                                         const bool aPreferCompositorSurface) {
   if (GetFormat() != gfx::SurfaceFormat::YUV) {
     MOZ_ASSERT(aImageKeys.length() == 1);
     aBuilder.PushImage(aBounds, aClip, true, aFilter, aImageKeys[0],
-                       !(mFlags & TextureFlags::NON_PREMULTIPLIED));
+                       !(mFlags & TextureFlags::NON_PREMULTIPLIED),
+                       wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
+                       aPreferCompositorSurface);
   } else {
     MOZ_ASSERT(aImageKeys.length() == 3);
     const YCbCrDescriptor& desc = mDescriptor.get_YCbCrDescriptor();
-    aBuilder.PushYCbCrPlanarImage(
-        aBounds, aClip, true, aImageKeys[0], aImageKeys[1], aImageKeys[2],
-        wr::ToWrColorDepth(desc.colorDepth()),
-        wr::ToWrYuvColorSpace(desc.yUVColorSpace()),
-        wr::ToWrColorRange(desc.colorRange()), aFilter);
+    aBuilder.PushYCbCrPlanarImage(aBounds, aClip, true, aImageKeys[0],
+                                  aImageKeys[1], aImageKeys[2],
+                                  wr::ToWrColorDepth(desc.colorDepth()),
+                                  wr::ToWrYuvColorSpace(desc.yUVColorSpace()),
+                                  wr::ToWrColorRange(desc.colorRange()),
+                                  aFilter, aPreferCompositorSurface);
   }
 }
 

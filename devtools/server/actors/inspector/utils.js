@@ -19,20 +19,12 @@ loader.lazyRequireGetter(
   "nodeFilterConstants",
   "devtools/shared/dom-node-filter-constants"
 );
-
 loader.lazyRequireGetter(
   this,
   "isNativeAnonymous",
   "devtools/shared/layout/utils",
   true
 );
-loader.lazyRequireGetter(
-  this,
-  "isXBLAnonymous",
-  "devtools/shared/layout/utils",
-  true
-);
-
 loader.lazyRequireGetter(
   this,
   "CssLogic",
@@ -117,7 +109,7 @@ function getNodeFlexType(node) {
 
 function getNodeGridType(node) {
   return {
-    isContainer: node.getGridFragments && node.getGridFragments().length,
+    isContainer: node.hasGridFragments && node.hasGridFragments(),
     isItem: !!findGridParentContainerForNode(node),
   };
 }
@@ -137,9 +129,7 @@ function isNodeDead(node) {
 
 function isInXULDocument(el) {
   const doc = nodeDocument(el);
-  return (
-    doc && doc.documentElement && doc.documentElement.namespaceURI === XUL_NS
-  );
+  return doc?.documentElement && doc.documentElement.namespaceURI === XUL_NS;
 }
 
 /**
@@ -165,19 +155,29 @@ function standardTreeWalkerFilter(node) {
       : nodeFilterConstants.FILTER_SKIP;
   }
 
-  // Ignore all native and XBL anonymous content inside a non-XUL document.
+  // Ignore all native anonymous content inside a non-XUL document.
   // We need to do this to skip things like form controls, scrollbars,
   // video controls, etc (see bug 1187482).
-  if (
-    !isInXULDocument(node) &&
-    (isXBLAnonymous(node) || isNativeAnonymous(node))
-  ) {
+  if (!isInXULDocument(node) && isNativeAnonymous(node)) {
     return nodeFilterConstants.FILTER_SKIP;
   }
 
   return nodeFilterConstants.FILTER_ACCEPT;
 }
 
+/**
+ * This DeepTreeWalker filter ignores anonymous content.
+ */
+function noAnonymousContentTreeWalkerFilter(node) {
+  // Ignore all native anonymous content inside a non-XUL document.
+  // We need to do this to skip things like form controls, scrollbars,
+  // video controls, etc (see bug 1187482).
+  if (!isInXULDocument(node) && isNativeAnonymous(node)) {
+    return nodeFilterConstants.FILTER_SKIP;
+  }
+
+  return nodeFilterConstants.FILTER_ACCEPT;
+}
 /**
  * This DeepTreeWalker filter is like standardTreeWalkerFilter except that
  * it also includes all anonymous content (like internal form controls).
@@ -222,7 +222,9 @@ function nodeHasSize(node) {
     return false;
   }
 
-  const quads = node.getBoxQuads();
+  const quads = node.getBoxQuads({
+    createFramesForSuppressedWhitespace: false,
+  });
   return quads.some(quad => {
     const bounds = quad.getBounds();
     return bounds.width && bounds.height;
@@ -464,7 +466,11 @@ async function getBackgroundColor({ rawNode: node, walker }) {
   // - not element node
   // - more than one child
   // Avoid calculating bounds and creating doc walker by returning early.
-  if (node.nodeType != Node.ELEMENT_NODE || node.children.length > 0) {
+  if (
+    node.nodeType != Node.ELEMENT_NODE ||
+    node.childNodes.length > 1 ||
+    !node.firstChild
+  ) {
     return {
       value: colorUtils.colorToRGBA(
         getClosestBackgroundColor(node),
@@ -551,6 +557,7 @@ async function getBackgroundColor({ rawNode: node, walker }) {
 
 module.exports = {
   allAnonymousContentTreeWalkerFilter,
+  isWhitespaceTextNode,
   findGridParentContainerForNode,
   getBackgroundColor,
   getClosestBackgroundColor,
@@ -562,4 +569,5 @@ module.exports = {
   nodeDocument,
   scrollbarTreeWalkerFilter,
   standardTreeWalkerFilter,
+  noAnonymousContentTreeWalkerFilter,
 };

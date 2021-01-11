@@ -2,8 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/java/ClipboardWrappers.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
 #include "nsClipboard.h"
-#include "FennecJNIWrappers.h"
 #include "nsISupportsPrimitives.h"
 #include "nsCOMPtr.h"
 #include "nsComponentManagerUtils.h"
@@ -63,12 +64,13 @@ nsClipboard::SetData(nsITransferable* aTransferable, nsIClipboardOwner* anOwner,
   }
 
   if (!html.IsEmpty() &&
-      java::Clipboard::SetHTML(GeckoAppShell::GetApplicationContext(), text,
-                               html)) {
+      java::Clipboard::SetHTML(java::GeckoAppShell::GetApplicationContext(),
+                               text, html)) {
     return NS_OK;
   }
   if (!text.IsEmpty() &&
-      java::Clipboard::SetText(GeckoAppShell::GetApplicationContext(), text)) {
+      java::Clipboard::SetText(java::GeckoAppShell::GetApplicationContext(),
+                               text)) {
     return NS_OK;
   }
 
@@ -89,8 +91,8 @@ nsClipboard::GetData(nsITransferable* aTransferable, int32_t aWhichClipboard) {
   for (auto& flavorStr : flavors) {
     if (flavorStr.EqualsLiteral(kUnicodeMime) ||
         flavorStr.EqualsLiteral(kHTMLMime)) {
-      auto text =
-          Clipboard::GetData(GeckoAppShell::GetApplicationContext(), flavorStr);
+      auto text = java::Clipboard::GetData(
+          java::GeckoAppShell::GetApplicationContext(), flavorStr);
       if (!text) {
         continue;
       }

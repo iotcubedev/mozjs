@@ -52,7 +52,7 @@ class ProcessHangMonitor final : public nsIObserver {
 
   static void PaintWhileInterruptingJS(
       PProcessHangMonitorParent* aParent, dom::BrowserParent* aTab,
-      bool aForceRepaint, const layers::LayersObserverEpoch& aEpoch);
+      const layers::LayersObserverEpoch& aEpoch);
   static void ClearPaintWhileInterruptingJS(
       const layers::LayersObserverEpoch& aEpoch);
   static void MaybeStartPaintWhileInterruptingJS();
@@ -70,7 +70,8 @@ class ProcessHangMonitor final : public nsIObserver {
   };
   SlowScriptAction NotifySlowScript(nsIBrowserChild* aBrowserChild,
                                     const char* aFileName,
-                                    const nsString& aAddonId);
+                                    const nsString& aAddonId,
+                                    const double aDuration);
 
   void NotifyPluginHang(uint32_t aPluginId);
 

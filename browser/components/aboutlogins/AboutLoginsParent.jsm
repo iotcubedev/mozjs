@@ -4,17 +4,22 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = ["AboutLoginsParent"];
+// _AboutLogins is only exported for testing
+var EXPORTED_SYMBOLS = ["AboutLoginsParent", "_AboutLogins"];
 
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  AppConstants: "resource://gre/modules/AppConstants.jsm",
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   LoginBreaches: "resource:///modules/LoginBreaches.jsm",
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
+  LoginExport: "resource://gre/modules/LoginExport.jsm",
+  LoginCSVImport: "resource://gre/modules/LoginCSVImport.jsm",
   MigrationUtils: "resource:///modules/MigrationUtils.jsm",
+  OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
   Services: "resource://gre/modules/Services.jsm",
   UIState: "resource://services-sync/UIState.jsm",
   PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
@@ -35,12 +40,29 @@ XPCOMUtils.defineLazyPreferenceGetter(
   "identity.fxaccounts.enabled",
   false
 );
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "OS_AUTH_ENABLED",
+  "signon.management.page.os-auth.enabled",
+  true
+);
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "VULNERABLE_PASSWORDS_ENABLED",
+  "signon.management.page.vulnerable-passwords.enabled",
+  false
+);
+XPCOMUtils.defineLazyGetter(this, "AboutLoginsL10n", () => {
+  return new Localization(["branding/brand.ftl", "browser/aboutLogins.ftl"]);
+});
 
 const ABOUT_LOGINS_ORIGIN = "about:logins";
 const MASTER_PASSWORD_NOTIFICATION_ID = "master-password-login-required";
 const PASSWORD_SYNC_NOTIFICATION_ID = "enable-password-sync";
 
 const HIDE_MOBILE_FOOTER_PREF = "signon.management.page.hideMobileFooter";
+const SHOW_PASSWORD_SYNC_NOTIFICATION_PREF =
+  "signon.management.page.showPasswordSyncNotification";
 
 // about:logins will always use the privileged content process,
 // even if it is disabled for other consumers such as about:newtab.
@@ -181,29 +203,40 @@ const augmentVanillaLoginObject = login => {
   });
 };
 
-var AboutLoginsParent = {
-  _l10n: null,
-  _subscribers: new WeakSet(),
-  _observersAdded: false,
-
-  // Listeners are added in BrowserGlue.jsm
+class AboutLoginsParent extends JSWindowActorParent {
   async receiveMessage(message) {
+    if (!this.browsingContext.embedderElement) {
+      return;
+    }
     // Only respond to messages sent from a privlegedabout process. Ideally
     // we would also check the contentPrincipal.originNoSuffix but this
     // check has been removed due to bug 1576722.
-    if (message.target.remoteType != EXPECTED_ABOUTLOGINS_REMOTE_TYPE) {
+    if (
+      this.browsingContext.embedderElement.remoteType !=
+      EXPECTED_ABOUTLOGINS_REMOTE_TYPE
+    ) {
       throw new Error(
-        `AboutLoginsParent: Received ${
-          message.name
-        } message the remote type didn't match expectations: ${
-          message.target.remoteType
-        } == ${EXPECTED_ABOUTLOGINS_REMOTE_TYPE}`
+        `AboutLoginsParent: Received ${message.name} message the remote type didn't match expectations: ${this.browsingContext.embedderElement.remoteType} == ${EXPECTED_ABOUTLOGINS_REMOTE_TYPE}`
       );
     }
 
-    this._subscribers.add(message.target);
+    AboutLogins._subscribers.add(this.browsingContext);
+
+    let ownerGlobal = this.browsingContext.embedderElement.ownerGlobal;
     switch (message.name) {
       case "AboutLogins:CreateLogin": {
+        if (!Services.policies.isAllowed("removeMasterPassword")) {
+          if (!LoginHelper.isMasterPasswordSet()) {
+            ownerGlobal.openDialog(
+              "chrome://mozapps/content/preferences/changemp.xhtml",
+              "",
+              "centerscreen,chrome,modal,titlebar"
+            );
+            if (!LoginHelper.isMasterPasswordSet()) {
+              return;
+            }
+          }
+        }
         let newLogin = message.data.login;
         // Remove the path from the origin, if it was provided.
         let origin = LoginHelper.getLoginOrigin(newLogin.origin);
@@ -232,38 +265,25 @@ var AboutLoginsParent = {
         Services.logins.removeLogin(login);
         break;
       }
-      case "AboutLogins:DismissBreachAlert": {
-        const login = message.data.login;
-
-        await LoginBreaches.recordDismissal(login.guid);
-        const logins = await this.getAllLogins();
-        const breachesByLoginGUID = await LoginBreaches.getPotentialBreachesByLoginGUID(
-          logins
-        );
-        const messageManager = message.target.messageManager;
-        messageManager.sendAsyncMessage(
-          "AboutLogins:SetBreaches",
-          breachesByLoginGUID
-        );
-        break;
-      }
       case "AboutLogins:HideFooter": {
         Services.prefs.setBoolPref(HIDE_MOBILE_FOOTER_PREF, true);
         break;
       }
+      case "AboutLogins:SortChanged": {
+        Services.prefs.setCharPref("signon.management.page.sort", message.data);
+        break;
+      }
       case "AboutLogins:SyncEnable": {
-        message.target.ownerGlobal.gSync.openFxAEmailFirstPage(
-          "password-manager"
-        );
+        ownerGlobal.gSync.openFxAEmailFirstPage("password-manager");
         break;
       }
       case "AboutLogins:SyncOptions": {
-        message.target.ownerGlobal.gSync.openFxAManagePage("password-manager");
+        ownerGlobal.gSync.openFxAManagePage("password-manager");
         break;
       }
       case "AboutLogins:Import": {
         try {
-          MigrationUtils.showMigrationWizard(message.target.ownerGlobal, [
+          MigrationUtils.showMigrationWizard(ownerGlobal, [
             MigrationUtils.MIGRATION_ENTRYPOINT_PASSWORDS,
           ]);
         } catch (ex) {
@@ -275,7 +295,7 @@ var AboutLoginsParent = {
         const SUPPORT_URL =
           Services.urlFormatter.formatURLPref("app.support.baseURL") +
           "firefox-lockwise";
-        message.target.ownerGlobal.openWebLinkIn(SUPPORT_URL, "tab", {
+        ownerGlobal.openWebLinkIn(SUPPORT_URL, "tab", {
           relatedToCurrent: true,
         });
         break;
@@ -289,7 +309,7 @@ var AboutLoginsParent = {
         );
         // Append the `utm_creative` query parameter value:
         MOBILE_ANDROID_URL += linkTrackingSource;
-        message.target.ownerGlobal.openWebLinkIn(MOBILE_ANDROID_URL, "tab", {
+        ownerGlobal.openWebLinkIn(MOBILE_ANDROID_URL, "tab", {
           relatedToCurrent: true,
         });
         break;
@@ -300,91 +320,76 @@ var AboutLoginsParent = {
         let MOBILE_IOS_URL = Services.prefs.getStringPref(MOBILE_IOS_URL_PREF);
         // Append the `utm_creative` query parameter value:
         MOBILE_IOS_URL += linkTrackingSource;
-        message.target.ownerGlobal.openWebLinkIn(MOBILE_IOS_URL, "tab", {
+        ownerGlobal.openWebLinkIn(MOBILE_IOS_URL, "tab", {
           relatedToCurrent: true,
         });
         break;
       }
       case "AboutLogins:OpenPreferences": {
-        message.target.ownerGlobal.openPreferences("privacy-logins");
-        break;
-      }
-      case "AboutLogins:OpenSite": {
-        let guid = message.data.login.guid;
-        let logins = LoginHelper.searchLoginsWithObject({ guid });
-        if (logins.length != 1) {
-          log.warn(
-            `AboutLogins:OpenSite: expected to find a login for guid: ${guid} but found ${
-              logins.length
-            }`
-          );
-          return;
-        }
-
-        message.target.ownerGlobal.openWebLinkIn(logins[0].origin, "tab", {
-          relatedToCurrent: true,
-        });
+        ownerGlobal.openPreferences("privacy-logins");
         break;
       }
       case "AboutLogins:MasterPasswordRequest": {
-        // This does no harm if master password isn't set.
-        let tokendb = Cc["@mozilla.org/security/pk11tokendb;1"].createInstance(
-          Ci.nsIPK11TokenDB
-        );
-        let token = tokendb.getInternalKeyToken();
-
-        let messageManager = message.target.messageManager;
-
-        // If there is no master password, return as-if authentication succeeded.
-        if (token.checkPassword("")) {
-          messageManager.sendAsyncMessage(
-            "AboutLogins:MasterPasswordResponse",
-            true
+        let messageId = message.data;
+        if (!messageId) {
+          throw new Error(
+            "AboutLogins:MasterPasswordRequest: Message ID required for MasterPasswordRequest."
           );
-          return;
+        }
+        let messageText = { value: "NOT SUPPORTED" };
+        let captionText = { value: "" };
+
+        // This feature is only supported on Windows and macOS
+        // but we still call in to OSKeyStore on Linux to get
+        // the proper auth_details for Telemetry.
+        // See bug 1614874 for Linux support.
+        if (OS_AUTH_ENABLED && OSKeyStore.canReauth()) {
+          messageId += "-" + AppConstants.platform;
+          [messageText, captionText] = await AboutLoginsL10n.formatMessages([
+            {
+              id: messageId,
+            },
+            {
+              id: "about-logins-os-auth-dialog-caption",
+            },
+          ]);
         }
 
-        // If a master password prompt is already open, just exit early and return false.
-        // The user can re-trigger it after responding to the already open dialog.
-        if (Services.logins.uiBusy) {
-          messageManager.sendAsyncMessage(
-            "AboutLogins:MasterPasswordResponse",
-            false
-          );
-          return;
-        }
-
-        // So there's a master password. But since checkPassword didn't succeed, we're logged out (per nsIPK11Token.idl).
-        try {
-          // Relogin and ask for the master password.
-          token.login(true); // 'true' means always prompt for token password. User will be prompted until
-          // clicking 'Cancel' or entering the correct password.
-        } catch (e) {
-          // An exception will be thrown if the user cancels the login prompt dialog.
-          // User is also logged out of Software Security Device.
-        }
-
-        messageManager.sendAsyncMessage(
-          "AboutLogins:MasterPasswordResponse",
-          token.isLoggedIn()
+        let { isAuthorized, telemetryEvent } = await LoginHelper.requestReauth(
+          this.browsingContext.embedderElement,
+          OS_AUTH_ENABLED,
+          AboutLogins._authExpirationTime,
+          messageText.value,
+          captionText.value
         );
+        if (isAuthorized) {
+          const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+          AboutLogins._authExpirationTime = Date.now() + AUTH_TIMEOUT_MS;
+        }
+        this.sendAsyncMessage("AboutLogins:MasterPasswordResponse", {
+          result: isAuthorized,
+          telemetryEvent,
+        });
         break;
       }
       case "AboutLogins:Subscribe": {
-        if (!this._observersAdded) {
-          Services.obs.addObserver(this, "passwordmgr-crypto-login");
-          Services.obs.addObserver(this, "passwordmgr-crypto-loginCanceled");
-          Services.obs.addObserver(this, "passwordmgr-storage-changed");
-          Services.obs.addObserver(this, UIState.ON_UPDATE);
-          this._observersAdded = true;
+        AboutLogins._authExpirationTime = Number.NEGATIVE_INFINITY;
+        if (!AboutLogins._observersAdded) {
+          Services.obs.addObserver(AboutLogins, "passwordmgr-crypto-login");
+          Services.obs.addObserver(
+            AboutLogins,
+            "passwordmgr-crypto-loginCanceled"
+          );
+          Services.obs.addObserver(AboutLogins, "passwordmgr-storage-changed");
+          Services.obs.addObserver(AboutLogins, UIState.ON_UPDATE);
+          AboutLogins._observersAdded = true;
         }
-        let messageManager = message.target.messageManager;
 
-        const logins = await this.getAllLogins();
+        const logins = await AboutLogins.getAllLogins();
         try {
-          let syncState = this.getSyncState();
+          let syncState = AboutLogins.getSyncState();
           if (FXA_ENABLED) {
-            this.updatePasswordSyncNotificationState(syncState);
+            AboutLogins.updatePasswordSyncNotificationState(syncState);
           }
 
           const playStoreBadgeLanguage = Services.locale.negotiateLanguages(
@@ -406,14 +411,33 @@ var AboutLoginsParent = {
             playStoreBadgeLanguage,
           };
 
-          messageManager.sendAsyncMessage("AboutLogins:Setup", {
+          let selectedSort = Services.prefs.getCharPref(
+            "signon.management.page.sort",
+            "name"
+          );
+          if (selectedSort == "breached") {
+            // The "breached" value was used since Firefox 70 and
+            // replaced with "alerts" in Firefox 76.
+            selectedSort = "alerts";
+          }
+          this.sendAsyncMessage("AboutLogins:Setup", {
             logins,
+            selectedSort,
             syncState,
             selectedBadgeLanguages,
             masterPasswordEnabled: LoginHelper.isMasterPasswordSet(),
+            passwordRevealVisible: Services.policies.isAllowed(
+              "passwordReveal"
+            ),
+            importVisible:
+              Services.policies.isAllowed("profileImport") &&
+              AppConstants.platform != "linux",
           });
 
-          await this._sendAllLoginRelatedObjects(logins, messageManager);
+          await AboutLogins._sendAllLoginRelatedObjects(
+            logins,
+            this.browsingContext
+          );
         } catch (ex) {
           if (ex.result != Cr.NS_ERROR_NOT_INITIALIZED) {
             throw ex;
@@ -434,9 +458,7 @@ var AboutLoginsParent = {
         });
         if (logins.length != 1) {
           log.warn(
-            `AboutLogins:UpdateLogin: expected to find a login for guid: ${
-              loginUpdates.guid
-            } but found ${logins.length}`
+            `AboutLogins:UpdateLogin: expected to find a login for guid: ${loginUpdates.guid} but found ${logins.length}`
           );
           return;
         }
@@ -455,10 +477,126 @@ var AboutLoginsParent = {
         }
         break;
       }
-    }
-  },
+      case "AboutLogins:ExportPasswords": {
+        let messageText = { value: "NOT SUPPORTED" };
+        let captionText = { value: "" };
 
-  handleLoginStorageErrors(login, error, message) {
+        // This feature is only supported on Windows and macOS
+        // but we still call in to OSKeyStore on Linux to get
+        // the proper auth_details for Telemetry.
+        // See bug 1614874 for Linux support.
+        if (OSKeyStore.canReauth()) {
+          let messageId =
+            "about-logins-export-password-os-auth-dialog-message-" +
+            AppConstants.platform;
+          [messageText, captionText] = await AboutLoginsL10n.formatMessages([
+            {
+              id: messageId,
+            },
+            {
+              id: "about-logins-os-auth-dialog-caption",
+            },
+          ]);
+        }
+
+        let { isAuthorized, telemetryEvent } = await LoginHelper.requestReauth(
+          this.browsingContext.embedderElement,
+          true,
+          null, // Prompt regardless of a recent prompt
+          messageText.value,
+          captionText.value
+        );
+
+        let { method, object, extra = {}, value = null } = telemetryEvent;
+        Services.telemetry.recordEvent("pwmgr", method, object, value, extra);
+
+        if (!isAuthorized) {
+          return;
+        }
+
+        let fp = Cc["@mozilla.org/filepicker;1"].createInstance(
+          Ci.nsIFilePicker
+        );
+        function fpCallback(aResult) {
+          if (aResult != Ci.nsIFilePicker.returnCancel) {
+            LoginExport.exportAsCSV(fp.file.path);
+            Services.telemetry.recordEvent(
+              "pwmgr",
+              "mgmt_menu_item_used",
+              "export_complete"
+            );
+          }
+        }
+        let [
+          title,
+          defaultFilename,
+          okButtonLabel,
+          csvFilterTitle,
+        ] = await AboutLoginsL10n.formatValues([
+          {
+            id: "about-logins-export-file-picker-title",
+          },
+          {
+            id: "about-logins-export-file-picker-default-filename",
+          },
+          {
+            id: "about-logins-export-file-picker-export-button",
+          },
+          {
+            id: "about-logins-export-file-picker-csv-filter-title",
+          },
+        ]);
+
+        fp.init(ownerGlobal, title, Ci.nsIFilePicker.modeSave);
+        fp.appendFilter(csvFilterTitle, "*.csv");
+        fp.appendFilters(Ci.nsIFilePicker.filterAll);
+        fp.defaultString = defaultFilename;
+        fp.defaultExtension = "csv";
+        fp.okButtonLabel = okButtonLabel;
+        fp.open(fpCallback);
+        break;
+      }
+      case "AboutLogins:ImportPasswords": {
+        let fp = Cc["@mozilla.org/filepicker;1"].createInstance(
+          Ci.nsIFilePicker
+        );
+        async function fpCallback(aResult) {
+          if (aResult != Ci.nsIFilePicker.returnCancel) {
+            await LoginCSVImport.importFromCSV(fp.file.path);
+            Services.telemetry.recordEvent(
+              "pwmgr",
+              "mgmt_menu_item_used",
+              "import_csv_complete"
+            );
+          }
+        }
+        let [
+          title,
+          okButtonLabel,
+          csvFilterTitle,
+        ] = await AboutLoginsL10n.formatValues([
+          {
+            id: "about-logins-import-file-picker-title",
+          },
+          {
+            id: "about-logins-import-file-picker-import-button",
+          },
+          {
+            id: "about-logins-import-file-picker-csv-filter-title",
+          },
+        ]);
+
+        fp.init(ownerGlobal, title, Ci.nsIFilePicker.modeOpen);
+        fp.appendFilter(csvFilterTitle, "*.csv");
+        fp.appendFilters(Ci.nsIFilePicker.filterAll);
+        fp.okButtonLabel = okButtonLabel;
+        fp.open(fpCallback);
+        break;
+      }
+    }
+  }
+
+  handleLoginStorageErrors(login, error) {
     let messageObject = {
       login: augmentVanillaLoginObject(LoginHelper.loginToVanillaObject(login)),
       errorMessage: error.message,
@@ -470,12 +608,14 @@ var AboutLoginsParent = {
       messageObject.existingLoginGuid = error.data.toString();
     }
 
-    const messageManager = message.target.messageManager;
-    messageManager.sendAsyncMessage(
-      "AboutLogins:ShowLoginItemError",
-      messageObject
-    );
-  },
+    this.sendAsyncMessage("AboutLogins:ShowLoginItemError", messageObject);
+  }
+}
+
+var AboutLogins = {
+  _subscribers: new WeakSet(),
+  _observersAdded: false,
+  _authExpirationTime: Number.NEGATIVE_INFINITY,
 
   async observe(subject, topic, type) {
     if (!ChromeUtils.nondeterministicGetWeakSetKeys(this._subscribers).length) {
@@ -511,14 +651,23 @@ var AboutLoginsParent = {
         if (!login) {
           return;
         }
-        this.messageSubscribers("AboutLogins:LoginAdded", login);
 
         if (BREACH_ALERTS_ENABLED) {
           this.messageSubscribers(
             "AboutLogins:UpdateBreaches",
             await LoginBreaches.getPotentialBreachesByLoginGUID([login])
           );
+          if (VULNERABLE_PASSWORDS_ENABLED) {
+            this.messageSubscribers(
+              "AboutLogins:UpdateVulnerableLogins",
+              await LoginBreaches.getPotentiallyVulnerablePasswordsByLoginGUID([
+                login,
+              ])
+            );
+          }
         }
+
+        this.messageSubscribers("AboutLogins:LoginAdded", login);
         break;
       }
       case "modifyLogin": {
@@ -527,6 +676,30 @@ var AboutLoginsParent = {
         if (!login) {
           return;
         }
+
+        if (BREACH_ALERTS_ENABLED) {
+          let breachesForThisLogin = await LoginBreaches.getPotentialBreachesByLoginGUID(
+            [login]
+          );
+          let breachData = breachesForThisLogin.size
+            ? breachesForThisLogin.get(login.guid)
+            : false;
+          this.messageSubscribers(
+            "AboutLogins:UpdateBreaches",
+            new Map([[login.guid, breachData]])
+          );
+          if (VULNERABLE_PASSWORDS_ENABLED) {
+            let vulnerablePasswordsForThisLogin = await LoginBreaches.getPotentiallyVulnerablePasswordsByLoginGUID(
+              [login]
+            );
+            let isLoginVulnerable = !!vulnerablePasswordsForThisLogin.size;
+            this.messageSubscribers(
+              "AboutLogins:UpdateVulnerableLogins",
+              new Map([[login.guid, isLoginVulnerable]])
+            );
+          }
+        }
+
         this.messageSubscribers("AboutLogins:LoginModified", login);
         break;
       }
@@ -582,24 +755,44 @@ var AboutLoginsParent = {
       id: MASTER_PASSWORD_NOTIFICATION_ID,
       priority: "PRIORITY_WARNING_MEDIUM",
       iconURL: "chrome://browser/skin/login.svg",
-      messageId: "master-password-notification-message",
-      buttonId: "master-password-reload-button",
-      onClick(browser) {
-        browser.reload();
-      },
+      messageId: "about-logins-primary-password-notification-message",
+      buttonIds: ["master-password-reload-button"],
+      onClicks: [
+        function onReloadClick(browser) {
+          browser.reload();
+        },
+      ],
     });
+    this.messageSubscribers("AboutLogins:MasterPasswordAuthRequired");
   },
 
   showPasswordSyncNotifications() {
+    if (
+      !Services.prefs.getBoolPref(SHOW_PASSWORD_SYNC_NOTIFICATION_PREF, true)
+    ) {
+      return;
+    }
+
     this.showNotifications({
       id: PASSWORD_SYNC_NOTIFICATION_ID,
       priority: "PRIORITY_INFO_MEDIUM",
       iconURL: "chrome://browser/skin/login.svg",
       messageId: "enable-password-sync-notification-message",
-      buttonId: "enable-password-sync-preferences-button",
-      onClick(browser) {
-        browser.ownerGlobal.gSync.openPrefs("password-manager");
-      },
+      buttonIds: [
+        "enable-password-sync-preferences-button",
+        "about-logins-enable-password-sync-dont-ask-again-button",
+      ],
+      onClicks: [
+        function onSyncPreferencesClick(browser) {
+          browser.ownerGlobal.gSync.openPrefs("password-manager");
+        },
+        function onDontAskAgainClick(browser) {
+          Services.prefs.setBoolPref(
+            SHOW_PASSWORD_SYNC_NOTIFICATION_PREF,
+            false
+          );
+        },
+      ],
       extraFtl: ["branding/brand.ftl", "browser/branding/sync-brand.ftl"],
     });
   },
@@ -609,20 +802,20 @@ var AboutLoginsParent = {
     priority,
     iconURL,
     messageId,
-    buttonId,
-    onClick,
+    buttonIds,
+    onClicks,
     extraFtl = [],
   } = {}) {
     for (let subscriber of this._subscriberIterator()) {
-      let MozXULElement = subscriber.ownerGlobal.MozXULElement;
+      let browser = subscriber.embedderElement;
+      let MozXULElement = browser.ownerGlobal.MozXULElement;
       MozXULElement.insertFTLIfNeeded("browser/aboutLogins.ftl");
       for (let ftl of extraFtl) {
         MozXULElement.insertFTLIfNeeded(ftl);
       }
 
       // If there's already an existing notification bar, don't do anything.
-      let { gBrowser } = subscriber.ownerGlobal;
-      let browser = subscriber;
+      let { gBrowser } = browser.ownerGlobal;
       let notificationBox = gBrowser.getNotificationBox(browser);
       let notification = notificationBox.getNotificationWithValue(id);
       if (notification) {
@@ -630,21 +823,22 @@ var AboutLoginsParent = {
       }
 
       // Configure the notification bar
-      let doc = subscriber.ownerDocument;
+      let doc = browser.ownerDocument;
       let messageFragment = doc.createDocumentFragment();
       let message = doc.createElement("span");
       doc.l10n.setAttributes(message, messageId);
       messageFragment.appendChild(message);
 
-      let buttons = [
-        {
-          "l10n-id": buttonId,
+      let buttons = [];
+      for (let i = 0; i < buttonIds.length; i++) {
+        buttons[i] = {
+          "l10n-id": buttonIds[i],
           popup: null,
           callback: () => {
-            onClick(browser);
+            onClicks[i](browser);
           },
-        },
-      ];
+        };
+      }
 
       notification = notificationBox.appendNotification(
         messageFragment,
@@ -658,8 +852,8 @@ var AboutLoginsParent = {
 
   removeNotifications(notificationId) {
     for (let subscriber of this._subscriberIterator()) {
-      let { gBrowser } = subscriber.ownerGlobal;
-      let browser = subscriber;
+      let browser = subscriber.embedderElement;
+      let { gBrowser } = browser.ownerGlobal;
       let notificationBox = gBrowser.getNotificationBox(browser);
       let notification = notificationBox.getNotificationWithValue(
         notificationId
@@ -676,10 +870,12 @@ var AboutLoginsParent = {
       this._subscribers
     );
     for (let subscriber of subscribers) {
+      let browser = subscriber.embedderElement;
       if (
-        subscriber.remoteType != EXPECTED_ABOUTLOGINS_REMOTE_TYPE ||
-        !subscriber.contentPrincipal ||
-        subscriber.contentPrincipal.originNoSuffix != ABOUT_LOGINS_ORIGIN
+        !browser ||
+        browser.remoteType != EXPECTED_ABOUTLOGINS_REMOTE_TYPE ||
+        !browser.contentPrincipal ||
+        browser.contentPrincipal.originNoSuffix != ABOUT_LOGINS_ORIGIN
       ) {
         this._subscribers.delete(subscriber);
         continue;
@@ -691,13 +887,16 @@ var AboutLoginsParent = {
   messageSubscribers(name, details) {
     for (let subscriber of this._subscriberIterator()) {
       try {
-        subscriber.messageManager.sendAsyncMessage(name, details);
+        if (subscriber.currentWindowGlobal) {
+          let actor = subscriber.currentWindowGlobal.getActor("AboutLogins");
+          actor.sendAsyncMessage(name, details);
+        }
       } catch (ex) {
         if (ex.result != Cr.NS_ERROR_NOT_INITIALIZED) {
           throw ex;
         }
 
-        // The message manager may be destroyed before the message is sent.
+        // The actor may be destroyed before the message is sent.
         log.debug(
           "messageSubscribers: exception when calling sendAsyncMessage",
           ex
@@ -721,24 +920,34 @@ var AboutLoginsParent = {
     }
   },
 
-  async _sendAllLoginRelatedObjects(logins, messageManager) {
+  async _sendAllLoginRelatedObjects(logins, browsingContext) {
     let sendMessageFn = (name, details) => {
-      if (messageManager) {
-        messageManager.sendAsyncMessage(name, details);
+      if (browsingContext && browsingContext.currentWindowGlobal) {
+        let actor = browsingContext.currentWindowGlobal.getActor("AboutLogins");
+        actor.sendAsyncMessage(name, details);
       } else {
         this.messageSubscribers(name, details);
       }
     };
+
     if (BREACH_ALERTS_ENABLED) {
       sendMessageFn(
         "AboutLogins:SetBreaches",
         await LoginBreaches.getPotentialBreachesByLoginGUID(logins)
       );
+      if (VULNERABLE_PASSWORDS_ENABLED) {
+        sendMessageFn(
+          "AboutLogins:SetVulnerableLogins",
+          await LoginBreaches.getPotentiallyVulnerablePasswordsByLoginGUID(
+            logins
+          )
+        );
+      }
     }
 
     sendMessageFn(
       "AboutLogins:SendFavicons",
-      await this.getAllFavicons(logins)
+      await AboutLogins.getAllFavicons(logins)
     );
   },
 
@@ -777,16 +986,16 @@ var AboutLoginsParent = {
   },
 
   onPasswordSyncEnabledPreferenceChange(data, previous, latest) {
+    Services.prefs.clearUserPref(SHOW_PASSWORD_SYNC_NOTIFICATION_PREF);
     this.updatePasswordSyncNotificationState(this.getSyncState(), latest);
   },
 };
+var _AboutLogins = AboutLogins;
 
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "PASSWORD_SYNC_ENABLED",
   "services.sync.engine.passwords",
   false,
-  AboutLoginsParent.onPasswordSyncEnabledPreferenceChange.bind(
-    AboutLoginsParent
-  )
+  AboutLogins.onPasswordSyncEnabledPreferenceChange.bind(AboutLogins)
 );

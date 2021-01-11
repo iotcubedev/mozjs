@@ -25,7 +25,7 @@ L10nRegistry.loadSync = function(url) {
 
 let locales = Services.locale.packagedLocales;
 const mockSource = new FileSource("mock", locales, "");
-L10nRegistry.registerSource(mockSource);
+L10nRegistry.registerSources([mockSource]);
 
 const gLangDN = Services.intl.getLanguageDisplayNames.bind(
   Services.intl,
@@ -122,15 +122,11 @@ add_test(function test_invalid_regions() {
 add_test(function test_availableLocaleDisplayNames() {
   let langCodes = gAvLocDN("language");
   equal(
-    langCodes.length > 0,
+    !!langCodes.length,
     true,
     "There should be some language codes available"
   );
   let regCodes = gAvLocDN("region");
-  equal(
-    regCodes.length > 0,
-    true,
-    "There should be some region codes available"
-  );
+  equal(!!regCodes.length, true, "There should be some region codes available");
   run_next_test();
 });

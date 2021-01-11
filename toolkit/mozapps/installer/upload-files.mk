@@ -133,10 +133,6 @@ ifeq ($(MOZ_PKG_FORMAT),BZ2)
 endif
 
 ifeq ($(MOZ_PKG_FORMAT),ZIP)
-  ifdef MOZ_EXTERNAL_SIGNING_FORMAT
-    # We can't use sha2signcode on zip files
-    MOZ_EXTERNAL_SIGNING_FORMAT := $(filter-out sha2signcode,$(MOZ_EXTERNAL_SIGNING_FORMAT))
-  endif
   PKG_SUFFIX	= .zip
   INNER_MAKE_PACKAGE = $(call py_action,make_zip,'$(MOZ_PKG_DIR)' '$(PACKAGE)')
   INNER_UNMAKE_PACKAGE = $(call py_action,make_unzip,$(UNPACKAGE))
@@ -166,7 +162,7 @@ ifeq ($(MOZ_PKG_FORMAT),RPM)
 
   RPM_CMD = \
     echo Creating RPM && \
-    $(PYTHON) -m mozbuild.action.preprocessor \
+    $(PYTHON3) -m mozbuild.action.preprocessor \
       -DMOZ_APP_NAME=$(MOZ_APP_NAME) \
       -DMOZ_APP_DISPLAYNAME='$(MOZ_APP_DISPLAYNAME)' \
       -DMOZ_APP_REMOTINGNAME='$(MOZ_APP_REMOTINGNAME)' \
@@ -225,12 +221,8 @@ endif #Create an RPM file
 
 
 ifeq ($(MOZ_PKG_FORMAT),APK)
-ifdef MOZ_ANDROID_WITH_FENNEC
-include $(MOZILLA_DIR)/toolkit/mozapps/installer/upload-files-$(MOZ_PKG_FORMAT).mk
-else
 INNER_MAKE_PACKAGE = true
 INNER_UNMAKE_PACKAGE = true
-endif # MOZ_ANDROID_WITH_FENNEC
 endif
 
 ifeq ($(MOZ_PKG_FORMAT),DMG)
@@ -280,6 +272,7 @@ NO_PKG_FILES += \
 	certutil* \
 	pk12util* \
 	BadCertAndPinningServer* \
+	DelegatedCredentialsServer* \
 	OCSPStaplingServer* \
 	SanctionsTestServer* \
 	GenerateOCSPResponse* \
@@ -394,12 +387,17 @@ UPLOAD_FILES= \
   $(call QUOTED_WILDCARD,$(topobjdir)/config.status) \
   $(if $(UPLOAD_EXTRA_FILES), $(foreach f, $(UPLOAD_EXTRA_FILES), $(wildcard $(DIST)/$(f))))
 
-ifneq ($(filter-out en-US x-test,$(AB_CD)),)
+ifneq ($(filter-out en-US,$(AB_CD)),)
   UPLOAD_FILES += \
     $(call QUOTED_WILDCARD,$(topobjdir)/$(MOZ_BUILD_APP)/installer/windows/l10ngen/setup.exe) \
     $(call QUOTED_WILDCARD,$(topobjdir)/$(MOZ_BUILD_APP)/installer/windows/l10ngen/setup-stub.exe)
 endif
 
+ifdef MOZ_NORMANDY
+ifndef CROSS_COMPILE
+  UPLOAD_FILES += $(call QUOTED_WILDCARD,$(MOZ_NORMANDY_JSON))
+endif
+endif
 
 ifdef MOZ_CODE_COVERAGE
   UPLOAD_FILES += \
@@ -416,6 +414,10 @@ ifdef ENABLE_MOZSEARCH_PLUGIN
   UPLOAD_FILES += $(call QUOTED_WILDCARD,$(DIST)/$(PKG_PATH)$(MOZSEARCH_INCLUDEMAP_BASENAME).map)
 endif
 
+ifeq (Darwin, $(OS_ARCH))
+  UPLOAD_FILES += $(call QUOTED_WILDCARD,$(DIST)/$(PKG_PATH)$(MACOS_CODESIGN_ARCHIVE_BASENAME).zip)
+endif
+
 ifdef MOZ_STUB_INSTALLER
   UPLOAD_FILES += $(call QUOTED_WILDCARD,$(DIST)/$(PKG_INST_PATH)$(PKG_STUB_BASENAME).exe)
 endif
@@ -427,6 +429,10 @@ endif
 SRC_TAR_PREFIX = $(MOZ_APP_NAME)-$(MOZ_PKG_VERSION)
 SRC_TAR_EXCLUDE_PATHS += \
   --exclude='.hg*' \
+  --exclude='.git' \
+  --exclude='.gitattributes' \
+  --exclude='.gitkeep' \
+  --exclude='.gitmodules' \
   --exclude='CVS' \
   --exclude='.cvs*' \
   --exclude='.mozconfig*' \

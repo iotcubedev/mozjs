@@ -10,8 +10,8 @@
 #include <limits>
 #include "ipc/TelemetryIPCAccumulator.h"
 #include "jsapi.h"
+#include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject, JS::NewArrayObject
 #include "mozilla/Maybe.h"
-#include "mozilla/Pair.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticMutex.h"
@@ -31,9 +31,7 @@
 #include "TelemetryEventData.h"
 #include "TelemetryScalar.h"
 
-using mozilla::ArrayLength;
 using mozilla::Maybe;
-using mozilla::Nothing;
 using mozilla::StaticAutoPtr;
 using mozilla::StaticMutex;
 using mozilla::StaticMutexAutoLock;
@@ -43,11 +41,9 @@ using mozilla::Telemetry::EventExtraEntry;
 using mozilla::Telemetry::LABELS_TELEMETRY_EVENT_RECORDING_ERROR;
 using mozilla::Telemetry::LABELS_TELEMETRY_EVENT_REGISTRATION_ERROR;
 using mozilla::Telemetry::ProcessID;
-using mozilla::Telemetry::Common::AutoHashtable;
 using mozilla::Telemetry::Common::CanRecordDataset;
 using mozilla::Telemetry::Common::CanRecordInProcess;
 using mozilla::Telemetry::Common::CanRecordProduct;
-using mozilla::Telemetry::Common::GetCurrentProduct;
 using mozilla::Telemetry::Common::GetNameForProcessID;
 using mozilla::Telemetry::Common::IsExpiredVersion;
 using mozilla::Telemetry::Common::IsInDataset;
@@ -133,7 +129,7 @@ struct DynamicEventInfo {
       : category(category),
         method(method),
         object(object),
-        extra_keys(extra_keys),
+        extra_keys(extra_keys.Clone()),
         recordOnRelease(recordOnRelease),
         builtin(builtin) {}
 
@@ -143,7 +139,7 @@ struct DynamicEventInfo {
   const nsCString category;
   const nsCString method;
   const nsCString object;
-  const nsTArray<nsCString> extra_keys;
+  const CopyableTArray<nsCString> extra_keys;
   const bool recordOnRelease;
   const bool builtin;
 
@@ -169,15 +165,19 @@ enum class RecordEventResult {
   StorageLimitReached,
   ExpiredEvent,
   WrongProcess,
+  CannotRecord,
 };
 
-typedef nsTArray<EventExtraEntry> ExtraArray;
+typedef CopyableTArray<EventExtraEntry> ExtraArray;
 
 class EventRecord {
  public:
   EventRecord(double timestamp, const EventKey& key,
               const Maybe<nsCString>& value, const ExtraArray& extra)
-      : mTimestamp(timestamp), mEventKey(key), mValue(value), mExtra(extra) {}
+      : mTimestamp(timestamp),
+        mEventKey(key),
+        mValue(value),
+        mExtra(extra.Clone()) {}
 
   EventRecord(const EventRecord& other) = default;
 
@@ -335,7 +335,7 @@ nsCString GetCategory(const StaticMutexAutoLock& lock,
   }
 
   if (!gDynamicEventInfo) {
-    return NS_LITERAL_CSTRING("");
+    return ""_ns;
   }
 
   return (*gDynamicEventInfo)[eventKey.id].category;
@@ -371,8 +371,7 @@ bool CanRecordEvent(const StaticMutexAutoLock& lock, const EventKey& eventKey,
 bool IsExpired(const EventKey& key) { return key.id == kExpiredEventId; }
 
 EventRecordArray* GetEventRecordsForProcess(const StaticMutexAutoLock& lock,
-                                            ProcessID processType,
-                                            const EventKey& eventKey) {
+                                            ProcessID processType) {
   EventRecordArray* eventRecords = nullptr;
   if (!gEventRecords.Get(uint32_t(processType), &eventRecords)) {
     eventRecords = new EventRecordArray();
@@ -458,7 +457,7 @@ RecordEventResult RecordEvent(const StaticMutexAutoLock& lock,
 
   // Check whether we can record this event.
   if (!CanRecordEvent(lock, *eventKey, processType)) {
-    return RecordEventResult::Ok;
+    return RecordEventResult::CannotRecord;
   }
 
   // Count the number of times this event has been recorded, even if its
@@ -477,8 +476,7 @@ RecordEventResult RecordEvent(const StaticMutexAutoLock& lock,
     return RecordEventResult::Ok;
   }
 
-  EventRecordArray* eventRecords =
-      GetEventRecordsForProcess(lock, processType, *eventKey);
+  EventRecordArray* eventRecords = GetEventRecordsForProcess(lock, processType);
   eventRecords->AppendElement(EventRecord(timestamp, *eventKey, value, extra));
 
   // Notify observers when we hit the "event" ping event record limit.
@@ -576,7 +574,7 @@ nsresult SerializeEventsArray(const EventRecordArray& events, JSContext* cx,
                               JS::MutableHandleObject result,
                               unsigned int dataset) {
   // We serialize the events to a JS array.
-  JS::RootedObject eventsArray(cx, JS_NewArrayObject(cx, events.Length()));
+  JS::RootedObject eventsArray(cx, JS::NewArrayObject(cx, events.Length()));
   if (!eventsArray) {
     return NS_ERROR_FAILURE;
   }
@@ -662,7 +660,7 @@ nsresult SerializeEventsArray(const EventRecordArray& events, JSContext* cx,
     }
 
     // Add the record to the events array.
-    JS::RootedObject itemsArray(cx, JS_NewArrayObject(cx, items));
+    JS::RootedObject itemsArray(cx, JS::NewArrayObject(cx, items));
     if (!JS_DefineElement(cx, eventsArray, i, itemsArray, JSPROP_ENUMERATE)) {
       return NS_ERROR_FAILURE;
     }
@@ -780,7 +778,7 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
   // Check value argument.
   if ((optional_argc > 0) && !aValue.isNull() && !aValue.isString()) {
     LogToBrowserConsole(nsIScriptError::warningFlag,
-                        NS_LITERAL_STRING("Invalid type for value parameter."));
+                        u"Invalid type for value parameter."_ns);
     mozilla::Telemetry::AccumulateCategorical(
         LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Value);
     return NS_OK;
@@ -791,9 +789,8 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
   if (aValue.isString()) {
     nsAutoJSString jsStr;
     if (!jsStr.init(cx, aValue)) {
-      LogToBrowserConsole(
-          nsIScriptError::warningFlag,
-          NS_LITERAL_STRING("Invalid string value for value parameter."));
+      LogToBrowserConsole(nsIScriptError::warningFlag,
+                          u"Invalid string value for value parameter."_ns);
       mozilla::Telemetry::AccumulateCategorical(
           LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Value);
       return NS_OK;
@@ -803,8 +800,8 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
     if (str.Length() > kMaxValueByteLength) {
       LogToBrowserConsole(
           nsIScriptError::warningFlag,
-          NS_LITERAL_STRING(
-              "Value parameter exceeds maximum string length, truncating."));
+          nsLiteralString(
+              u"Value parameter exceeds maximum string length, truncating."));
       TruncateToByteLength(str, kMaxValueByteLength);
     }
     value = mozilla::Some(str);
@@ -813,7 +810,7 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
   // Check extra argument.
   if ((optional_argc > 1) && !aExtra.isNull() && !aExtra.isObject()) {
     LogToBrowserConsole(nsIScriptError::warningFlag,
-                        NS_LITERAL_STRING("Invalid type for extra parameter."));
+                        u"Invalid type for extra parameter."_ns);
     mozilla::Telemetry::AccumulateCategorical(
         LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Extra);
     return NS_OK;
@@ -826,7 +823,7 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
     JS::Rooted<JS::IdVector> ids(cx, JS::IdVector(cx));
     if (!JS_Enumerate(cx, obj, &ids)) {
       LogToBrowserConsole(nsIScriptError::warningFlag,
-                          NS_LITERAL_STRING("Failed to enumerate object."));
+                          u"Failed to enumerate object."_ns);
       mozilla::Telemetry::AccumulateCategorical(
           LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Extra);
       return NS_OK;
@@ -837,8 +834,8 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
       if (!key.init(cx, ids[i])) {
         LogToBrowserConsole(
             nsIScriptError::warningFlag,
-            NS_LITERAL_STRING(
-                "Extra dictionary should only contain string keys."));
+            nsLiteralString(
+                u"Extra dictionary should only contain string keys."));
         mozilla::Telemetry::AccumulateCategorical(
             LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Extra);
         return NS_OK;
@@ -847,7 +844,7 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
       JS::Rooted<JS::Value> value(cx);
       if (!JS_GetPropertyById(cx, obj, ids[i], &value)) {
         LogToBrowserConsole(nsIScriptError::warningFlag,
-                            NS_LITERAL_STRING("Failed to get extra property."));
+                            u"Failed to get extra property."_ns);
         mozilla::Telemetry::AccumulateCategorical(
             LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Extra);
         return NS_OK;
@@ -855,9 +852,8 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
 
       nsAutoJSString jsStr;
       if (!value.isString() || !jsStr.init(cx, value)) {
-        LogToBrowserConsole(
-            nsIScriptError::warningFlag,
-            NS_LITERAL_STRING("Extra properties should have string values."));
+        LogToBrowserConsole(nsIScriptError::warningFlag,
+                            u"Extra properties should have string values."_ns);
         mozilla::Telemetry::AccumulateCategorical(
             LABELS_TELEMETRY_EVENT_RECORDING_ERROR::Extra);
         return NS_OK;
@@ -867,8 +863,8 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
       if (str.Length() > kMaxExtraValueByteLength) {
         LogToBrowserConsole(
             nsIScriptError::warningFlag,
-            NS_LITERAL_STRING(
-                "Extra value exceeds maximum string length, truncating."));
+            nsLiteralString(
+                u"Extra value exceeds maximum string length, truncating."));
         TruncateToByteLength(str, kMaxExtraValueByteLength);
       }
 
@@ -910,10 +906,12 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
   // Trigger warnings or errors where needed.
   switch (res) {
     case RecordEventResult::UnknownEvent: {
-      JS_ReportErrorASCII(cx, R"(Unknown event: ["%s", "%s", "%s"])",
+      nsPrintfCString msg(R"(Unknown event: ["%s", "%s", "%s"])",
                           PromiseFlatCString(aCategory).get(),
                           PromiseFlatCString(aMethod).get(),
                           PromiseFlatCString(aObject).get());
+      LogToBrowserConsole(nsIScriptError::errorFlag,
+                          NS_ConvertUTF8toUTF16(msg));
       return NS_OK;
     }
     case RecordEventResult::InvalidExtraKey: {
@@ -927,7 +925,7 @@ nsresult TelemetryEvent::RecordEvent(const nsACString& aCategory,
     }
     case RecordEventResult::StorageLimitReached: {
       LogToBrowserConsole(nsIScriptError::warningFlag,
-                          NS_LITERAL_STRING("Event storage limit reached."));
+                          u"Event storage limit reached."_ns);
       nsCOMPtr<nsIObserverService> serv =
           mozilla::services::GetObserverService();
       if (serv) {
@@ -957,7 +955,7 @@ void TelemetryEvent::RecordEventNative(
   // Truncate any over-long extra values.
   ExtraArray extra;
   if (aExtra) {
-    extra = aExtra.ref();
+    extra = aExtra.value();
     for (auto& item : extra) {
       if (item.value.Length() > kMaxExtraValueByteLength) {
         TruncateToByteLength(item.value, kMaxExtraValueByteLength);
@@ -1009,7 +1007,7 @@ static bool GetArrayPropertyValues(JSContext* cx, JS::HandleObject obj,
   }
 
   bool isArray = false;
-  if (!JS_IsArrayObject(cx, value, &isArray) || !isArray) {
+  if (!JS::IsArrayObject(cx, value, &isArray) || !isArray) {
     JS_ReportErrorASCII(cx, R"(Property "%s" for event should be an array)",
                         property);
     return false;
@@ -1017,7 +1015,7 @@ static bool GetArrayPropertyValues(JSContext* cx, JS::HandleObject obj,
 
   JS::RootedObject arrayObj(cx, &value.toObject());
   uint32_t arrayLength;
-  if (!JS_GetArrayLength(cx, arrayObj, &arrayLength)) {
+  if (!JS::GetArrayLength(cx, arrayObj, &arrayLength)) {
     return false;
   }
 
@@ -1243,8 +1241,8 @@ nsresult TelemetryEvent::CreateSnapshots(uint32_t aDataset, bool aClear,
   // from JS recording Telemetry.
 
   // (1) Extract the events from storage with a lock held.
-  nsTArray<mozilla::Pair<const char*, EventRecordArray>> processEvents;
-  nsTArray<mozilla::Pair<uint32_t, EventRecordArray>> leftovers;
+  nsTArray<std::pair<const char*, EventRecordArray>> processEvents;
+  nsTArray<std::pair<uint32_t, EventRecordArray>> leftovers;
   {
     StaticMutexAutoLock locker(gTelemetryEventsMutex);
 
@@ -1259,8 +1257,7 @@ nsresult TelemetryEvent::CreateSnapshots(uint32_t aDataset, bool aClear,
                         optional_argc,
                         aEventLimit](EventRecordsMapType& aProcessStorage) {
       for (auto iter = aProcessStorage.Iter(); !iter.Done(); iter.Next()) {
-        const EventRecordArray* eventStorage =
-            static_cast<EventRecordArray*>(iter.Data());
+        const EventRecordArray* eventStorage = iter.UserData();
         EventRecordArray events;
         EventRecordArray leftoverEvents;
 
@@ -1281,10 +1278,10 @@ nsresult TelemetryEvent::CreateSnapshots(uint32_t aDataset, bool aClear,
         if (events.Length()) {
           const char* processName = GetNameForProcessID(ProcessID(iter.Key()));
           processEvents.AppendElement(
-              mozilla::MakePair(processName, std::move(events)));
+              std::make_pair(processName, std::move(events)));
           if (leftoverEvents.Length()) {
             leftovers.AppendElement(
-                mozilla::MakePair(iter.Key(), std::move(leftoverEvents)));
+                std::make_pair(iter.Key(), std::move(leftoverEvents)));
           }
         }
       }
@@ -1295,8 +1292,8 @@ nsresult TelemetryEvent::CreateSnapshots(uint32_t aDataset, bool aClear,
     if (aClear) {
       gEventRecords.Clear();
       for (auto& pair : leftovers) {
-        gEventRecords.Put(pair.first(),
-                          new EventRecordArray(std::move(pair.second())));
+        gEventRecords.Put(pair.first,
+                          new EventRecordArray(std::move(pair.second)));
       }
       leftovers.Clear();
     }
@@ -1311,12 +1308,12 @@ nsresult TelemetryEvent::CreateSnapshots(uint32_t aDataset, bool aClear,
   const uint32_t processLength = processEvents.Length();
   for (uint32_t i = 0; i < processLength; ++i) {
     JS::RootedObject eventsArray(cx);
-    if (NS_FAILED(SerializeEventsArray(processEvents[i].second(), cx,
+    if (NS_FAILED(SerializeEventsArray(processEvents[i].second, cx,
                                        &eventsArray, aDataset))) {
       return NS_ERROR_FAILURE;
     }
 
-    if (!JS_DefineProperty(cx, rootObj, processEvents[i].first(), eventsArray,
+    if (!JS_DefineProperty(cx, rootObj, processEvents[i].first, eventsArray,
                            JSPROP_ENUMERATE)) {
       return NS_ERROR_FAILURE;
     }
@@ -1347,7 +1344,7 @@ void TelemetryEvent::SetEventRecordingEnabled(const nsACString& category,
     LogToBrowserConsole(
         nsIScriptError::warningFlag,
         NS_ConvertUTF8toUTF16(
-            NS_LITERAL_CSTRING(
+            nsLiteralCString(
                 "Unknown category for SetEventRecordingEnabled: ") +
             category));
     return;
@@ -1368,8 +1365,7 @@ size_t TelemetryEvent::SizeOfIncludingThis(
   auto getSizeOfRecords = [aMallocSizeOf](auto& storageMap) {
     size_t partial = storageMap.ShallowSizeOfExcludingThis(aMallocSizeOf);
     for (auto iter = storageMap.Iter(); !iter.Done(); iter.Next()) {
-      EventRecordArray* eventRecords =
-          static_cast<EventRecordArray*>(iter.Data());
+      EventRecordArray* eventRecords = iter.UserData();
       partial += eventRecords->ShallowSizeOfIncludingThis(aMallocSizeOf);
 
       const uint32_t len = eventRecords->Length();

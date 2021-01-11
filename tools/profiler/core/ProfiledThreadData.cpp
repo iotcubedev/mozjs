@@ -17,28 +17,23 @@
 #endif
 
 ProfiledThreadData::ProfiledThreadData(ThreadInfo* aThreadInfo,
-                                       nsIEventTarget* aEventTarget,
-                                       bool aIncludeResponsiveness)
+                                       nsIEventTarget* aEventTarget)
     : mThreadInfo(aThreadInfo) {
   MOZ_COUNT_CTOR(ProfiledThreadData);
-  if (aIncludeResponsiveness) {
-    mResponsiveness.emplace(aEventTarget, aThreadInfo->IsMainThread());
-  }
 }
 
 ProfiledThreadData::~ProfiledThreadData() {
   MOZ_COUNT_DTOR(ProfiledThreadData);
 }
 
-void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
-                                    JSContext* aCx,
-                                    SpliceableJSONWriter& aWriter,
-                                    const nsACString& aProcessName,
-                                    const mozilla::TimeStamp& aProcessStartTime,
-                                    double aSinceTime, bool JSTracerEnabled,
-                                    ProfilerCodeAddressService* aService) {
+void ProfiledThreadData::StreamJSON(
+    const ProfileBuffer& aBuffer, JSContext* aCx, SpliceableJSONWriter& aWriter,
+    const nsACString& aProcessName, const nsACString& aETLDplus1,
+    const mozilla::TimeStamp& aProcessStartTime, double aSinceTime,
+    bool JSTracerEnabled, ProfilerCodeAddressService* aService) {
   if (mJITFrameInfoForPreviousJSContexts &&
-      mJITFrameInfoForPreviousJSContexts->HasExpired(aBuffer.mRangeStart)) {
+      mJITFrameInfoForPreviousJSContexts->HasExpired(
+          aBuffer.BufferRangeStart())) {
     mJITFrameInfoForPreviousJSContexts = nullptr;
   }
 
@@ -60,9 +55,9 @@ void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
   aWriter.Start();
   {
     StreamSamplesAndMarkers(mThreadInfo->Name(), mThreadInfo->ThreadId(),
-                            aBuffer, aWriter, aProcessName, aProcessStartTime,
-                            mThreadInfo->RegisterTime(), mUnregisterTime,
-                            aSinceTime, uniqueStacks);
+                            aBuffer, aWriter, aProcessName, aETLDplus1,
+                            aProcessStartTime, mThreadInfo->RegisterTime(),
+                            mUnregisterTime, aSinceTime, uniqueStacks);
 
     aWriter.StartObjectProperty("stackTable");
     {
@@ -84,6 +79,7 @@ void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
         JSONSchemaWriter schema(aWriter);
         schema.WriteField("location");
         schema.WriteField("relevantForJS");
+        schema.WriteField("innerWindowID");
         schema.WriteField("implementation");
         schema.WriteField("optimizations");
         schema.WriteField("line");
@@ -204,12 +200,12 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
                              const ProfileBuffer& aBuffer,
                              SpliceableJSONWriter& aWriter,
                              const nsACString& aProcessName,
+                             const nsACString& aETLDplus1,
                              const mozilla::TimeStamp& aProcessStartTime,
                              const mozilla::TimeStamp& aRegisterTime,
                              const mozilla::TimeStamp& aUnregisterTime,
                              double aSinceTime, UniqueStacks& aUniqueStacks) {
-  aWriter.StringProperty("processType",
-                         XRE_ChildProcessTypeToString(XRE_GetProcessType()));
+  aWriter.StringProperty("processType", XRE_GetProcessTypeString());
 
   aWriter.StringProperty("name", aName);
 
@@ -218,6 +214,9 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
     aWriter.StringProperty("processName", "Parent Process");
   } else if (!aProcessName.IsEmpty()) {
     aWriter.StringProperty("processName", aProcessName.Data());
+  }
+  if (!aETLDplus1.IsEmpty()) {
+    aWriter.StringProperty("eTLD+1", aETLDplus1.Data());
   }
 
   aWriter.IntProperty("tid", static_cast<int64_t>(aThreadId));
@@ -245,7 +244,7 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
       JSONSchemaWriter schema(aWriter);
       schema.WriteField("stack");
       schema.WriteField("time");
-      schema.WriteField("responsiveness");
+      schema.WriteField("eventDelay");
     }
 
     aWriter.StartArrayProperty("data");
@@ -287,7 +286,8 @@ void ProfiledThreadData::NotifyAboutToLoseJSContext(
   MOZ_RELEASE_ASSERT(aContext);
 
   if (mJITFrameInfoForPreviousJSContexts &&
-      mJITFrameInfoForPreviousJSContexts->HasExpired(aBuffer.mRangeStart)) {
+      mJITFrameInfoForPreviousJSContexts->HasExpired(
+          aBuffer.BufferRangeStart())) {
     mJITFrameInfoForPreviousJSContexts = nullptr;
   }
 

@@ -49,7 +49,8 @@ function createHostCookie(host, originAttributes) {
     false,
     Date.now() + 24000 * 60 * 60,
     originAttributes,
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
 }
 
@@ -64,12 +65,13 @@ function createDomainCookie(host, originAttributes) {
     false,
     Date.now() + 24000 * 60 * 60,
     originAttributes,
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTPS
   );
 }
 
 function checkCookie(host, originAttributes) {
-  for (let cookie of Services.cookies.enumerator) {
+  for (let cookie of Services.cookies.cookies) {
     if (
       ChromeUtils.isOriginAttributesEqual(
         originAttributes,

@@ -19,17 +19,11 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
-#include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsICachingChannel.h"
-#include "nsIChannelEventSink.h"
 #include "nsIContentPolicy.h"
-#include "nsIContentSecurityPolicy.h"
 #include "mozilla/dom/Document.h"
-#include "nsIHttpChannel.h"
-#include "nsIInterfaceRequestor.h"
 #include "nsILoadGroup.h"
 #include "nsIObserver.h"
-#include "nsIStreamListener.h"
+#include "nsIScriptError.h"
 #include "nsISupportsImpl.h"
 #include "nsISupportsPrimitives.h"
 #include "nsMappedAttributes.h"
@@ -48,7 +42,9 @@ extern mozilla::LazyLogModule gTextTrackLog;
 nsGenericHTMLElement* NS_NewHTMLTrackElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
     mozilla::dom::FromParser aFromParser) {
-  return new mozilla::dom::HTMLTrackElement(std::move(aNodeInfo));
+  RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
+  auto* nim = nodeInfo->NodeInfoManager();
+  return new (nim) mozilla::dom::HTMLTrackElement(nodeInfo.forget());
 }
 
 namespace mozilla {
@@ -109,7 +105,8 @@ class WindowDestroyObserver final : public nsIObserver {
   }
 
  private:
-  ~WindowDestroyObserver(){};
+  ~WindowDestroyObserver() = default;
+
   HTMLTrackElement* mTrackElement;
   uint64_t mInnerID;
 };
@@ -165,11 +162,20 @@ TextTrack* HTMLTrackElement::GetTrack() {
   if (!mTrack) {
     CreateTextTrack();
   }
-
   return mTrack;
 }
 
 void HTMLTrackElement::CreateTextTrack() {
+  nsISupports* parentObject = OwnerDoc()->GetParentObject();
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(parentObject);
+  if (!parentObject) {
+    nsContentUtils::ReportToConsole(
+        nsIScriptError::errorFlag, "Media"_ns, OwnerDoc(),
+        nsContentUtils::eDOM_PROPERTIES,
+        "Using track element in non-window context");
+    return;
+  }
+
   nsString label, srcLang;
   GetSrclang(srcLang);
   GetLabel(label);
@@ -181,19 +187,11 @@ void HTMLTrackElement::CreateTextTrack() {
     kind = TextTrackKind::Subtitles;
   }
 
-  nsISupports* parentObject = OwnerDoc()->GetParentObject();
-
-  NS_ENSURE_TRUE_VOID(parentObject);
-
-  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(parentObject);
+  MOZ_ASSERT(!mTrack, "No need to recreate a text track!");
   mTrack =
       new TextTrack(window, kind, label, srcLang, TextTrackMode::Disabled,
                     TextTrackReadyState::NotLoaded, TextTrackSource::Track);
   mTrack->SetTrackElement(this);
-
-  if (mMediaParent) {
-    mMediaParent->AddTextTrack(mTrack);
-  }
 }
 
 bool HTMLTrackElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
@@ -316,16 +314,16 @@ void HTMLTrackElement::LoadResource(RefPtr<WebVTTListener>&& aWebVTTListener) {
   nsSecurityFlags secFlags;
   if (CORS_NONE == corsMode) {
     // Same-origin is required for track element.
-    secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS;
+    secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT;
   } else {
-    secFlags = nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS;
+    secFlags = nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT;
     if (CORS_ANONYMOUS == corsMode) {
       secFlags |= nsILoadInfo::SEC_COOKIES_SAME_ORIGIN;
     } else if (CORS_USE_CREDENTIALS == corsMode) {
       secFlags |= nsILoadInfo::SEC_COOKIES_INCLUDE;
     } else {
       NS_WARNING("Unknown CORS mode.");
-      secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS;
+      secFlags = nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT;
     }
   }
 
@@ -399,6 +397,11 @@ nsresult HTMLTrackElement::BindToTree(BindContext& aContext, nsINode& aParent) {
     if (!mTrack) {
       CreateTextTrack();
     }
+    // As `CreateTextTrack()` might fail, so we have to check it again.
+    if (mTrack) {
+      LOG("Add text track to media parent");
+      mMediaParent->AddTextTrack(mTrack);
+    }
     MaybeDispatchLoadResource();
   }
 
@@ -419,7 +422,7 @@ void HTMLTrackElement::UnbindFromTree(bool aNullParent) {
   nsGenericHTMLElement::UnbindFromTree(aNullParent);
 }
 
-uint16_t HTMLTrackElement::ReadyState() const {
+TextTrackReadyState HTMLTrackElement::ReadyState() const {
   if (!mTrack) {
     return TextTrackReadyState::NotLoaded;
   }
@@ -427,7 +430,7 @@ uint16_t HTMLTrackElement::ReadyState() const {
   return mTrack->ReadyState();
 }
 
-void HTMLTrackElement::SetReadyState(uint16_t aReadyState) {
+void HTMLTrackElement::SetReadyState(TextTrackReadyState aReadyState) {
   if (ReadyState() == aReadyState) {
     return;
   }
@@ -436,11 +439,13 @@ void HTMLTrackElement::SetReadyState(uint16_t aReadyState) {
     switch (aReadyState) {
       case TextTrackReadyState::Loaded:
         LOG("dispatch 'load' event");
-        DispatchTrackRunnable(NS_LITERAL_STRING("load"));
+        DispatchTrackRunnable(u"load"_ns);
         break;
       case TextTrackReadyState::FailedToLoad:
         LOG("dispatch 'error' event");
-        DispatchTrackRunnable(NS_LITERAL_STRING("error"));
+        DispatchTrackRunnable(u"error"_ns);
+        break;
+      default:
         break;
     }
     mTrack->SetReadyState(aReadyState);

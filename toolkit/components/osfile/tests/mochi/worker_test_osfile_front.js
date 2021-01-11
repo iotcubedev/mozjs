@@ -2,8 +2,9 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /* eslint-env mozilla/chrome-worker, node */
+/* global finish, log */
 
-importScripts("worker_test_osfile_shared.js");
+importScripts("chrome://mochikit/content/tests/SimpleTest/WorkerSimpleTest.js");
 importScripts("resource://gre/modules/workers/require.js");
 
 var SharedAll = require("resource://gre/modules/osfile/osfile_shared_allthreads.jsm");
@@ -657,7 +658,7 @@ function test_exists_file() {
     "osfile",
     "tests",
     "mochi",
-    "test_osfile_front.xul"
+    "test_osfile_front.xhtml"
   );
   info("test_exists_file: starting");
   ok(

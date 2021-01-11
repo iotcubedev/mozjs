@@ -6,8 +6,9 @@
 
 #include "GPUProcessHost.h"
 #include "chrome/common/process_watcher.h"
+#include "gfxPlatform.h"
+#include "mozilla/gfx/GPUChild.h"
 #include "mozilla/gfx/Logging.h"
-#include "nsITimer.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_layers.h"
 #include "VRGPUChild.h"
@@ -137,8 +138,8 @@ void GPUProcessHost::InitAfterConnect(bool aSucceeded) {
   if (aSucceeded) {
     mProcessToken = ++sProcessTokenCounter;
     mGPUChild = MakeUnique<GPUChild>(this);
-    DebugOnly<bool> rv =
-        mGPUChild->Open(GetChannel(), base::GetProcId(GetChildProcessHandle()));
+    DebugOnly<bool> rv = mGPUChild->Open(
+        TakeChannel(), base::GetProcId(GetChildProcessHandle()));
     MOZ_ASSERT(rv);
 
     mGPUChild->Init();
@@ -222,7 +223,7 @@ void GPUProcessHost::DestroyProcess() {
     mTaskFactory.RevokeAll();
   }
 
-  MessageLoop::current()->PostTask(
+  GetCurrentSerialEventTarget()->Dispatch(
       NS_NewRunnableFunction("DestroyProcessRunnable", [this] { Destroy(); }));
 }
 

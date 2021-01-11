@@ -55,9 +55,8 @@ struct ScratchFloat32Scope : public AutoFloatRegisterScope {
       : AutoFloatRegisterScope(masm, ScratchFloat32Reg) {}
 };
 
-static constexpr Register InvalidReg{Registers::invalid_reg};
-static constexpr FloatRegister InvalidFloatReg = {FloatRegisters::invalid_fpreg,
-                                                  FloatRegisters::Single};
+static constexpr Register InvalidReg{Registers::Invalid};
+static constexpr FloatRegister InvalidFloatReg = {};
 
 static constexpr Register OsrFrameReg{Registers::x3};
 static constexpr Register CallTempReg0{Registers::x9};
@@ -89,9 +88,6 @@ static constexpr Register RealStackPointer{Registers::sp};
 static constexpr Register PseudoStackPointer{Registers::x28};
 static constexpr ARMRegister PseudoStackPointer64 = {Registers::x28, 64};
 static constexpr ARMRegister PseudoStackPointer32 = {Registers::x28, 32};
-
-// StackPointer for use by irregexp.
-static constexpr Register RegExpStackPointer = PseudoStackPointer;
 
 static constexpr Register IntArgReg0{Registers::x0};
 static constexpr Register IntArgReg1{Registers::x1};
@@ -164,11 +160,6 @@ static_assert(JitStackAlignment % sizeof(Value) == 0 &&
                   JitStackValueAlignment >= 1,
               "Stack alignment should be a non-zero multiple of sizeof(Value)");
 
-// This boolean indicates whether we support SIMD instructions flavoured for
-// this architecture or not. Rather than a method in the LIRGenerator, it is
-// here such that it is accessible from the entire codebase. Once full support
-// for SIMD is reached on all tier-1 platforms, this constant can be deleted.
-static constexpr bool SupportsSimd = false;
 static constexpr uint32_t SimdMemoryAlignment = 16;
 
 static_assert(CodeAlignment % SimdMemoryAlignment == 0,
@@ -181,14 +172,10 @@ static_assert(CodeAlignment % SimdMemoryAlignment == 0,
 static const uint32_t WasmStackAlignment = SimdMemoryAlignment;
 static const uint32_t WasmTrapInstructionLength = 4;
 
-// Does this architecture support SIMD conversions between Uint32x4 and
-// Float32x4?
-static constexpr bool SupportsUint32x4FloatConversions = false;
-
-// Does this architecture support comparisons of unsigned integer vectors?
-static constexpr bool SupportsUint8x16Compares = false;
-static constexpr bool SupportsUint16x8Compares = false;
-static constexpr bool SupportsUint32x4Compares = false;
+// The offsets are dynamically asserted during
+// code generation in the prologue/epilogue.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
+static constexpr uint32_t WasmCheckedTailEntryOffset = 32u;
 
 class Assembler : public vixl::Assembler {
  public:
@@ -205,15 +192,13 @@ class Assembler : public vixl::Assembler {
   // table.
   BufferOffset emitExtendedJumpTable();
   BufferOffset ExtendedJumpTable_;
-  void executableCopy(uint8_t* buffer, bool flushICache = true);
+  void executableCopy(uint8_t* buffer);
 
   BufferOffset immPool(ARMRegister dest, uint8_t* value, vixl::LoadLiteralOp op,
                        const LiteralDoc& doc,
                        ARMBuffer::PoolEntry* pe = nullptr);
   BufferOffset immPool64(ARMRegister dest, uint64_t value,
                          ARMBuffer::PoolEntry* pe = nullptr);
-  BufferOffset immPool64Branch(RepatchLabel* label, ARMBuffer::PoolEntry* pe,
-                               vixl::Condition c);
   BufferOffset fImmPool(ARMFPRegister dest, uint8_t* value,
                         vixl::LoadLiteralOp op, const LiteralDoc& doc);
   BufferOffset fImmPool64(ARMFPRegister dest, double value);
@@ -223,7 +208,6 @@ class Assembler : public vixl::Assembler {
 
   void bind(Label* label) { bind(label, nextOffset()); }
   void bind(Label* label, BufferOffset boff);
-  void bind(RepatchLabel* label);
   void bind(CodeLabel* label) { label->target()->bind(currentOffset()); }
 
   void setUnlimitedBuffer() { armbuffer_.setUnlimited(); }
@@ -284,14 +268,6 @@ class Assembler : public vixl::Assembler {
 #endif
   }
 
-  int actualIndex(int curOffset) {
-    ARMBuffer::PoolEntry pe(curOffset);
-    return armbuffer_.poolEntryOffset(pe);
-  }
-  static uint8_t* PatchableJumpAddress(JitCode* code, uint32_t index) {
-    return code->raw() + index;
-  }
-
   void setPrinter(Sprinter* sp) {
 #ifdef JS_DISASM_ARM64
     spew_.setPrinter(sp);
@@ -300,7 +276,7 @@ class Assembler : public vixl::Assembler {
 
   static bool SupportsFloatingPoint() { return true; }
   static bool SupportsUnalignedAccesses() { return true; }
-  static bool SupportsSimd() { return js::jit::SupportsSimd; }
+  static bool SupportsFastUnalignedAccesses() { return true; }
 
   static bool HasRoundInstruction(RoundingMode mode) { return false; }
 
@@ -481,6 +457,11 @@ static constexpr Register WasmTableCallScratchReg1 = ABINonArgReg1;
 static constexpr Register WasmTableCallSigReg = ABINonArgReg2;
 static constexpr Register WasmTableCallIndexReg = ABINonArgReg3;
 
+// Register used as a scratch along the return path in the fast js -> wasm stub
+// code.  This must not overlap ReturnReg, JSReturnOperand, or WasmTlsReg.  It
+// must be a volatile register.
+static constexpr Register WasmJitEntryReturnScratch = r9;
+
 static inline bool GetIntArgReg(uint32_t usedIntArgs, uint32_t usedFloatArgs,
                                 Register* out) {
   if (usedIntArgs >= NumIntArgRegs) {
@@ -523,8 +504,6 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
 inline Imm32 Imm64::firstHalf() const { return low(); }
 
 inline Imm32 Imm64::secondHalf() const { return hi(); }
-
-void PatchJump(CodeLocationJump& jump_, CodeLocationLabel label);
 
 // Forbids nop filling for testing purposes. Not nestable.
 class AutoForbidNops {

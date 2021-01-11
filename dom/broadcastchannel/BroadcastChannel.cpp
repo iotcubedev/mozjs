@@ -9,9 +9,14 @@
 #include "mozilla/dom/BroadcastChannelBinding.h"
 #include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/File.h"
+#include "mozilla/dom/MessageEvent.h"
+#include "mozilla/dom/MessageEventBinding.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/ipc/StructuredCloneData.h"
+#include "mozilla/dom/RefMessageBodyService.h"
+#include "mozilla/dom/SharedMessageBody.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerScope.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/ipc/BackgroundChild.h"
@@ -21,9 +26,8 @@
 #include "nsContentUtils.h"
 
 #include "nsIBFCacheEntry.h"
-#include "nsICookieService.h"
+#include "nsICookieJarSettings.h"
 #include "mozilla/dom/Document.h"
-#include "nsISupportsPrimitives.h"
 
 #ifdef XP_WIN
 #  undef PostMessage
@@ -37,90 +41,7 @@ namespace dom {
 
 using namespace ipc;
 
-class BroadcastChannelMessage final : public StructuredCloneDataNoTransfers {
- public:
-  NS_INLINE_DECL_REFCOUNTING(BroadcastChannelMessage)
-
-  BroadcastChannelMessage() : StructuredCloneDataNoTransfers() {}
-
- private:
-  ~BroadcastChannelMessage() {}
-};
-
 namespace {
-
-nsIPrincipal* GetStoragePrincipalFromThreadSafeWorkerRef(
-    ThreadSafeWorkerRef* aWorkerRef) {
-  nsIPrincipal* storagePrincipal =
-      aWorkerRef->Private()->GetEffectiveStoragePrincipal();
-  if (storagePrincipal) {
-    return storagePrincipal;
-  }
-
-  // Walk up to our containing page
-  WorkerPrivate* wp = aWorkerRef->Private();
-  while (wp->GetParent()) {
-    wp = wp->GetParent();
-  }
-
-  return wp->GetEffectiveStoragePrincipal();
-}
-
-class InitializeRunnable final : public WorkerMainThreadRunnable {
- public:
-  InitializeRunnable(ThreadSafeWorkerRef* aWorkerRef, nsACString& aOrigin,
-                     PrincipalInfo& aStoragePrincipalInfo, ErrorResult& aRv)
-      : WorkerMainThreadRunnable(
-            aWorkerRef->Private(),
-            NS_LITERAL_CSTRING("BroadcastChannel :: Initialize")),
-        mWorkerRef(aWorkerRef),
-        mOrigin(aOrigin),
-        mStoragePrincipalInfo(aStoragePrincipalInfo),
-        mRv(aRv) {
-    MOZ_ASSERT(mWorkerRef);
-  }
-
-  bool MainThreadRun() override {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    nsIPrincipal* storagePrincipal =
-        GetStoragePrincipalFromThreadSafeWorkerRef(mWorkerRef);
-    if (!storagePrincipal) {
-      mRv.Throw(NS_ERROR_FAILURE);
-      return true;
-    }
-
-    mRv = PrincipalToPrincipalInfo(storagePrincipal, &mStoragePrincipalInfo);
-    if (NS_WARN_IF(mRv.Failed())) {
-      return true;
-    }
-
-    mRv = storagePrincipal->GetOrigin(mOrigin);
-    if (NS_WARN_IF(mRv.Failed())) {
-      return true;
-    }
-
-    // Walk up to our containing page
-    WorkerPrivate* wp = mWorkerRef->Private();
-    while (wp->GetParent()) {
-      wp = wp->GetParent();
-    }
-
-    // Window doesn't exist for some kind of workers (eg: SharedWorkers)
-    nsPIDOMWindowInner* window = wp->GetWindow();
-    if (!window) {
-      return true;
-    }
-
-    return true;
-  }
-
- private:
-  RefPtr<ThreadSafeWorkerRef> mWorkerRef;
-  nsACString& mOrigin;
-  PrincipalInfo& mStoragePrincipalInfo;
-  ErrorResult& mRv;
-};
 
 class CloseRunnable final : public nsIRunnable, public nsICancelableRunnable {
  public:
@@ -136,7 +57,7 @@ class CloseRunnable final : public nsIRunnable, public nsICancelableRunnable {
   nsresult Cancel() override { return NS_OK; }
 
  private:
-  ~CloseRunnable() {}
+  ~CloseRunnable() = default;
 
   RefPtr<BroadcastChannel> mBC;
 };
@@ -202,10 +123,15 @@ class TeardownRunnableOnWorker final : public WorkerControlRunnable,
 }  // namespace
 
 BroadcastChannel::BroadcastChannel(nsIGlobalObject* aGlobal,
-                                   const nsAString& aChannel)
-    : DOMEventTargetHelper(aGlobal), mChannel(aChannel), mState(StateActive) {
+                                   const nsAString& aChannel,
+                                   const nsID& aPortUUID)
+    : DOMEventTargetHelper(aGlobal),
+      mRefMessageBodyService(RefMessageBodyService::GetOrCreate()),
+      mChannel(aChannel),
+      mState(StateActive),
+      mPortUUID(aPortUUID) {
   MOZ_ASSERT(aGlobal);
-  KeepAliveIfHasListenersFor(NS_LITERAL_STRING("message"));
+  KeepAliveIfHasListenersFor(u"message"_ns);
 }
 
 BroadcastChannel::~BroadcastChannel() {
@@ -227,14 +153,22 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
     return nullptr;
   }
 
-  RefPtr<BroadcastChannel> bc = new BroadcastChannel(global, aChannel);
+  nsID portUUID = {};
+  aRv = nsContentUtils::GenerateUUIDInPlace(portUUID);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+
+  RefPtr<BroadcastChannel> bc =
+      new BroadcastChannel(global, aChannel, portUUID);
 
   nsAutoCString origin;
+  nsAutoString originNoSuffix;
   PrincipalInfo storagePrincipalInfo;
 
   StorageAccess storageAccess;
 
-  nsCOMPtr<nsICookieSettings> cs;
+  nsCOMPtr<nsICookieJarSettings> cjs;
   if (NS_IsMainThread()) {
     nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(global);
     if (NS_WARN_IF(!window)) {
@@ -266,6 +200,13 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
       return nullptr;
     }
 
+    nsAutoCString originNoSuffix8;
+    aRv = storagePrincipal->GetOriginNoSuffix(originNoSuffix8);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return nullptr;
+    }
+    CopyUTF8toUTF16(originNoSuffix8, originNoSuffix);
+
     aRv = PrincipalToPrincipalInfo(storagePrincipal, &storagePrincipalInfo);
     if (NS_WARN_IF(aRv.Failed())) {
       return nullptr;
@@ -275,7 +216,7 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
 
     Document* doc = window->GetExtantDoc();
     if (doc) {
-      cs = doc->CookieSettings();
+      cjs = doc->CookieJarSettings();
     }
   } else {
     JSContext* cx = aGlobal.Context();
@@ -292,26 +233,22 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
       return nullptr;
     }
 
-    RefPtr<ThreadSafeWorkerRef> tsr = new ThreadSafeWorkerRef(workerRef);
-
-    RefPtr<InitializeRunnable> runnable =
-        new InitializeRunnable(tsr, origin, storagePrincipalInfo, aRv);
-    runnable->Dispatch(Canceling, aRv);
-    if (aRv.Failed()) {
-      return nullptr;
-    }
-
     storageAccess = workerPrivate->StorageAccess();
+    storagePrincipalInfo = workerPrivate->GetEffectiveStoragePrincipalInfo();
+    origin = workerPrivate->EffectiveStoragePrincipalOrigin();
+
+    originNoSuffix = workerPrivate->GetLocationInfo().mOrigin;
+
     bc->mWorkerRef = workerRef;
 
-    cs = workerPrivate->CookieSettings();
+    cjs = workerPrivate->CookieJarSettings();
   }
 
   // We want to allow opaque origins.
   if (storagePrincipalInfo.type() != PrincipalInfo::TNullPrincipalInfo &&
       (storageAccess == StorageAccess::eDeny ||
        (ShouldPartitionStorage(storageAccess) &&
-        !StoragePartitioningEnabled(storageAccess, cs)))) {
+        !StoragePartitioningEnabled(storageAccess, cjs)))) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
     return nullptr;
   }
@@ -331,6 +268,7 @@ already_AddRefed<BroadcastChannel> BroadcastChannel::Constructor(
   MOZ_ASSERT(bc->mActor);
 
   bc->mActor->SetParent(bc);
+  bc->mOriginNoSuffix = originNoSuffix;
 
   return bc.forget();
 }
@@ -343,17 +281,26 @@ void BroadcastChannel::PostMessage(JSContext* aCx,
     return;
   }
 
-  RefPtr<BroadcastChannelMessage> data = new BroadcastChannelMessage();
+  Maybe<nsID> agentClusterId;
+  nsCOMPtr<nsIGlobalObject> global = GetOwnerGlobal();
+  MOZ_ASSERT(global);
+  if (global) {
+    agentClusterId = global->GetAgentClusterId();
+  }
 
-  data->Write(aCx, aMessage, aRv);
+  RefPtr<SharedMessageBody> data = new SharedMessageBody(
+      StructuredCloneHolder::TransferringNotSupported, agentClusterId);
+
+  data->Write(aCx, aMessage, JS::UndefinedHandleValue, mPortUUID,
+              mRefMessageBodyService, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return;
   }
 
   RemoveDocFromBFCache();
 
-  ClonedMessageData message;
-  data->BuildClonedMessageDataForBackgroundChild(mActor->Manager(), message);
+  MessageData message;
+  SharedMessageBody::FromSharedToMessageChild(mActor->Manager(), data, message);
   mActor->SendPostMessage(message);
 }
 
@@ -399,7 +346,7 @@ void BroadcastChannel::Shutdown() {
     mActor = nullptr;
   }
 
-  IgnoreKeepAliveIfHasListenersFor(NS_LITERAL_STRING("message"));
+  IgnoreKeepAliveIfHasListenersFor(u"message"_ns);
 }
 
 void BroadcastChannel::RemoveDocFromBFCache() {
@@ -428,6 +375,86 @@ void BroadcastChannel::RemoveDocFromBFCache() {
 void BroadcastChannel::DisconnectFromOwner() {
   Shutdown();
   DOMEventTargetHelper::DisconnectFromOwner();
+}
+
+void BroadcastChannel::MessageReceived(const MessageData& aData) {
+  if (NS_FAILED(CheckCurrentGlobalCorrectness())) {
+    return;
+  }
+
+  // Let's ignore messages after a close/shutdown.
+  if (mState != StateActive) {
+    return;
+  }
+
+  nsCOMPtr<nsIGlobalObject> globalObject;
+
+  if (NS_IsMainThread()) {
+    globalObject = GetParentObject();
+  } else {
+    WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+    MOZ_ASSERT(workerPrivate);
+    globalObject = workerPrivate->GlobalScope();
+  }
+
+  AutoJSAPI jsapi;
+  if (!globalObject || !jsapi.Init(globalObject)) {
+    NS_WARNING("Failed to initialize AutoJSAPI object.");
+    return;
+  }
+
+  JSContext* cx = jsapi.cx();
+
+  RefPtr<SharedMessageBody> data = SharedMessageBody::FromMessageToSharedChild(
+      aData, StructuredCloneHolder::TransferringNotSupported);
+  if (NS_WARN_IF(!data)) {
+    DispatchError(cx);
+    return;
+  }
+
+  IgnoredErrorResult rv;
+  JS::Rooted<JS::Value> value(cx);
+
+  data->Read(cx, &value, mRefMessageBodyService,
+             SharedMessageBody::ReadMethod::KeepRefMessageBody, rv);
+  if (NS_WARN_IF(rv.Failed())) {
+    JS_ClearPendingException(cx);
+    DispatchError(cx);
+    return;
+  }
+
+  RemoveDocFromBFCache();
+
+  RootedDictionary<MessageEventInit> init(cx);
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mOrigin = mOriginNoSuffix;
+  init.mData = value;
+
+  RefPtr<MessageEvent> event =
+      MessageEvent::Constructor(this, u"message"_ns, init);
+
+  event->SetTrusted(true);
+
+  DispatchEvent(*event);
+}
+
+void BroadcastChannel::MessageDelivered(const nsID& aMessageID,
+                                        uint32_t aOtherBCs) {
+  mRefMessageBodyService->SetMaxCount(aMessageID, aOtherBCs);
+}
+
+void BroadcastChannel::DispatchError(JSContext* aCx) {
+  RootedDictionary<MessageEventInit> init(aCx);
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mOrigin = mOriginNoSuffix;
+
+  RefPtr<Event> event =
+      MessageEvent::Constructor(this, u"messageerror"_ns, init);
+  event->SetTrusted(true);
+
+  DispatchEvent(*event);
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(BroadcastChannel)

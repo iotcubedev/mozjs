@@ -1,9 +1,12 @@
 from __future__ import print_function
 import array
 import os
+import sys
 from collections import defaultdict, namedtuple
 
 from mozlog import structuredlog
+from six import ensure_str, ensure_text, iteritems, iterkeys, itervalues, text_type
+from six.moves import intern, range
 
 from . import manifestupdate
 from . import testloader
@@ -42,11 +45,11 @@ class RunInfo(object):
         return self.canonical_repr == other.canonical_repr
 
     def iteritems(self):
-        for key, value in self.data.iteritems():
+        for key, value in iteritems(self.data):
             yield key, value
 
     def items(self):
-        return list(self.iteritems())
+        return list(iteritems(self))
 
 
 def update_expected(test_paths, serve_root, log_file_names,
@@ -60,7 +63,7 @@ def update_expected(test_paths, serve_root, log_file_names,
     test jobs, disable tests that don't behave as expected on all runs
 
     If `update_intermittent` is True, intermittent statuses will be recorded as `expected` in
-    the metadata. 
+    the metadata.
 
     If `remove_intermittent` is True and used in conjunction with `update_intermittent`, any
     intermittent statuses which are not present in the current run will be removed from the
@@ -126,7 +129,7 @@ def unexpected_changes(manifests, change_data, files_changed):
     files_changed = set(files_changed)
 
     root_manifest = None
-    for manifest, paths in manifests.iteritems():
+    for manifest, paths in iteritems(manifests):
         if paths["url_base"] == "/":
             root_manifest = manifest
             break
@@ -197,7 +200,7 @@ class InternedData(object):
         return obj
 
     def __iter__(self):
-        for i in xrange(1, len(self._data[0])):
+        for i in range(1, len(self._data[0])):
             yield self.get(i)
 
 
@@ -220,8 +223,10 @@ def pack_result(data):
     if not data.get("known_intermittent"):
         return status_intern.store(data.get("status"))
     result = array.array("B")
-    result_parts = ([data["status"], data.get("expected", data["status"])] +
-                    data["known_intermittent"])
+    expected = data.get("expected")
+    if expected is None:
+        expected = data["status"]
+    result_parts = [data["status"], expected] + data["known_intermittent"]
     for i, part in enumerate(result_parts):
         value = status_intern.store(part)
         if i % 2 == 0:
@@ -235,7 +240,7 @@ def pack_result(data):
 def unpack_result(data):
     if isinstance(data, int):
         return (status_intern.get(data), None)
-    if isinstance(data, unicode):
+    if isinstance(data, text_type):
         return (data, None)
     # Unpack multiple statuses into a tuple to be used in the Results named tuple below,
     # separating `status` and `known_intermittent`.
@@ -254,7 +259,7 @@ def load_test_data(test_paths):
     manifests = manifest_loader.load()
 
     id_test_map = {}
-    for test_manifest, paths in manifests.iteritems():
+    for test_manifest, paths in iteritems(manifests):
         id_test_map.update(create_test_tree(paths["metadata_path"],
                                             test_manifest))
     return id_test_map
@@ -282,10 +287,10 @@ def update_results(id_test_map,
                    disable_intermittent,
                    update_intermittent,
                    remove_intermittent):
-    test_file_items = set(id_test_map.itervalues())
+    test_file_items = set(itervalues(id_test_map))
 
     default_expected_by_type = {}
-    for test_type, test_cls in wpttest.manifest_test_cls.iteritems():
+    for test_type, test_cls in iteritems(wpttest.manifest_test_cls):
         if test_cls.result_cls:
             default_expected_by_type[(test_type, False)] = test_cls.result_cls.default_expected
         if test_cls.subtest_result_cls:
@@ -321,8 +326,11 @@ def write_new_expected(metadata_path, expected):
         tmp_path = path + ".tmp"
         try:
             with open(tmp_path, "wb") as f:
-                f.write(manifest_str)
-            os.rename(tmp_path, path)
+                f.write(manifest_str.encode("utf8"))
+            if sys.version_info >= (3, 3):
+                os.replace(tmp_path, path)
+            else:
+                os.rename(tmp_path, path)
         except (Exception, KeyboardInterrupt):
             try:
                 os.unlink(tmp_path)
@@ -350,18 +358,41 @@ class ExpectedUpdater(object):
         self.tests_visited = {}
 
     def update_from_log(self, log_file):
+        # We support three possible formats:
+        # * wptreport format; one json object in the file, possibly pretty-printed
+        # * wptreport format; one run per line
+        # * raw log format
+
+        # Try reading a single json object in wptreport format
         self.run_info = None
+        success = self.get_wptreport_data(log_file.read())
+
+        if success:
+            return
+
+        # Try line-separated json objects in wptreport format
+        log_file.seek(0)
+        for line in log_file:
+            success = self.get_wptreport_data(line)
+            if not success:
+                break
+        else:
+            return
+
+        # Assume the file is a raw log
+        log_file.seek(0)
+        self.update_from_raw_log(log_file)
+
+    def get_wptreport_data(self, input_str):
         try:
-            data = json.load(log_file)
+            data = json.loads(input_str)
         except Exception:
             pass
         else:
             if "action" not in data and "results" in data:
                 self.update_from_wptreport_log(data)
-                return
-
-        log_file.seek(0)
-        self.update_from_raw_log(log_file)
+                return True
+        return False
 
     def update_from_raw_log(self, log_file):
         action_map = self.action_map
@@ -400,7 +431,7 @@ class ExpectedUpdater(object):
             action_map["lsan_leak"](item)
 
         mozleak_data = data.get("mozleak", {})
-        for scope, scope_data in mozleak_data.iteritems():
+        for scope, scope_data in iteritems(mozleak_data):
             for key, action in [("objects", "mozleak_object"),
                                 ("total", "mozleak_total")]:
                 for item in scope_data.get(key, []):
@@ -412,7 +443,7 @@ class ExpectedUpdater(object):
         self.run_info = run_info_intern.store(RunInfo(data["run_info"]))
 
     def test_start(self, data):
-        test_id = intern(data["test"].encode("utf8"))
+        test_id = intern(ensure_str(data["test"]))
         try:
             self.id_test_map[test_id]
         except KeyError:
@@ -422,8 +453,8 @@ class ExpectedUpdater(object):
         self.tests_visited[test_id] = set()
 
     def test_status(self, data):
-        test_id = intern(data["test"].encode("utf8"))
-        subtest = intern(data["subtest"].encode("utf8"))
+        test_id = intern(ensure_str(data["test"]))
+        subtest = intern(ensure_str(data["subtest"]))
         test_data = self.id_test_map.get(test_id)
         if test_data is None:
             return
@@ -440,7 +471,7 @@ class ExpectedUpdater(object):
         if data["status"] == "SKIP":
             return
 
-        test_id = intern(data["test"].encode("utf8"))
+        test_id = intern(ensure_str(data["test"]))
         test_data = self.id_test_map.get(test_id)
         if test_data is None:
             return
@@ -453,7 +484,7 @@ class ExpectedUpdater(object):
         del self.tests_visited[test_id]
 
     def assertion_count(self, data):
-        test_id = intern(data["test"].encode("utf8"))
+        test_id = intern(ensure_str(data["test"]))
         test_data = self.id_test_map.get(test_id)
         if test_data is None:
             return
@@ -464,12 +495,15 @@ class ExpectedUpdater(object):
 
     def test_for_scope(self, data):
         dir_path = data.get("scope", "/")
-        dir_id = intern(os.path.join(dir_path, "__dir__").replace(os.path.sep, "/").encode("utf8"))
+        dir_id = intern(ensure_str(os.path.join(dir_path, "__dir__").replace(os.path.sep, "/")))
         if dir_id.startswith("/"):
             dir_id = dir_id[1:]
         return dir_id, self.id_test_map[dir_id]
 
     def lsan_leak(self, data):
+        if data["scope"] == "/":
+            logger.warning("Not updating lsan annotations for root scope")
+            return
         dir_id, test_data = self.test_for_scope(data)
         test_data.set(dir_id, None, "lsan",
                       self.run_info, (data["frames"], data.get("allowed_match")))
@@ -477,6 +511,9 @@ class ExpectedUpdater(object):
             test_data.set_requires_update()
 
     def mozleak_object(self, data):
+        if data["scope"] == "/":
+            logger.warning("Not updating mozleak annotations for root scope")
+            return
         dir_id, test_data = self.test_for_scope(data)
         test_data.set(dir_id, None, "leak-object",
                       self.run_info, ("%s:%s", (data["process"], data["name"]),
@@ -485,6 +522,9 @@ class ExpectedUpdater(object):
             test_data.set_requires_update()
 
     def mozleak_total(self, data):
+        if data["scope"] == "/":
+            logger.warning("Not updating mozleak annotations for root scope")
+            return
         if data["bytes"]:
             dir_id, test_data = self.test_for_scope(data)
             test_data.set(dir_id, None, "leak-threshold",
@@ -498,36 +538,35 @@ def create_test_tree(metadata_path, test_manifest):
     """
     do_delayed_imports()
     id_test_map = {}
-    exclude_types = frozenset(["stub", "manual", "support", "conformancechecker"])
+    exclude_types = frozenset(["manual", "support", "conformancechecker"])
     all_types = set(manifestitem.item_types.keys())
     assert all_types > exclude_types
     include_types = all_types - exclude_types
     for item_type, test_path, tests in test_manifest.itertypes(*include_types):
-        test_file_data = TestFileData(intern(test_manifest.url_base.encode("utf8")),
-                                      intern(item_type.encode("utf8")),
+        test_file_data = TestFileData(intern(ensure_str(test_manifest.url_base)),
+                                      intern(ensure_str(item_type)),
                                       metadata_path,
                                       test_path,
                                       tests)
         for test in tests:
-            id_test_map[intern(test.id.encode("utf8"))] = test_file_data
+            id_test_map[intern(ensure_str(test.id))] = test_file_data
 
-        dir_path = os.path.split(test_path)[0].replace(os.path.sep, "/")
+        dir_path = os.path.dirname(test_path)
         while True:
-            if dir_path:
-                dir_id = dir_path + "/__dir__"
-            else:
-                dir_id = "__dir__"
-            dir_id = intern((test_manifest.url_base + dir_id).lstrip("/").encode("utf8"))
-            if dir_id not in id_test_map:
-                test_file_data = TestFileData(intern(test_manifest.url_base.encode("utf8")),
-                                              None,
-                                              metadata_path,
-                                              dir_id,
-                                              [])
-                id_test_map[dir_id] = test_file_data
-            if not dir_path or dir_path in id_test_map:
+            dir_meta_path = os.path.join(dir_path, "__dir__")
+            dir_id = (test_manifest.url_base + dir_meta_path.replace(os.path.sep, "/")).lstrip("/")
+            if dir_id in id_test_map:
                 break
-            dir_path = dir_path.rsplit("/", 1)[0] if "/" in dir_path else ""
+
+            test_file_data = TestFileData(intern(ensure_str(test_manifest.url_base)),
+                                          None,
+                                          metadata_path,
+                                          dir_meta_path,
+                                          [])
+            id_test_map[dir_id] = test_file_data
+            dir_path = os.path.dirname(dir_path)
+            if not dir_path:
+                break
 
     return id_test_map
 
@@ -554,7 +593,7 @@ class PackedResultList(object):
     def append(self, prop, run_info, value):
         out_val = (prop << 12) + run_info
         if prop == prop_intern.store("status") and isinstance(value, int):
-             out_val += value << 8
+            out_val += value << 8
         else:
             if not hasattr(self, "raw_data"):
                 self.raw_data = {}
@@ -587,7 +626,7 @@ class TestFileData(object):
         self.item_type = item_type
         self.test_path = test_path
         self.metadata_path = metadata_path
-        self.tests = {intern(item.id.encode("utf8")) for item in tests}
+        self.tests = {intern(ensure_str(item.id)) for item in tests}
         self._requires_update = False
         self.data = defaultdict(lambda: defaultdict(PackedResultList))
 
@@ -628,18 +667,46 @@ class TestFileData(object):
         # Return subtest nodes present in the expected file, but missing from the data
         rv = []
 
-        for test_id, subtests in self.data.iteritems():
-            test = expected.get_test(test_id.decode("utf8"))
+        for test_id, subtests in iteritems(self.data):
+            test = expected.get_test(ensure_text(test_id))
             if not test:
                 continue
-            seen_subtests = set(item.decode("utf8") for item in subtests.iterkeys() if item is not None)
+            seen_subtests = set(ensure_text(item) for item in iterkeys(subtests) if item is not None)
             missing_subtests = set(test.subtests.keys()) - seen_subtests
             for item in missing_subtests:
                 expected_subtest = test.get_subtest(item)
                 if not self.is_disabled(expected_subtest):
                     rv.append(expected_subtest)
+            for name in seen_subtests:
+                subtest = test.get_subtest(name)
+                # If any of the items have children (ie subsubtests) we want to prune thes
+                if subtest.children:
+                    rv.extend(subtest.children)
 
         return rv
+
+    def filter_unknown_props(self, update_properties, subtests):
+        # Remove subtests which have some conditions that aren't in update_properties
+        # since removing these may be inappropriate
+        top_level_props, dependent_props = update_properties
+        all_properties = set(top_level_props)
+        for item in itervalues(dependent_props):
+            all_properties |= set(item)
+
+        filtered = []
+        for subtest in subtests:
+            include = True
+            for key, _ in subtest.iter_properties():
+                conditions = subtest.get_conditions(key)
+                for condition in conditions:
+                    if not condition.variables.issubset(all_properties):
+                        include = False
+                        break
+                if not include:
+                    break
+            if include:
+                filtered.append(subtest)
+        return filtered
 
     def update(self, default_expected_by_type, update_properties,
                full_update=False, disable_intermittent=None, update_intermittent=False,
@@ -655,6 +722,7 @@ class TestFileData(object):
 
         if full_update:
             orphans = self.orphan_subtests(expected)
+            orphans = self.filter_unknown_props(update_properties, orphans)
 
             if not self.requires_update and not orphans:
                 return
@@ -672,9 +740,9 @@ class TestFileData(object):
             test_expected = expected.get_test(test_id)
             expected_by_test[test_id] = test_expected
 
-        for test_id, test_data in self.data.iteritems():
-            test_id = test_id.decode("utf8")
-            for subtest_id, results_list in test_data.iteritems():
+        for test_id, test_data in iteritems(self.data):
+            test_id = ensure_str(test_id)
+            for subtest_id, results_list in iteritems(test_data):
                 for prop, run_info, value in results_list:
                     # Special case directory metadata
                     if subtest_id is None and test_id.endswith("__dir__"):
@@ -686,22 +754,19 @@ class TestFileData(object):
                             expected.set_leak_threshold(run_info, value)
                         continue
 
+                    test_expected = expected_by_test[test_id]
+                    if subtest_id is None:
+                        item_expected = test_expected
+                    else:
+                        subtest_id = ensure_text(subtest_id)
+                        item_expected = test_expected.get_subtest(subtest_id)
+
                     if prop == "status":
                         status, known_intermittent = unpack_result(value)
                         value = Result(status,
                                        known_intermittent,
                                        default_expected_by_type[self.item_type,
-                                                                subtest_id is not None],
-                        )
-
-                    test_expected = expected_by_test[test_id]
-                    if subtest_id is None:
-                        item_expected = test_expected
-                    else:
-                        if isinstance(subtest_id, str):
-                            subtest_id = subtest_id.decode("utf8")
-                        item_expected = test_expected.get_subtest(subtest_id)
-                    if prop == "status":
+                                                                subtest_id is not None])
                         item_expected.set_result(run_info, value)
                     elif prop == "asserts":
                         item_expected.set_asserts(run_info, value)
@@ -721,7 +786,7 @@ class TestFileData(object):
 Result = namedtuple("Result", ["status", "known_intermittent", "default_expected"])
 
 
-def create_expected(url_base, test_path,  run_info_properties, update_intermittent, remove_intermittent):
+def create_expected(url_base, test_path, run_info_properties, update_intermittent, remove_intermittent):
     expected = manifestupdate.ExpectedManifest(None,
                                                test_path,
                                                url_base,

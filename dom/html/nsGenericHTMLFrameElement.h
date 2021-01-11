@@ -14,7 +14,6 @@
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
 #include "nsGenericHTMLElement.h"
-#include "nsIDOMEventListener.h"
 #include "nsIMozBrowserFrame.h"
 
 namespace mozilla {
@@ -50,7 +49,6 @@ class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
         mSrcLoadHappened(false),
         mNetworkCreated(aFromParser == mozilla::dom::FROM_PARSER_NETWORK),
         mBrowserFrameListenersRegistered(false),
-        mFrameLoaderCreationDisallowed(false),
         mReallyIsBrowser(false) {}
 
   NS_DECL_ISUPPORTS_INHERITED
@@ -85,44 +83,12 @@ class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
   void SwapFrameLoaders(nsFrameLoaderOwner* aOtherLoaderOwner,
                         mozilla::ErrorResult& rv);
 
-  void PresetOpenerWindow(const mozilla::dom::Nullable<
-                              mozilla::dom::WindowProxyHolder>& aOpenerWindow,
-                          mozilla::ErrorResult& aRv);
-
   /**
-   * Normally, a frame tries to create its frame loader when its src is
-   * modified, or its contentWindow is accessed.
-   *
-   * disallowCreateFrameLoader prevents the frame element from creating its
-   * frame loader (in the same way that not being inside a document prevents the
-   * creation of a frame loader).  allowCreateFrameLoader lifts this
-   * restriction.
-   *
-   * These methods are not re-entrant -- it is an error to call
-   * disallowCreateFrameLoader twice without first calling allowFrameLoader.
-   *
-   * It's also an error to call either method if we already have a frame loader.
+   * Helper method to map a HTML 'scrolling' attribute value (which can be null)
+   * to a ScrollbarPreference value value.  scrolling="no" (and its synonyms)
+   * map to Never, and anything else to Auto.
    */
-  void DisallowCreateFrameLoader();
-  void AllowCreateFrameLoader();
-
-  /**
-   * Create a remote (i.e., out-of-process) frame loader attached to the given
-   * remote tab.
-   *
-   * It is an error to call this method if we already have a frame loader.
-   */
-  void CreateRemoteFrameLoader(mozilla::dom::BrowserParent* aBrowserParent);
-
-  /**
-   * Helper method to map a HTML 'scrolling' attribute value to a nsIScrollable
-   * enum value.  scrolling="no" (and its synonyms) maps to
-   * nsIScrollable::Scrollbar_Never, and anything else (including nullptr) maps
-   * to nsIScrollable::Scrollbar_Auto.
-   * @param aValue the attribute value to map or nullptr
-   * @return nsIScrollable::Scrollbar_Never or nsIScrollable::Scrollbar_Auto
-   */
-  static int32_t MapScrollingAttribute(const nsAttrValue* aValue);
+  static mozilla::ScrollbarPreference MapScrollingAttribute(const nsAttrValue*);
 
   nsIPrincipal* GetSrcTriggeringPrincipal() const {
     return mSrcTriggeringPrincipal;
@@ -152,8 +118,6 @@ class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
                                           const nsAttrValueOrString& aValue,
                                           bool aNotify) override;
 
-  RefPtr<mozilla::dom::BrowsingContext> mOpenerWindow;
-
   nsCOMPtr<nsIPrincipal> mSrcTriggeringPrincipal;
 
   /**
@@ -169,7 +133,6 @@ class nsGenericHTMLFrameElement : public nsGenericHTMLElement,
   bool mNetworkCreated;
 
   bool mBrowserFrameListenersRegistered;
-  bool mFrameLoaderCreationDisallowed;
   bool mReallyIsBrowser;
 
   // This flag is only used by <iframe>. See HTMLIFrameElement::

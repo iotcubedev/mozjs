@@ -53,7 +53,7 @@
       this._scrollButtonWidth = 0;
       this._lastNumPinned = 0;
       this._pinnedTabsLayoutCache = null;
-      this._animateElement = this.arrowScrollbox._scrollButtonDown;
+      this._animateElement = this.arrowScrollbox;
       this._tabClipWidth = Services.prefs.getIntPref(
         "browser.tabs.tabClipWidth"
       );
@@ -66,6 +66,11 @@
 
       var tab = this.allTabs[0];
       tab.label = this.emptyTabTitle;
+
+      this.newTabButton.setAttribute(
+        "aria-label",
+        GetDynamicShortcutTooltipText("tabs-newtab-button")
+      );
 
       window.addEventListener("resize", this);
 
@@ -86,15 +91,6 @@
       );
 
       this._tabMinWidth = this._tabMinWidthPref;
-
-      XPCOMUtils.defineLazyPreferenceGetter(
-        this,
-        "_multiselectEnabledPref",
-        "browser.tabs.multiselect",
-        null,
-        (pref, prevValue, newValue) => (this._multiselectEnabled = newValue)
-      );
-      this._multiselectEnabled = this._multiselectEnabledPref;
 
       this._setPositionalAttributes();
 
@@ -470,11 +466,15 @@
         }
         // PageThumb is async with e10s but that's fine
         // since we can update the image during the dnd.
-        PageThumbs.captureToCanvas(browser, canvas, captureListener);
+        PageThumbs.captureToCanvas(browser, canvas)
+          .then(captureListener)
+          .catch(e => Cu.reportError(e));
       } else {
         // For the non e10s case we can just use PageThumbs
         // sync, so let's use the canvas for setDragImage.
-        PageThumbs.captureToCanvas(browser, canvas);
+        PageThumbs.captureToCanvas(browser, canvas).catch(e =>
+          Cu.reportError(e)
+        );
         dragImageOffset = dragImageOffset * scale;
       }
       dt.setDragImage(toDrag, dragImageOffset, dragImageOffset);
@@ -518,12 +518,11 @@
       // return to avoid drawing the drop indicator
       var pixelsToScroll = 0;
       if (this.getAttribute("overflow") == "true") {
-        var targetAnonid = event.originalTarget.getAttribute("anonid");
-        switch (targetAnonid) {
-          case "scrollbutton-up":
+        switch (event.originalTarget) {
+          case arrowScrollbox._scrollButtonUp:
             pixelsToScroll = arrowScrollbox.scrollIncrement * -1;
             break;
-          case "scrollbutton-down":
+          case arrowScrollbox._scrollButtonDown:
             pixelsToScroll = arrowScrollbox.scrollIncrement;
             break;
         }
@@ -609,14 +608,11 @@
       }
 
       ind.hidden = false;
-
       newMargin += ind.clientWidth / 2;
       if (RTL_UI) {
         newMargin *= -1;
       }
-
       ind.style.transform = "translate(" + Math.round(newMargin) + "px)";
-      ind.style.marginInlineStart = -ind.clientWidth + "px";
     }
 
     on_drop(event) {
@@ -671,8 +667,7 @@
           incrementDropIndex = false;
         }
 
-        let animate = gBrowser.animationsEnabled;
-        if (oldTranslateX && oldTranslateX != newTranslateX && animate) {
+        if (oldTranslateX && oldTranslateX != newTranslateX && !gReduceMotion) {
           for (let tab of movingTabs) {
             tab.setAttribute("tabdrop-samewindow", "true");
             tab.style.transform = "translateX(" + newTranslateX + "px)";
@@ -804,6 +799,11 @@
         this._isCustomizing
       ) {
         delete draggedTab._dragData;
+        return;
+      }
+
+      // Check if tab detaching is enabled
+      if (!Services.prefs.getBoolPref("browser.tabs.allowTabDetach")) {
         return;
       }
 
@@ -940,23 +940,22 @@
       return val;
     }
 
-    set _multiselectEnabled(val) {
-      // Unlike boolean HTML attributes, the value of boolean ARIA attributes actually matters.
-      this.setAttribute("aria-multiselectable", !!val);
-      return val;
-    }
-
-    get _multiselectEnabled() {
-      return this.getAttribute("aria-multiselectable") == "true";
-    }
-
     get _isCustomizing() {
       return document.documentElement.getAttribute("customizing") == "true";
     }
 
+    // This overrides the TabsBase _selectNewTab method so that we can
+    // potentially interrupt keyboard tab switching when sharing the
+    // window or screen.
+    _selectNewTab(aNewTab, aFallbackDir, aWrap) {
+      if (!gSharedTabWarning.willShowSharedTabWarning(aNewTab)) {
+        super._selectNewTab(aNewTab, aFallbackDir, aWrap);
+      }
+    }
+
     _initializeArrowScrollbox() {
       let arrowScrollbox = this.arrowScrollbox;
-      arrowScrollbox.addEventListener(
+      arrowScrollbox.shadowRoot.addEventListener(
         "underflow",
         event => {
           // Ignore underflow events:
@@ -986,7 +985,7 @@
         true
       );
 
-      arrowScrollbox.addEventListener("overflow", event => {
+      arrowScrollbox.shadowRoot.addEventListener("overflow", event => {
         // Ignore overflow events:
         // - from nested scrollable elements
         // - for vertical orientation
@@ -1002,7 +1001,7 @@
         this._handleTabSelect(true);
       });
 
-      // Override scrollbox.xml method, since our scrollbox's children are
+      // Override arrowscrollbox.js method, since our scrollbox's children are
       // inherited from the scrollbox binding parent (this).
       arrowScrollbox._getScrollableElements = () => {
         return this.allTabs.filter(arrowScrollbox._canScrollToElement);
@@ -1017,24 +1016,15 @@
         case "nsPref:changed":
           // This is has to deal with changes in
           // privacy.userContext.enabled and
-          // privacy.userContext.longPressBehavior.
+          // privacy.userContext.newTabContainerOnLeftClick.enabled.
           let containersEnabled =
             Services.prefs.getBoolPref("privacy.userContext.enabled") &&
             !PrivateBrowsingUtils.isWindowPrivate(window);
 
           // This pref won't change so often, so just recreate the menu.
-          let longPressBehavior = Services.prefs.getIntPref(
-            "privacy.userContext.longPressBehavior"
+          const newTabLeftClickOpensContainersMenu = Services.prefs.getBoolPref(
+            "privacy.userContext.newTabContainerOnLeftClick.enabled"
           );
-
-          // If longPressBehavior pref is set to 0 (or any invalid value)
-          // long press menu is disabled.
-          if (
-            containersEnabled &&
-            (longPressBehavior <= 0 || longPressBehavior > 2)
-          ) {
-            containersEnabled = false;
-          }
 
           // There are separate "new tab" buttons for when the tab strip
           // is overflowed and when it is not.  Attach the long click
@@ -1047,51 +1037,36 @@
               continue;
             }
 
-            gClickAndHoldListenersOnElement.remove(parent);
             parent.removeAttribute("type");
             if (parent.menupopup) {
               parent.menupopup.remove();
             }
 
             if (containersEnabled) {
-              let popup = document.createElementNS(
-                "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul",
-                "menupopup"
-              );
-              if (parent.id) {
-                popup.id = parent.id + "-popup";
-              } else {
-                popup.setAttribute("anonid", "newtab-popup");
-              }
+              parent.setAttribute("context", "new-tab-button-popup");
+
+              let popup = document
+                .getElementById("new-tab-button-popup")
+                .cloneNode(true);
+              popup.removeAttribute("id");
               popup.className = "new-tab-popup";
               popup.setAttribute("position", "after_end");
-              popup.addEventListener("popupshowing", event => {
-                createUserContextMenu(event, {
-                  useAccessKeys: false,
-                  showDefaultTab:
-                    Services.prefs.getIntPref(
-                      "privacy.userContext.longPressBehavior"
-                    ) == 1,
-                });
-              });
               parent.prepend(popup);
-
-              // longPressBehavior == 2 means that the menu is shown after X
-              // millisecs. Otherwise, with 1, the menu is open immediatelly.
-              if (longPressBehavior == 2) {
-                gClickAndHoldListenersOnElement.add(parent);
-              }
-
               parent.setAttribute("type", "menu");
-            }
-
-            // Update tooltip text and evict from tooltip cache
-            if (containersEnabled) {
-              nodeToTooltipMap[parent.id] = "newTabContainer.tooltip";
+              if (newTabLeftClickOpensContainersMenu) {
+                gClickAndHoldListenersOnElement.remove(parent);
+                // Update tooltip text
+                nodeToTooltipMap[parent.id] = "newTabAlwaysContainer.tooltip";
+              } else {
+                gClickAndHoldListenersOnElement.add(parent);
+                nodeToTooltipMap[parent.id] = "newTabContainer.tooltip";
+              }
             } else {
               nodeToTooltipMap[parent.id] = "newTabButton.tooltip";
+              parent.removeAttribute("context", "new-tab-button-popup");
             }
 
+            // evict from tooltip cache
             gDynamicTooltipCache.delete(parent.id);
           }
 
@@ -1551,7 +1526,7 @@
     _groupSelectedTabs(tab) {
       let draggedTabPos = tab._tPos;
       let selectedTabs = gBrowser.selectedTabs;
-      let animate = gBrowser.animationsEnabled;
+      let animate = !gReduceMotion;
 
       tab.groupingTabsData = {
         finished: !animate,
@@ -1915,6 +1890,12 @@
           if (
             window.gMultiProcessBrowser !=
             sourceNode.ownerGlobal.gMultiProcessBrowser
+          ) {
+            return "none";
+          }
+
+          if (
+            window.gFissionBrowser != sourceNode.ownerGlobal.gFissionBrowser
           ) {
             return "none";
           }

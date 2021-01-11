@@ -30,6 +30,15 @@ class CanvasChild final : public PCanvasChild {
   explicit CanvasChild(Endpoint<PCanvasChild>&& aEndpoint);
 
   /**
+   * @returns true if remote canvas has been deactivated due to failure.
+   */
+  static bool Deactivated() { return mDeactivated; }
+
+  ipc::IPCResult RecvNotifyDeviceChanged();
+
+  ipc::IPCResult RecvDeactivate();
+
+  /**
    * Ensures that the DrawEventRecorder has been created.
    *
    * @params aTextureType the TextureType to create in the CanvasTranslator.
@@ -73,6 +82,12 @@ class CanvasChild final : public PCanvasChild {
    * Send an end transaction event to indicate the end of events for this frame.
    */
   void EndTransaction();
+
+  /**
+   * @returns true if the canvas IPC classes have not been used for some time
+   *          and can be cleaned up.
+   */
+  bool ShouldBeCleanedUp() const;
 
   /**
    * Create a DrawTargetRecording for a canvas texture.
@@ -119,11 +134,13 @@ class CanvasChild final : public PCanvasChild {
 
   static const uint32_t kCacheDataSurfaceThreshold = 10;
 
+  static bool mDeactivated;
+
   RefPtr<CanvasDrawEventRecorder> mRecorder;
   TextureType mTextureType = TextureType::Unknown;
   uint32_t mLastWriteLockCheckpoint = 0;
   uint32_t mTransactionsSinceGetDataSurface = kCacheDataSurfaceThreshold;
-  bool mCanSend = false;
+  TimeStamp mLastNonEmptyTransaction = TimeStamp::NowLoRes();
   bool mIsInTransaction = false;
   bool mHasOutstandingWriteLock = false;
 };

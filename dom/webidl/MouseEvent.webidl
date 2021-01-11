@@ -11,8 +11,11 @@
  * liability, trademark and document use rules apply.
  */
 
-[Constructor(DOMString typeArg, optional MouseEventInit mouseEventInitDict = {})]
+[Exposed=Window]
 interface MouseEvent : UIEvent {
+  constructor(DOMString typeArg,
+              optional MouseEventInit mouseEventInitDict = {});
+
   [NeedsCallerType]
   readonly attribute long           screenX;
   [NeedsCallerType]
@@ -112,8 +115,6 @@ partial interface MouseEvent
                         optional EventTarget? relatedTargetArg = null,
                         optional float pressure = 0,
                         optional unsigned short inputSourceArg = 0);
-  [ChromeOnly]
-  readonly attribute boolean hitCluster; // True when touch occurs in a cluster of links
 
 };
 

@@ -44,6 +44,7 @@ function EvaluationResult(props) {
     level,
     id: messageId,
     indent,
+    hasException,
     exceptionDocURL,
     stacktrace,
     frame,
@@ -57,26 +58,37 @@ function EvaluationResult(props) {
     typeof message.messageText !== "undefined" &&
     message.messageText !== null
   ) {
-    if (typeof message.messageText === "string") {
-      messageBody = message.messageText;
+    const messageText = message.messageText?.getGrip
+      ? message.messageText.getGrip()
+      : message.messageText;
+    if (typeof messageText === "string") {
+      messageBody = messageText;
     } else if (
-      typeof message.messageText === "object" &&
-      message.messageText.type === "longString"
+      typeof messageText === "object" &&
+      messageText.type === "longString"
     ) {
-      messageBody = `${message.messageText.initial}…`;
+      messageBody = `${messageText.initial}…`;
     }
   } else {
-    messageBody = GripMessageBody({
-      dispatch,
-      messageId,
-      grip: parameters[0],
-      serviceContainer,
-      useQuotes: true,
-      escapeWhitespace: false,
-      type,
-      helperType,
-      maybeScrollToBottom,
-    });
+    messageBody = [];
+    if (hasException) {
+      messageBody.push("Uncaught ");
+    }
+    messageBody.push(
+      GripMessageBody({
+        dispatch,
+        messageId,
+        grip: parameters[0],
+        key: "grip",
+        serviceContainer,
+        useQuotes: !hasException,
+        escapeWhitespace: false,
+        type,
+        helperType,
+        maybeScrollToBottom,
+        customFormat: true,
+      })
+    );
   }
 
   const topLevelClasses = ["cm-s-mozilla"];

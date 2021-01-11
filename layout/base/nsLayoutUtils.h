@@ -12,27 +12,33 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/ReflowOutput.h"
+#include "mozilla/RelativeTo.h"
 #include "mozilla/StaticPrefs_nglayout.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/ToString.h"
 #include "mozilla/TypedEnumBits.h"
-#include "nsBoundingMetrics.h"
-#include "nsChangeHint.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/layout/FrameChildList.h"
 #include "mozilla/layers/ScrollableLayerGuid.h"
-#include "nsThreadUtils.h"
-#include "nsCSSPropertyIDSet.h"
-#include "nsStyleConsts.h"
-#include "nsGkAtoms.h"
 #include "mozilla/gfx/2D.h"
-#include "Units.h"
-#include "mozilla/ToString.h"
-#include "mozilla/ReflowOutput.h"
-#include "ImageContainer.h"  // for layers::Image
 #include "gfx2DGlue.h"
-#include "SVGImageContext.h"
+#include "gfxPoint.h"
+#include "nsBoundingMetrics.h"
+#include "nsCSSPropertyIDSet.h"
+#include "nsClassHashtable.h"
+#include "nsGkAtoms.h"
+#include "nsThreadUtils.h"
+#include "ImageContainer.h"  // for layers::Image
+#include "Units.h"
 #include <limits>
 #include <algorithm>
-#include "gfxPoint.h"
-#include "nsClassHashtable.h"
+// If you're thinking of adding a new include here, please try hard to not.
+// This header file gets included just about everywhere and adding headers here
+// can dramatically increase avoidable build activity. Try instead:
+// - using a forward declaration
+// - putting the include in the .cpp file, if it is only needed by the body
+// - putting your new functions in some other less-widely-used header
 
 class gfxContext;
 class gfxFontEntry;
@@ -47,7 +53,9 @@ class nsIScrollableFrame;
 class nsRegion;
 class nsDisplayListBuilder;
 enum class nsDisplayListBuilderMode : uint8_t;
+enum nsChangeHint : uint32_t;
 class nsDisplayItem;
+class nsDisplayList;
 class nsFontMetrics;
 class nsFontFaceList;
 class nsIImageLoadingContent;
@@ -73,6 +81,7 @@ class WritingMode;
 class DisplayItemClip;
 class EffectSet;
 struct ActiveScrolledRoot;
+enum class ScrollOrigin : uint8_t;
 enum class StyleImageOrientation : uint8_t;
 namespace dom {
 class CanvasRenderingContext2D;
@@ -103,31 +112,27 @@ class Layer;
 namespace mozilla {
 
 struct DisplayPortPropertyData {
-  DisplayPortPropertyData(const nsRect& aRect, uint32_t aPriority)
-      : mRect(aRect), mPriority(aPriority) {}
+  DisplayPortPropertyData(const nsRect& aRect, uint32_t aPriority,
+                          bool aPainted)
+      : mRect(aRect), mPriority(aPriority), mPainted(aPainted) {}
   nsRect mRect;
   uint32_t mPriority;
+  bool mPainted;
 };
 
 struct DisplayPortMarginsPropertyData {
   DisplayPortMarginsPropertyData(const ScreenMargin& aMargins,
-                                 uint32_t aPriority)
-      : mMargins(aMargins), mPriority(aPriority) {}
+                                 uint32_t aPriority, bool aPainted)
+      : mMargins(aMargins), mPriority(aPriority), mPainted(aPainted) {}
   ScreenMargin mMargins;
   uint32_t mPriority;
-};
-
-struct MotionPathData {
-  gfx::Point mTranslate;
-  float mRotate;
-  // The delta value between transform-origin and offset-anchor.
-  gfx::Point mShift;
+  bool mPainted;
 };
 
 }  // namespace mozilla
 
 // For GetDisplayPort
-enum class RelativeTo { ScrollPort, ScrollFrame };
+enum class DisplayportRelativeTo { ScrollPort, ScrollFrame };
 
 // Flags to customize the behavior of nsLayoutUtils::DrawString.
 enum class DrawStringFlags {
@@ -151,8 +156,11 @@ class nsLayoutUtils {
   typedef mozilla::layers::StackingContextHelper StackingContextHelper;
   typedef mozilla::ContainerLayerParameters ContainerLayerParameters;
   typedef mozilla::IntrinsicSize IntrinsicSize;
+  typedef mozilla::RelativeTo RelativeTo;
+  typedef mozilla::ScrollOrigin ScrollOrigin;
+  typedef mozilla::ViewportType ViewportType;
   typedef mozilla::gfx::SourceSurface SourceSurface;
-  typedef mozilla::gfx::Color Color;
+  typedef mozilla::gfx::sRGBColor sRGBColor;
   typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::ExtendMode ExtendMode;
   typedef mozilla::gfx::SamplingFilter SamplingFilter;
@@ -219,13 +227,27 @@ class nsLayoutUtils {
    * Get display port for the given element, relative to the specified entity,
    * defaulting to the scrollport.
    */
-  static bool GetDisplayPort(nsIContent* aContent, nsRect* aResult,
-                             RelativeTo aRelativeTo = RelativeTo::ScrollPort);
+  static bool GetDisplayPort(
+      nsIContent* aContent, nsRect* aResult,
+      DisplayportRelativeTo aRelativeTo = DisplayportRelativeTo::ScrollPort,
+      bool* aOutPainted = nullptr);
 
   /**
    * Check whether the given element has a displayport.
    */
   static bool HasDisplayPort(nsIContent* aContent);
+
+  /**
+   * Check whether the given element has a displayport that has already
+   * been sent to the compositor via a layers or WR transaction.
+   */
+  static bool HasPaintedDisplayPort(nsIContent* aContent);
+
+  /**
+   * Mark the displayport of a given element as having been sent to
+   * the compositor via a layers or WR transaction.
+   */
+  static void MarkDisplayPortAsPainted(nsIContent* aContent);
 
   /**
    * Check whether the given frame has a displayport. It returns false
@@ -260,7 +282,7 @@ class nsLayoutUtils {
    */
   static bool GetDisplayPortForVisibilityTesting(
       nsIContent* aContent, nsRect* aResult,
-      RelativeTo aRelativeTo = RelativeTo::ScrollPort);
+      DisplayportRelativeTo aRelativeTo = DisplayportRelativeTo::ScrollPort);
 
   enum class RepaintMode : uint8_t { Repaint, DoNotRepaint };
 
@@ -304,7 +326,8 @@ class nsLayoutUtils {
   /**
    * Get the critical display port for the given element.
    */
-  static bool GetCriticalDisplayPort(nsIContent* aContent, nsRect* aResult);
+  static bool GetCriticalDisplayPort(nsIContent* aContent, nsRect* aResult,
+                                     bool* aOutPainted = nullptr);
 
   /**
    * Check whether the given element has a critical display port.
@@ -316,7 +339,8 @@ class nsLayoutUtils {
    * GetCriticalDisplayPort. Otherwise, delegates to GetDisplayPort.
    */
   static bool GetHighResolutionDisplayPort(nsIContent* aContent,
-                                           nsRect* aResult);
+                                           nsRect* aResult,
+                                           bool* aOutPainted = nullptr);
 
   /**
    * Remove the displayport for the given element.
@@ -573,8 +597,8 @@ class nsLayoutUtils {
    * aFrame == aAncestorFrame.
    */
   static bool IsProperAncestorFrameCrossDoc(
-      nsIFrame* aAncestorFrame, nsIFrame* aFrame,
-      nsIFrame* aCommonAncestor = nullptr);
+      const nsIFrame* aAncestorFrame, const nsIFrame* aFrame,
+      const nsIFrame* aCommonAncestor = nullptr);
 
   /**
    * IsAncestorFrameCrossDoc checks whether aAncestorFrame is an ancestor
@@ -605,6 +629,12 @@ class nsLayoutUtils {
       Layer* aLayer, const nsIFrame* aViewportFrame, const nsRect& aAnchorRect,
       const nsIFrame* aFixedPosFrame, nsPresContext* aPresContext,
       const ContainerLayerParameters& aContainerParameters);
+
+  static mozilla::SideBits GetSideBitsAndAdjustAnchorForFixedPositionContent(
+      const nsIFrame* aViewportFrame, const nsIFrame* aFixedPosFrame,
+      mozilla::LayerPoint* aAnchor, const Rect* aAnchorRect);
+  static mozilla::SideBits GetSideBitsForFixedPositionContent(
+      const nsIFrame* aFixedPosFrame);
 
   /**
    * Get the scroll id for the root scrollframe of the presshell of the given
@@ -673,10 +703,16 @@ class nsLayoutUtils {
     SCROLLABLE_ALWAYS_MATCH_ROOT = 0x08,
     /**
      * If the SCROLLABLE_FIXEDPOS_FINDS_ROOT flag is set, then for fixed-pos
-     * frames that are in the root document (in the current process) return the
-     * root scrollable frame for that document.
+     * frames return the root scrollable frame for that document.
      */
-    SCROLLABLE_FIXEDPOS_FINDS_ROOT = 0x10
+    SCROLLABLE_FIXEDPOS_FINDS_ROOT = 0x10,
+    /**
+     * If the SCROLLABLE_STOP_AT_PAGE flag is set, then we stop searching
+     * for scrollable ancestors when seeing a nsPageFrame.  This can be used
+     * to avoid finding the viewport scroll frame in Print Preview (which
+     * would be undesirable as a 'position:sticky' container for content).
+     */
+    SCROLLABLE_STOP_AT_PAGE = 0x20,
   };
   /**
    * GetNearestScrollableFrame locates the first ancestor of aFrame
@@ -696,12 +732,11 @@ class nsLayoutUtils {
    * GetScrolledRect returns the range of allowable scroll offsets
    * for aScrolledFrame, assuming the scrollable overflow area is
    * aScrolledFrameOverflowArea and the scrollport size is aScrollPortSize.
-   * aDirection is either NS_STYLE_DIRECTION_LTR or NS_STYLE_DIRECTION_RTL.
    */
   static nsRect GetScrolledRect(nsIFrame* aScrolledFrame,
                                 const nsRect& aScrolledFrameOverflowArea,
                                 const nsSize& aScrollPortSize,
-                                uint8_t aDirection);
+                                mozilla::StyleDirection);
 
   /**
    * HasPseudoStyle returns true if aContent (whose primary style
@@ -752,7 +787,7 @@ class nsLayoutUtils {
    * the event is not a GUI event).
    */
   static nsPoint GetEventCoordinatesRelativeTo(
-      const mozilla::WidgetEvent* aEvent, nsIFrame* aFrame);
+      const mozilla::WidgetEvent* aEvent, RelativeTo aFrame);
 
   /**
    * Get the coordinates of a given point relative to an event and a
@@ -766,7 +801,7 @@ class nsLayoutUtils {
    */
   static nsPoint GetEventCoordinatesRelativeTo(
       const mozilla::WidgetEvent* aEvent,
-      const mozilla::LayoutDeviceIntPoint& aPoint, nsIFrame* aFrame);
+      const mozilla::LayoutDeviceIntPoint& aPoint, RelativeTo aFrame);
 
   /**
    * Get the coordinates of a given point relative to a widget and a
@@ -780,7 +815,7 @@ class nsLayoutUtils {
    */
   static nsPoint GetEventCoordinatesRelativeTo(
       nsIWidget* aWidget, const mozilla::LayoutDeviceIntPoint& aPoint,
-      nsIFrame* aFrame);
+      RelativeTo aFrame);
 
   /**
    * Get the popup frame of a given native mouse event.
@@ -826,12 +861,13 @@ class nsLayoutUtils {
    * @param aPresContext the PresContext for the view
    * @param aView the view
    * @param aPt the point relative to the view
+   * @param aViewportType whether the point is in visual or layout coordinates
    * @param aWidget the widget to which returned coordinates are relative
    * @return the point in the view's coordinates
    */
   static mozilla::LayoutDeviceIntPoint TranslateViewToWidget(
       nsPresContext* aPresContext, nsView* aView, nsPoint aPt,
-      nsIWidget* aWidget);
+      ViewportType aViewportType, nsIWidget* aWidget);
 
   static mozilla::LayoutDeviceIntPoint WidgetToWidgetOffset(
       nsIWidget* aFromWidget, nsIWidget* aToWidget);
@@ -861,21 +897,23 @@ class nsLayoutUtils {
    * Given aFrame, the root frame of a stacking context, find its descendant
    * frame under the point aPt that receives a mouse event at that location,
    * or nullptr if there is no such frame.
-   * @param aPt the point, relative to the frame origin
+   * @param aPt the point, relative to the frame origin, in either visual
+   *            or layout coordinates depending on aRelativeTo.mViewportType
    * @param aFlags some combination of FrameForPointOption.
    */
-  static nsIFrame* GetFrameForPoint(nsIFrame* aFrame, nsPoint aPt,
+  static nsIFrame* GetFrameForPoint(RelativeTo aRelativeTo, nsPoint aPt,
                                     mozilla::EnumSet<FrameForPointOption> = {});
 
   /**
    * Given aFrame, the root frame of a stacking context, find all descendant
    * frames under the area of a rectangle that receives a mouse event,
    * or nullptr if there is no such frame.
-   * @param aRect the rect, relative to the frame origin
+   * @param aRect the rect, relative to the frame origin, in either visual
+   *              or layout coordinates depending on aRelativeTo.mViewportType
    * @param aOutFrames an array to add all the frames found
    * @param aFlags some combination of FrameForPointOption.
    */
-  static nsresult GetFramesForArea(nsIFrame* aFrame, const nsRect& aRect,
+  static nsresult GetFramesForArea(RelativeTo aRelativeTo, const nsRect& aRect,
                                    nsTArray<nsIFrame*>& aOutFrames,
                                    mozilla::EnumSet<FrameForPointOption> = {});
 
@@ -884,6 +922,8 @@ class nsLayoutUtils {
    * aAncestor. Computes the bounding-box of the true quadrilateral.
    * Pass non-null aPreservesAxisAlignedRectangles and it will be set to true if
    * we only need to use a 2d transform that PreservesAxisAlignedRectangles().
+   * The corner positions of aRect are treated as meaningful even if aRect is
+   * empty.
    *
    * |aMatrixCache| allows for optimizations in recomputing the same matrix over
    * and over. The argument can be one of the following values:
@@ -904,6 +944,17 @@ class nsLayoutUtils {
       bool* aPreservesAxisAlignedRectangles = nullptr,
       mozilla::Maybe<Matrix4x4Flagged>* aMatrixCache = nullptr,
       bool aStopAtStackingContextAndDisplayPortAndOOFFrame = false,
+      nsIFrame** aOutAncestor = nullptr) {
+    return TransformFrameRectToAncestor(
+        aFrame, aRect, RelativeTo{aAncestor}, aPreservesAxisAlignedRectangles,
+        aMatrixCache, aStopAtStackingContextAndDisplayPortAndOOFFrame,
+        aOutAncestor);
+  }
+  static nsRect TransformFrameRectToAncestor(
+      const nsIFrame* aFrame, const nsRect& aRect, RelativeTo aAncestor,
+      bool* aPreservesAxisAlignedRectangles = nullptr,
+      mozilla::Maybe<Matrix4x4Flagged>* aMatrixCache = nullptr,
+      bool aStopAtStackingContextAndDisplayPortAndOOFFrame = false,
       nsIFrame** aOutAncestor = nullptr);
 
   /**
@@ -912,9 +963,41 @@ class nsLayoutUtils {
    * flag in aFlags will return CSS pixels, by default it returns device
    * pixels.
    * More info can be found in nsIFrame::GetTransformMatrix.
+   *
+   * Some notes on the possible combinations of |aFrame.mViewportType| and
+   * |aAncestor.mViewportType|:
+   *
+   * | aFrame.       | aAncestor.    | Notes
+   * | mViewportType | mViewportType |
+   * ==========================================================================
+   * | Layout        | Layout        | Commonplace, when both source and target
+   * |               |               | are inside zoom boundary.
+   * |               |               |
+   * |               |               | Could also happen in non-e10s setups
+   * |               |               | when both source and target are outside
+   * |               |               | the zoom boundary and the code is
+   * |               |               | oblivious to the existence of a zoom
+   * |               |               | boundary.
+   * ==========================================================================
+   * | Layout        | Visual        | Commonplace, used when hit testing visual
+   * |               |               | coordinates (e.g. coming from user input
+   * |               |               | events). We expected to encounter a
+   * |               |               | zoomed content root during traversal and
+   * |               |               | apply a layout-to-visual transform.
+   * ==========================================================================
+   * | Visual        | Layout        | Should never happen, will assert.
+   * ==========================================================================
+   * | Visual        | Visual        | In e10s setups, should only happen if
+   * |               |               | aFrame and aAncestor are both the
+   * |               |               | RCD viewport frame.
+   * |               |               |
+   * |               |               | In non-e10s setups, could happen with
+   * |               |               | different frames if they are both
+   * |               |               | outside the zoom boundary.
+   * ==========================================================================
    */
   static Matrix4x4Flagged GetTransformToAncestor(
-      const nsIFrame* aFrame, const nsIFrame* aAncestor, uint32_t aFlags = 0,
+      RelativeTo aFrame, RelativeTo aAncestor, uint32_t aFlags = 0,
       nsIFrame** aOutAncestor = nullptr);
 
   /**
@@ -935,8 +1018,17 @@ class nsLayoutUtils {
    * Find the nearest common ancestor frame for aFrame1 and aFrame2. The
    * ancestor frame could be cross-doc.
    */
-  static nsIFrame* FindNearestCommonAncestorFrame(nsIFrame* aFrame1,
-                                                  nsIFrame* aFrame2);
+  static const nsIFrame* FindNearestCommonAncestorFrame(
+      const nsIFrame* aFrame1, const nsIFrame* aFrame2);
+
+  /**
+   * Find the nearest common ancestor frame for aFrame1 and aFrame2, assuming
+   * that they are within the same block.
+   *
+   * Returns null if they are not within the same block.
+   */
+  static const nsIFrame* FindNearestCommonAncestorFrameWithinBlock(
+      const nsTextFrame* aFrame1, const nsTextFrame* aFrame2);
 
   /**
    * Transforms a list of CSSPoints from aFromFrame to aToFrame, taking into
@@ -962,16 +1054,16 @@ class nsLayoutUtils {
    * Same as above function, but transform points in app units and
    * handle 1 point per call.
    */
-  static TransformResult TransformPoint(nsIFrame* aFromFrame,
-                                        nsIFrame* aToFrame, nsPoint& aPoint);
+  static TransformResult TransformPoint(RelativeTo aFromFrame,
+                                        RelativeTo aToFrame, nsPoint& aPoint);
 
   /**
    * Transforms a rect from aFromFrame to aToFrame. In app units.
    * Returns the bounds of the actual rect if the transform requires rotation
    * or anything complex like that.
    */
-  static TransformResult TransformRect(nsIFrame* aFromFrame, nsIFrame* aToFrame,
-                                       nsRect& aRect);
+  static TransformResult TransformRect(const nsIFrame* aFromFrame,
+                                       const nsIFrame* aToFrame, nsRect& aRect);
 
   /**
    * Converts app units to pixels (with optional snapping) and appends as a
@@ -979,6 +1071,13 @@ class nsLayoutUtils {
    */
   static void PostTranslate(Matrix4x4& aTransform, const nsPoint& aOrigin,
                             float aAppUnitsPerPixel, bool aRounded);
+
+  /*
+   * Whether the frame should snap to grid. This will end up being passed
+   * as the aRounded parameter in PostTranslate above. SVG frames should
+   * not have their translation rounded.
+   */
+  static bool ShouldSnapToGrid(const nsIFrame* aFrame);
 
   /**
    * Get the border-box of aElement's primary frame, transformed it to be
@@ -1014,23 +1113,27 @@ class nsLayoutUtils {
    * in the coordinate system of aFrame.  This effectively inverts all
    * transforms between this point and the root frame.
    *
+   * @param aFromType Specifies whether |aPoint| is in layout or visual
+   * coordinates.
    * @param aFrame The frame that acts as the coordinate space container.
-   * @param aPoint The point, in the global space, to get in the frame-local
-   * space.
+   * @param aPoint The point, in global layout or visual coordinates (as per
+   * |aFromType|, to get in the frame-local space.
    * @return aPoint, expressed in aFrame's canonical coordinate space.
    */
-  static nsPoint TransformRootPointToFrame(nsIFrame* aFrame,
+  static nsPoint TransformRootPointToFrame(ViewportType aFromType,
+                                           RelativeTo aFrame,
                                            const nsPoint& aPoint) {
-    return TransformAncestorPointToFrame(aFrame, aPoint, nullptr);
+    return TransformAncestorPointToFrame(aFrame, aPoint,
+                                         RelativeTo{nullptr, aFromType});
   }
 
   /**
    * Transform aPoint relative to aAncestor down to the coordinate system of
    * aFrame.
    */
-  static nsPoint TransformAncestorPointToFrame(nsIFrame* aFrame,
+  static nsPoint TransformAncestorPointToFrame(RelativeTo aFrame,
                                                const nsPoint& aPoint,
-                                               nsIFrame* aAncestor);
+                                               RelativeTo aAncestor);
 
   /**
    * Helper function that, given a rectangle and a matrix, returns the smallest
@@ -1067,17 +1170,8 @@ class nsLayoutUtils {
    * @param aFactor The number of app units per graphics unit.
    * @return The smallest rectangle in app space that contains aRect.
    */
-  static nsRect RoundGfxRectToAppRect(const Rect& aRect, float aFactor);
-
-  /**
-   * Given a graphics rectangle in graphics space, return a rectangle in
-   * app space that contains the graphics rectangle, rounding out as necessary.
-   *
-   * @param aRect The graphics rect to round outward.
-   * @param aFactor The number of app units per graphics unit.
-   * @return The smallest rectangle in app space that contains aRect.
-   */
-  static nsRect RoundGfxRectToAppRect(const gfxRect& aRect, float aFactor);
+  template <typename T>
+  static nsRect RoundGfxRectToAppRect(const T& aRect, const float aFactor);
 
   /**
    * Returns a subrectangle of aContainedRect that is entirely inside the
@@ -1115,6 +1209,7 @@ class nsLayoutUtils {
     NoComposite = 0x100,
     Compressed = 0x200,
     ForWebRender = 0x400,
+    UseHighQualityScaling = 0x800,
   };
 
   /**
@@ -1406,10 +1501,16 @@ class nsLayoutUtils {
   static nsIFrame* GetDisplayListParent(nsIFrame* aFrame);
 
   /**
-   * Get a frame's next-in-flow, or, if it doesn't have one, its
+   * Get a frame's previous continuation, or, if it doesn't have one, its
+   * previous block-in-inline-split sibling.
+   */
+  static nsIFrame* GetPrevContinuationOrIBSplitSibling(const nsIFrame* aFrame);
+
+  /**
+   * Get a frame's next continuation, or, if it doesn't have one, its
    * block-in-inline-split sibling.
    */
-  static nsIFrame* GetNextContinuationOrIBSplitSibling(nsIFrame* aFrame);
+  static nsIFrame* GetNextContinuationOrIBSplitSibling(const nsIFrame* aFrame);
 
   /**
    * Get the first frame in the continuation-plus-ib-split-sibling chain
@@ -2069,7 +2170,7 @@ class nsLayoutUtils {
 
   /**
    * Some frames with 'position: fixed' (nsStyleDisplay::mPosition ==
-   * NS_STYLE_POSITION_FIXED) are not really fixed positioned, since
+   * StylePositionProperty::Fixed) are not really fixed positioned, since
    * they're inside an element with -moz-transform.  This function says
    * whether such an element is a real fixed-pos element.
    */
@@ -2077,7 +2178,7 @@ class nsLayoutUtils {
 
   /**
    * This function says whether `aFrame` would really be a fixed positioned
-   * frame if the frame was created with NS_STYLE_POSITION_FIXED.
+   * frame if the frame was created with StylePositionProperty::Fixed.
    *
    * It is effectively the same as IsReallyFixedPos, but without asserting the
    * position value. Use it only when you know what you're doing, like when
@@ -2085,6 +2186,11 @@ class nsLayoutUtils {
    * ::first-line reparenting and rule changes at the same time).
    */
   static bool MayBeReallyFixedPos(const nsIFrame* aFrame);
+
+  /**
+   * Returns true if |aFrame| is inside position:fixed subtree.
+   */
+  static bool IsInPositionFixedSubtree(const nsIFrame* aFrame);
 
   /**
    * Obtain a SourceSurface from the given DOM element, if possible.
@@ -2112,9 +2218,8 @@ class nsLayoutUtils {
     SFE_WANT_FIRST_FRAME_IF_IMAGE = 1 << 1,
     /* Whether we should skip colorspace/gamma conversion */
     SFE_NO_COLORSPACE_CONVERSION = 1 << 2,
-    /* Specifies that the caller wants either OPAQUE or NON_PREMULT mAlphaType,
-       if this is can be done efficiently. */
-    SFE_PREFER_NO_PREMULTIPLY_ALPHA = 1 << 3,
+    /* Caller handles SFER::mAlphaType = NonPremult */
+    SFE_ALLOW_NON_PREMULT = 1 << 3,
     /* Whether we should skip getting a surface for vector images and
        return a DirectDrawInfo containing an imgIContainer instead. */
     SFE_NO_RASTERIZING_VECTORS = 1 << 4,
@@ -2269,7 +2374,8 @@ class nsLayoutUtils {
    * want to maintain a mapping from gfxFontEntry to InspectorFontFace
    * records, so use a temporary hashtable for that.
    */
-  typedef nsTArray<nsAutoPtr<mozilla::dom::InspectorFontFace>> UsedFontFaceList;
+  typedef nsTArray<mozilla::UniquePtr<mozilla::dom::InspectorFontFace>>
+      UsedFontFaceList;
   typedef nsDataHashtable<nsPtrHashKey<gfxFontEntry>,
                           mozilla::dom::InspectorFontFace*>
       UsedFontFaceTable;
@@ -2330,6 +2436,17 @@ class nsLayoutUtils {
   static bool HasAnimationOfPropertySet(const nsIFrame* aFrame,
                                         const nsCSSPropertyIDSet& aPropertySet,
                                         mozilla::EffectSet* aEffectSet);
+
+  /**
+   * A variant of the above HasAnimationOfPropertySet. This is especially for
+   * tranform-like properties with motion-path.
+   * For transform-like properties with motion-path, we need to check if
+   * offset-path has effect. If we don't have any animation on offset-path and
+   * offset-path is none, there is no effective motion-path, and so we don't
+   * care other offset-* properties. In this case, this function only checks the
+   * rest of transform-like properties (i.e. transform/translate/rotate/scale).
+   */
+  static bool HasAnimationOfTransformAndMotionPath(const nsIFrame* aFrame);
 
   /**
    * Returns true if |aFrame| has an animation of |aProperty| which is
@@ -2583,9 +2700,16 @@ class nsLayoutUtils {
    * to the given prescontext. Return true if the size was set, false
    * otherwise.
    */
-  static bool GetContentViewerSize(nsPresContext* aPresContext,
-                                   LayoutDeviceIntSize& aOutSize);
+  enum class SubtractDynamicToolbar { No, Yes };
+  static bool GetContentViewerSize(
+      nsPresContext* aPresContext, LayoutDeviceIntSize& aOutSize,
+      SubtractDynamicToolbar = SubtractDynamicToolbar::Yes);
 
+ private:
+  static bool UpdateCompositionBoundsForRCDRSF(
+      mozilla::ParentLayerRect& aCompBounds, nsPresContext* aPresContext);
+
+ public:
   /**
    * Calculate the compostion size for a frame. See FrameMetrics.h for
    * defintion of composition size (or bounds).
@@ -2596,7 +2720,8 @@ class nsLayoutUtils {
    * are likely to need special-case handling of the RCD-RSF.
    */
   static nsSize CalculateCompositionSizeForFrame(
-      nsIFrame* aFrame, bool aSubtractScrollbars = true);
+      nsIFrame* aFrame, bool aSubtractScrollbars = true,
+      const nsSize* aOverrideScrollPortSize = nullptr);
 
   /**
    * Calculate the composition size for the root scroll frame of the root
@@ -2766,20 +2891,13 @@ class nsLayoutUtils {
   static bool HasDocumentLevelListenersForApzAwareEvents(PresShell* aPresShell);
 
   /**
-   * Set the viewport size for the purpose of clamping the scroll position
-   * for the root scroll frame of this document
-   * (see nsIDOMWindowUtils.setVisualViewportSize).
-   */
-  static void SetVisualViewportSize(PresShell* aPresShell, CSSSize aSize);
-
-  /**
    * Returns true if the given scroll origin is "higher priority" than APZ.
    * In general any content programmatic scrolls (e.g. scrollTo calls) are
    * higher priority, and take precedence over APZ scrolling. This function
    * returns true for those, and returns false for other origins like APZ
    * itself, or scroll position updates from the history restore code.
    */
-  static bool CanScrollOriginClobberApz(nsAtom* aScrollOrigin);
+  static bool CanScrollOriginClobberApz(ScrollOrigin aScrollOrigin);
 
   static ScrollMetadata ComputeScrollMetadata(
       nsIFrame* aForFrame, nsIFrame* aScrollFrame, nsIContent* aContent,
@@ -2886,16 +3004,21 @@ class nsLayoutUtils {
   /**
    * Compute a rect to pre-render in cases where we want to render more of
    * something than what is visible (usually to support async transformation).
-   * @param aDirtyRect the area that's visible
-   * @param aOverflow the total size of the thing we're rendering
-   * @param aPrerenderSize how large of an area we're willing to render
+   * @param aFrame the target frame to be pre-rendered
+   * @param aDirtyRect the area that's visible in the coordinate system of
+   *        |aFrame|.
+   * @param aOverflow the total size of the thing we're rendering in the
+   *        coordinate system of |aFrame|.
+   * @param aPrerenderSize how large of an area we're willing to render in the
+   *        coordinate system of the root frame.
    * @return A rectangle that includes |aDirtyRect|, is clamped to |aOverflow|,
-   *         and is no larger than |aPrerenderSize| (unless |aPrerenderSize|
-   *         is smaller than |aDirtyRect|, in which case the returned rect
-   *         will still include |aDirtyRect| and thus be larger than
+   *         and is no larger than |aPrerenderSize| (unless |aPrerenderSize| is
+   *         smaller than |aDirtyRect|, in which case the returned rect will
+   *         still include |aDirtyRect| and thus be larger than
    *         |aPrerenderSize|).
    */
-  static nsRect ComputePartialPrerenderArea(const nsRect& aDirtyRect,
+  static nsRect ComputePartialPrerenderArea(nsIFrame* aFrame,
+                                            const nsRect& aDirtyRect,
                                             const nsRect& aOverflow,
                                             const nsSize& aPrerenderSize);
 
@@ -2917,21 +3040,27 @@ class nsLayoutUtils {
   static bool IsInvisibleBreak(nsINode* aNode,
                                nsIFrame** aNextLineFrame = nullptr);
 
-  static nsRect ComputeGeometryBox(nsIFrame* aFrame,
-                                   StyleGeometryBox aGeometryBox);
+  static nsRect ComputeGeometryBox(nsIFrame*, StyleGeometryBox);
+
+  static nsRect ComputeGeometryBox(nsIFrame*,
+                                   const mozilla::StyleShapeGeometryBox&);
+
+  static nsRect ComputeGeometryBox(nsIFrame*, const mozilla::StyleShapeBox&);
 
   static nsPoint ComputeOffsetToUserSpace(nsDisplayListBuilder* aBuilder,
                                           nsIFrame* aFrame);
 
   // Return the default value to be used for -moz-control-character-visibility,
   // from preferences.
-  static uint8_t ControlCharVisibilityDefault();
+  static mozilla::StyleControlCharacterVisibility
+  ControlCharVisibilityDefault();
 
   // Callers are responsible to ensure the user-font-set is up-to-date if
   // aUseUserFontSet is true.
   static already_AddRefed<nsFontMetrics> GetMetricsFor(
       nsPresContext* aPresContext, bool aIsVertical,
-      const nsStyleFont* aStyleFont, nscoord aFontSize, bool aUseUserFontSet);
+      const nsStyleFont* aStyleFont, mozilla::Length aFontSize,
+      bool aUseUserFontSet);
 
   static void ComputeSystemFont(nsFont* aSystemFont,
                                 mozilla::LookAndFeel::FontID aFontID,
@@ -2978,10 +3107,33 @@ class nsLayoutUtils {
   static ComputedStyle* StyleForScrollbar(nsIFrame* aScrollbarPart);
 
   /**
-   * Generate the motion path transform result.
+   * Returns true if |aFrame| is scrolled out of view by a scrollable element in
+   * a cross-process ancestor document.
+   * Note this function only works for frames in out-of-process iframes.
    **/
-  static mozilla::Maybe<mozilla::MotionPathData> ResolveMotionPath(
-      const nsIFrame* aFrame);
+  static bool FrameIsScrolledOutOfViewInCrossProcess(const nsIFrame* aFrame);
+
+  /**
+   * Similar to above FrameIsScrolledOutViewInCrossProcess but returns true even
+   * if |aFrame| is not fully scrolled out of view and its visible area width or
+   * height is smaller than |aMargin|.
+   **/
+  static bool FrameIsMostlyScrolledOutOfViewInCrossProcess(
+      const nsIFrame* aFrame, nscoord aMargin);
+
+  /**
+   * Expand the height of |aSize| to the size of `vh` units.
+   *
+   * With dynamic toolbar(s) the height for `vh` units is greater than the
+   * ICB height, we need to expand it in some places.
+   **/
+  static nsSize ExpandHeightForViewportUnits(nsPresContext* aPresContext,
+                                             const nsSize& aSize);
+
+  static CSSSize ExpandHeightForDynamicToolbar(nsPresContext* aPresContext,
+                                               const CSSSize& aSize);
+  static nsSize ExpandHeightForDynamicToolbar(nsPresContext* aPresContext,
+                                              const nsSize& aSize);
 
  private:
   /**
@@ -2992,6 +3144,9 @@ class nsLayoutUtils {
                                     const std::string& aValue);
 
   static bool IsAPZTestLoggingEnabled();
+
+  static void ConstrainToCoordValues(gfxFloat& aStart, gfxFloat& aSize);
+  static void ConstrainToCoordValues(float& aStart, float& aSize);
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(nsLayoutUtils::PaintFrameFlags)
@@ -3033,6 +3188,31 @@ template <typename PointType, typename RectType, typename CoordType>
   }
 
   return false;
+}
+
+template <typename T>
+nsRect nsLayoutUtils::RoundGfxRectToAppRect(const T& aRect,
+                                            const float aFactor) {
+  // Get a new Rect whose units are app units by scaling by the specified
+  // factor.
+  T scaledRect = aRect;
+  scaledRect.ScaleRoundOut(aFactor);
+
+  // We now need to constrain our results to the max and min values for coords.
+  ConstrainToCoordValues(scaledRect.x, scaledRect.width);
+  ConstrainToCoordValues(scaledRect.y, scaledRect.height);
+
+  if (!aRect.Width()) {
+    scaledRect.SetWidth(0);
+  }
+
+  if (!aRect.Height()) {
+    scaledRect.SetHeight(0);
+  }
+
+  // Now typecast everything back.  This is guaranteed to be safe.
+  return nsRect(nscoord(scaledRect.X()), nscoord(scaledRect.Y()),
+                nscoord(scaledRect.Width()), nscoord(scaledRect.Height()));
 }
 
 namespace mozilla {
@@ -3120,7 +3300,7 @@ class nsSetAttrRunnable : public mozilla::Runnable {
 
   NS_DECL_NSIRUNNABLE
 
-  RefPtr<Element> mElement;
+  RefPtr<mozilla::dom::Element> mElement;
   RefPtr<nsAtom> mAttrName;
   nsAutoString mValue;
 };
@@ -3131,7 +3311,7 @@ class nsUnsetAttrRunnable : public mozilla::Runnable {
 
   NS_DECL_NSIRUNNABLE
 
-  RefPtr<Element> mElement;
+  RefPtr<mozilla::dom::Element> mElement;
   RefPtr<nsAtom> mAttrName;
 };
 

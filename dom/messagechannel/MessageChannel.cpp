@@ -13,7 +13,6 @@
 #include "nsContentUtils.h"
 #include "mozilla/dom/Document.h"
 #include "nsIGlobalObject.h"
-#include "nsIPrincipal.h"
 #include "nsServiceManagerUtils.h"
 
 namespace mozilla {
@@ -32,7 +31,7 @@ MessageChannel::MessageChannel(nsIGlobalObject* aGlobal) : mGlobal(aGlobal) {
   MOZ_ASSERT(aGlobal);
 }
 
-MessageChannel::~MessageChannel() {}
+MessageChannel::~MessageChannel() = default;
 
 JSObject* MessageChannel::WrapObject(JSContext* aCx,
                                      JS::Handle<JSObject*> aGivenProto) {

@@ -8,7 +8,6 @@
 
 #include "nsIOfflineCacheUpdate.h"
 
-#include "nsAutoPtr.h"
 #include "nsCOMArray.h"
 #include "nsCOMPtr.h"
 #include "nsIChannelEventSink.h"
@@ -17,11 +16,9 @@
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
 #include "nsIApplicationCache.h"
-#include "nsIRequestObserver.h"
 #include "nsIRunnable.h"
 #include "nsIStreamListener.h"
 #include "nsIURI.h"
-#include "nsIWebProgressListener.h"
 #include "nsClassHashtable.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -31,6 +28,14 @@
 #include "mozilla/WeakPtr.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
+
+namespace mozilla {
+
+namespace net {
+class CookieJarSettingsArgs;
+}
+
+}  // namespace mozilla
 
 class nsOfflineCacheUpdate;
 
@@ -178,10 +183,8 @@ class nsOfflineManifestItem : public nsOfflineCacheUpdateItem {
   nsCString mOldManifestHashValue;
 };
 
-class nsOfflineCacheUpdateOwner
-    : public mozilla::SupportsWeakPtr<nsOfflineCacheUpdateOwner> {
+class nsOfflineCacheUpdateOwner : public mozilla::SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(nsOfflineCacheUpdateOwner)
   virtual ~nsOfflineCacheUpdateOwner() {}
   virtual nsresult UpdateFinished(nsOfflineCacheUpdate* aUpdate) = 0;
 };
@@ -214,6 +217,11 @@ class nsOfflineCacheUpdate final : public nsIOfflineCacheUpdate,
   bool IsForProfile(nsIFile* aCustomProfileDir);
 
   virtual nsresult UpdateFinished(nsOfflineCacheUpdate* aUpdate) override;
+
+  nsICookieJarSettings* CookieJarSettings() const { return mCookieJarSettings; }
+  void SetCookieJarSettings(nsICookieJarSettings* aCookieJarSettings);
+  void SetCookieJarSettingsArgs(
+      const mozilla::net::CookieJarSettingsArgs& aCookieJarSettingsArgs);
 
  protected:
   ~nsOfflineCacheUpdate();
@@ -271,6 +279,7 @@ class nsOfflineCacheUpdate final : public nsIOfflineCacheUpdate,
   nsCOMPtr<nsIURI> mDocumentURI;
   nsCOMPtr<nsIPrincipal> mLoadingPrincipal;
   nsCOMPtr<nsIFile> mCustomProfileDir;
+  nsCOMPtr<nsICookieJarSettings> mCookieJarSettings;
 
   nsCOMPtr<nsIObserver> mUpdateAvailableObserver;
 
@@ -341,9 +350,7 @@ class nsOfflineCacheUpdateService final : public nsIOfflineCacheUpdateService,
 
   static already_AddRefed<nsOfflineCacheUpdateService> GetInstance();
 
-  static nsresult OfflineAppPinnedForURI(nsIURI* aDocumentURI,
-                                         nsIPrefBranch* aPrefBranch,
-                                         bool* aPinned);
+  static nsresult OfflineAppPinnedForURI(nsIURI* aDocumentURI, bool* aPinned);
 
   static nsTHashtable<nsCStringHashKey>* AllowedDomains();
 

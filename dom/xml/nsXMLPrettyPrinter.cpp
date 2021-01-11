@@ -6,13 +6,11 @@
 #include "nsXMLPrettyPrinter.h"
 #include "nsContentUtils.h"
 #include "nsICSSDeclaration.h"
-#include "nsIObserver.h"
 #include "nsSyncLoadService.h"
 #include "nsPIDOMWindow.h"
-#include "nsIServiceManager.h"
 #include "nsNetUtil.h"
 #include "mozilla/dom/Element.h"
-#include "nsIScriptSecurityManager.h"
+#include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Document.h"
 #include "nsVariant.h"
@@ -60,16 +58,15 @@ nsresult nsXMLPrettyPrinter::PrettyPrint(Document* aDocument,
 
   // Load the XSLT
   nsCOMPtr<nsIURI> xslUri;
-  rv = NS_NewURI(
-      getter_AddRefs(xslUri),
-      NS_LITERAL_CSTRING("chrome://global/content/xml/XMLPrettyPrint.xsl"));
+  rv = NS_NewURI(getter_AddRefs(xslUri),
+                 "chrome://global/content/xml/XMLPrettyPrint.xsl"_ns);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<Document> xslDocument;
   rv = nsSyncLoadService::LoadDocument(
       xslUri, nsIContentPolicy::TYPE_XSLT, nsContentUtils::GetSystemPrincipal(),
-      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL, nullptr,
-      aDocument->CookieSettings(), true, ReferrerPolicy::_empty,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL, nullptr,
+      aDocument->CookieJarSettings(), true, ReferrerPolicy::_empty,
       getter_AddRefs(xslDocument));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -88,7 +85,7 @@ nsresult nsXMLPrettyPrinter::PrettyPrint(Document* aDocument,
   }
 
   // Attach an UA Widget Shadow Root on it.
-  rootElement->AttachAndSetUAShadowRoot();
+  rootElement->AttachAndSetUAShadowRoot(Element::NotifyUAWidgetSetup::No);
   RefPtr<ShadowRoot> shadowRoot = rootElement->GetShadowRoot();
   MOZ_RELEASE_ASSERT(shadowRoot && shadowRoot->IsUAWidget(),
                      "There should be a UA Shadow Root here.");
@@ -113,8 +110,8 @@ void nsXMLPrettyPrinter::MaybeUnhook(nsIContent* aContent) {
   // If it is not null but in the shadow tree or the <scrollbar> NACs,
   // the change was in the generated content, and it should be ignored.
   bool isGeneratedContent =
-      !aContent ? false
-                : aContent->GetBindingParent() || aContent->IsInShadowTree();
+      aContent &&
+      (aContent->IsInNativeAnonymousSubtree() || aContent->IsInShadowTree());
 
   if (!isGeneratedContent && !mUnhookPending) {
     // Can't blindly to mUnhookPending after AddScriptRunner,

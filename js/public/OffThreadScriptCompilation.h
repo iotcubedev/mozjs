@@ -23,8 +23,8 @@
 #include "js/GCVector.h"        // JS::GCVector
 #include "js/Transcoding.h"     // JS::TranscodeSource
 
-struct JSContext;
-class JSScript;
+struct JS_PUBLIC_API JSContext;
+class JS_PUBLIC_API JSScript;
 
 namespace JS {
 
@@ -130,20 +130,6 @@ extern JS_PUBLIC_API bool FinishMultiOffThreadScriptsDecoder(
 
 extern JS_PUBLIC_API void CancelMultiOffThreadScriptsDecoder(
     JSContext* cx, OffThreadToken* token);
-
-#if defined(JS_BUILD_BINAST)
-
-extern JS_PUBLIC_API bool CanDecodeBinASTOffThread(
-    JSContext* cx, const ReadOnlyCompileOptions& options, size_t length);
-
-extern JS_PUBLIC_API bool DecodeBinASTOffThread(
-    JSContext* cx, const ReadOnlyCompileOptions& options, const uint8_t* buf,
-    size_t length, OffThreadCompileCallback callback, void* callbackData);
-
-extern JS_PUBLIC_API JSScript* FinishOffThreadBinASTDecode(
-    JSContext* cx, OffThreadToken* token);
-
-#endif  // defined(JS_BUILD_BINAST)
 
 }  // namespace JS
 

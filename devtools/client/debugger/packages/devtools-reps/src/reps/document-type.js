@@ -3,33 +3,41 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 // Reps
 const { getGripType, isGrip, wrapRender } = require("./rep-utils");
-const dom = require("react-dom-factories");
-const { span } = dom;
 
 /**
  * Renders DOM documentType object.
  */
+
 DocumentType.propTypes = {
   object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function DocumentType(props) {
-  const { object } = props;
+  const { object, shouldRenderTooltip } = props;
   const name =
     object && object.preview && object.preview.nodeName
       ? ` ${object.preview.nodeName}`
       : "";
-  return span(
-    {
-      "data-link-actor-id": props.object.actor,
-      className: "objectBox objectBox-document",
-    },
-    `<!DOCTYPE${name}>`
-  );
+
+  const config = getElementConfig({ object, shouldRenderTooltip, name });
+
+  return span(config, `<!DOCTYPE${name}>`);
+}
+
+function getElementConfig(opts) {
+  const { object, shouldRenderTooltip, name } = opts;
+
+  return {
+    "data-link-actor-id": object.actor,
+    className: "objectBox objectBox-document",
+    title: shouldRenderTooltip ? `<!DOCTYPE${name}>` : null,
+  };
 }
 
 // Registration

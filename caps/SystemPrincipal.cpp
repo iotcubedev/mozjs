@@ -7,15 +7,11 @@
 
 #include "nscore.h"
 #include "SystemPrincipal.h"
-#include "nsIComponentManager.h"
-#include "nsIServiceManager.h"
-#include "nsIURL.h"
 #include "nsCOMPtr.h"
 #include "nsReadableUtils.h"
 #include "nsCRT.h"
 #include "nsString.h"
 #include "nsIClassInfoImpl.h"
-#include "nsIScriptSecurityManager.h"
 #include "pratom.h"
 
 using namespace mozilla;
@@ -30,7 +26,7 @@ NS_IMPL_CI_INTERFACE_GETTER(SystemPrincipal, nsIPrincipal, nsISerializable)
 
 already_AddRefed<SystemPrincipal> SystemPrincipal::Create() {
   RefPtr<SystemPrincipal> sp = new SystemPrincipal();
-  sp->FinishInit(NS_LITERAL_CSTRING(SYSTEM_PRINCIPAL_SPEC), OriginAttributes());
+  sp->FinishInit(nsLiteralCString(SYSTEM_PRINCIPAL_SPEC), OriginAttributes());
   return sp.forget();
 }
 
@@ -48,6 +44,12 @@ uint32_t SystemPrincipal::GetHashValue() { return NS_PTR_TO_INT32(this); }
 NS_IMETHODIMP
 SystemPrincipal::GetURI(nsIURI** aURI) {
   *aURI = nullptr;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+SystemPrincipal::GetIsOriginPotentiallyTrustworthy(bool* aResult) {
+  *aResult = true;
   return NS_OK;
 }
 

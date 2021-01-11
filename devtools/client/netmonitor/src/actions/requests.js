@@ -12,10 +12,17 @@ const {
   REMOVE_SELECTED_CUSTOM_REQUEST,
   RIGHT_CLICK_REQUEST,
   SEND_CUSTOM_REQUEST,
+  SET_EVENT_STREAM_FLAG,
   TOGGLE_RECORDING,
   UPDATE_REQUEST,
-} = require("../constants");
-const { getSelectedRequest, getRequestById } = require("../selectors/index");
+} = require("devtools/client/netmonitor/src/constants");
+const {
+  getSelectedRequest,
+  getRequestById,
+} = require("devtools/client/netmonitor/src/selectors/index");
+const {
+  fetchNetworkUpdatePacket,
+} = require("devtools/client/netmonitor/src/utils/request-utils");
 
 function addRequest(id, data, batch) {
   return {
@@ -31,6 +38,14 @@ function updateRequest(id, data, batch) {
     type: UPDATE_REQUEST,
     id,
     data,
+    meta: { batch },
+  };
+}
+
+function setEventStreamFlag(id, batch) {
+  return {
+    type: SET_EVENT_STREAM_FLAG,
+    id,
     meta: { batch },
   };
 }
@@ -70,7 +85,7 @@ function cloneSelectedRequest() {
  * Send a new HTTP request using the data in the custom request form.
  */
 function sendCustomRequest(connector, requestId = null) {
-  return (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     let request;
     if (requestId) {
       request = getRequestById(getState(), requestId);
@@ -82,6 +97,15 @@ function sendCustomRequest(connector, requestId = null) {
       return;
     }
 
+    // Fetch request headers and post data from the backend.
+    await fetchNetworkUpdatePacket(connector.requestData, request, [
+      "requestHeaders",
+      "requestPostData",
+    ]);
+
+    // Reload the request from the store to get the headers.
+    request = getRequestById(getState(), request.id);
+
     // Send a new HTTP request using the data in the custom request form
     const data = {
       cause: request.cause,
@@ -89,9 +113,11 @@ function sendCustomRequest(connector, requestId = null) {
       method: request.method,
       httpVersion: request.httpVersion,
     };
+
     if (request.requestHeaders) {
       data.headers = request.requestHeaders.headers;
     }
+
     if (request.requestPostData) {
       data.body = request.requestPostData.postData.text;
     }
@@ -102,34 +128,6 @@ function sendCustomRequest(connector, requestId = null) {
         id: response.eventActor.actor,
       });
     });
-  };
-}
-
-/**
- * Tell the backend to block future requests that match the URL of the selected one.
- */
-function blockSelectedRequestURL(connector, clickedRequest) {
-  return () => {
-    if (!clickedRequest) {
-      return;
-    }
-
-    const { url } = clickedRequest;
-    connector.blockRequest({ url });
-  };
-}
-
-/**
- * Tell the backend to unblock future requests that match the URL of the selected one.
- */
-function unblockSelectedRequestURL(connector, clickedRequest) {
-  return () => {
-    if (!clickedRequest) {
-      return;
-    }
-
-    const { url } = clickedRequest;
-    connector.unblockRequest({ url });
   };
 }
 
@@ -160,14 +158,13 @@ function toggleRecording() {
 
 module.exports = {
   addRequest,
-  blockSelectedRequestURL,
   clearRequests,
   cloneRequest,
   cloneSelectedRequest,
   rightClickRequest,
   removeSelectedCustomRequest,
   sendCustomRequest,
+  setEventStreamFlag,
   toggleRecording,
-  unblockSelectedRequestURL,
   updateRequest,
 };

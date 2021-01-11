@@ -21,6 +21,8 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/Unused.h"
 
+#include <algorithm>
+
 #include "jit/ProcessExecutableMemory.h"
 #include "util/Text.h"
 #include "wasm/WasmBaselineCompile.h"
@@ -76,19 +78,12 @@ uint32_t wasm::ObservedCPUFeatures() {
 
 SharedCompileArgs CompileArgs::build(JSContext* cx,
                                      ScriptedCaller&& scriptedCaller) {
-  bool baseline = BaselineCanCompile() && cx->options().wasmBaseline();
-  bool ion = IonCanCompile() && cx->options().wasmIon();
-#ifdef ENABLE_WASM_CRANELIFT
-  bool cranelift = CraneliftCanCompile() && cx->options().wasmCranelift();
-#else
-  bool cranelift = false;
-#endif
+  bool baseline = BaselineAvailable(cx);
+  bool ion = IonAvailable(cx);
+  bool cranelift = CraneliftAvailable(cx);
 
-#ifdef ENABLE_WASM_GC
-  bool gc = cx->options().wasmGc();
-#else
-  bool gc = false;
-#endif
+  // At most one optimizing compiler.
+  MOZ_RELEASE_ASSERT(!(ion && cranelift));
 
   // Debug information such as source view or debug traps will require
   // additional memory and permanently stay in baseline code, so we try to
@@ -96,39 +91,23 @@ SharedCompileArgs CompileArgs::build(JSContext* cx,
   // is open.
   bool debug = cx->realm()->debuggerObservesAsmJS();
 
-  bool sharedMemory =
-      cx->realm()->creationOptions().getSharedMemoryAndAtomicsEnabled();
   bool forceTiering =
       cx->options().testWasmAwaitTier2() || JitOptions.wasmDelayTier2;
 
-  if (debug || gc) {
-    if (!baseline) {
-      JS_ReportErrorASCII(cx, "can't use wasm debug/gc without baseline");
-      return nullptr;
-    }
-    ion = false;
-    cranelift = false;
-  }
+  // The <Compiler>Available() predicates should ensure this.
+  MOZ_RELEASE_ASSERT(!(debug && (ion || cranelift)));
 
-  if (forceTiering && (!baseline || (!cranelift && !ion))) {
+  if (forceTiering && !(baseline && (cranelift || ion))) {
     // This can happen only in testing, and in this case we don't have a
     // proper way to signal the error, so just silently override the default,
     // instead of adding a skip-if directive to every test using debug/gc.
     forceTiering = false;
   }
 
-#ifdef ENABLE_WASM_CRANELIFT
-  if (!baseline && !ion && !cranelift) {
-    if (cx->options().wasmCranelift() && !CraneliftCanCompile()) {
-      // We're forcing to use Cranelift on a platform that doesn't support it.
-      JS_ReportErrorASCII(cx, "cranelift isn't supported on this platform");
-      return nullptr;
-    }
+  if (!(baseline || ion || cranelift)) {
+    JS_ReportErrorASCII(cx, "no WebAssembly compiler available");
+    return nullptr;
   }
-#endif
-
-  // HasCompilerSupport() should prevent failure here.
-  MOZ_RELEASE_ASSERT(baseline || ion || cranelift);
 
   CompileArgs* target = cx->new_<CompileArgs>(std::move(scriptedCaller));
   if (!target) {
@@ -139,10 +118,18 @@ SharedCompileArgs CompileArgs::build(JSContext* cx,
   target->ionEnabled = ion;
   target->craneliftEnabled = cranelift;
   target->debugEnabled = debug;
-  target->sharedMemoryEnabled = sharedMemory;
+  target->sharedMemoryEnabled =
+      cx->realm()->creationOptions().getSharedMemoryAndAtomicsEnabled();
   target->forceTiering = forceTiering;
-  target->gcEnabled = gc;
+  target->reftypesEnabled = wasm::ReftypesAvailable(cx);
+  target->gcEnabled = wasm::GcTypesAvailable(cx);
   target->hugeMemory = wasm::IsHugeMemoryEnabled();
+  target->multiValuesEnabled = wasm::MultiValuesAvailable(cx);
+  target->v128Enabled = wasm::SimdAvailable(cx);
+
+  Log(cx, "available wasm compilers: tier1=%s tier2=%s",
+      baseline ? "baseline" : "none",
+      ion ? "ion" : (cranelift ? "cranelift" : "none"));
 
   return target;
 }
@@ -387,7 +374,7 @@ static bool TieringBeneficial(uint32_t codeSize) {
   // The number of cores we will use is bounded both by the CPU count and the
   // worker count.
 
-  uint32_t cores = Min(cpuCount, workers);
+  uint32_t cores = std::min(cpuCount, workers);
 
   SystemClass cls = ClassifySystem();
 
@@ -437,9 +424,10 @@ CompilerEnvironment::CompilerEnvironment(const CompileArgs& args)
 CompilerEnvironment::CompilerEnvironment(CompileMode mode, Tier tier,
                                          OptimizedBackend optimizedBackend,
                                          DebugEnabled debugEnabled,
+                                         bool multiValueConfigured,
                                          bool refTypesConfigured,
                                          bool gcTypesConfigured,
-                                         bool hugeMemory)
+                                         bool hugeMemory, bool v128Configured)
     : state_(InitialWithModeTierDebug),
       mode_(mode),
       tier_(tier),
@@ -447,39 +435,42 @@ CompilerEnvironment::CompilerEnvironment(CompileMode mode, Tier tier,
       debug_(debugEnabled),
       refTypes_(refTypesConfigured),
       gcTypes_(gcTypesConfigured),
-      hugeMemory_(hugeMemory) {}
+      multiValues_(multiValueConfigured),
+      hugeMemory_(hugeMemory),
+      v128_(v128Configured) {}
 
-void CompilerEnvironment::computeParameters(bool gcFeatureOptIn) {
+void CompilerEnvironment::computeParameters() {
   MOZ_ASSERT(state_ == InitialWithModeTierDebug);
 
-  if (gcTypes_) {
-    gcTypes_ = gcFeatureOptIn;
-  }
   state_ = Computed;
 }
 
-void CompilerEnvironment::computeParameters(Decoder& d, bool gcFeatureOptIn) {
+void CompilerEnvironment::computeParameters(Decoder& d) {
   MOZ_ASSERT(!isComputed());
 
   if (state_ == InitialWithModeTierDebug) {
-    computeParameters(gcFeatureOptIn);
+    computeParameters();
     return;
   }
 
-  bool gcEnabled = args_->gcEnabled && gcFeatureOptIn;
+  bool reftypesEnabled = args_->reftypesEnabled;
+  bool gcEnabled = args_->gcEnabled;
   bool baselineEnabled = args_->baselineEnabled;
   bool ionEnabled = args_->ionEnabled;
   bool debugEnabled = args_->debugEnabled;
   bool craneliftEnabled = args_->craneliftEnabled;
   bool forceTiering = args_->forceTiering;
   bool hugeMemory = args_->hugeMemory;
+  bool multiValuesEnabled = args_->multiValuesEnabled;
+  bool v128Enabled = args_->v128Enabled;
 
   bool hasSecondTier = ionEnabled || craneliftEnabled;
-  MOZ_ASSERT_IF(gcEnabled || debugEnabled, baselineEnabled);
+  MOZ_ASSERT_IF(debugEnabled, baselineEnabled);
   MOZ_ASSERT_IF(forceTiering, baselineEnabled && hasSecondTier);
 
-  // HasCompilerSupport() should prevent failure here
+  // Various constraints in various places should prevent failure here.
   MOZ_RELEASE_ASSERT(baselineEnabled || ionEnabled || craneliftEnabled);
+  MOZ_RELEASE_ASSERT(!(ionEnabled && craneliftEnabled));
 
   uint32_t codeSectionSize = 0;
 
@@ -501,9 +492,13 @@ void CompilerEnvironment::computeParameters(Decoder& d, bool gcFeatureOptIn) {
       craneliftEnabled ? OptimizedBackend::Cranelift : OptimizedBackend::Ion;
 
   debug_ = debugEnabled ? DebugEnabled::True : DebugEnabled::False;
+  refTypes_ = reftypesEnabled;
   gcTypes_ = gcEnabled;
-  refTypes_ = !craneliftEnabled;
+  multiValues_ = multiValuesEnabled;
   hugeMemory_ = hugeMemory;
+  multiValues_ = multiValuesEnabled;
+  v128_ = v128Enabled;
+
   state_ = Computed;
 }
 
@@ -603,15 +598,22 @@ void wasm::CompileTier2(const CompileArgs& args, const Bytes& bytecode,
   Decoder d(bytecode, 0, &error);
 
   bool gcTypesConfigured = false;  // No optimized backend support yet
-  bool refTypesConfigured = !args.craneliftEnabled;
+#ifdef ENABLE_WASM_REFTYPES
+  bool refTypesConfigured = true;
+#else
+  bool refTypesConfigured = false;
+#endif
+  bool multiValueConfigured = args.multiValuesEnabled;
+  bool v128Configured = args.v128Enabled;
+
   OptimizedBackend optimizedBackend = args.craneliftEnabled
                                           ? OptimizedBackend::Cranelift
                                           : OptimizedBackend::Ion;
 
-  CompilerEnvironment compilerEnv(CompileMode::Tier2, Tier::Optimized,
-                                  optimizedBackend, DebugEnabled::False,
-                                  refTypesConfigured, gcTypesConfigured,
-                                  args.hugeMemory);
+  CompilerEnvironment compilerEnv(
+      CompileMode::Tier2, Tier::Optimized, optimizedBackend,
+      DebugEnabled::False, multiValueConfigured, refTypesConfigured,
+      gcTypesConfigured, args.hugeMemory, v128Configured);
 
   ModuleEnvironment env(&compilerEnv, args.sharedMemoryEnabled
                                           ? Shareable::True
@@ -662,7 +664,7 @@ class StreamingDecoder {
   size_t currentOffset() const { return d_.currentOffset(); }
 
   bool waitForBytes(size_t numBytes) {
-    numBytes = Min(numBytes, d_.bytesRemain());
+    numBytes = std::min(numBytes, d_.bytesRemain());
     const uint8_t* requiredEnd = d_.currentPosition() + numBytes;
     auto codeBytesEnd = codeBytesEnd_.lock();
     while (codeBytesEnd < requiredEnd) {

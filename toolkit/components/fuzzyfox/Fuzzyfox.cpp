@@ -7,13 +7,12 @@
 #include "Fuzzyfox.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_privacy.h"
-#include "mozilla/SystemGroup.h"
 #include "mozilla/TimeStamp.h"
 #include "nsComponentManagerUtils.h"
 #include "nsIPrefBranch.h"
-#include "nsIPrefService.h"
 #include "nsServiceManagerUtils.h"
 #include "prrng.h"
 #include "prtime.h"
@@ -51,7 +50,7 @@ void Fuzzyfox::Start() {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<Fuzzyfox> r = new Fuzzyfox();
-  SystemGroup::Dispatch(TaskCategory::Other, r.forget());
+  SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
 }
 
 Fuzzyfox::Fuzzyfox()
@@ -73,8 +72,14 @@ Fuzzyfox::Fuzzyfox()
 
   sFuzzyfoxInitializing = fuzzyfoxEnabled;
 
-  // Should I see if these fail? And do what?
   nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+  if (!prefs) {
+    // Sometimes the call to the pref service fails. If that happens, we
+    // don't add the observers. The user will have to restart to have
+    // preference changes take effect.
+    return;
+  }
+
   prefs->AddObserver(FUZZYFOX_ENABLED_PREF, this, false);
   prefs->AddObserver(FUZZYFOX_CLOCKGRAIN_PREF, this, false);
 }
@@ -106,7 +111,7 @@ Fuzzyfox::Observe(nsISupports* aObject, const char* aTopic,
       if (sFuzzyfoxInitializing) {
         // Queue a runnable
         nsCOMPtr<nsIRunnable> r = this;
-        SystemGroup::Dispatch(TaskCategory::Other, r.forget());
+        SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
       } else {
         mStartTime = 0;
         mTickType = eUptick;
@@ -118,9 +123,9 @@ Fuzzyfox::Observe(nsISupports* aObject, const char* aTopic,
   return NS_OK;
 }
 
-#define DISPATCH_AND_RETURN()                             \
-  nsCOMPtr<nsIRunnable> r = this;                         \
-  SystemGroup::Dispatch(TaskCategory::Other, r.forget()); \
+#define DISPATCH_AND_RETURN()                                \
+  nsCOMPtr<nsIRunnable> r = this;                            \
+  SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()); \
   return NS_OK
 
 NS_IMETHODIMP

@@ -16,7 +16,6 @@
 #include "nsProxyInfo.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "plstr.h"
 #include "prerr.h"
@@ -35,10 +34,12 @@
 #include "nsIDNSRecord.h"
 #include "nsIDNSByTypeRecord.h"
 #include "nsICancelable.h"
+#include "QuicSocketControl.h"
 #include "TCPFastOpenLayer.h"
 #include <algorithm>
 #include "sslexp.h"
 #include "mozilla/net/SSLTokensCache.h"
+#include "mozilla/StaticPrefs_network.h"
 
 #include "nsPrintfCString.h"
 #include "xpcpublic.h"
@@ -277,7 +278,7 @@ void nsSocketInputStream::OnSocketReady(nsresult condition) {
 
     // ignore event if only waiting for closure and not closed.
     if (NS_FAILED(mCondition) || !(mCallbackFlags & WAIT_CLOSURE_ONLY)) {
-      callback = mCallback.forget();
+      callback = std::move(mCallback);
       mCallbackFlags = 0;
     }
   }
@@ -509,7 +510,7 @@ void nsSocketOutputStream::OnSocketReady(nsresult condition) {
 
     // ignore event if only waiting for closure and not closed.
     if (NS_FAILED(mCondition) || !(mCallbackFlags & WAIT_CLOSURE_ONLY)) {
-      callback = mCallback.forget();
+      callback = std::move(mCallback);
       mCallbackFlags = 0;
     }
   }
@@ -736,7 +737,7 @@ nsSocketTransport::nsSocketTransport()
       mFastOpenStatus(TFO_NOT_SET),
       mFirstRetryError(NS_OK),
       mDoNotRetryToConnect(false),
-      mSSLCallbackSet(false) {
+      mUsingQuic(false) {
   this->mNetAddr.raw.family = 0;
   this->mNetAddr.inet = {};
   this->mSelfAddr.raw.family = 0;
@@ -773,6 +774,13 @@ nsresult nsSocketTransport::Init(const nsTArray<nsCString>& types,
     mHost = host;
     mPort = port;
   }
+
+  // A subtle check we don't enter this method more than once for the socket
+  // transport lifetime.  Disable on TSan builds to prevent race checking, we
+  // don't want an atomic here for perf reasons!
+#ifndef MOZ_TSAN
+  MOZ_ASSERT(!mPortRemappingApplied);
+#endif  // !MOZ_TSAN
 
   if (proxyInfo) {
     mHttpsProxy = proxyInfo->IsHTTPS();
@@ -819,11 +827,14 @@ nsresult nsSocketTransport::Init(const nsTArray<nsCString>& types,
     else
       mTypes.AppendElement(types[type++]);
 
-    nsCOMPtr<nsISocketProvider> provider;
-    rv = spserv->GetSocketProvider(mTypes[i].get(), getter_AddRefs(provider));
-    if (NS_FAILED(rv)) {
-      NS_WARNING("no registered socket provider");
-      return rv;
+    // quic does not have a socketProvider.
+    if (!mTypes[i].EqualsLiteral("quic")) {
+      nsCOMPtr<nsISocketProvider> provider;
+      rv = spserv->GetSocketProvider(mTypes[i].get(), getter_AddRefs(provider));
+      if (NS_FAILED(rv)) {
+        NS_WARNING("no registered socket provider");
+        return rv;
+      }
     }
 
     // note if socket type corresponds to a transparent proxy
@@ -896,7 +907,6 @@ nsresult nsSocketTransport::InitWithConnectedSocket(PRFileDesc* fd,
   memcpy(&mNetAddr, addr, sizeof(NetAddr));
 
   mPollFlags = (PR_POLL_READ | PR_POLL_WRITE | PR_POLL_EXCEPT);
-  mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
   mState = STATE_TRANSFERRING;
   SetSocketName(fd);
   mNetAddrIsSet = true;
@@ -907,6 +917,7 @@ nsresult nsSocketTransport::InitWithConnectedSocket(PRFileDesc* fd,
     mFD = fd;
     mFDref = 1;
     mFDconnected = true;
+    mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
   }
 
   // make sure new socket is non-blocking
@@ -1034,6 +1045,15 @@ nsresult nsSocketTransport::ResolveHost() {
   if (mConnectionFlags & nsSocketTransport::DISABLE_TRR)
     dnsFlags |= nsIDNSService::RESOLVE_DISABLE_TRR;
 
+  dnsFlags |= nsIDNSService::GetFlagsFromTRRMode(
+      nsISocketTransport::GetTRRModeFromFlags(mConnectionFlags));
+
+  // When we get here, we are not resolving using any configured proxy likely
+  // because of individual proxy setting on the request or because the host is
+  // excluded from proxying.  Hence, force resolution despite global proxy-DNS
+  // configuration.
+  dnsFlags |= nsIDNSService::RESOLVE_IGNORE_SOCKS_DNS;
+
   NS_ASSERTION(!(dnsFlags & nsIDNSService::RESOLVE_DISABLE_IPV6) ||
                    !(dnsFlags & nsIDNSService::RESOLVE_DISABLE_IPV4),
                "Setting both RESOLVE_DISABLE_IPV6 and RESOLVE_DISABLE_IPV4");
@@ -1089,162 +1109,178 @@ nsresult nsSocketTransport::BuildSocket(PRFileDesc*& fd, bool& proxyTransparent,
                                         bool& usingSSL) {
   SOCKET_LOG(("nsSocketTransport::BuildSocket [this=%p]\n", this));
 
-  nsresult rv;
+  nsresult rv = NS_OK;
 
   proxyTransparent = false;
   usingSSL = false;
 
   if (mTypes.IsEmpty()) {
     fd = PR_OpenTCPSocket(mNetAddr.raw.family);
-    rv = fd ? NS_OK : NS_ERROR_OUT_OF_MEMORY;
-  } else {
+    if (!fd) {
+      SOCKET_LOG(("  error creating TCP nspr socket [rv=%" PRIx32 "]\n",
+                  static_cast<uint32_t>(rv)));
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+    return NS_OK;
+  }
+
 #if defined(XP_UNIX)
-    MOZ_ASSERT(!mNetAddrIsSet || mNetAddr.raw.family != AF_LOCAL,
-               "Unix domain sockets can't be used with socket types");
+  MOZ_ASSERT(!mNetAddrIsSet || mNetAddr.raw.family != AF_LOCAL,
+             "Unix domain sockets can't be used with socket types");
 #endif
 
-    fd = nullptr;
+  fd = nullptr;
 
-    nsCOMPtr<nsISocketProviderService> spserv =
-        nsSocketProviderService::GetOrCreate();
+  uint32_t controlFlags = 0;
+  if (mProxyTransparentResolvesHost)
+    controlFlags |= nsISocketProvider::PROXY_RESOLVES_HOST;
 
-    // by setting host to mOriginHost, instead of mHost we send the
-    // SocketProvider (e.g. PSM) the origin hostname but can still do DNS
-    // on an explicit alternate service host name
-    const char* host = mOriginHost.get();
-    int32_t port = (int32_t)mOriginPort;
-    nsCOMPtr<nsIProxyInfo> proxyInfo = mProxyInfo;
-    uint32_t controlFlags = 0;
+  if (mConnectionFlags & nsISocketTransport::ANONYMOUS_CONNECT)
+    controlFlags |= nsISocketProvider::ANONYMOUS_CONNECT;
 
-    uint32_t i;
-    for (i = 0; i < mTypes.Length(); ++i) {
-      nsCOMPtr<nsISocketProvider> provider;
+  if (mConnectionFlags & nsISocketTransport::NO_PERMANENT_STORAGE)
+    controlFlags |= nsISocketProvider::NO_PERMANENT_STORAGE;
 
-      SOCKET_LOG(("  pushing io layer [%u:%s]\n", i, mTypes[i].get()));
+  if (mConnectionFlags & nsISocketTransport::BE_CONSERVATIVE)
+    controlFlags |= nsISocketProvider::BE_CONSERVATIVE;
 
-      rv = spserv->GetSocketProvider(mTypes[i].get(), getter_AddRefs(provider));
-      if (NS_FAILED(rv)) break;
+  // by setting host to mOriginHost, instead of mHost we send the
+  // SocketProvider (e.g. PSM) the origin hostname but can still do DNS
+  // on an explicit alternate service host name
+  const char* host = mOriginHost.get();
+  int32_t port = (int32_t)mOriginPort;
 
-      if (mProxyTransparentResolvesHost)
-        controlFlags |= nsISocketProvider::PROXY_RESOLVES_HOST;
-
-      if (mConnectionFlags & nsISocketTransport::ANONYMOUS_CONNECT)
-        controlFlags |= nsISocketProvider::ANONYMOUS_CONNECT;
-
-      if (mConnectionFlags & nsISocketTransport::NO_PERMANENT_STORAGE)
-        controlFlags |= nsISocketProvider::NO_PERMANENT_STORAGE;
-
-      if (mConnectionFlags & nsISocketTransport::MITM_OK)
-        controlFlags |= nsISocketProvider::MITM_OK;
-
-      if (mConnectionFlags & nsISocketTransport::BE_CONSERVATIVE)
-        controlFlags |= nsISocketProvider::BE_CONSERVATIVE;
-
-      nsCOMPtr<nsISupports> secinfo;
-      if (i == 0) {
-        // if this is the first type, we'll want the
-        // service to allocate a new socket
-
-        // Most layers _ESPECIALLY_ PSM want the origin name here as they
-        // will use it for secure checks, etc.. and any connection management
-        // differences between the origin name and the routed name can be
-        // taken care of via DNS. However, SOCKS is a special case as there is
-        // no DNS. in the case of SOCKS and PSM the PSM is a separate layer
-        // and receives the origin name.
-        const char* socketProviderHost = host;
-        int32_t socketProviderPort = port;
-        if (mProxyTransparentResolvesHost &&
-            (mTypes[0].EqualsLiteral("socks") ||
-             mTypes[0].EqualsLiteral("socks4"))) {
-          SOCKET_LOG(("SOCKS %d Host/Route override: %s:%d -> %s:%d\n",
-                      mHttpsProxy, socketProviderHost, socketProviderPort,
-                      mHost.get(), mPort));
-          socketProviderHost = mHost.get();
-          socketProviderPort = mPort;
-        }
-
-        // when https proxying we want to just connect to the proxy as if
-        // it were the end host (i.e. expect the proxy's cert)
-
-        rv = provider->NewSocket(
-            mNetAddr.raw.family,
-            mHttpsProxy ? mProxyHost.get() : socketProviderHost,
-            mHttpsProxy ? mProxyPort : socketProviderPort, proxyInfo,
-            mOriginAttributes, controlFlags, mTlsFlags, &fd,
-            getter_AddRefs(secinfo));
-
-        if (NS_SUCCEEDED(rv) && !fd) {
-          MOZ_ASSERT_UNREACHABLE(
-              "NewSocket succeeded but failed to "
-              "create a PRFileDesc");
-          rv = NS_ERROR_UNEXPECTED;
-        }
-      } else {
-        // the socket has already been allocated,
-        // so we just want the service to add itself
-        // to the stack (such as pushing an io layer)
-        rv = provider->AddToSocket(mNetAddr.raw.family, host, port, proxyInfo,
-                                   mOriginAttributes, controlFlags, mTlsFlags,
-                                   fd, getter_AddRefs(secinfo));
-      }
-
-      // controlFlags = 0; not used below this point...
-      if (NS_FAILED(rv)) break;
-
-      // if the service was ssl or starttls, we want to hold onto the socket
-      // info
-      bool isSSL = mTypes[i].EqualsLiteral("ssl");
-      if (isSSL || mTypes[i].EqualsLiteral("starttls")) {
-        // remember security info and give notification callbacks to PSM...
-        nsCOMPtr<nsIInterfaceRequestor> callbacks;
-        {
-          MutexAutoLock lock(mLock);
-          mSecInfo = secinfo;
-          callbacks = mCallbacks;
-          SOCKET_LOG(("  [secinfo=%p callbacks=%p]\n", mSecInfo.get(),
-                      mCallbacks.get()));
-        }
-        // don't call into PSM while holding mLock!!
-        nsCOMPtr<nsISSLSocketControl> secCtrl(do_QueryInterface(secinfo));
-        if (secCtrl) secCtrl->SetNotificationCallbacks(callbacks);
-        // remember if socket type is SSL so we can ProxyStartSSL if need be.
-        usingSSL = isSSL;
-      } else if (mTypes[i].EqualsLiteral("socks") ||
-                 mTypes[i].EqualsLiteral("socks4")) {
-        // since socks is transparent, any layers above
-        // it do not have to worry about proxy stuff
-        proxyInfo = nullptr;
-        proxyTransparent = true;
-      }
+  if (mTypes[0].EqualsLiteral("quic")) {
+    fd = PR_OpenUDPSocket(mNetAddr.raw.family);
+    if (!fd) {
+      SOCKET_LOG(("  error creating UDP nspr socket [rv=%" PRIx32 "]\n",
+                  static_cast<uint32_t>(rv)));
+      return NS_ERROR_OUT_OF_MEMORY;
     }
 
-    if (NS_FAILED(rv)) {
-      SOCKET_LOG(("  error pushing io layer [%u:%s rv=%" PRIx32 "]\n", i,
-                  mTypes[i].get(), static_cast<uint32_t>(rv)));
-      if (fd) {
-        CloseSocket(
-            fd, mSocketTransportService->IsTelemetryEnabledAndNotSleepPhase());
+    mUsingQuic = true;
+    // Create security control and info object for quic.
+    RefPtr<QuicSocketControl> quicCtrl = new QuicSocketControl(controlFlags);
+    quicCtrl->SetHostName(mHttpsProxy ? mProxyHost.get() : host);
+    quicCtrl->SetPort(mHttpsProxy ? mProxyPort : port);
+    nsCOMPtr<nsISupports> secinfo;
+    quicCtrl->QueryInterface(NS_GET_IID(nsISupports), (void**)(&secinfo));
+
+    // remember security info and give notification callbacks to PSM...
+    nsCOMPtr<nsIInterfaceRequestor> callbacks;
+    {
+      MutexAutoLock lock(mLock);
+      mSecInfo = secinfo;
+      callbacks = mCallbacks;
+      SOCKET_LOG(
+          ("  [secinfo=%p callbacks=%p]\n", mSecInfo.get(), mCallbacks.get()));
+    }
+    // don't call into PSM while holding mLock!!
+    quicCtrl->SetNotificationCallbacks(callbacks);
+
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsISocketProviderService> spserv =
+      nsSocketProviderService::GetOrCreate();
+  nsCOMPtr<nsIProxyInfo> proxyInfo = mProxyInfo;
+
+  uint32_t i;
+  for (i = 0; i < mTypes.Length(); ++i) {
+    nsCOMPtr<nsISocketProvider> provider;
+
+    SOCKET_LOG(("  pushing io layer [%u:%s]\n", i, mTypes[i].get()));
+
+    rv = spserv->GetSocketProvider(mTypes[i].get(), getter_AddRefs(provider));
+    if (NS_FAILED(rv)) break;
+
+    nsCOMPtr<nsISupports> secinfo;
+    if (i == 0) {
+      // if this is the first type, we'll want the
+      // service to allocate a new socket
+
+      // Most layers _ESPECIALLY_ PSM want the origin name here as they
+      // will use it for secure checks, etc.. and any connection management
+      // differences between the origin name and the routed name can be
+      // taken care of via DNS. However, SOCKS is a special case as there is
+      // no DNS. in the case of SOCKS and PSM the PSM is a separate layer
+      // and receives the origin name.
+      const char* socketProviderHost = host;
+      int32_t socketProviderPort = port;
+      if (mProxyTransparentResolvesHost &&
+          (mTypes[0].EqualsLiteral("socks") ||
+           mTypes[0].EqualsLiteral("socks4"))) {
+        SOCKET_LOG(("SOCKS %d Host/Route override: %s:%d -> %s:%d\n",
+                    mHttpsProxy, socketProviderHost, socketProviderPort,
+                    mHost.get(), mPort));
+        socketProviderHost = mHost.get();
+        socketProviderPort = mPort;
       }
+
+      // when https proxying we want to just connect to the proxy as if
+      // it were the end host (i.e. expect the proxy's cert)
+
+      rv = provider->NewSocket(
+          mNetAddr.raw.family,
+          mHttpsProxy ? mProxyHost.get() : socketProviderHost,
+          mHttpsProxy ? mProxyPort : socketProviderPort, proxyInfo,
+          mOriginAttributes, controlFlags, mTlsFlags, &fd,
+          getter_AddRefs(secinfo));
+
+      if (NS_SUCCEEDED(rv) && !fd) {
+        MOZ_ASSERT_UNREACHABLE(
+            "NewSocket succeeded but failed to "
+            "create a PRFileDesc");
+        rv = NS_ERROR_UNEXPECTED;
+      }
+    } else {
+      // the socket has already been allocated,
+      // so we just want the service to add itself
+      // to the stack (such as pushing an io layer)
+      rv = provider->AddToSocket(mNetAddr.raw.family, host, port, proxyInfo,
+                                 mOriginAttributes, controlFlags, mTlsFlags, fd,
+                                 getter_AddRefs(secinfo));
+    }
+
+    // controlFlags = 0; not used below this point...
+    if (NS_FAILED(rv)) break;
+
+    // if the service was ssl or starttls, we want to hold onto the socket
+    // info
+    bool isSSL = mTypes[i].EqualsLiteral("ssl");
+    if (isSSL || mTypes[i].EqualsLiteral("starttls")) {
+      // remember security info and give notification callbacks to PSM...
+      nsCOMPtr<nsIInterfaceRequestor> callbacks;
+      {
+        MutexAutoLock lock(mLock);
+        mSecInfo = secinfo;
+        callbacks = mCallbacks;
+        SOCKET_LOG(("  [secinfo=%p callbacks=%p]\n", mSecInfo.get(),
+                    mCallbacks.get()));
+      }
+      // don't call into PSM while holding mLock!!
+      nsCOMPtr<nsISSLSocketControl> secCtrl(do_QueryInterface(secinfo));
+      if (secCtrl) secCtrl->SetNotificationCallbacks(callbacks);
+      // remember if socket type is SSL so we can ProxyStartSSL if need be.
+      usingSSL = isSSL;
+    } else if (mTypes[i].EqualsLiteral("socks") ||
+               mTypes[i].EqualsLiteral("socks4")) {
+      // since socks is transparent, any layers above
+      // it do not have to worry about proxy stuff
+      proxyInfo = nullptr;
+      proxyTransparent = true;
     }
   }
 
+  if (NS_FAILED(rv)) {
+    SOCKET_LOG(("  error pushing io layer [%u:%s rv=%" PRIx32 "]\n", i,
+                mTypes[i].get(), static_cast<uint32_t>(rv)));
+    if (fd) {
+      CloseSocket(
+          fd, mSocketTransportService->IsTelemetryEnabledAndNotSleepPhase());
+    }
+  }
   return rv;
-}
-
-// static
-SECStatus nsSocketTransport::StoreResumptionToken(
-    PRFileDesc* fd, const PRUint8* resumptionToken, unsigned int len,
-    void* ctx) {
-  PRIntn val;
-  if (SSL_OptionGet(fd, SSL_ENABLE_SESSION_TICKETS, &val) != SECSuccess ||
-      val == 0) {
-    return SECFailure;
-  }
-
-  SSLTokensCache::Put(static_cast<nsSocketTransport*>(ctx)->mHost,
-                      resumptionToken, len);
-
-  return SECSuccess;
 }
 
 nsresult nsSocketTransport::InitiateSocket() {
@@ -1298,7 +1334,7 @@ nsresult nsSocketTransport::InitiateSocket() {
       netAddrCString.SetLength(kIPv6CStrBufSize);
       if (!NetAddrToString(&mNetAddr, netAddrCString.BeginWriting(),
                            kIPv6CStrBufSize))
-        netAddrCString = NS_LITERAL_CSTRING("<IP-to-string failed>");
+        netAddrCString = "<IP-to-string failed>"_ns;
       SOCKET_LOG(
           ("nsSocketTransport::InitiateSocket skipping "
            "speculative connection for host [%s:%d] proxy "
@@ -1382,67 +1418,79 @@ nsresult nsSocketTransport::InitiateSocket() {
   status = PR_SetSocketOption(fd, &opt);
   NS_ASSERTION(status == PR_SUCCESS, "unable to make socket non-blocking");
 
-  if (mReuseAddrPort) {
-    SOCKET_LOG(("  Setting port/addr reuse socket options\n"));
-
-    // Set ReuseAddr for TCP sockets to enable having several
-    // sockets bound to same local IP and port
-    PRSocketOptionData opt_reuseaddr;
-    opt_reuseaddr.option = PR_SockOpt_Reuseaddr;
-    opt_reuseaddr.value.reuse_addr = PR_TRUE;
-    status = PR_SetSocketOption(fd, &opt_reuseaddr);
+  if (mUsingQuic) {
+    opt.option = PR_SockOpt_RecvBufferSize;
+    opt.value.recv_buffer_size =
+        StaticPrefs::network_http_http3_recvBufferSize();
+    status = PR_SetSocketOption(fd, &opt);
     if (status != PR_SUCCESS) {
-      SOCKET_LOG(("  Couldn't set reuse addr socket option: %d\n", status));
-    }
-
-    // And also set ReusePort for platforms supporting this socket option
-    PRSocketOptionData opt_reuseport;
-    opt_reuseport.option = PR_SockOpt_Reuseport;
-    opt_reuseport.value.reuse_port = PR_TRUE;
-    status = PR_SetSocketOption(fd, &opt_reuseport);
-    if (status != PR_SUCCESS &&
-        PR_GetError() != PR_OPERATION_NOT_SUPPORTED_ERROR) {
-      SOCKET_LOG(("  Couldn't set reuse port socket option: %d\n", status));
+      SOCKET_LOG(("  Couldn't set recv buffer size"));
     }
   }
 
-  // disable the nagle algorithm - if we rely on it to coalesce writes into
-  // full packets the final packet of a multi segment POST/PUT or pipeline
-  // sequence is delayed a full rtt
-  opt.option = PR_SockOpt_NoDelay;
-  opt.value.no_delay = true;
-  PR_SetSocketOption(fd, &opt);
+  if (!mUsingQuic) {
+    if (mReuseAddrPort) {
+      SOCKET_LOG(("  Setting port/addr reuse socket options\n"));
 
-  // if the network.tcp.sendbuffer preference is set, use it to size SO_SNDBUF
-  // The Windows default of 8KB is too small and as of vista sp1, autotuning
-  // only applies to receive window
-  int32_t sndBufferSize;
-  mSocketTransportService->GetSendBufferSize(&sndBufferSize);
-  if (sndBufferSize > 0) {
-    opt.option = PR_SockOpt_SendBufferSize;
-    opt.value.send_buffer_size = sndBufferSize;
-    PR_SetSocketOption(fd, &opt);
-  }
+      // Set ReuseAddr for TCP sockets to enable having several
+      // sockets bound to same local IP and port
+      PRSocketOptionData opt_reuseaddr;
+      opt_reuseaddr.option = PR_SockOpt_Reuseaddr;
+      opt_reuseaddr.value.reuse_addr = PR_TRUE;
+      status = PR_SetSocketOption(fd, &opt_reuseaddr);
+      if (status != PR_SUCCESS) {
+        SOCKET_LOG(("  Couldn't set reuse addr socket option: %d\n", status));
+      }
 
-  if (mQoSBits) {
-    opt.option = PR_SockOpt_IpTypeOfService;
-    opt.value.tos = mQoSBits;
+      // And also set ReusePort for platforms supporting this socket option
+      PRSocketOptionData opt_reuseport;
+      opt_reuseport.option = PR_SockOpt_Reuseport;
+      opt_reuseport.value.reuse_port = PR_TRUE;
+      status = PR_SetSocketOption(fd, &opt_reuseport);
+      if (status != PR_SUCCESS &&
+          PR_GetError() != PR_OPERATION_NOT_SUPPORTED_ERROR) {
+        SOCKET_LOG(("  Couldn't set reuse port socket option: %d\n", status));
+      }
+    }
+
+    // disable the nagle algorithm - if we rely on it to coalesce writes into
+    // full packets the final packet of a multi segment POST/PUT or pipeline
+    // sequence is delayed a full rtt
+    opt.option = PR_SockOpt_NoDelay;
+    opt.value.no_delay = true;
     PR_SetSocketOption(fd, &opt);
-  }
+
+    // if the network.tcp.sendbuffer preference is set, use it to size SO_SNDBUF
+    // The Windows default of 8KB is too small and as of vista sp1, autotuning
+    // only applies to receive window
+    int32_t sndBufferSize;
+    mSocketTransportService->GetSendBufferSize(&sndBufferSize);
+    if (sndBufferSize > 0) {
+      opt.option = PR_SockOpt_SendBufferSize;
+      opt.value.send_buffer_size = sndBufferSize;
+      PR_SetSocketOption(fd, &opt);
+    }
+
+    if (mQoSBits) {
+      opt.option = PR_SockOpt_IpTypeOfService;
+      opt.value.tos = mQoSBits;
+      PR_SetSocketOption(fd, &opt);
+    }
 
 #if defined(XP_WIN)
-  // The linger is turned off by default. This is not a hard close, but
-  // closesocket should return immediately and operating system tries to send
-  // remaining data for certain, implementation specific, amount of time.
-  // https://msdn.microsoft.com/en-us/library/ms739165.aspx
-  //
-  // Turn the linger option on an set the interval to 0. This will cause hard
-  // close of the socket.
-  opt.option = PR_SockOpt_Linger;
-  opt.value.linger.polarity = 1;
-  opt.value.linger.linger = 0;
-  PR_SetSocketOption(fd, &opt);
+    // The linger is turned off by default. This is not a hard close, but
+    // closesocket should return immediately and operating system tries to send
+    // remaining data for certain, implementation specific, amount of time.
+    // https://msdn.microsoft.com/en-us/library/ms739165.aspx
+    //
+    // Turn the linger option on an set the interval to 0. This will cause hard
+    // close of the socket.
+    opt.option = PR_SockOpt_Linger;
+    opt.value.linger.polarity = 1;
+    opt.value.linger.linger = 0;
+    PR_SetSocketOption(fd, &opt);
 #endif
+  }
 
   // inform socket transport about this newly created socket...
   rv = mSocketTransportService->AttachSocket(fd, this);
@@ -1460,11 +1508,11 @@ nsresult nsSocketTransport::InitiateSocket() {
     mFD = fd;
     mFDref = 1;
     mFDconnected = false;
+    mPollTimeout = mTimeouts[TIMEOUT_CONNECT];
   }
 
   SOCKET_LOG(("  advancing to STATE_CONNECTING\n"));
   mState = STATE_CONNECTING;
-  mPollTimeout = mTimeouts[TIMEOUT_CONNECT];
   SendStatus(NS_NET_STATUS_CONNECTING_TO);
 
   if (SOCKET_LOG_ENABLED()) {
@@ -1505,7 +1553,7 @@ nsresult nsSocketTransport::InitiateSocket() {
   }
 #endif
 
-  if (!mDNSRecordTxt.IsEmpty() && mSecInfo) {
+  if (!mDNSRecordTxt.IsEmpty() && !mUsingQuic && mSecInfo) {
     nsCOMPtr<nsISSLSocketControl> secCtrl = do_QueryInterface(mSecInfo);
     if (secCtrl) {
       SOCKET_LOG(("nsSocketTransport::InitiateSocket set esni keys."));
@@ -1515,6 +1563,18 @@ nsresult nsSocketTransport::InitiateSocket() {
       }
       mEsniUsed = true;
     }
+  }
+
+  if (mUsingQuic) {
+    //
+    // we pretend that we are connected!
+    //
+    if (PR_Connect(fd, &prAddr, NS_SOCKET_CONNECT_TIMEOUT) == PR_SUCCESS) {
+      OnSocketConnected();
+      return NS_OK;
+    }
+    PRErrorCode code = PR_GetError();
+    return ErrorAccordingToNSPR(code);
   }
 
   // We use PRIntervalTime here because we need
@@ -1535,27 +1595,6 @@ nsresult nsSocketTransport::InitiateSocket() {
            "started [this=%p]\n",
            this));
     }
-  }
-
-  if (usingSSL && SSLTokensCache::IsEnabled()) {
-    PRIntn val;
-    // If SSL_NO_CACHE option was set, we must not use the cache
-    if (SSL_OptionGet(fd, SSL_NO_CACHE, &val) == SECSuccess && val == 0) {
-      nsTArray<uint8_t> token;
-      nsresult rv2 = SSLTokensCache::Get(mHost, token);
-      if (NS_SUCCEEDED(rv2) && token.Length() != 0) {
-        SECStatus srv =
-            SSL_SetResumptionToken(fd, token.Elements(), token.Length());
-        if (srv == SECFailure) {
-          SOCKET_LOG(("Setting token failed with NSS error %d [host=%s]",
-                      PORT_GetError(), PromiseFlatCString(mHost).get()));
-          SSLTokensCache::Remove(mHost);
-        }
-      }
-    }
-
-    SSL_SetResumptionTokenCallback(fd, &StoreResumptionToken, this);
-    mSSLCallbackSet = true;
   }
 
   bool connectCalled = true;  // This is only needed for telemetry.
@@ -1691,7 +1730,7 @@ nsresult nsSocketTransport::InitiateSocket() {
     //
     else {
       if (gSocketTransportService->IsTelemetryEnabledAndNotSleepPhase() &&
-          connectStarted && connectStarted) {
+          connectStarted && connectCalled) {
         SendPRBlockingTelemetry(
             connectStarted, Telemetry::PRCONNECT_FAIL_BLOCKING_TIME_NORMAL,
             Telemetry::PRCONNECT_FAIL_BLOCKING_TIME_SHUTDOWN,
@@ -1747,6 +1786,7 @@ bool nsSocketTransport::RecoverFromError() {
   if ((!mFDFastOpenInProgress ||
        ((mCondition != NS_ERROR_CONNECTION_REFUSED) &&
         (mCondition != NS_ERROR_NET_TIMEOUT) &&
+        (mCondition != NS_BASE_STREAM_CLOSED) &&
         (mCondition != NS_ERROR_PROXY_CONNECTION_REFUSED))) &&
       mState == STATE_CONNECTING && mDNSRecord) {
     mDNSRecord->ReportUnusable(SocketPort());
@@ -1929,7 +1969,6 @@ void nsSocketTransport::OnSocketConnected() {
   SOCKET_LOG(("  advancing to STATE_TRANSFERRING\n"));
 
   mPollFlags = (PR_POLL_READ | PR_POLL_WRITE | PR_POLL_EXCEPT);
-  mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
   mState = STATE_TRANSFERRING;
 
   // Set the m*AddrIsSet flags only when state has reached TRANSFERRING
@@ -1953,6 +1992,7 @@ void nsSocketTransport::OnSocketConnected() {
     SetSocketName(mFD);
     mFDconnected = true;
     mFDFastOpenInProgress = false;
+    mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
   }
 
   // Ensure keepalive is configured correctly if previously enabled.
@@ -2044,11 +2084,6 @@ void nsSocketTransport::ReleaseFD_Locked(PRFileDesc* fd) {
   NS_ASSERTION(mFD == fd, "wrong fd");
 
   if (--mFDref == 0) {
-    if (mSSLCallbackSet) {
-      SSL_SetResumptionTokenCallback(fd, nullptr, nullptr);
-      mSSLCallbackSet = false;
-    }
-
     if (gIOService->IsNetTearingDown() &&
         ((PR_IntervalNow() - gIOService->NetTearingDownStarted()) >
          gSocketTransportService->MaxTimeForPrClosePref())) {
@@ -2100,6 +2135,17 @@ void nsSocketTransport::OnSocketEvent(uint32_t type, nsresult status,
   switch (type) {
     case MSG_ENSURE_CONNECT:
       SOCKET_LOG(("  MSG_ENSURE_CONNECT\n"));
+
+      // Apply port remapping here so that we do it on the socket thread and
+      // before we process the resolved DNS name or create the socket the first
+      // time.
+      if (!mPortRemappingApplied) {
+        mPortRemappingApplied = true;
+
+        mSocketTransportService->ApplyPortRemap(&mPort);
+        mSocketTransportService->ApplyPortRemap(&mOriginPort);
+      }
+
       //
       // ensure that we have created a socket, attached it, and have a
       // connection.
@@ -2175,9 +2221,12 @@ void nsSocketTransport::OnSocketEvent(uint32_t type, nsresult status,
       break;
     case MSG_TIMEOUT_CHANGED:
       SOCKET_LOG(("  MSG_TIMEOUT_CHANGED\n"));
-      mPollTimeout =
-          mTimeouts[(mState == STATE_TRANSFERRING) ? TIMEOUT_READ_WRITE
-                                                   : TIMEOUT_CONNECT];
+      {
+        MutexAutoLock lock(mLock);
+        mPollTimeout =
+            mTimeouts[(mState == STATE_TRANSFERRING) ? TIMEOUT_READ_WRITE
+                                                     : TIMEOUT_CONNECT];
+      }
       break;
     default:
       SOCKET_LOG(("  unhandled event!\n"));
@@ -2238,7 +2287,10 @@ void nsSocketTransport::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
       mInput.OnSocketReady(NS_OK);
     }
     // Update poll timeout in case it was changed
-    mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
+    {
+      MutexAutoLock lock(mLock);
+      mPollTimeout = mTimeouts[TIMEOUT_READ_WRITE];
+    }
   } else if ((mState == STATE_CONNECTING) && !gIOService->IsNetTearingDown()) {
     // We do not need to do PR_ConnectContinue when we are already
     // shutting down.
@@ -2311,7 +2363,10 @@ void nsSocketTransport::OnSocketReady(PRFileDesc* fd, int16_t outFlags) {
         // Set up the select flags for connect...
         mPollFlags = (PR_POLL_EXCEPT | PR_POLL_WRITE);
         // Update poll timeout in case it was changed
-        mPollTimeout = mTimeouts[TIMEOUT_CONNECT];
+        {
+          MutexAutoLock lock(mLock);
+          mPollTimeout = mTimeouts[TIMEOUT_CONNECT];
+        }
       }
       //
       // The SOCKS proxy rejected our request. Find out why.
@@ -2601,7 +2656,7 @@ NS_IMETHODIMP
 nsSocketTransport::SetSecurityCallbacks(nsIInterfaceRequestor* callbacks) {
   nsCOMPtr<nsIInterfaceRequestor> threadsafeCallbacks;
   NS_NewNotificationCallbacksAggregation(callbacks, nullptr,
-                                         GetCurrentThreadEventTarget(),
+                                         GetCurrentEventTarget(),
                                          getter_AddRefs(threadsafeCallbacks));
 
   nsCOMPtr<nsISupports> secinfo;
@@ -2763,7 +2818,7 @@ nsSocketTransport::Bind(NetAddr* aLocalAddr) {
     return NS_ERROR_FAILURE;
   }
 
-  mBindAddr = new NetAddr();
+  mBindAddr = MakeUnique<NetAddr>();
   memcpy(mBindAddr.get(), aLocalAddr, sizeof(NetAddr));
 
   return NS_OK;
@@ -2777,8 +2832,8 @@ nsSocketTransport::GetScriptablePeerAddr(nsINetAddr** addr) {
   rv = GetPeerAddr(&rawAddr);
   if (NS_FAILED(rv)) return rv;
 
-  NS_ADDREF(*addr = new nsNetAddr(&rawAddr));
-
+  RefPtr<nsNetAddr> netaddr = new nsNetAddr(&rawAddr);
+  netaddr.forget(addr);
   return NS_OK;
 }
 
@@ -2790,7 +2845,8 @@ nsSocketTransport::GetScriptableSelfAddr(nsINetAddr** addr) {
   rv = GetSelfAddr(&rawAddr);
   if (NS_FAILED(rv)) return rv;
 
-  NS_ADDREF(*addr = new nsNetAddr(&rawAddr));
+  RefPtr<nsNetAddr> netaddr = new nsNetAddr(&rawAddr);
+  netaddr.forget(addr);
 
   return NS_OK;
 }
@@ -2798,6 +2854,7 @@ nsSocketTransport::GetScriptableSelfAddr(nsINetAddr** addr) {
 NS_IMETHODIMP
 nsSocketTransport::GetTimeout(uint32_t type, uint32_t* value) {
   NS_ENSURE_ARG_MAX(type, nsISocketTransport::TIMEOUT_READ_WRITE);
+  MutexAutoLock lock(mLock);
   *value = (uint32_t)mTimeouts[type];
   return NS_OK;
 }
@@ -2810,7 +2867,10 @@ nsSocketTransport::SetTimeout(uint32_t type, uint32_t value) {
               value));
 
   // truncate overly large timeout values.
-  mTimeouts[type] = (uint16_t)std::min<uint32_t>(value, UINT16_MAX);
+  {
+    MutexAutoLock lock(mLock);
+    mTimeouts[type] = (uint16_t)std::min<uint32_t>(value, UINT16_MAX);
+  }
   PostEvent(MSG_TIMEOUT_CHANGED);
   return NS_OK;
 }
@@ -2915,10 +2975,43 @@ nsSocketTransport::OnLookupComplete(nsICancelable* request, nsIDNSRecord* rec,
   SOCKET_LOG(("nsSocketTransport::OnLookupComplete: this=%p status %" PRIx32
               ".",
               this, static_cast<uint32_t>(status)));
+
+  if (request == mDNSTxtRequest) {
+    if (NS_SUCCEEDED(status)) {
+      nsCOMPtr<nsIDNSTXTRecord> txtResponse = do_QueryInterface(rec);
+      txtResponse->GetRecordsAsOneString(mDNSRecordTxt);
+      mDNSRecordTxt.Trim(" ");
+    }
+    Telemetry::Accumulate(Telemetry::ESNI_KEYS_RECORDS_FOUND,
+                          NS_SUCCEEDED(status));
+    // flag host lookup complete for the benefit of the ResolveHost method.
+    if (!mDNSRequest) {
+      mResolving = false;
+      MOZ_ASSERT(mDNSARequestFinished);
+      Telemetry::Accumulate(
+          Telemetry::ESNI_KEYS_RECORD_FETCH_DELAYS,
+          PR_IntervalToMilliseconds(PR_IntervalNow() - mDNSARequestFinished));
+
+      nsresult rv =
+          PostEvent(MSG_DNS_LOOKUP_COMPLETE, mDNSLookupStatus, nullptr);
+
+      // if posting a message fails, then we should assume that the socket
+      // transport has been shutdown.  this should never happen!  if it does
+      // it means that the socket transport service was shutdown before the
+      // DNS service.
+      if (NS_FAILED(rv)) {
+        NS_WARNING("unable to post DNS lookup complete message");
+      }
+    } else {
+      mDNSTxtRequest = nullptr;
+    }
+    return NS_OK;
+  }
+
   if (NS_FAILED(status) && mDNSTxtRequest) {
     mDNSTxtRequest->Cancel(NS_ERROR_ABORT);
   } else if (NS_SUCCEEDED(status)) {
-    mDNSRecord = static_cast<nsIDNSRecord*>(rec);
+    mDNSRecord = rec;
   }
 
   // flag host lookup complete for the benefit of the ResolveHost method.
@@ -2941,46 +3034,6 @@ nsSocketTransport::OnLookupComplete(nsICancelable* request, nsIDNSRecord* rec,
         status;  // remember the status to send it when esni lookup is ready.
     mDNSRequest = nullptr;
     mDNSARequestFinished = PR_IntervalNow();
-  }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsSocketTransport::OnLookupByTypeComplete(nsICancelable* request,
-                                          nsIDNSByTypeRecord* txtResponse,
-                                          nsresult status) {
-  SOCKET_LOG(
-      ("nsSocketTransport::OnLookupByTypeComplete: "
-       "this=%p status %" PRIx32 ".",
-       this, static_cast<uint32_t>(status)));
-  MOZ_ASSERT(mDNSTxtRequest == request);
-
-  if (NS_SUCCEEDED(status)) {
-    txtResponse->GetRecordsAsOneString(mDNSRecordTxt);
-    mDNSRecordTxt.Trim(" ");
-  }
-  Telemetry::Accumulate(Telemetry::ESNI_KEYS_RECORDS_FOUND,
-                        NS_SUCCEEDED(status));
-  // flag host lookup complete for the benefit of the ResolveHost method.
-  if (!mDNSRequest) {
-    mResolving = false;
-    MOZ_ASSERT(mDNSARequestFinished);
-    Telemetry::Accumulate(
-        Telemetry::ESNI_KEYS_RECORD_FETCH_DELAYS,
-        PR_IntervalToMilliseconds(PR_IntervalNow() - mDNSARequestFinished));
-
-    nsresult rv = PostEvent(MSG_DNS_LOOKUP_COMPLETE, mDNSLookupStatus, nullptr);
-
-    // if posting a message fails, then we should assume that the socket
-    // transport has been shutdown.  this should never happen!  if it does
-    // it means that the socket transport service was shutdown before the
-    // DNS service.
-    if (NS_FAILED(rv)) {
-      NS_WARNING("unable to post DNS lookup complete message");
-    }
-  } else {
-    mDNSTxtRequest = nullptr;
   }
 
   return NS_OK;

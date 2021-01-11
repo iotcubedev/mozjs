@@ -1,9 +1,13 @@
 //! Helper functions and structures for the translation.
-use crate::environ::WasmResult;
+use crate::environ::{TargetEnvironment, WasmResult, WasmType};
+use crate::state::ModuleTranslationState;
 use crate::wasm_unsupported;
+use core::convert::TryInto;
 use core::u32;
 use cranelift_codegen::entity::entity_impl;
 use cranelift_codegen::ir;
+use cranelift_codegen::ir::immediates::V128Imm;
+use cranelift_frontend::FunctionBuilder;
 #[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
 use wasmparser;
@@ -36,28 +40,53 @@ entity_impl!(DefinedGlobalIndex);
 
 /// Index type of a table (imported or defined) inside the WebAssembly module.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct TableIndex(u32);
 entity_impl!(TableIndex);
 
 /// Index type of a global variable (imported or defined) inside the WebAssembly module.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct GlobalIndex(u32);
 entity_impl!(GlobalIndex);
 
 /// Index type of a linear memory (imported or defined) inside the WebAssembly module.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct MemoryIndex(u32);
 entity_impl!(MemoryIndex);
 
 /// Index type of a signature (imported or defined) inside the WebAssembly module.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct SignatureIndex(u32);
 entity_impl!(SignatureIndex);
 
-/// WebAssembly global.
-#[derive(Debug, Clone, Copy, Hash)]
+/// Index type of a passive data segment inside the WebAssembly module.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct DataIndex(u32);
+entity_impl!(DataIndex);
+
+/// Index type of a passive element segment inside the WebAssembly module.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct ElemIndex(u32);
+entity_impl!(ElemIndex);
+
+/// A WebAssembly global.
+///
+/// Note that we record both the original Wasm type and the Cranelift IR type
+/// used to represent it. This is because multiple different kinds of Wasm types
+/// might be represented with the same Cranelift IR type. For example, both a
+/// Wasm `i64` and a `funcref` might be represented with a Cranelift `i64` on
+/// 64-bit architectures, and when GC is not required for func refs.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Global {
-    /// The type of the value stored in the global.
+    /// The Wasm type of the value stored in the global.
+    pub wasm_ty: crate::WasmType,
+    /// The Cranelift IR type of the value stored in the global.
     pub ty: ir::Type,
     /// A flag indicating whether the value may change at runtime.
     pub mutability: bool,
@@ -65,8 +94,9 @@ pub struct Global {
     pub initializer: GlobalInit,
 }
 
-/// Globals are initialized via the four `const` operators or by referring to another import.
-#[derive(Debug, Clone, Copy, Hash)]
+/// Globals are initialized via the `const` operators or by referring to another import.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum GlobalInit {
     /// An `i32.const`.
     I32Const(i32),
@@ -76,16 +106,25 @@ pub enum GlobalInit {
     F32Const(u32),
     /// An `f64.const`.
     F64Const(u64),
-    /// A `get_global` of another global.
+    /// A `vconst`.
+    V128Const(V128Imm),
+    /// A `global.get` of another global.
     GetGlobal(GlobalIndex),
+    /// A `ref.null`.
+    RefNullConst,
+    /// A `ref.func <index>`.
+    RefFunc(FuncIndex),
     ///< The global is imported from, and thus initialized by, a different module.
     Import,
 }
 
 /// WebAssembly table.
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Table {
-    /// The type of data stored in elements of the table.
+    /// The table elements' Wasm type.
+    pub wasm_ty: WasmType,
+    /// The table elements' Cranelift type.
     pub ty: TableElementType,
     /// The minimum number of elements in the table.
     pub minimum: u32,
@@ -94,7 +133,8 @@ pub struct Table {
 }
 
 /// WebAssembly table element. Can be a function or a scalar type.
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub enum TableElementType {
     /// A scalar type.
     Val(ir::Type),
@@ -103,7 +143,8 @@ pub enum TableElementType {
 }
 
 /// WebAssembly linear memory.
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
 pub struct Memory {
     /// The minimum number of pages in the memory.
     pub minimum: u32,
@@ -114,37 +155,105 @@ pub struct Memory {
 }
 
 /// Helper function translating wasmparser types to Cranelift types when possible.
-pub fn type_to_type(ty: wasmparser::Type) -> WasmResult<ir::Type> {
-    Ok(match ty {
-        wasmparser::Type::I32 => ir::types::I32,
-        wasmparser::Type::I64 => ir::types::I64,
-        wasmparser::Type::F32 => ir::types::F32,
-        wasmparser::Type::F64 => ir::types::F64,
-        ty => wasm_unsupported!("unsupported wasm type {:?}", ty),
-    })
+pub fn type_to_type<PE: TargetEnvironment + ?Sized>(
+    ty: wasmparser::Type,
+    environ: &PE,
+) -> WasmResult<ir::Type> {
+    match ty {
+        wasmparser::Type::I32 => Ok(ir::types::I32),
+        wasmparser::Type::I64 => Ok(ir::types::I64),
+        wasmparser::Type::F32 => Ok(ir::types::F32),
+        wasmparser::Type::F64 => Ok(ir::types::F64),
+        wasmparser::Type::V128 => Ok(ir::types::I8X16),
+        wasmparser::Type::ExternRef | wasmparser::Type::FuncRef => {
+            Ok(environ.reference_type(ty.try_into()?))
+        }
+        ty => Err(wasm_unsupported!("type_to_type: wasm type {:?}", ty)),
+    }
 }
 
 /// Helper function translating wasmparser possible table types to Cranelift types when possible,
 /// or None for Func tables.
-pub fn tabletype_to_type(ty: wasmparser::Type) -> WasmResult<Option<ir::Type>> {
-    Ok(match ty {
-        wasmparser::Type::I32 => Some(ir::types::I32),
-        wasmparser::Type::I64 => Some(ir::types::I64),
-        wasmparser::Type::F32 => Some(ir::types::F32),
-        wasmparser::Type::F64 => Some(ir::types::F64),
-        wasmparser::Type::AnyFunc => None,
-        ty => wasm_unsupported!("unsupported table wasm type {:?}", ty),
+pub fn tabletype_to_type<PE: TargetEnvironment + ?Sized>(
+    ty: wasmparser::Type,
+    environ: &PE,
+) -> WasmResult<Option<ir::Type>> {
+    match ty {
+        wasmparser::Type::I32 => Ok(Some(ir::types::I32)),
+        wasmparser::Type::I64 => Ok(Some(ir::types::I64)),
+        wasmparser::Type::F32 => Ok(Some(ir::types::F32)),
+        wasmparser::Type::F64 => Ok(Some(ir::types::F64)),
+        wasmparser::Type::V128 => Ok(Some(ir::types::I8X16)),
+        wasmparser::Type::ExternRef => Ok(Some(environ.reference_type(ty.try_into()?))),
+        wasmparser::Type::FuncRef => Ok(None),
+        ty => Err(wasm_unsupported!(
+            "tabletype_to_type: table wasm type {:?}",
+            ty
+        )),
+    }
+}
+
+/// Get the parameter and result types for the given Wasm blocktype.
+pub fn blocktype_params_results(
+    module_translation_state: &ModuleTranslationState,
+    ty_or_ft: wasmparser::TypeOrFuncType,
+) -> WasmResult<(&[wasmparser::Type], &[wasmparser::Type])> {
+    Ok(match ty_or_ft {
+        wasmparser::TypeOrFuncType::Type(ty) => match ty {
+            wasmparser::Type::I32 => (&[], &[wasmparser::Type::I32]),
+            wasmparser::Type::I64 => (&[], &[wasmparser::Type::I64]),
+            wasmparser::Type::F32 => (&[], &[wasmparser::Type::F32]),
+            wasmparser::Type::F64 => (&[], &[wasmparser::Type::F64]),
+            wasmparser::Type::V128 => (&[], &[wasmparser::Type::V128]),
+            wasmparser::Type::ExternRef => (&[], &[wasmparser::Type::ExternRef]),
+            wasmparser::Type::FuncRef => (&[], &[wasmparser::Type::FuncRef]),
+            wasmparser::Type::EmptyBlockType => (&[], &[]),
+            ty => return Err(wasm_unsupported!("blocktype_params_results: type {:?}", ty)),
+        },
+        wasmparser::TypeOrFuncType::FuncType(ty_index) => {
+            let sig_idx = SignatureIndex::from_u32(ty_index);
+            let (ref params, ref returns) = module_translation_state.wasm_types[sig_idx];
+            (&*params, &*returns)
+        }
     })
 }
 
-/// Helper function translating wasmparser block signatures to Cranelift types when possible.
-pub fn blocktype_to_type(ty: wasmparser::TypeOrFuncType) -> WasmResult<ir::Type> {
-    match ty {
-        wasmparser::TypeOrFuncType::Type(ty) => type_to_type(ty),
-        wasmparser::TypeOrFuncType::FuncType(_) => {
-            wasm_unsupported!("multi-value block signature {:?}", ty);
+/// Create a `Block` with the given Wasm parameters.
+pub fn block_with_params<PE: TargetEnvironment + ?Sized>(
+    builder: &mut FunctionBuilder,
+    params: &[wasmparser::Type],
+    environ: &PE,
+) -> WasmResult<ir::Block> {
+    let block = builder.create_block();
+    for ty in params.iter() {
+        match ty {
+            wasmparser::Type::I32 => {
+                builder.append_block_param(block, ir::types::I32);
+            }
+            wasmparser::Type::I64 => {
+                builder.append_block_param(block, ir::types::I64);
+            }
+            wasmparser::Type::F32 => {
+                builder.append_block_param(block, ir::types::F32);
+            }
+            wasmparser::Type::F64 => {
+                builder.append_block_param(block, ir::types::F64);
+            }
+            wasmparser::Type::ExternRef | wasmparser::Type::FuncRef => {
+                builder.append_block_param(block, environ.reference_type((*ty).try_into()?));
+            }
+            wasmparser::Type::V128 => {
+                builder.append_block_param(block, ir::types::I8X16);
+            }
+            ty => {
+                return Err(wasm_unsupported!(
+                    "block_with_params: type {:?} in multi-value block's signature",
+                    ty
+                ))
+            }
         }
     }
+    Ok(block)
 }
 
 /// Turns a `wasmparser` `f32` into a `Cranelift` one.
@@ -155,23 +264,6 @@ pub fn f32_translation(x: wasmparser::Ieee32) -> ir::immediates::Ieee32 {
 /// Turns a `wasmparser` `f64` into a `Cranelift` one.
 pub fn f64_translation(x: wasmparser::Ieee64) -> ir::immediates::Ieee64 {
     ir::immediates::Ieee64::with_bits(x.bits())
-}
-
-/// Translate a `wasmparser` type into its `Cranelift` equivalent, when possible
-pub fn num_return_values(ty: wasmparser::TypeOrFuncType) -> WasmResult<usize> {
-    match ty {
-        wasmparser::TypeOrFuncType::Type(ty) => match ty {
-            wasmparser::Type::EmptyBlockType => Ok(0),
-            wasmparser::Type::I32
-            | wasmparser::Type::F32
-            | wasmparser::Type::I64
-            | wasmparser::Type::F64 => Ok(1),
-            ty => wasm_unsupported!("unsupported return value type {:?}", ty),
-        },
-        wasmparser::TypeOrFuncType::FuncType(_) => {
-            wasm_unsupported!("multi-value block signature {:?}", ty);
-        }
-    }
 }
 
 /// Special VMContext value label. It is tracked as 0xffff_fffe label.

@@ -14,6 +14,7 @@
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include "nsGkAtoms.h"
+#include "nsFieldSetFrame.h"
 #include "nsPageContentFrame.h"
 #include "nsDisplayList.h"
 #include "nsPageSequenceFrame.h"  // for nsSharedPageData
@@ -41,7 +42,7 @@ NS_QUERYFRAME_TAIL_INHERITING(nsContainerFrame)
 nsPageFrame::nsPageFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
     : nsContainerFrame(aStyle, aPresContext, kClassID) {}
 
-nsPageFrame::~nsPageFrame() {}
+nsPageFrame::~nsPageFrame() = default;
 
 void nsPageFrame::Reflow(nsPresContext* aPresContext,
                          ReflowOutput& aDesiredSize,
@@ -58,7 +59,11 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
 
   // Resize our frame allowing it only to be as big as we are
   // XXX Pay attention to the page's border and padding...
-  if (mFrames.NotEmpty()) {
+  [&] {
+    if (mFrames.IsEmpty()) {
+      return;
+    }
+
     nsIFrame* frame = mFrames.FirstChild();
     // When the reflow size is NS_UNCONSTRAINEDSIZE it means we are reflowing
     // a single page to print selection. So this means we want to use
@@ -81,7 +86,6 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
     // XXX Shouldn't we do something more friendly when invalid margins
     //     are set?
     if (maxSize.width < onePixelInTwips || maxSize.height < onePixelInTwips) {
-      aDesiredSize.ClearSize();
       NS_WARNING("Reflow aborted; no space for content");
       return;
     }
@@ -95,7 +99,7 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
     // If a margin is 'auto', use the margin from the print settings for that
     // side.
     const auto& marginStyle = kidReflowInput.mStyleMargin->mMargin;
-    NS_FOR_CSS_SIDES(side) {
+    for (const auto side : mozilla::AllPhysicalSides()) {
       if (marginStyle.Get(side).IsAuto()) {
         mPageContentMargin.Side(side) = mPD->mReflowMargin.Side(side);
       } else {
@@ -114,15 +118,20 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
 
     // Check the width and height, if they're too small we reset the margins
     // back to the default.
-    if (maxWidth < onePixelInTwips ||
-        (maxHeight != NS_UNCONSTRAINEDSIZE && maxHeight < onePixelInTwips)) {
-      NS_FOR_CSS_SIDES(side) {
+    if (maxWidth < onePixelInTwips || maxHeight < onePixelInTwips) {
+      for (const auto side : mozilla::AllPhysicalSides()) {
         mPageContentMargin.Side(side) = mPD->mReflowMargin.Side(side);
       }
       maxWidth = maxSize.width - mPageContentMargin.LeftRight() / scale;
       if (maxHeight != NS_UNCONSTRAINEDSIZE) {
         maxHeight = maxSize.height - mPageContentMargin.TopBottom() / scale;
       }
+    }
+
+    // And if they're still too small we bail out.
+    if (maxWidth < onePixelInTwips || maxHeight < onePixelInTwips) {
+      NS_WARNING("Reflow aborted; no space for content");
+      return;
     }
 
     kidReflowInput.SetComputedWidth(maxWidth);
@@ -142,7 +151,8 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
 
     NS_ASSERTION(!aStatus.IsFullyComplete() || !frame->GetNextInFlow(),
                  "bad child flow list");
-  }
+  }();
+
   PR_PL(("PageFrame::Reflow %p ", this));
   PR_PL(("[%d,%d][%d,%d]\n", aDesiredSize.Width(), aDesiredSize.Height(),
          aReflowInput.AvailableWidth(), aReflowInput.AvailableHeight()));
@@ -166,7 +176,7 @@ void nsPageFrame::Reflow(nsPresContext* aPresContext,
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsPageFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Page"), aResult);
+  return MakeFrameName(u"Page"_ns, aResult);
 }
 #endif
 
@@ -175,7 +185,7 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
 
   // Search to see if the &D code is in the string
   // then subst in the current date/time
-  NS_NAMED_LITERAL_STRING(kDate, "&D");
+  constexpr auto kDate = u"&D"_ns;
   if (aStr.Find(kDate) != kNotFound) {
     aNewStr.ReplaceSubstring(kDate, mPD->mDateTimeStr);
   }
@@ -185,7 +195,7 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
   // Search to see if the "page number and page" total code are in the string
   // and replace the page number and page total code with the actual
   // values
-  NS_NAMED_LITERAL_STRING(kPageAndTotal, "&PT");
+  constexpr auto kPageAndTotal = u"&PT"_ns;
   if (aStr.Find(kPageAndTotal) != kNotFound) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumAndTotalsFormat.get(),
@@ -195,24 +205,24 @@ void nsPageFrame::ProcessSpecialCodes(const nsString& aStr, nsString& aNewStr) {
 
   // Search to see if the page number code is in the string
   // and replace the page number code with the actual value
-  NS_NAMED_LITERAL_STRING(kPage, "&P");
+  constexpr auto kPage = u"&P"_ns;
   if (aStr.Find(kPage) != kNotFound) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumFormat.get(), mPageNum);
     aNewStr.ReplaceSubstring(kPage, uStr);
   }
 
-  NS_NAMED_LITERAL_STRING(kTitle, "&T");
+  constexpr auto kTitle = u"&T"_ns;
   if (aStr.Find(kTitle) != kNotFound) {
     aNewStr.ReplaceSubstring(kTitle, mPD->mDocTitle);
   }
 
-  NS_NAMED_LITERAL_STRING(kDocURL, "&U");
+  constexpr auto kDocURL = u"&U"_ns;
   if (aStr.Find(kDocURL) != kNotFound) {
     aNewStr.ReplaceSubstring(kDocURL, mPD->mDocURL);
   }
 
-  NS_NAMED_LITERAL_STRING(kPageTotal, "&L");
+  constexpr auto kPageTotal = u"&L"_ns;
   if (aStr.Find(kPageTotal) != kNotFound) {
     nsAutoString uStr;
     nsTextFormatter::ssprintf(uStr, mPD->mPageNumFormat.get(), mTotNumPages);
@@ -359,7 +369,7 @@ void nsPageFrame::DrawHeaderFooter(gfxContext& aRenderingContext,
     aRenderingContext.Save();
     aRenderingContext.Clip(NSRectToSnappedRect(
         aRect, PresContext()->AppUnitsPerDevPixel(), *drawTarget));
-    aRenderingContext.SetColor(Color(0.f, 0.f, 0.f));
+    aRenderingContext.SetColor(sRGBColor::OpaqueBlack());
     nsLayoutUtils::DrawString(this, aFontMetrics, &aRenderingContext, str.get(),
                               str.Length(), nsPoint(x, y + aAscent), nullptr,
                               DrawStringFlags::ForceHorizontal);
@@ -446,9 +456,7 @@ class nsDisplayHeaderFooter final : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayHeaderFooter);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayHeaderFooter() { MOZ_COUNT_DTOR(nsDisplayHeaderFooter); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayHeaderFooter)
 
   virtual void Paint(nsDisplayListBuilder* aBuilder,
                      gfxContext* aCtx) override {
@@ -468,17 +476,65 @@ class nsDisplayHeaderFooter final : public nsPaintedDisplayItem {
   }
 };
 
+static void PaintMarginGuides(nsIFrame* aFrame, DrawTarget* aDrawTarget,
+                              const nsRect& aDirtyRect, nsPoint aPt) {
+  // Set up parameters needed to draw the guides: we draw them in blue,
+  // using 2px-long dashes with 2px separation and a line width of 0.5px.
+  // Drawing is antialiased, so on a non-hidpi screen where the line width is
+  // less than one device pixel, it doesn't disappear but renders fainter
+  // than a solid 1px-wide line would be.
+  // (In many cases, the entire preview is scaled down so that the guides
+  // will be nominally less than 1 dev px even on a hidpi screen, resulting
+  // in lighter antialiased rendering so they don't dominate the page.)
+  ColorPattern pattern(ToDeviceColor(sRGBColor(0.0f, 0.0f, 1.0f)));
+  Float dashes[] = {2.0f, 2.0f};
+  StrokeOptions stroke(/* line width (in CSS px) */ 0.5f,
+                       JoinStyle::MITER_OR_BEVEL, CapStyle::BUTT,
+                       /* mitre limit (default, not used) */ 10.0f,
+                       /* set dash pattern of 2px stroke, 2px gap */
+                       ArrayLength(dashes), dashes,
+                       /* dash offset */ 0.0f);
+  DrawOptions options;
+
+  auto* pageData = static_cast<nsPageFrame*>(aFrame)->GetSharedPageData();
+  MOZ_ASSERT(pageData, "Should have page data by the time we're painting");
+  const nsMargin& margin = pageData->mReflowMargin;
+  int32_t appUnitsPerDevPx = aFrame->PresContext()->AppUnitsPerDevPixel();
+
+  // Get the frame's rect and inset by the margins to get the edges of the
+  // content area, where we want to draw the guides.
+  // We draw in two stages, first applying the top/bottom margins and drawing
+  // the horizontal guides across the full width of the page.
+  nsRect rect(aPt, aFrame->GetSize());
+  rect.Deflate(nsMargin(margin.top, 0, margin.bottom, 0));
+  Rect r = NSRectToRect(rect, appUnitsPerDevPx);
+  aDrawTarget->StrokeLine(r.TopLeft(), r.TopRight(), pattern, stroke, options);
+  aDrawTarget->StrokeLine(r.BottomLeft(), r.BottomRight(), pattern, stroke,
+                          options);
+
+  // Then reset rect, apply the left/right margins, and draw vertical guides
+  // extending the full height of the page.
+  rect = nsRect(aPt, aFrame->GetSize());
+  rect.Deflate(nsMargin(0, margin.left, 0, margin.right));
+  r = NSRectToRect(rect, appUnitsPerDevPx);
+  aDrawTarget->StrokeLine(r.TopLeft(), r.BottomLeft(), pattern, stroke,
+                          options);
+  aDrawTarget->StrokeLine(r.TopRight(), r.BottomRight(), pattern, stroke,
+                          options);
+}
+
 //------------------------------------------------------------------------------
 void nsPageFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                    const nsDisplayListSet& aLists) {
   nsDisplayListCollection set(aBuilder);
 
-  if (PresContext()->IsScreen()) {
+  nsPresContext* pc = PresContext();
+  if (pc->IsScreen()) {
     DisplayBorderBackgroundOutline(aBuilder, aLists);
   }
 
   nsIFrame* child = mFrames.FirstChild();
-  float scale = PresContext()->GetPageScale();
+  float scale = pc->GetPageScale();
   nsRect clipRect(nsPoint(0, 0), child->GetSize());
   // Note: this computation matches how we compute maxSize.height
   // in nsPageFrame::Reflow
@@ -508,7 +564,7 @@ void nsPageFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     clipState.Clear();
     clipState.ClipContainingBlockDescendants(clipRect, nullptr);
 
-    nsRect visibleRect = child->GetVisualOverflowRectRelativeToSelf();
+    nsRect visibleRect = child->InkOverflowRectRelativeToSelf();
     nsDisplayListBuilder::AutoBuildingDisplayList buildingForChild(
         aBuilder, child, visibleRect, visibleRect);
     child->BuildDisplayListForStackingContext(aBuilder, &content);
@@ -555,18 +611,33 @@ void nsPageFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     nsRect backgroundRect =
         nsRect(aBuilder->ToReferenceFrame(child), child->GetSize());
 
-    PresContext()->GetPresShell()->AddCanvasBackgroundColorItem(
+    pc->GetPresShell()->AddCanvasBackgroundColorItem(
         aBuilder, &content, child, backgroundRect, NS_RGBA(0, 0, 0, 0));
   }
 
   content.AppendNewToTop<nsDisplayTransform>(aBuilder, child, &content,
-                                             content.GetBuildingRect(), 0,
+                                             content.GetBuildingRect(),
                                              ::ComputePageTransform);
 
   set.Content()->AppendToTop(&content);
 
-  if (PresContext()->IsRootPaginatedDocument()) {
+  if (pc->IsRootPaginatedDocument()) {
     set.Content()->AppendNewToTop<nsDisplayHeaderFooter>(aBuilder, this);
+
+    // For print-preview, show margin guides if requested in the settings.
+    if (pc->Type() == nsPresContext::eContext_PrintPreview) {
+      if (!mPD->mPrintSettings) {
+        mPD->mPrintSettings = pc->GetPrintSettings();
+      }
+      bool showGuides;
+      if (mPD->mPrintSettings &&
+          NS_SUCCEEDED(mPD->mPrintSettings->GetShowMarginGuides(&showGuides)) &&
+          showGuides) {
+        set.Content()->AppendNewToTop<nsDisplayGeneric>(
+            aBuilder, this, PaintMarginGuides, "MarginGuides",
+            DisplayItemType::TYPE_MARGIN_GUIDES);
+      }
+    }
   }
 
   set.MoveTo(aLists);
@@ -589,7 +660,7 @@ void nsPageFrame::PaintHeaderFooter(gfxContext& aRenderingContext, nsPoint aPt,
   }
 
   nsRect rect(aPt, mRect.Size());
-  aRenderingContext.SetColor(Color(0.f, 0.f, 0.f));
+  aRenderingContext.SetColor(sRGBColor::OpaqueBlack());
 
   DrawTargetAutoDisableSubpixelAntialiasing disable(
       aRenderingContext.GetDrawTarget(), aDisableSubpixelAA);
@@ -598,6 +669,7 @@ void nsPageFrame::PaintHeaderFooter(gfxContext& aRenderingContext, nsPoint aPt,
   nsFontMetrics::Params params;
   params.userFontSet = pc->GetUserFontSet();
   params.textPerf = pc->GetTextPerfMetrics();
+  params.fontStats = pc->GetFontMatchingStats();
   params.featureValueLookup = pc->GetFontFeatureValuesLookup();
   RefPtr<nsFontMetrics> fontMet =
       pc->DeviceContext()->GetMetricsFor(mPD->mHeadFootFont, params);
@@ -658,7 +730,7 @@ nsPageBreakFrame::nsPageBreakFrame(ComputedStyle* aStyle,
                                    nsPresContext* aPresContext)
     : nsLeafFrame(aStyle, aPresContext, kClassID), mHaveReflowed(false) {}
 
-nsPageBreakFrame::~nsPageBreakFrame() {}
+nsPageBreakFrame::~nsPageBreakFrame() = default;
 
 nscoord nsPageBreakFrame::GetIntrinsicISize() {
   return nsPresContext::CSSPixelsToAppUnits(1);
@@ -677,11 +749,31 @@ void nsPageBreakFrame::Reflow(nsPresContext* aPresContext,
   // Override reflow, since we don't want to deal with what our
   // computed values are.
   WritingMode wm = aReflowInput.GetWritingMode();
-  LogicalSize finalSize(wm, GetIntrinsicISize(),
-                        aReflowInput.AvailableBSize() == NS_UNCONSTRAINEDSIZE
-                            ? 0
-                            : aReflowInput.AvailableBSize());
+  nscoord bSize = aReflowInput.AvailableBSize();
+  if (aReflowInput.AvailableBSize() == NS_UNCONSTRAINEDSIZE) {
+    bSize = nscoord(0);
+  } else if (GetContent()->IsHTMLElement(nsGkAtoms::legend)) {
+    // If this is a page break frame for a _rendered legend_ then it should be
+    // ignored since these frames are inserted inside the fieldset's inner
+    // frame and thus "misplaced".  nsFieldSetFrame::Reflow deals with these
+    // forced breaks explicitly instead.
+    nsContainerFrame* parent = GetParent();
+    if (parent &&
+        parent->Style()->GetPseudoType() == PseudoStyleType::fieldsetContent) {
+      while ((parent = parent->GetParent())) {
+        if (nsFieldSetFrame* fieldset = do_QueryFrame(parent)) {
+          auto* legend = fieldset->GetLegend();
+          if (legend && legend->GetContent() == GetContent()) {
+            bSize = nscoord(0);
+          }
+          break;
+        }
+      }
+    }
+  }
+  LogicalSize finalSize(wm, GetIntrinsicISize(), bSize);
   // round the height down to the nearest pixel
+  // XXX(mats) why???
   finalSize.BSize(wm) -=
       finalSize.BSize(wm) % nsPresContext::CSSPixelsToAppUnits(1);
   aDesiredSize.SetSize(wm, finalSize);
@@ -693,6 +785,6 @@ void nsPageBreakFrame::Reflow(nsPresContext* aPresContext,
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsPageBreakFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("PageBreak"), aResult);
+  return MakeFrameName(u"PageBreak"_ns, aResult);
 }
 #endif

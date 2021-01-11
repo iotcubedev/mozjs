@@ -12,6 +12,7 @@
 #include "WinTaskbar.h"
 #include "WinMouseScrollHandler.h"
 #include "nsWindowDefs.h"
+#include "nsWindow.h"
 #include "nsString.h"
 #include "WinIMEHandler.h"
 #include "mozilla/widget/AudioSession.h"
@@ -53,40 +54,40 @@ class WinWakeLockListener final : public nsIDOMMozWakeLockListener {
 
   NS_IMETHOD Callback(const nsAString& aTopic,
                       const nsAString& aState) override {
+    WAKE_LOCK_LOG("WinWakeLock: topic=%s, state=%s",
+                  NS_ConvertUTF16toUTF8(aTopic).get(),
+                  NS_ConvertUTF16toUTF8(aState).get());
     if (!aTopic.EqualsASCII("screen") && !aTopic.EqualsASCII("audio-playing") &&
         !aTopic.EqualsASCII("video-playing")) {
       return NS_OK;
     }
 
-    // we should still hold the lock for background audio.
-    if (aTopic.EqualsASCII("audio-playing") &&
-        aState.EqualsASCII("locked-background")) {
-      return NS_OK;
+    // Check what kind of lock we will require, if both display lock and non
+    // display lock are needed, we would require display lock because it has
+    // higher priority.
+    if (aTopic.EqualsASCII("audio-playing")) {
+      mRequireForNonDisplayLock = aState.EqualsASCII("locked-foreground") ||
+                                  aState.EqualsASCII("locked-background");
+    } else if (aTopic.EqualsASCII("screen") ||
+               aTopic.EqualsASCII("video-playing")) {
+      mRequireForDisplayLock = aState.EqualsASCII("locked-foreground");
     }
 
-    if (aTopic.EqualsASCII("screen") || aTopic.EqualsASCII("video-playing")) {
-      mRequireForDisplay = aState.EqualsASCII("locked-foreground");
-    }
-
-    // Note the wake lock code ensures that we're not sent duplicate
-    // "locked-foreground" notifications when multiple wake locks are held.
-    if (aState.EqualsASCII("locked-foreground")) {
-      WAKE_LOCK_LOG("WinWakeLock: Blocking screen saver");
-      if (mRequireForDisplay) {
-        // Prevent the display turning off and block the screen saver.
-        SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_CONTINUOUS);
-      } else {
-        SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS);
-      }
+    if (mRequireForDisplayLock) {
+      WAKE_LOCK_LOG("WinWakeLock: Request display lock");
+      SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_CONTINUOUS);
+    } else if (mRequireForNonDisplayLock) {
+      WAKE_LOCK_LOG("WinWakeLock: Request non-display lock");
+      SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_CONTINUOUS);
     } else {
-      WAKE_LOCK_LOG("WinWakeLock: Unblocking screen saver");
-      // Unblock display/screen saver turning off.
+      WAKE_LOCK_LOG("WinWakeLock: reset lock");
       SetThreadExecutionState(ES_CONTINUOUS);
     }
     return NS_OK;
   }
 
-  bool mRequireForDisplay = false;
+  bool mRequireForDisplayLock = false;
+  bool mRequireForNonDisplayLock = false;
 };
 
 NS_IMPL_ISUPPORTS(WinWakeLockListener, nsIDOMMozWakeLockListener)
@@ -281,39 +282,58 @@ static void InitUIADetection() {
   }
 }
 
+#endif  // defined(ACCESSIBILITY)
+
 NS_IMETHODIMP
 nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
                     const char16_t* aData) {
-  if (XRE_IsParentProcess() && !strcmp(aTopic, "dll-loaded-main-thread")) {
-    if (a11y::PlatformDisabledState() != a11y::ePlatformIsDisabled &&
-        !gUiaHook) {
-      nsDependentString dllName(aData);
+  if (XRE_IsParentProcess()) {
+    nsCOMPtr<nsIObserverService> obsServ(
+        mozilla::services::GetObserverService());
 
-      if (StringEndsWith(dllName, NS_LITERAL_STRING("uiautomationcore.dll"),
-                         nsCaseInsensitiveStringComparator())) {
-        InitUIADetection();
+#if defined(ACCESSIBILITY)
+    if (!strcmp(aTopic, "dll-loaded-main-thread")) {
+      if (a11y::PlatformDisabledState() != a11y::ePlatformIsDisabled &&
+          !gUiaHook) {
+        nsDependentString dllName(aData);
 
-        // Now that we've handled the observer notification, we can remove it
-        nsCOMPtr<nsIObserverService> obsServ(
-            mozilla::services::GetObserverService());
-        obsServ->RemoveObserver(this, "dll-loaded-main-thread");
+        if (StringEndsWith(dllName, u"uiautomationcore.dll"_ns,
+                           nsCaseInsensitiveStringComparator)) {
+          InitUIADetection();
+
+          // Now that we've handled the observer notification, we can remove it
+          obsServ->RemoveObserver(this, "dll-loaded-main-thread");
+        }
       }
+
+      return NS_OK;
+    }
+#endif  // defined(ACCESSIBILITY)
+
+    if (!strcmp(aTopic, "sessionstore-restoring-on-startup")) {
+      nsWindow::SetIsRestoringSession(true);
+      // Now that we've handled the observer notification, we can remove it
+      obsServ->RemoveObserver(this, "sessionstore-restoring-on-startup");
+      return NS_OK;
     }
 
-    return NS_OK;
+    if (!strcmp(aTopic, "sessionstore-windows-restored")) {
+      nsWindow::SetIsRestoringSession(false);
+      // Now that we've handled the observer notification, we can remove it
+      obsServ->RemoveObserver(this, "sessionstore-windows-restored");
+      return NS_OK;
+    }
   }
 
   return nsBaseAppShell::Observe(aSubject, aTopic, aData);
 }
-
-#endif  // defined(ACCESSIBILITY)
 
 nsresult nsAppShell::Init() {
   LSPAnnotate();
 
   hal::Init();
 
-  if (XRE_Win32kCallsAllowed()) {
+  if (XRE_IsParentProcess()) {
     sTaskbarButtonCreatedMsg = ::RegisterWindowMessageW(kTaskbarButtonEventId);
     NS_ASSERTION(sTaskbarButtonCreatedMsg,
                  "Could not register taskbar button creation message");
@@ -374,12 +394,16 @@ nsresult nsAppShell::Init() {
       ScreenHelperWin::RefreshScreens();
     }
 
+    nsCOMPtr<nsIObserverService> obsServ(
+        mozilla::services::GetObserverService());
+
+    obsServ->AddObserver(this, "sessionstore-restoring-on-startup", false);
+    obsServ->AddObserver(this, "sessionstore-windows-restored", false);
+
 #if defined(ACCESSIBILITY)
     if (::GetModuleHandleW(L"uiautomationcore.dll")) {
       InitUIADetection();
     } else {
-      nsCOMPtr<nsIObserverService> obsServ(
-          mozilla::services::GetObserverService());
       obsServ->AddObserver(this, "dll-loaded-main-thread", false);
     }
 #endif  // defined(ACCESSIBILITY)
@@ -543,7 +567,6 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
       mozilla::BackgroundHangMonitor().NotifyWait();
       {
         AUTO_PROFILER_LABEL("nsAppShell::ProcessNextNativeEvent::Wait", IDLE);
-        AUTO_PROFILER_THREAD_SLEEP;
         WinUtils::WaitForMessage();
       }
     }

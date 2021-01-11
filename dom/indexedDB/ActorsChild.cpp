@@ -6,8 +6,9 @@
 
 #include "ActorsChild.h"
 
+#include <type_traits>
+
 #include "BackgroundChildImpl.h"
-#include "FileSnapshot.h"
 #include "IDBDatabase.h"
 #include "IDBEvents.h"
 #include "IDBFactory.h"
@@ -19,19 +20,20 @@
 #include "IDBTransaction.h"
 #include "IndexedDatabase.h"
 #include "IndexedDatabaseInlines.h"
-#include <mozIIPCBlobInputStream.h>
+#include "js/Array.h"  // JS::NewArrayObject, JS::SetArrayLength
+#include "js/Date.h"   // JS::NewDateObject, JS::TimeClip
+#include <mozIRemoteLazyInputStream.h>
+#include "mozilla/ArrayAlgorithm.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/CycleCollectedJSRuntime.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/SnappyUncompressInputStream.h"
-#include "mozilla/TypeTraits.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/dom/indexedDB/PBackgroundIDBDatabaseFileChild.h"
 #include "mozilla/dom/IPCBlobUtils.h"
-#include "mozilla/dom/PendingIPCBlobChild.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/Encoding.h"
@@ -51,6 +53,7 @@
 #include "PermissionRequestBase.h"
 #include "ProfilerHelpers.h"
 #include "ReportInternalError.h"
+#include "ThreadLocal.h"
 
 #ifdef DEBUG
 #  include "IndexedDatabaseManager.h"
@@ -91,14 +94,8 @@ const uint32_t kFileCopyBufferSize = 32768;
 
 ThreadLocal::ThreadLocal(const nsID& aBackgroundChildLoggingId)
     : mLoggingInfo(aBackgroundChildLoggingId, 1, -1, 1),
-      mCurrentTransaction(0) {
+      mLoggingIdString(aBackgroundChildLoggingId) {
   MOZ_COUNT_CTOR(mozilla::dom::indexedDB::ThreadLocal);
-
-  // NSID_LENGTH counts the null terminator, SetLength() does not.
-  mLoggingIdString.SetLength(NSID_LENGTH - 1);
-
-  aBackgroundChildLoggingId.ToProvidedString(
-      *reinterpret_cast<char(*)[NSID_LENGTH]>(mLoggingIdString.BeginWriting()));
 }
 
 ThreadLocal::~ThreadLocal() {
@@ -148,14 +145,20 @@ void MaybeCollectGarbageOnIPCMessage() {
 class MOZ_STACK_CLASS AutoSetCurrentTransaction final {
   typedef mozilla::ipc::BackgroundChildImpl BackgroundChildImpl;
 
-  IDBTransaction* const mTransaction;
-  IDBTransaction* mPreviousTransaction;
+  Maybe<IDBTransaction&> const mTransaction;
+  Maybe<IDBTransaction&> mPreviousTransaction;
   ThreadLocal* mThreadLocal;
 
  public:
-  explicit AutoSetCurrentTransaction(IDBTransaction* aTransaction)
+  AutoSetCurrentTransaction(const AutoSetCurrentTransaction&) = delete;
+  AutoSetCurrentTransaction(AutoSetCurrentTransaction&&) = delete;
+  AutoSetCurrentTransaction& operator=(const AutoSetCurrentTransaction&) =
+      delete;
+  AutoSetCurrentTransaction& operator=(AutoSetCurrentTransaction&&) = delete;
+
+  explicit AutoSetCurrentTransaction(Maybe<IDBTransaction&> aTransaction)
       : mTransaction(aTransaction),
-        mPreviousTransaction(nullptr),
+        mPreviousTransaction(),
         mThreadLocal(nullptr) {
     if (aTransaction) {
       BackgroundChildImpl::ThreadLocal* threadLocal =
@@ -163,11 +166,11 @@ class MOZ_STACK_CLASS AutoSetCurrentTransaction final {
       MOZ_ASSERT(threadLocal);
 
       // Hang onto this for resetting later.
-      mThreadLocal = threadLocal->mIndexedDBThreadLocal;
+      mThreadLocal = threadLocal->mIndexedDBThreadLocal.get();
       MOZ_ASSERT(mThreadLocal);
 
       // Save the current value.
-      mPreviousTransaction = mThreadLocal->GetCurrentTransaction();
+      mPreviousTransaction = mThreadLocal->MaybeCurrentTransactionRef();
 
       // Set the new value.
       mThreadLocal->SetCurrentTransaction(aTransaction);
@@ -177,621 +180,481 @@ class MOZ_STACK_CLASS AutoSetCurrentTransaction final {
   ~AutoSetCurrentTransaction() {
     MOZ_ASSERT_IF(mThreadLocal, mTransaction);
     MOZ_ASSERT_IF(mThreadLocal,
-                  mThreadLocal->GetCurrentTransaction() == mTransaction);
+                  ReferenceEquals(mThreadLocal->MaybeCurrentTransactionRef(),
+                                  mTransaction));
 
     if (mThreadLocal) {
       // Reset old value.
       mThreadLocal->SetCurrentTransaction(mPreviousTransaction);
     }
   }
-
-  IDBTransaction* Transaction() const { return mTransaction; }
 };
 
-class MOZ_STACK_CLASS ResultHelper final : public IDBRequest::ResultCallback {
-  IDBRequest* mRequest;
-  AutoSetCurrentTransaction mAutoTransaction;
+template <typename T>
+void SetResultAndDispatchSuccessEvent(
+    const NotNull<RefPtr<IDBRequest>>& aRequest,
+    const SafeRefPtr<IDBTransaction>& aTransaction, T& aPtr,
+    RefPtr<Event> aEvent = nullptr);
 
-  union {
-    IDBDatabase* mDatabase;
-    IDBCursor* mCursor;
-    IDBMutableFile* mMutableFile;
-    StructuredCloneReadInfo* mStructuredClone;
-    const nsTArray<StructuredCloneReadInfo>* mStructuredCloneArray;
-    const Key* mKey;
-    const nsTArray<Key>* mKeyArray;
-    const JS::Value* mJSVal;
-    const JS::Handle<JS::Value>* mJSValHandle;
-  } mResult;
+namespace detail {
+void DispatchSuccessEvent(const NotNull<RefPtr<IDBRequest>>& aRequest,
+                          const SafeRefPtr<IDBTransaction>& aTransaction,
+                          const RefPtr<Event>& aEvent);
 
-  enum {
-    ResultTypeDatabase,
-    ResultTypeCursor,
-    ResultTypeMutableFile,
-    ResultTypeStructuredClone,
-    ResultTypeStructuredCloneArray,
-    ResultTypeKey,
-    ResultTypeKeyArray,
-    ResultTypeJSVal,
-    ResultTypeJSValHandle,
-  } mResultType;
-
- public:
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               IDBDatabase* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeDatabase) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(aResult);
-
-    mResult.mDatabase = aResult;
+template <class T>
+std::enable_if_t<std::is_same_v<T, IDBDatabase> ||
+                     std::is_same_v<T, IDBCursor> ||
+                     std::is_same_v<T, IDBMutableFile>,
+                 nsresult>
+GetResult(JSContext* aCx, T* aDOMObject, JS::MutableHandle<JS::Value> aResult) {
+  if (!aDOMObject) {
+    aResult.setNull();
+    return NS_OK;
   }
 
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               IDBCursor* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeCursor) {
-    MOZ_ASSERT(aRequest);
-
-    mResult.mCursor = aResult;
+  const bool ok = GetOrCreateDOMReflector(aCx, aDOMObject, aResult);
+  if (NS_WARN_IF(!ok)) {
+    IDB_REPORT_INTERNAL_ERR();
+    return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
   }
 
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               IDBMutableFile* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeMutableFile) {
-    MOZ_ASSERT(aRequest);
+  return NS_OK;
+}
 
-    mResult.mMutableFile = aResult;
+nsresult GetResult(JSContext* aCx, const JS::Handle<JS::Value>* aValue,
+                   JS::MutableHandle<JS::Value> aResult) {
+  aResult.set(*aValue);
+  return NS_OK;
+}
+
+nsresult GetResult(JSContext* aCx, const uint64_t* aValue,
+                   JS::MutableHandle<JS::Value> aResult) {
+  aResult.set(JS::NumberValue(*aValue));
+  return NS_OK;
+}
+
+nsresult GetResult(JSContext* aCx, StructuredCloneReadInfoChild&& aCloneInfo,
+                   JS::MutableHandle<JS::Value> aResult) {
+  const bool ok =
+      IDBObjectStore::DeserializeValue(aCx, std::move(aCloneInfo), aResult);
+
+  if (NS_WARN_IF(!ok)) {
+    return NS_ERROR_DOM_DATA_CLONE_ERR;
   }
 
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               StructuredCloneReadInfo* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeStructuredClone) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(aResult);
+  return NS_OK;
+}
 
-    mResult.mStructuredClone = aResult;
+nsresult GetResult(JSContext* aCx, StructuredCloneReadInfoChild* aCloneInfo,
+                   JS::MutableHandle<JS::Value> aResult) {
+  return GetResult(aCx, std::move(*aCloneInfo), aResult);
+}
+
+nsresult GetResult(JSContext* aCx,
+                   nsTArray<StructuredCloneReadInfoChild>* aCloneInfos,
+                   JS::MutableHandle<JS::Value> aResult) {
+  JS::Rooted<JSObject*> array(aCx, JS::NewArrayObject(aCx, 0));
+  if (NS_WARN_IF(!array)) {
+    IDB_REPORT_INTERNAL_ERR();
+    return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
   }
 
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               const nsTArray<StructuredCloneReadInfo>* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeStructuredCloneArray) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(aResult);
+  if (!aCloneInfos->IsEmpty()) {
+    const uint32_t count = aCloneInfos->Length();
 
-    mResult.mStructuredCloneArray = aResult;
-  }
-
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               const Key* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeKey) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(aResult);
-
-    mResult.mKey = aResult;
-  }
-
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               const nsTArray<Key>* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeKeyArray) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(aResult);
-
-    mResult.mKeyArray = aResult;
-  }
-
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               const JS::Value* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeJSVal) {
-    MOZ_ASSERT(aRequest);
-    MOZ_ASSERT(!aResult->isGCThing());
-
-    mResult.mJSVal = aResult;
-  }
-
-  ResultHelper(IDBRequest* aRequest, IDBTransaction* aTransaction,
-               const JS::Handle<JS::Value>* aResult)
-      : mRequest(aRequest),
-        mAutoTransaction(aTransaction),
-        mResultType(ResultTypeJSValHandle) {
-    MOZ_ASSERT(aRequest);
-
-    mResult.mJSValHandle = aResult;
-  }
-
-  IDBRequest* Request() const { return mRequest; }
-
-  IDBTransaction* Transaction() const { return mAutoTransaction.Transaction(); }
-
-  virtual nsresult GetResult(JSContext* aCx,
-                             JS::MutableHandle<JS::Value> aResult) override {
-    MOZ_ASSERT(aCx);
-    MOZ_ASSERT(mRequest);
-
-    switch (mResultType) {
-      case ResultTypeDatabase:
-        return GetResult(aCx, mResult.mDatabase, aResult);
-
-      case ResultTypeCursor:
-        return GetResult(aCx, mResult.mCursor, aResult);
-
-      case ResultTypeMutableFile:
-        return GetResult(aCx, mResult.mMutableFile, aResult);
-
-      case ResultTypeStructuredClone:
-        return GetResult(aCx, mResult.mStructuredClone, aResult);
-
-      case ResultTypeStructuredCloneArray:
-        return GetResult(aCx, mResult.mStructuredCloneArray, aResult);
-
-      case ResultTypeKey:
-        return GetResult(aCx, mResult.mKey, aResult);
-
-      case ResultTypeKeyArray:
-        return GetResult(aCx, mResult.mKeyArray, aResult);
-
-      case ResultTypeJSVal:
-        aResult.set(*mResult.mJSVal);
-        return NS_OK;
-
-      case ResultTypeJSValHandle:
-        aResult.set(*mResult.mJSValHandle);
-        return NS_OK;
-
-      default:
-        MOZ_CRASH("Unknown result type!");
-    }
-
-    MOZ_CRASH("Should never get here!");
-  }
-
- private:
-  template <class T>
-  typename EnableIf<IsSame<T, IDBDatabase>::value ||
-                        IsSame<T, IDBCursor>::value ||
-                        IsSame<T, IDBMutableFile>::value,
-                    nsresult>::Type
-  GetResult(JSContext* aCx, T* aDOMObject,
-            JS::MutableHandle<JS::Value> aResult) {
-    if (!aDOMObject) {
-      aResult.setNull();
-      return NS_OK;
-    }
-
-    bool ok = GetOrCreateDOMReflector(aCx, aDOMObject, aResult);
-    if (NS_WARN_IF(!ok)) {
+    if (NS_WARN_IF(!JS::SetArrayLength(aCx, array, count))) {
       IDB_REPORT_INTERNAL_ERR();
       return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
     }
 
-    return NS_OK;
-  }
+    for (uint32_t index = 0; index < count; index++) {
+      auto& cloneInfo = aCloneInfos->ElementAt(index);
 
-  nsresult GetResult(JSContext* aCx, StructuredCloneReadInfo* aCloneInfo,
-                     JS::MutableHandle<JS::Value> aResult) {
-    bool ok = IDBObjectStore::DeserializeValue(aCx, *aCloneInfo, aResult);
+      JS::Rooted<JS::Value> value(aCx);
 
-    if (NS_WARN_IF(!ok)) {
-      return NS_ERROR_DOM_DATA_CLONE_ERR;
-    }
+      const nsresult rv = GetResult(aCx, std::move(cloneInfo), &value);
+      if (NS_WARN_IF(NS_FAILED(rv))) {
+        return rv;
+      }
 
-    return NS_OK;
-  }
-
-  nsresult GetResult(JSContext* aCx,
-                     const nsTArray<StructuredCloneReadInfo>* aCloneInfos,
-                     JS::MutableHandle<JS::Value> aResult) {
-    JS::Rooted<JSObject*> array(aCx, JS_NewArrayObject(aCx, 0));
-    if (NS_WARN_IF(!array)) {
-      IDB_REPORT_INTERNAL_ERR();
-      return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
-    }
-
-    if (!aCloneInfos->IsEmpty()) {
-      const uint32_t count = aCloneInfos->Length();
-
-      if (NS_WARN_IF(!JS_SetArrayLength(aCx, array, count))) {
+      if (NS_WARN_IF(
+              !JS_DefineElement(aCx, array, index, value, JSPROP_ENUMERATE))) {
         IDB_REPORT_INTERNAL_ERR();
         return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
       }
-
-      for (uint32_t index = 0; index < count; index++) {
-        auto& cloneInfo =
-            const_cast<StructuredCloneReadInfo&>(aCloneInfos->ElementAt(index));
-
-        JS::Rooted<JS::Value> value(aCx);
-
-        nsresult rv = GetResult(aCx, &cloneInfo, &value);
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-
-        if (NS_WARN_IF(!JS_DefineElement(aCx, array, index, value,
-                                         JSPROP_ENUMERATE))) {
-          IDB_REPORT_INTERNAL_ERR();
-          return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
-        }
-      }
     }
-
-    aResult.setObject(*array);
-    return NS_OK;
   }
 
-  nsresult GetResult(JSContext* aCx, const Key* aKey,
-                     JS::MutableHandle<JS::Value> aResult) {
-    nsresult rv = aKey->ToJSVal(aCx, aResult);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-    return NS_OK;
+  aResult.setObject(*array);
+  return NS_OK;
+}
+
+nsresult GetResult(JSContext* aCx, const Key* aKey,
+                   JS::MutableHandle<JS::Value> aResult) {
+  const nsresult rv = aKey->ToJSVal(aCx, aResult);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+  return NS_OK;
+}
+
+nsresult GetResult(JSContext* aCx, const nsTArray<Key>* aKeys,
+                   JS::MutableHandle<JS::Value> aResult) {
+  JS::Rooted<JSObject*> array(aCx, JS::NewArrayObject(aCx, 0));
+  if (NS_WARN_IF(!array)) {
+    IDB_REPORT_INTERNAL_ERR();
+    return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
   }
 
-  nsresult GetResult(JSContext* aCx, const nsTArray<Key>* aKeys,
-                     JS::MutableHandle<JS::Value> aResult) {
-    JS::Rooted<JSObject*> array(aCx, JS_NewArrayObject(aCx, 0));
-    if (NS_WARN_IF(!array)) {
+  if (!aKeys->IsEmpty()) {
+    const uint32_t count = aKeys->Length();
+
+    if (NS_WARN_IF(!JS::SetArrayLength(aCx, array, count))) {
       IDB_REPORT_INTERNAL_ERR();
       return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
     }
 
-    if (!aKeys->IsEmpty()) {
-      const uint32_t count = aKeys->Length();
+    for (uint32_t index = 0; index < count; index++) {
+      const Key& key = aKeys->ElementAt(index);
+      MOZ_ASSERT(!key.IsUnset());
 
-      if (NS_WARN_IF(!JS_SetArrayLength(aCx, array, count))) {
+      JS::Rooted<JS::Value> value(aCx);
+
+      const nsresult rv = GetResult(aCx, &key, &value);
+      if (NS_WARN_IF(NS_FAILED(rv))) {
+        return rv;
+      }
+
+      if (NS_WARN_IF(
+              !JS_DefineElement(aCx, array, index, value, JSPROP_ENUMERATE))) {
         IDB_REPORT_INTERNAL_ERR();
         return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
       }
-
-      for (uint32_t index = 0; index < count; index++) {
-        const Key& key = aKeys->ElementAt(index);
-        MOZ_ASSERT(!key.IsUnset());
-
-        JS::Rooted<JS::Value> value(aCx);
-
-        nsresult rv = GetResult(aCx, &key, &value);
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-
-        if (NS_WARN_IF(!JS_DefineElement(aCx, array, index, value,
-                                         JSPROP_ENUMERATE))) {
-          IDB_REPORT_INTERNAL_ERR();
-          return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
-        }
-      }
     }
-
-    aResult.setObject(*array);
-    return NS_OK;
   }
-};
+
+  aResult.setObject(*array);
+  return NS_OK;
+}
+}  // namespace detail
 
 class PermissionRequestMainProcessHelper final : public PermissionRequestBase {
   BackgroundFactoryRequestChild* mActor;
-  RefPtr<IDBFactory> mFactory;
+  SafeRefPtr<IDBFactory> mFactory;
 
  public:
   PermissionRequestMainProcessHelper(BackgroundFactoryRequestChild* aActor,
-                                     IDBFactory* aFactory,
+                                     SafeRefPtr<IDBFactory> aFactory,
                                      Element* aOwnerElement,
                                      nsIPrincipal* aPrincipal)
       : PermissionRequestBase(aOwnerElement, aPrincipal),
         mActor(aActor),
-        mFactory(aFactory) {
+        mFactory(std::move(aFactory)) {
     MOZ_ASSERT(aActor);
-    MOZ_ASSERT(aFactory);
+    MOZ_ASSERT(mFactory);
     aActor->AssertIsOnOwningThread();
   }
 
  protected:
-  ~PermissionRequestMainProcessHelper() {}
+  ~PermissionRequestMainProcessHelper() = default;
 
  private:
   virtual void OnPromptComplete(PermissionValue aPermissionValue) override;
 };
 
-void DeserializeStructuredCloneFiles(
+auto DeserializeStructuredCloneFiles(
     IDBDatabase* aDatabase,
     const nsTArray<SerializedStructuredCloneFile>& aSerializedFiles,
-    bool aForPreprocess, nsTArray<StructuredCloneFile>& aFiles) {
-  MOZ_ASSERT(aFiles.IsEmpty());
+    bool aForPreprocess) {
   MOZ_ASSERT_IF(aForPreprocess, aSerializedFiles.Length() == 1);
 
-  if (!aSerializedFiles.IsEmpty()) {
-    const uint32_t count = aSerializedFiles.Length();
-    aFiles.SetCapacity(count);
+  return TransformIntoNewArray(
+      aSerializedFiles,
+      [aForPreprocess, &database = *aDatabase](
+          const auto& serializedFile) -> StructuredCloneFileChild {
+        MOZ_ASSERT_IF(
+            aForPreprocess,
+            serializedFile.type() == StructuredCloneFileBase::eStructuredClone);
 
-    for (uint32_t index = 0; index < count; index++) {
-      const SerializedStructuredCloneFile& serializedFile =
-          aSerializedFiles[index];
+        const BlobOrMutableFile& blobOrMutableFile = serializedFile.file();
 
-      MOZ_ASSERT_IF(aForPreprocess, serializedFile.type() ==
-                                        StructuredCloneFile::eStructuredClone);
-
-      const BlobOrMutableFile& blobOrMutableFile = serializedFile.file();
-
-      switch (serializedFile.type()) {
-        case StructuredCloneFile::eBlob: {
-          MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::TIPCBlob);
-
-          const IPCBlob& ipcBlob = blobOrMutableFile.get_IPCBlob();
-
-          RefPtr<BlobImpl> blobImpl = IPCBlobUtils::Deserialize(ipcBlob);
-          MOZ_ASSERT(blobImpl);
-
-          RefPtr<Blob> blob =
-              Blob::Create(aDatabase->GetOwnerGlobal(), blobImpl);
-
-          StructuredCloneFile* file = aFiles.AppendElement();
-          MOZ_ASSERT(file);
-
-          file->mType = StructuredCloneFile::eBlob;
-          file->mBlob.swap(blob);
-
-          break;
-        }
-
-        case StructuredCloneFile::eMutableFile: {
-          MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t ||
-                     blobOrMutableFile.type() ==
-                         BlobOrMutableFile::TPBackgroundMutableFileChild);
-
-          switch (blobOrMutableFile.type()) {
-            case BlobOrMutableFile::Tnull_t: {
-              StructuredCloneFile* file = aFiles.AppendElement();
-              MOZ_ASSERT(file);
-
-              file->mType = StructuredCloneFile::eMutableFile;
-
-              break;
-            }
-
-            case BlobOrMutableFile::TPBackgroundMutableFileChild: {
-              auto* actor = static_cast<BackgroundMutableFileChild*>(
-                  blobOrMutableFile.get_PBackgroundMutableFileChild());
-              MOZ_ASSERT(actor);
-
-              actor->EnsureDOMObject();
-
-              auto* mutableFile =
-                  static_cast<IDBMutableFile*>(actor->GetDOMObject());
-              MOZ_ASSERT(mutableFile);
-
-              StructuredCloneFile* file = aFiles.AppendElement();
-              MOZ_ASSERT(file);
-
-              file->mType = StructuredCloneFile::eMutableFile;
-              file->mMutableFile = mutableFile;
-
-              actor->ReleaseDOMObject();
-
-              break;
-            }
-
-            default:
-              MOZ_CRASH("Should never get here!");
-          }
-
-          break;
-        }
-
-        case StructuredCloneFile::eStructuredClone: {
-          if (aForPreprocess) {
+        switch (serializedFile.type()) {
+          case StructuredCloneFileBase::eBlob: {
             MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::TIPCBlob);
 
             const IPCBlob& ipcBlob = blobOrMutableFile.get_IPCBlob();
 
-            RefPtr<BlobImpl> blobImpl = IPCBlobUtils::Deserialize(ipcBlob);
+            const RefPtr<BlobImpl> blobImpl =
+                IPCBlobUtils::Deserialize(ipcBlob);
             MOZ_ASSERT(blobImpl);
 
             RefPtr<Blob> blob =
-                Blob::Create(aDatabase->GetOwnerGlobal(), blobImpl);
+                Blob::Create(database.GetOwnerGlobal(), blobImpl);
+            MOZ_ASSERT(blob);
 
-            StructuredCloneFile* file = aFiles.AppendElement();
-            MOZ_ASSERT(file);
-
-            file->mType = StructuredCloneFile::eStructuredClone;
-            file->mBlob.swap(blob);
-          } else {
-            MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t);
-
-            StructuredCloneFile* file = aFiles.AppendElement();
-            MOZ_ASSERT(file);
-
-            file->mType = StructuredCloneFile::eStructuredClone;
+            return {StructuredCloneFileBase::eBlob, std::move(blob)};
           }
 
-          break;
+          case StructuredCloneFileBase::eMutableFile: {
+            MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t ||
+                       blobOrMutableFile.type() ==
+                           BlobOrMutableFile::TPBackgroundMutableFileChild);
+
+            switch (blobOrMutableFile.type()) {
+              case BlobOrMutableFile::Tnull_t:
+                return StructuredCloneFileChild{
+                    StructuredCloneFileBase::eMutableFile};
+
+              case BlobOrMutableFile::TPBackgroundMutableFileChild: {
+                auto* const actor = static_cast<BackgroundMutableFileChild*>(
+                    blobOrMutableFile.get_PBackgroundMutableFileChild());
+                MOZ_ASSERT(actor);
+
+                actor->EnsureDOMObject();
+
+                auto* const mutableFile =
+                    static_cast<IDBMutableFile*>(actor->GetDOMObject());
+                MOZ_ASSERT(mutableFile);
+
+                auto file = StructuredCloneFileChild{mutableFile};
+
+                actor->ReleaseDOMObject();
+
+                return file;
+              }
+
+              default:
+                MOZ_CRASH("Should never get here!");
+            }
+          }
+
+          case StructuredCloneFileBase::eStructuredClone: {
+            if (aForPreprocess) {
+              MOZ_ASSERT(blobOrMutableFile.type() ==
+                         BlobOrMutableFile::TIPCBlob);
+
+              const IPCBlob& ipcBlob = blobOrMutableFile.get_IPCBlob();
+
+              const RefPtr<BlobImpl> blobImpl =
+                  IPCBlobUtils::Deserialize(ipcBlob);
+              MOZ_ASSERT(blobImpl);
+
+              RefPtr<Blob> blob =
+                  Blob::Create(database.GetOwnerGlobal(), blobImpl);
+              MOZ_ASSERT(blob);
+
+              return {StructuredCloneFileBase::eStructuredClone,
+                      std::move(blob)};
+            }
+            MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t);
+
+            return StructuredCloneFileChild{
+                StructuredCloneFileBase::eStructuredClone};
+          }
+
+          case StructuredCloneFileBase::eWasmBytecode:
+          case StructuredCloneFileBase::eWasmCompiled: {
+            MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t);
+
+            return StructuredCloneFileChild{serializedFile.type()};
+
+            // Don't set mBlob, support for storing WebAssembly.Modules has been
+            // removed in bug 1469395. Support for de-serialization of
+            // WebAssembly.Modules has been removed in bug 1561876. Full removal
+            // is tracked in bug 1487479.
+          }
+
+          default:
+            MOZ_CRASH("Should never get here!");
         }
-
-        case StructuredCloneFile::eWasmBytecode:
-        case StructuredCloneFile::eWasmCompiled: {
-          MOZ_ASSERT(blobOrMutableFile.type() == BlobOrMutableFile::Tnull_t);
-
-          StructuredCloneFile* file = aFiles.AppendElement();
-          MOZ_ASSERT(file);
-
-          file->mType = serializedFile.type();
-
-          // Don't set mBlob, support for storing WebAssembly.Modules has been
-          // removed in bug 1469395. Support for de-serialization of
-          // WebAssembly.Modules has been removed in bug 1561876. Full removal
-          // is tracked in bug 1487479.
-
-          break;
-        }
-
-        default:
-          MOZ_CRASH("Should never get here!");
-      }
-    }
-  }
+      });
 }
 
-void DispatchErrorEvent(IDBRequest* aRequest, nsresult aErrorCode,
-                        IDBTransaction* aTransaction = nullptr,
-                        Event* aEvent = nullptr) {
-  MOZ_ASSERT(aRequest);
-  aRequest->AssertIsOnOwningThread();
+JSStructuredCloneData PreprocessingNotSupported() {
+  MOZ_CRASH("Preprocessing not (yet) supported!");
+}
+
+template <typename PreprocessInfoAccessor>
+StructuredCloneReadInfoChild DeserializeStructuredCloneReadInfo(
+    SerializedStructuredCloneReadInfo&& aSerialized,
+    IDBDatabase* const aDatabase,
+    PreprocessInfoAccessor preprocessInfoAccessor) {
+  // XXX Make this a class invariant of SerializedStructuredCloneReadInfo.
+  MOZ_ASSERT_IF(aSerialized.hasPreprocessInfo(),
+                0 == aSerialized.data().data.Size());
+  return {aSerialized.hasPreprocessInfo() ? preprocessInfoAccessor()
+                                          : std::move(aSerialized.data().data),
+          DeserializeStructuredCloneFiles(aDatabase, aSerialized.files(),
+                                          /* aForPreprocess */ false),
+          aDatabase};
+}
+
+// TODO: Remove duplication between DispatchErrorEvent and DispatchSucessEvent.
+
+void DispatchErrorEvent(
+    MovingNotNull<RefPtr<IDBRequest>> aRequest, nsresult aErrorCode,
+    const SafeRefPtr<IDBTransaction>& aTransaction = nullptr,
+    RefPtr<Event> aEvent = nullptr) {
+  const RefPtr<IDBRequest> request = std::move(aRequest);
+
+  request->AssertIsOnOwningThread();
   MOZ_ASSERT(NS_FAILED(aErrorCode));
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aErrorCode) == NS_ERROR_MODULE_DOM_INDEXEDDB);
 
   AUTO_PROFILER_LABEL("IndexedDB:DispatchErrorEvent", DOM);
 
-  RefPtr<IDBRequest> request = aRequest;
-  RefPtr<IDBTransaction> transaction = aTransaction;
-
   request->SetError(aErrorCode);
 
-  RefPtr<Event> errorEvent;
   if (!aEvent) {
     // Make an error event and fire it at the target.
-    errorEvent = CreateGenericEvent(request, nsDependentString(kErrorEventType),
-                                    eDoesBubble, eCancelable);
-    MOZ_ASSERT(errorEvent);
-
-    aEvent = errorEvent;
+    aEvent = CreateGenericEvent(request, nsDependentString(kErrorEventType),
+                                eDoesBubble, eCancelable);
   }
+  MOZ_ASSERT(aEvent);
 
+  // XXX This is redundant if we are called from
+  // DispatchSuccessEvent.
   Maybe<AutoSetCurrentTransaction> asct;
   if (aTransaction) {
-    asct.emplace(aTransaction);
+    asct.emplace(SomeRef(*aTransaction));
   }
 
-  if (transaction) {
-    IDB_LOG_MARK(
-        "IndexedDB %s: Child  Transaction[%lld] Request[%llu]: "
-        "Firing %s event with error 0x%x",
-        "IndexedDB %s: C T[%lld] R[%llu]: %s (0x%x)", IDB_LOG_ID_STRING(),
-        transaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
-        IDB_LOG_STRINGIFY(aEvent, kErrorEventType), aErrorCode);
+  if (aTransaction && aTransaction->IsInactive()) {
+    aTransaction->TransitionToActive();
+  }
+
+  if (aTransaction) {
+    IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+        "Firing %s event with error 0x%x", "%s (0x%" PRIx32 ")",
+        aTransaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
+        IDB_LOG_STRINGIFY(aEvent, kErrorEventType),
+        static_cast<uint32_t>(aErrorCode));
   } else {
-    IDB_LOG_MARK(
-        "IndexedDB %s: Child  Request[%llu]: "
-        "Firing %s event with error 0x%x",
-        "IndexedDB %s: C R[%llu]: %s (0x%x)", IDB_LOG_ID_STRING(),
-        request->LoggingSerialNumber(),
-        IDB_LOG_STRINGIFY(aEvent, kErrorEventType), aErrorCode);
+    IDB_LOG_MARK_CHILD_REQUEST("Firing %s event with error 0x%x",
+                               "%s (0x%" PRIx32 ")",
+                               request->LoggingSerialNumber(),
+                               IDB_LOG_STRINGIFY(aEvent, kErrorEventType),
+                               static_cast<uint32_t>(aErrorCode));
   }
 
   IgnoredErrorResult rv;
-  bool doDefault = request->DispatchEvent(*aEvent, CallerType::System, rv);
+  const bool doDefault =
+      request->DispatchEvent(*aEvent, CallerType::System, rv);
   if (NS_WARN_IF(rv.Failed())) {
     return;
   }
 
-  MOZ_ASSERT(!transaction || transaction->IsOpen() || transaction->IsAborted());
+  MOZ_ASSERT(!aTransaction || aTransaction->IsActive() ||
+             aTransaction->IsAborted() ||
+             aTransaction->WasExplicitlyCommitted());
 
-  // Do not abort the transaction here if this request is failed due to the
-  // abortion of its transaction to ensure that the correct error cause of
-  // the abort event be set in IDBTransaction::FireCompleteOrAbortEvents()
-  // later.
-  if (transaction && transaction->IsOpen() &&
-      aErrorCode != NS_ERROR_DOM_INDEXEDDB_ABORT_ERR) {
-    WidgetEvent* internalEvent = aEvent->WidgetEventPtr();
-    MOZ_ASSERT(internalEvent);
+  if (aTransaction && aTransaction->IsActive()) {
+    aTransaction->TransitionToInactive();
 
-    if (internalEvent->mFlags.mExceptionWasRaised) {
-      transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
-    } else if (doDefault) {
-      transaction->Abort(request);
+    // Do not abort the transaction here if this request is failed due to the
+    // abortion of its transaction to ensure that the correct error cause of
+    // the abort event be set in IDBTransaction::FireCompleteOrAbortEvents()
+    // later.
+    if (aErrorCode != NS_ERROR_DOM_INDEXEDDB_ABORT_ERR) {
+      WidgetEvent* const internalEvent = aEvent->WidgetEventPtr();
+      MOZ_ASSERT(internalEvent);
+
+      if (internalEvent->mFlags.mExceptionWasRaised) {
+        aTransaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
+      } else if (doDefault) {
+        aTransaction->Abort(request);
+      }
     }
   }
 }
 
-void DispatchSuccessEvent(ResultHelper* aResultHelper,
-                          Event* aEvent = nullptr) {
-  MOZ_ASSERT(aResultHelper);
+template <typename T>
+void SetResultAndDispatchSuccessEvent(
+    const NotNull<RefPtr<IDBRequest>>& aRequest,
+    const SafeRefPtr<IDBTransaction>& aTransaction, T& aPtr,
+    RefPtr<Event> aEvent) {
+  const auto autoTransaction = AutoSetCurrentTransaction{
+      aTransaction ? SomeRef(*aTransaction) : Nothing()};
 
-  AUTO_PROFILER_LABEL("IndexedDB:DispatchSuccessEvent", DOM);
+  AUTO_PROFILER_LABEL("IndexedDB:SetResultAndDispatchSuccessEvent", DOM);
 
-  RefPtr<IDBRequest> request = aResultHelper->Request();
-  MOZ_ASSERT(request);
-  request->AssertIsOnOwningThread();
+  aRequest->AssertIsOnOwningThread();
 
-  RefPtr<IDBTransaction> transaction = aResultHelper->Transaction();
-
-  if (transaction && transaction->IsAborted()) {
-    DispatchErrorEvent(request, transaction->AbortCode(), transaction);
+  if (aTransaction && aTransaction->IsAborted()) {
+    DispatchErrorEvent(aRequest, aTransaction->AbortCode(), aTransaction);
     return;
   }
 
-  RefPtr<Event> successEvent;
   if (!aEvent) {
-    successEvent =
-        CreateGenericEvent(request, nsDependentString(kSuccessEventType),
+    aEvent =
+        CreateGenericEvent(aRequest.get(), nsDependentString(kSuccessEventType),
                            eDoesNotBubble, eNotCancelable);
-    MOZ_ASSERT(successEvent);
+  }
+  MOZ_ASSERT(aEvent);
 
-    aEvent = successEvent;
+  aRequest->SetResult(
+      [&aPtr](JSContext* aCx, JS::MutableHandle<JS::Value> aResult) {
+        MOZ_ASSERT(aCx);
+        return detail::GetResult(aCx, &aPtr, aResult);
+      });
+
+  detail::DispatchSuccessEvent(aRequest, aTransaction, aEvent);
+}
+
+namespace detail {
+void DispatchSuccessEvent(const NotNull<RefPtr<IDBRequest>>& aRequest,
+                          const SafeRefPtr<IDBTransaction>& aTransaction,
+                          const RefPtr<Event>& aEvent) {
+  if (aTransaction && aTransaction->IsInactive()) {
+    aTransaction->TransitionToActive();
   }
 
-  request->SetResultCallback(aResultHelper);
-
-  MOZ_ASSERT(aEvent);
-  MOZ_ASSERT_IF(transaction, transaction->IsOpen());
-
-  if (transaction) {
-    IDB_LOG_MARK(
-        "IndexedDB %s: Child  Transaction[%lld] Request[%llu]: "
-        "Firing %s event",
-        "IndexedDB %s: C T[%lld] R[%llu]: %s", IDB_LOG_ID_STRING(),
-        transaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
+  if (aTransaction) {
+    IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+        "Firing %s event", "%s", aTransaction->LoggingSerialNumber(),
+        aRequest->LoggingSerialNumber(),
         IDB_LOG_STRINGIFY(aEvent, kSuccessEventType));
   } else {
-    IDB_LOG_MARK("IndexedDB %s: Child  Request[%llu]: Firing %s event",
-                 "IndexedDB %s: C R[%llu]: %s", IDB_LOG_ID_STRING(),
-                 request->LoggingSerialNumber(),
-                 IDB_LOG_STRINGIFY(aEvent, kSuccessEventType));
+    IDB_LOG_MARK_CHILD_REQUEST("Firing %s event", "%s",
+                               aRequest->LoggingSerialNumber(),
+                               IDB_LOG_STRINGIFY(aEvent, kSuccessEventType));
   }
 
-  MOZ_ASSERT_IF(transaction,
-                transaction->IsOpen() && !transaction->IsAborted());
+  MOZ_ASSERT_IF(aTransaction && !aTransaction->WasExplicitlyCommitted(),
+                aTransaction->IsActive() && !aTransaction->IsAborted());
 
   IgnoredErrorResult rv;
-  request->DispatchEvent(*aEvent, rv);
+  aRequest->DispatchEvent(*aEvent, rv);
   if (NS_WARN_IF(rv.Failed())) {
     return;
   }
 
-  WidgetEvent* internalEvent = aEvent->WidgetEventPtr();
+  WidgetEvent* const internalEvent = aEvent->WidgetEventPtr();
   MOZ_ASSERT(internalEvent);
 
-  if (transaction && transaction->IsOpen()) {
+  if (aTransaction && aTransaction->IsActive()) {
+    aTransaction->TransitionToInactive();
+
     if (internalEvent->mFlags.mExceptionWasRaised) {
-      transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
+      aTransaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
     } else {
       // To handle upgrade transaction.
-      transaction->Run();
+      aTransaction->CommitIfNotStarted();
     }
   }
 }
+}  // namespace detail
 
 PRFileDesc* GetFileDescriptorFromStream(nsIInputStream* aStream) {
   MOZ_ASSERT(aStream);
 
-  nsCOMPtr<nsIFileMetadata> fileMetadata = do_QueryInterface(aStream);
+  const nsCOMPtr<nsIFileMetadata> fileMetadata = do_QueryInterface(aStream);
   if (NS_WARN_IF(!fileMetadata)) {
     return nullptr;
   }
 
   PRFileDesc* fileDesc;
-  nsresult rv = fileMetadata->GetFileDescriptor(&fileDesc);
+  const nsresult rv = fileMetadata->GetFileDescriptor(&fileDesc);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return nullptr;
   }
@@ -843,16 +706,16 @@ class WorkerPermissionChallenge final : public Runnable {
  public:
   WorkerPermissionChallenge(WorkerPrivate* aWorkerPrivate,
                             BackgroundFactoryRequestChild* aActor,
-                            IDBFactory* aFactory,
-                            const PrincipalInfo& aPrincipalInfo)
+                            SafeRefPtr<IDBFactory> aFactory,
+                            PrincipalInfo&& aPrincipalInfo)
       : Runnable("indexedDB::WorkerPermissionChallenge"),
         mWorkerPrivate(aWorkerPrivate),
         mActor(aActor),
-        mFactory(aFactory),
-        mPrincipalInfo(aPrincipalInfo) {
+        mFactory(std::move(aFactory)),
+        mPrincipalInfo(std::move(aPrincipalInfo)) {
     MOZ_ASSERT(mWorkerPrivate);
     MOZ_ASSERT(aActor);
-    MOZ_ASSERT(aFactory);
+    MOZ_ASSERT(mFactory);
     mWorkerPrivate->AssertIsOnWorkerThread();
   }
 
@@ -872,7 +735,7 @@ class WorkerPermissionChallenge final : public Runnable {
 
   NS_IMETHOD
   Run() override {
-    bool completed = RunInternal();
+    const bool completed = RunInternal();
     if (completed) {
       OperationCompleted();
     }
@@ -882,7 +745,7 @@ class WorkerPermissionChallenge final : public Runnable {
 
   void OperationCompleted() {
     if (NS_IsMainThread()) {
-      RefPtr<WorkerPermissionOperationCompleted> runnable =
+      const RefPtr<WorkerPermissionOperationCompleted> runnable =
           new WorkerPermissionOperationCompleted(mWorkerPrivate, this);
 
       MOZ_ALWAYS_TRUE(runnable->Dispatch());
@@ -894,8 +757,8 @@ class WorkerPermissionChallenge final : public Runnable {
 
     MaybeCollectGarbageOnIPCMessage();
 
-    RefPtr<IDBFactory> factory;
-    mFactory.swap(factory);
+    const SafeRefPtr<IDBFactory> factory = std::move(mFactory);
+    Unused << factory;  // XXX see Bug 1605075
 
     mActor->SendPermissionRetry();
     mActor = nullptr;
@@ -914,20 +777,21 @@ class WorkerPermissionChallenge final : public Runnable {
       wp = wp->GetParent();
     }
 
-    nsPIDOMWindowInner* window = wp->GetWindow();
+    nsPIDOMWindowInner* const window = wp->GetWindow();
     if (!window) {
       return true;
     }
 
-    nsresult rv;
-    nsCOMPtr<nsIPrincipal> principal =
-        mozilla::ipc::PrincipalInfoToPrincipal(mPrincipalInfo, &rv);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
+    auto principalOrErr =
+        mozilla::ipc::PrincipalInfoToPrincipal(mPrincipalInfo);
+    if (NS_WARN_IF(principalOrErr.isErr())) {
       return true;
     }
 
+    const nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+
     if (XRE_IsParentProcess()) {
-      nsCOMPtr<Element> ownerElement =
+      const nsCOMPtr<Element> ownerElement =
           do_QueryInterface(window->GetChromeEventHandler());
       if (NS_WARN_IF(!ownerElement)) {
         return true;
@@ -951,22 +815,19 @@ class WorkerPermissionChallenge final : public Runnable {
     BrowserChild* browserChild = BrowserChild::GetFrom(window);
     MOZ_ASSERT(browserChild);
 
-    IPC::Principal ipcPrincipal(principal);
-
     RefPtr<WorkerPermissionChallenge> self(this);
-    browserChild->SendIndexedDBPermissionRequest(ipcPrincipal)
-        ->Then(
-            GetCurrentThreadSerialEventTarget(), __func__,
-            [self](const uint32_t& aPermission) { self->OperationCompleted(); },
-            [](const mozilla::ipc::ResponseRejectReason) {});
+    browserChild->SendIndexedDBPermissionRequest(principal)->Then(
+        GetCurrentSerialEventTarget(), __func__,
+        [self](const uint32_t& aPermission) { self->OperationCompleted(); },
+        [](const mozilla::ipc::ResponseRejectReason) {});
     return false;
   }
 
  private:
-  WorkerPrivate* mWorkerPrivate;
+  WorkerPrivate* const mWorkerPrivate;
   BackgroundFactoryRequestChild* mActor;
-  RefPtr<IDBFactory> mFactory;
-  PrincipalInfo mPrincipalInfo;
+  SafeRefPtr<IDBFactory> mFactory;
+  const PrincipalInfo mPrincipalInfo;
 };
 
 void WorkerPermissionRequest::OnPromptComplete(
@@ -1023,218 +884,95 @@ class MOZ_STACK_CLASS AutoSetCurrentFileHandle final {
   IDBFileHandle* FileHandle() const { return mFileHandle; }
 };
 
-class MOZ_STACK_CLASS FileHandleResultHelper final
-    : public IDBFileRequest::ResultCallback {
-  IDBFileRequest* mFileRequest;
-  AutoSetCurrentFileHandle mAutoFileHandle;
+template <typename T>
+void SetFileHandleResultAndDispatchSuccessEvent(
+    const RefPtr<IDBFileRequest>& aFileRequest,
+    const RefPtr<IDBFileHandle>& aFileHandle, T* aPtr);
 
-  union {
-    File* mFile;
-    const nsCString* mString;
-    const FileRequestMetadata* mMetadata;
-    const JS::Handle<JS::Value>* mJSValHandle;
-  } mResult;
+namespace detail {
+nsresult GetFileHandleResult(const RefPtr<IDBFileRequest>& aFileRequest,
+                             JSContext* aCx, const nsCString* aString,
+                             JS::MutableHandle<JS::Value> aResult) {
+  const nsCString& data = *aString;
 
-  enum {
-    ResultTypeFile,
-    ResultTypeString,
-    ResultTypeMetadata,
-    ResultTypeJSValHandle,
-  } mResultType;
+  nsresult rv;
 
- public:
-  FileHandleResultHelper(IDBFileRequest* aFileRequest,
-                         IDBFileHandle* aFileHandle, File* aResult)
-      : mFileRequest(aFileRequest),
-        mAutoFileHandle(aFileHandle),
-        mResultType(ResultTypeFile) {
-    MOZ_ASSERT(aFileRequest);
-    MOZ_ASSERT(aFileHandle);
-    MOZ_ASSERT(aResult);
-
-    mResult.mFile = aResult;
-  }
-
-  FileHandleResultHelper(IDBFileRequest* aFileRequest,
-                         IDBFileHandle* aFileHandle, const nsCString* aResult)
-      : mFileRequest(aFileRequest),
-        mAutoFileHandle(aFileHandle),
-        mResultType(ResultTypeString) {
-    MOZ_ASSERT(aFileRequest);
-    MOZ_ASSERT(aFileHandle);
-    MOZ_ASSERT(aResult);
-
-    mResult.mString = aResult;
-  }
-
-  FileHandleResultHelper(IDBFileRequest* aFileRequest,
-                         IDBFileHandle* aFileHandle,
-                         const FileRequestMetadata* aResult)
-      : mFileRequest(aFileRequest),
-        mAutoFileHandle(aFileHandle),
-        mResultType(ResultTypeMetadata) {
-    MOZ_ASSERT(aFileRequest);
-    MOZ_ASSERT(aFileHandle);
-    MOZ_ASSERT(aResult);
-
-    mResult.mMetadata = aResult;
-  }
-
-  FileHandleResultHelper(IDBFileRequest* aFileRequest,
-                         IDBFileHandle* aFileHandle,
-                         const JS::Handle<JS::Value>* aResult)
-      : mFileRequest(aFileRequest),
-        mAutoFileHandle(aFileHandle),
-        mResultType(ResultTypeJSValHandle) {
-    MOZ_ASSERT(aFileRequest);
-    MOZ_ASSERT(aFileHandle);
-    MOZ_ASSERT(aResult);
-
-    mResult.mJSValHandle = aResult;
-  }
-
-  IDBFileRequest* FileRequest() const { return mFileRequest; }
-
-  IDBFileHandle* FileHandle() const { return mAutoFileHandle.FileHandle(); }
-
-  virtual nsresult GetResult(JSContext* aCx,
-                             JS::MutableHandle<JS::Value> aResult) override {
-    MOZ_ASSERT(aCx);
-    MOZ_ASSERT(mFileRequest);
-
-    switch (mResultType) {
-      case ResultTypeFile:
-        return GetResult(aCx, mResult.mFile, aResult);
-
-      case ResultTypeString:
-        return GetResult(aCx, mResult.mString, aResult);
-
-      case ResultTypeMetadata:
-        return GetResult(aCx, mResult.mMetadata, aResult);
-
-      case ResultTypeJSValHandle:
-        aResult.set(*mResult.mJSValHandle);
-        return NS_OK;
-
-      default:
-        MOZ_CRASH("Unknown result type!");
-    }
-
-    MOZ_CRASH("Should never get here!");
-  }
-
- private:
-  nsresult GetResult(JSContext* aCx, File* aFile,
-                     JS::MutableHandle<JS::Value> aResult) {
-    bool ok = GetOrCreateDOMReflector(aCx, aFile, aResult);
-    if (NS_WARN_IF(!ok)) {
-      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-    }
-
-    return NS_OK;
-  }
-
-  nsresult GetResult(JSContext* aCx, const nsCString* aString,
-                     JS::MutableHandle<JS::Value> aResult) {
-    const nsCString& data = *aString;
-
-    nsresult rv;
-
-    if (!mFileRequest->HasEncoding()) {
-      JS::Rooted<JSObject*> arrayBuffer(aCx);
-      rv = nsContentUtils::CreateArrayBuffer(aCx, data, arrayBuffer.address());
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-      }
-
-      aResult.setObject(*arrayBuffer);
-      return NS_OK;
-    }
-
-    // Try the API argument.
-    const Encoding* encoding = Encoding::ForLabel(mFileRequest->GetEncoding());
-    if (!encoding) {
-      // API argument failed. Since we are dealing with a file system file,
-      // we don't have a meaningful type attribute for the blob available,
-      // so proceeding to the next step, which is defaulting to UTF-8.
-      encoding = UTF_8_ENCODING;
-    }
-
-    nsString tmpString;
-    Tie(rv, encoding) = encoding->Decode(data, tmpString);
+  if (!aFileRequest->HasEncoding()) {
+    JS::Rooted<JSObject*> arrayBuffer(aCx);
+    rv = nsContentUtils::CreateArrayBuffer(aCx, data, arrayBuffer.address());
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
     }
-    rv = NS_OK;
 
-    if (NS_WARN_IF(!xpc::StringToJsval(aCx, tmpString, aResult))) {
-      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-    }
-
+    aResult.setObject(*arrayBuffer);
     return NS_OK;
   }
 
-  nsresult GetResult(JSContext* aCx, const FileRequestMetadata* aMetadata,
-                     JS::MutableHandle<JS::Value> aResult) {
-    JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
-    if (NS_WARN_IF(!obj)) {
-      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-    }
-
-    const Maybe<uint64_t>& size = aMetadata->size();
-    if (size.isSome()) {
-      JS::Rooted<JS::Value> number(aCx, JS_NumberValue(size.value()));
-
-      if (NS_WARN_IF(!JS_DefineProperty(aCx, obj, "size", number, 0))) {
-        return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-      }
-    }
-
-    const Maybe<int64_t>& lastModified = aMetadata->lastModified();
-    if (lastModified.isSome()) {
-      JS::Rooted<JSObject*> date(
-          aCx, JS::NewDateObject(aCx, JS::TimeClip(lastModified.value())));
-      if (NS_WARN_IF(!date)) {
-        return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-      }
-
-      if (NS_WARN_IF(!JS_DefineProperty(aCx, obj, "lastModified", date, 0))) {
-        return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
-      }
-    }
-
-    aResult.setObject(*obj);
-    return NS_OK;
+  // Try the API argument.
+  const Encoding* encoding = Encoding::ForLabel(aFileRequest->GetEncoding());
+  if (!encoding) {
+    // API argument failed. Since we are dealing with a file system file,
+    // we don't have a meaningful type attribute for the blob available,
+    // so proceeding to the next step, which is defaulting to UTF-8.
+    encoding = UTF_8_ENCODING;
   }
-};
 
-already_AddRefed<File> ConvertActorToFile(
-    IDBFileHandle* aFileHandle, const FileRequestGetFileResponse& aResponse) {
-  auto* actor = static_cast<PendingIPCBlobChild*>(aResponse.fileChild());
+  nsString tmpString;
+  Tie(rv, encoding) = encoding->Decode(data, tmpString);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+  }
 
-  IDBMutableFile* mutableFile = aFileHandle->GetMutableFile();
-  MOZ_ASSERT(mutableFile);
+  if (NS_WARN_IF(!xpc::StringToJsval(aCx, tmpString, aResult))) {
+    return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+  }
 
-  const FileRequestMetadata& metadata = aResponse.metadata();
-
-  const Maybe<uint64_t>& size = metadata.size();
-  MOZ_ASSERT(size.isSome());
-
-  const Maybe<int64_t>& lastModified = metadata.lastModified();
-  MOZ_ASSERT(lastModified.isSome());
-
-  RefPtr<BlobImpl> blobImpl = actor->SetPendingInfoAndDeleteActor(
-      mutableFile->Name(), mutableFile->Type(), size.value(),
-      lastModified.value());
-  MOZ_ASSERT(blobImpl);
-
-  RefPtr<BlobImpl> blobImplSnapshot =
-      new BlobImplSnapshot(blobImpl, static_cast<IDBFileHandle*>(aFileHandle));
-
-  RefPtr<File> file =
-      File::Create(mutableFile->GetOwnerGlobal(), blobImplSnapshot);
-  return file.forget();
+  return NS_OK;
 }
+
+nsresult GetFileHandleResult(const RefPtr<IDBFileRequest>& /*aFileRequest*/,
+                             JSContext* aCx,
+                             const FileRequestMetadata* aMetadata,
+                             JS::MutableHandle<JS::Value> aResult) {
+  JS::Rooted<JSObject*> obj(aCx, JS_NewPlainObject(aCx));
+  if (NS_WARN_IF(!obj)) {
+    return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+  }
+
+  const Maybe<uint64_t>& size = aMetadata->size();
+  if (size.isSome()) {
+    JS::Rooted<JS::Value> number(aCx, JS_NumberValue(size.value()));
+
+    if (NS_WARN_IF(!JS_DefineProperty(aCx, obj, "size", number, 0))) {
+      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+    }
+  }
+
+  const Maybe<int64_t>& lastModified = aMetadata->lastModified();
+  if (lastModified.isSome()) {
+    JS::Rooted<JSObject*> date(
+        aCx, JS::NewDateObject(aCx, JS::TimeClip(lastModified.value())));
+    if (NS_WARN_IF(!date)) {
+      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+    }
+
+    if (NS_WARN_IF(!JS_DefineProperty(aCx, obj, "lastModified", date, 0))) {
+      return NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR;
+    }
+  }
+
+  aResult.setObject(*obj);
+  return NS_OK;
+}
+
+nsresult GetFileHandleResult(const RefPtr<IDBFileRequest>& /*aFileRequest*/,
+                             JSContext* aCx,
+                             const JS::Handle<JS::Value>* aValue,
+                             JS::MutableHandle<JS::Value> aResult) {
+  aResult.set(*aValue);
+  return NS_OK;
+}
+}  // namespace detail
 
 void DispatchFileHandleErrorEvent(IDBFileRequest* aFileRequest,
                                   nsresult aErrorCode,
@@ -1245,8 +983,8 @@ void DispatchFileHandleErrorEvent(IDBFileRequest* aFileRequest,
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aErrorCode) == NS_ERROR_MODULE_DOM_FILEHANDLE);
   MOZ_ASSERT(aFileHandle);
 
-  RefPtr<IDBFileRequest> fileRequest = aFileRequest;
-  RefPtr<IDBFileHandle> fileHandle = aFileHandle;
+  const RefPtr<IDBFileRequest> fileRequest = aFileRequest;
+  const RefPtr<IDBFileHandle> fileHandle = aFileHandle;
 
   AutoSetCurrentFileHandle ascfh(aFileHandle);
 
@@ -1255,27 +993,75 @@ void DispatchFileHandleErrorEvent(IDBFileRequest* aFileRequest,
   MOZ_ASSERT(fileHandle->IsOpen() || fileHandle->IsAborted());
 }
 
-void DispatchFileHandleSuccessEvent(FileHandleResultHelper* aResultHelper) {
-  MOZ_ASSERT(aResultHelper);
+template <typename T>
+void SetFileHandleResultAndDispatchSuccessEvent(
+    const RefPtr<IDBFileRequest>& aFileRequest,
+    const RefPtr<IDBFileHandle>& aFileHandle, T* aPtr) {
+  MOZ_ASSERT(aFileRequest);
+  MOZ_ASSERT(aFileHandle);
+  MOZ_ASSERT(aPtr);
 
-  RefPtr<IDBFileRequest> fileRequest = aResultHelper->FileRequest();
-  MOZ_ASSERT(fileRequest);
-  fileRequest->AssertIsOnOwningThread();
+  auto autoFileHandle = AutoSetCurrentFileHandle{aFileHandle};
 
-  RefPtr<IDBFileHandle> fileHandle = aResultHelper->FileHandle();
-  MOZ_ASSERT(fileHandle);
+  aFileRequest->AssertIsOnOwningThread();
 
-  if (fileHandle->IsAborted()) {
-    fileRequest->FireError(NS_ERROR_DOM_FILEHANDLE_ABORT_ERR);
+  if (aFileHandle->IsAborted()) {
+    aFileRequest->FireError(NS_ERROR_DOM_FILEHANDLE_ABORT_ERR);
     return;
   }
 
-  MOZ_ASSERT(fileHandle->IsOpen());
+  MOZ_ASSERT(aFileHandle->IsOpen());
 
-  fileRequest->SetResultCallback(aResultHelper);
+  aFileRequest->SetResult(
+      [aFileRequest, aPtr](JSContext* aCx,
+                           JS::MutableHandle<JS::Value> aResult) {
+        return detail::GetFileHandleResult(aFileRequest, aCx, aPtr, aResult);
+      });
 
-  MOZ_ASSERT(fileHandle->IsOpen() || fileHandle->IsAborted());
+  MOZ_ASSERT(aFileHandle->IsOpen() || aFileHandle->IsAborted());
 }
+
+auto GetKeyOperator(const IDBCursorDirection aDirection) {
+  switch (aDirection) {
+    case IDBCursorDirection::Next:
+    case IDBCursorDirection::Nextunique:
+      return &Key::operator>=;
+    case IDBCursorDirection::Prev:
+    case IDBCursorDirection::Prevunique:
+      return &Key::operator<=;
+    default:
+      MOZ_CRASH("Should never get here.");
+  }
+}
+
+// Does not need to be threadsafe since this only runs on one thread, but
+// inheriting from CancelableRunnable is easy.
+template <typename T>
+class DelayedActionRunnable final : public CancelableRunnable {
+  using ActionFunc = void (T::*)();
+
+  T* mActor;
+  RefPtr<IDBRequest> mRequest;
+  ActionFunc mActionFunc;
+
+ public:
+  explicit DelayedActionRunnable(T* aActor, ActionFunc aActionFunc)
+      : CancelableRunnable("indexedDB::DelayedActionRunnable"),
+        mActor(aActor),
+        mRequest(aActor->GetRequest()),
+        mActionFunc(aActionFunc) {
+    MOZ_ASSERT(aActor);
+    aActor->AssertIsOnOwningThread();
+    MOZ_ASSERT(mRequest);
+    MOZ_ASSERT(mActionFunc);
+  }
+
+ private:
+  ~DelayedActionRunnable() = default;
+
+  NS_DECL_NSIRUNNABLE
+  nsresult Cancel() override;
+};
 
 }  // namespace
 
@@ -1305,13 +1091,12 @@ class BackgroundRequestChild::PreprocessHelper final
     Completed
   };
 
-  nsCOMPtr<nsIEventTarget> mOwningEventTarget;
+  const nsCOMPtr<nsIEventTarget> mOwningEventTarget;
   RefPtr<TaskQueue> mTaskQueue;
-  nsCOMPtr<nsIEventTarget> mTaskQueueEventTarget;
   nsCOMPtr<nsIInputStream> mStream;
   UniquePtr<JSStructuredCloneData> mCloneData;
   BackgroundRequestChild* mActor;
-  uint32_t mCloneDataIndex;
+  const uint32_t mCloneDataIndex;
   nsresult mResultCode;
   State mState;
 
@@ -1345,7 +1130,7 @@ class BackgroundRequestChild::PreprocessHelper final
     mActor = nullptr;
   }
 
-  nsresult Init(const StructuredCloneFile& aFile);
+  nsresult Init(const StructuredCloneFileChild& aFile);
 
   nsresult Dispatch();
 
@@ -1391,10 +1176,10 @@ void PermissionRequestMainProcessHelper::OnPromptComplete(
  * BackgroundRequestChildBase
  ******************************************************************************/
 
-BackgroundRequestChildBase::BackgroundRequestChildBase(IDBRequest* aRequest)
-    : mRequest(aRequest) {
-  MOZ_ASSERT(aRequest);
-  aRequest->AssertIsOnOwningThread();
+BackgroundRequestChildBase::BackgroundRequestChildBase(
+    MovingNotNull<RefPtr<IDBRequest>> aRequest)
+    : mRequest(std::move(aRequest)) {
+  mRequest->AssertIsOnOwningThread();
 
   MOZ_COUNT_CTOR(indexedDB::BackgroundRequestChildBase);
 }
@@ -1408,7 +1193,6 @@ BackgroundRequestChildBase::~BackgroundRequestChildBase() {
 #ifdef DEBUG
 
 void BackgroundRequestChildBase::AssertIsOnOwningThread() const {
-  MOZ_ASSERT(mRequest);
   mRequest->AssertIsOnOwningThread();
 }
 
@@ -1418,11 +1202,10 @@ void BackgroundRequestChildBase::AssertIsOnOwningThread() const {
  * BackgroundFactoryChild
  ******************************************************************************/
 
-BackgroundFactoryChild::BackgroundFactoryChild(IDBFactory* aFactory)
-    : mFactory(aFactory) {
+BackgroundFactoryChild::BackgroundFactoryChild(IDBFactory& aFactory)
+    : mFactory(&aFactory) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aFactory);
-  aFactory->AssertIsOnOwningThread();
+  mFactory->AssertIsOnOwningThread();
 
   MOZ_COUNT_CTOR(indexedDB::BackgroundFactoryChild);
 }
@@ -1476,7 +1259,7 @@ BackgroundFactoryChild::AllocPBackgroundIDBDatabaseChild(
     const DatabaseSpec& aSpec, PBackgroundIDBFactoryRequestChild* aRequest) {
   AssertIsOnOwningThread();
 
-  auto request = static_cast<BackgroundFactoryRequestChild*>(aRequest);
+  auto* const request = static_cast<BackgroundFactoryRequestChild*>(aRequest);
   MOZ_ASSERT(request);
 
   return new BackgroundDatabaseChild(aSpec, request);
@@ -1507,17 +1290,17 @@ BackgroundFactoryChild::RecvPBackgroundIDBDatabaseConstructor(
  ******************************************************************************/
 
 BackgroundFactoryRequestChild::BackgroundFactoryRequestChild(
-    IDBFactory* aFactory, IDBOpenDBRequest* aOpenRequest, bool aIsDeleteOp,
+    SafeRefPtr<IDBFactory> aFactory,
+    MovingNotNull<RefPtr<IDBOpenDBRequest>> aOpenRequest, bool aIsDeleteOp,
     uint64_t aRequestedVersion)
-    : BackgroundRequestChildBase(aOpenRequest),
-      mFactory(aFactory),
+    : BackgroundRequestChildBase(std::move(aOpenRequest)),
+      mFactory(std::move(aFactory)),
       mDatabaseActor(nullptr),
       mRequestedVersion(aRequestedVersion),
       mIsDeleteOp(aIsDeleteOp) {
   // Can't assert owning thread here because IPDL has not yet set our manager!
-  MOZ_ASSERT(aFactory);
-  aFactory->AssertIsOnOwningThread();
-  MOZ_ASSERT(aOpenRequest);
+  MOZ_ASSERT(mFactory);
+  mFactory->AssertIsOnOwningThread();
 
   MOZ_COUNT_CTOR(indexedDB::BackgroundFactoryRequestChild);
 }
@@ -1526,10 +1309,13 @@ BackgroundFactoryRequestChild::~BackgroundFactoryRequestChild() {
   MOZ_COUNT_DTOR(indexedDB::BackgroundFactoryRequestChild);
 }
 
-IDBOpenDBRequest* BackgroundFactoryRequestChild::GetOpenDBRequest() const {
+NotNull<IDBOpenDBRequest*> BackgroundFactoryRequestChild::GetOpenDBRequest()
+    const {
   AssertIsOnOwningThread();
 
-  return static_cast<IDBOpenDBRequest*>(mRequest.get());
+  // XXX NotNull might provide something to encapsulate this
+  return WrapNotNullUnchecked(
+      static_cast<IDBOpenDBRequest*>(mRequest.get().get()));
 }
 
 void BackgroundFactoryRequestChild::SetDatabaseActor(
@@ -1563,20 +1349,26 @@ bool BackgroundFactoryRequestChild::HandleResponse(
 
   mRequest->Reset();
 
-  auto databaseActor =
+  auto* databaseActor =
       static_cast<BackgroundDatabaseChild*>(aResponse.databaseChild());
   MOZ_ASSERT(databaseActor);
 
-  IDBDatabase* database = databaseActor->GetDOMObject();
-  if (!database) {
-    databaseActor->EnsureDOMObject();
-    MOZ_ASSERT(mDatabaseActor);
+  NotNull<IDBDatabase*> database = [this, databaseActor] {
+    IDBDatabase* database = databaseActor->GetDOMObject();
+    if (!database) {
+      Unused << this;
 
-    database = databaseActor->GetDOMObject();
-    MOZ_ASSERT(database);
+      databaseActor->EnsureDOMObject();
+      MOZ_ASSERT(mDatabaseActor);
 
-    MOZ_ASSERT(!database->IsClosed());
-  }
+      database = databaseActor->GetDOMObject();
+      MOZ_ASSERT(database);
+
+      MOZ_ASSERT(!database->IsClosed());
+    }
+
+    return WrapNotNullUnchecked(database);
+  }();
 
   MOZ_ASSERT(mDatabaseActor == databaseActor);
 
@@ -1586,9 +1378,7 @@ bool BackgroundFactoryRequestChild::HandleResponse(
     // Instead we fire an error event with AbortErr.
     DispatchErrorEvent(mRequest, NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
   } else {
-    ResultHelper helper(mRequest, nullptr, database);
-
-    DispatchSuccessEvent(&helper);
+    SetResultAndDispatchSuccessEvent(mRequest, nullptr, *database);
   }
 
   databaseActor->ReleaseDOMObject();
@@ -1601,14 +1391,13 @@ bool BackgroundFactoryRequestChild::HandleResponse(
     const DeleteDatabaseRequestResponse& aResponse) {
   AssertIsOnOwningThread();
 
-  ResultHelper helper(mRequest, nullptr, &JS::UndefinedHandleValue);
-
   RefPtr<Event> successEvent = IDBVersionChangeEvent::Create(
-      mRequest, nsDependentString(kSuccessEventType),
+      mRequest.get(), nsDependentString(kSuccessEventType),
       aResponse.previousVersion());
   MOZ_ASSERT(successEvent);
 
-  DispatchSuccessEvent(&helper, successEvent);
+  SetResultAndDispatchSuccessEvent(mRequest, nullptr, JS::UndefinedHandleValue,
+                                   std::move(successEvent));
 
   MOZ_ASSERT(!mDatabaseActor);
 
@@ -1621,17 +1410,13 @@ void BackgroundFactoryRequestChild::ActorDestroy(ActorDestroyReason aWhy) {
   MaybeCollectGarbageOnIPCMessage();
 
   if (aWhy != Deletion) {
-    IDBOpenDBRequest* openRequest = GetOpenDBRequest();
-    if (openRequest) {
-      openRequest->NoteComplete();
-    }
+    GetOpenDBRequest()->NoteComplete();
   }
 }
 
 mozilla::ipc::IPCResult BackgroundFactoryRequestChild::Recv__delete__(
     const FactoryRequestResponse& aResponse) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
 
   MaybeCollectGarbageOnIPCMessage();
 
@@ -1654,8 +1439,7 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::Recv__delete__(
       MOZ_CRASH("Unknown response type!");
   }
 
-  IDBOpenDBRequest* request = GetOpenDBRequest();
-  MOZ_ASSERT(request);
+  auto request = GetOpenDBRequest();
 
   request->NoteComplete();
 
@@ -1667,7 +1451,7 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::Recv__delete__(
 }
 
 mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvPermissionChallenge(
-    const PrincipalInfo& aPrincipalInfo) {
+    PrincipalInfo&& aPrincipalInfo) {
   AssertIsOnOwningThread();
 
   MaybeCollectGarbageOnIPCMessage();
@@ -1678,19 +1462,18 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvPermissionChallenge(
     workerPrivate->AssertIsOnWorkerThread();
 
     RefPtr<WorkerPermissionChallenge> challenge = new WorkerPermissionChallenge(
-        workerPrivate, this, mFactory, aPrincipalInfo);
+        workerPrivate, this, mFactory.clonePtr(), std::move(aPrincipalInfo));
     if (!challenge->Dispatch()) {
       return IPC_FAIL_NO_REASON(this);
     }
     return IPC_OK();
   }
 
-  nsresult rv;
-  nsCOMPtr<nsIPrincipal> principal =
-      mozilla::ipc::PrincipalInfoToPrincipal(aPrincipalInfo, &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  auto principalOrErr = mozilla::ipc::PrincipalInfoToPrincipal(aPrincipalInfo);
+  if (NS_WARN_IF(principalOrErr.isErr())) {
     return IPC_FAIL_NO_REASON(this);
   }
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
 
   if (XRE_IsParentProcess()) {
     nsCOMPtr<nsIGlobalObject> global = mFactory->GetParentObject();
@@ -1709,8 +1492,8 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvPermissionChallenge(
     }
 
     RefPtr<PermissionRequestMainProcessHelper> helper =
-        new PermissionRequestMainProcessHelper(this, mFactory, ownerElement,
-                                               principal);
+        new PermissionRequestMainProcessHelper(this, mFactory.clonePtr(),
+                                               ownerElement, principal);
 
     PermissionRequestBase::PermissionValue permission;
     if (NS_WARN_IF(NS_FAILED(helper->PromptIfNeeded(&permission)))) {
@@ -1730,25 +1513,21 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvPermissionChallenge(
   RefPtr<BrowserChild> browserChild = mFactory->GetBrowserChild();
   MOZ_ASSERT(browserChild);
 
-  IPC::Principal ipcPrincipal(principal);
-
-  browserChild->SendIndexedDBPermissionRequest(ipcPrincipal)
-      ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
-          [this](const uint32_t& aPermission) {
-            this->AssertIsOnOwningThread();
-            MaybeCollectGarbageOnIPCMessage();
-            this->SendPermissionRetry();
-          },
-          [](const mozilla::ipc::ResponseRejectReason) {});
+  browserChild->SendIndexedDBPermissionRequest(principal)->Then(
+      GetCurrentSerialEventTarget(), __func__,
+      [this](const uint32_t& aPermission) {
+        this->AssertIsOnOwningThread();
+        MaybeCollectGarbageOnIPCMessage();
+        this->SendPermissionRetry();
+      },
+      [](const mozilla::ipc::ResponseRejectReason) {});
 
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvBlocked(
-    const uint64_t& aCurrentVersion) {
+    const uint64_t aCurrentVersion) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
 
   MaybeCollectGarbageOnIPCMessage();
 
@@ -1757,19 +1536,18 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvBlocked(
   RefPtr<Event> blockedEvent;
   if (mIsDeleteOp) {
     blockedEvent =
-        IDBVersionChangeEvent::Create(mRequest, type, aCurrentVersion);
+        IDBVersionChangeEvent::Create(mRequest.get(), type, aCurrentVersion);
     MOZ_ASSERT(blockedEvent);
   } else {
     blockedEvent = IDBVersionChangeEvent::Create(
-        mRequest, type, aCurrentVersion, mRequestedVersion);
+        mRequest.get(), type, aCurrentVersion, mRequestedVersion);
     MOZ_ASSERT(blockedEvent);
   }
 
   RefPtr<IDBRequest> kungFuDeathGrip = mRequest;
 
-  IDB_LOG_MARK("IndexedDB %s: Child  Request[%llu]: Firing \"blocked\" event",
-               "IndexedDB %s: C R[%llu]: \"blocked\"", IDB_LOG_ID_STRING(),
-               kungFuDeathGrip->LoggingSerialNumber());
+  IDB_LOG_MARK_CHILD_REQUEST("Firing \"blocked\" event", "\"blocked\"",
+                             kungFuDeathGrip->LoggingSerialNumber());
 
   IgnoredErrorResult rv;
   kungFuDeathGrip->DispatchEvent(*blockedEvent, rv);
@@ -1786,7 +1564,7 @@ mozilla::ipc::IPCResult BackgroundFactoryRequestChild::RecvBlocked(
 
 BackgroundDatabaseChild::BackgroundDatabaseChild(
     const DatabaseSpec& aSpec, BackgroundFactoryRequestChild* aOpenRequestActor)
-    : mSpec(new DatabaseSpec(aSpec)),
+    : mSpec(MakeUnique<DatabaseSpec>(aSpec)),
       mOpenRequestActor(aOpenRequestActor),
       mDatabase(nullptr) {
   // Can't assert owning thread here because IPDL has not yet set our manager!
@@ -1826,25 +1604,28 @@ void BackgroundDatabaseChild::EnsureDOMObject() {
 
   if (mTemporaryStrongDatabase) {
     MOZ_ASSERT(!mSpec);
+    MOZ_ASSERT(mDatabase == mTemporaryStrongDatabase);
     return;
   }
 
   MOZ_ASSERT(mSpec);
 
-  auto request = mOpenRequestActor->GetOpenDBRequest();
-  MOZ_ASSERT(request);
+  const auto request = mOpenRequestActor->GetOpenDBRequest();
 
-  auto factory =
+  auto& factory =
       static_cast<BackgroundFactoryChild*>(Manager())->GetDOMObject();
-  MOZ_ASSERT(factory);
 
-  mTemporaryStrongDatabase = IDBDatabase::Create(request, factory, this, mSpec);
+  // TODO: This AcquireStrongRefFromRawPtr looks suspicious. This should be
+  // changed or at least well explained, see also comment on
+  // BackgroundFactoryChild.
+  mTemporaryStrongDatabase = IDBDatabase::Create(
+      request, SafeRefPtr{&factory, AcquireStrongRefFromRawPtr{}}, this,
+      std::move(mSpec));
 
   MOZ_ASSERT(mTemporaryStrongDatabase);
   mTemporaryStrongDatabase->AssertIsOnOwningThread();
 
   mDatabase = mTemporaryStrongDatabase;
-  mSpec.forget();
 
   mOpenRequestActor->SetDatabaseActor(this);
 }
@@ -1864,6 +1645,8 @@ void BackgroundDatabaseChild::ReleaseDOMObject() {
   // calling SendDeleteMeInternal() here. Make sure everything is cleaned up
   // properly before proceeding.
   mTemporaryStrongDatabase = nullptr;
+
+  // XXX Why isn't mDatabase set to nullptr here?
 }
 
 void BackgroundDatabaseChild::ActorDestroy(ActorDestroyReason aWhy) {
@@ -1910,32 +1693,15 @@ bool BackgroundDatabaseChild::DeallocPBackgroundIDBDatabaseRequestChild(
   return true;
 }
 
-PBackgroundIDBTransactionChild*
-BackgroundDatabaseChild::AllocPBackgroundIDBTransactionChild(
-    const nsTArray<nsString>& aObjectStoreNames, const Mode& aMode) {
-  MOZ_CRASH(
-      "PBackgroundIDBTransactionChild actors should be manually "
-      "constructed!");
-}
-
-bool BackgroundDatabaseChild::DeallocPBackgroundIDBTransactionChild(
-    PBackgroundIDBTransactionChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  delete static_cast<BackgroundTransactionChild*>(aActor);
-  return true;
-}
-
-PBackgroundIDBVersionChangeTransactionChild*
+already_AddRefed<PBackgroundIDBVersionChangeTransactionChild>
 BackgroundDatabaseChild::AllocPBackgroundIDBVersionChangeTransactionChild(
-    const uint64_t& aCurrentVersion, const uint64_t& aRequestedVersion,
-    const int64_t& aNextObjectStoreId, const int64_t& aNextIndexId) {
+    const uint64_t aCurrentVersion, const uint64_t aRequestedVersion,
+    const int64_t aNextObjectStoreId, const int64_t aNextIndexId) {
   AssertIsOnOwningThread();
 
-  IDBOpenDBRequest* request = mOpenRequestActor->GetOpenDBRequest();
-  MOZ_ASSERT(request);
-
-  return new BackgroundVersionChangeTransactionChild(request);
+  return RefPtr{new BackgroundVersionChangeTransactionChild(
+                    mOpenRequestActor->GetOpenDBRequest())}
+      .forget();
 }
 
 mozilla::ipc::IPCResult
@@ -1955,40 +1721,34 @@ BackgroundDatabaseChild::RecvPBackgroundIDBVersionChangeTransactionConstructor(
 
   auto* actor = static_cast<BackgroundVersionChangeTransactionChild*>(aActor);
 
-  RefPtr<IDBOpenDBRequest> request = mOpenRequestActor->GetOpenDBRequest();
-  MOZ_ASSERT(request);
+  // XXX NotNull might encapsulate this
+  const auto request =
+      WrapNotNullUnchecked(RefPtr{mOpenRequestActor->GetOpenDBRequest().get()});
 
-  RefPtr<IDBTransaction> transaction = IDBTransaction::CreateVersionChange(
+  SafeRefPtr<IDBTransaction> transaction = IDBTransaction::CreateVersionChange(
       mDatabase, actor, request, aNextObjectStoreId, aNextIndexId);
   MOZ_ASSERT(transaction);
 
   transaction->AssertIsOnOwningThread();
 
-  actor->SetDOMTransaction(transaction);
+  actor->SetDOMTransaction(transaction.clonePtr());
 
-  mDatabase->EnterSetVersionTransaction(aRequestedVersion);
+  const auto database = WrapNotNull(mDatabase);
 
-  request->SetTransaction(transaction);
+  database->EnterSetVersionTransaction(aRequestedVersion);
+
+  request->SetTransaction(transaction.clonePtr());
 
   RefPtr<Event> upgradeNeededEvent = IDBVersionChangeEvent::Create(
-      request, nsDependentString(kUpgradeNeededEventType), aCurrentVersion,
-      aRequestedVersion);
+      request.get(), nsDependentString(kUpgradeNeededEventType),
+      aCurrentVersion, aRequestedVersion);
   MOZ_ASSERT(upgradeNeededEvent);
 
-  ResultHelper helper(request, transaction, mDatabase);
-
-  DispatchSuccessEvent(&helper, upgradeNeededEvent);
+  SetResultAndDispatchSuccessEvent(
+      WrapNotNullUnchecked<RefPtr<IDBRequest>>(request.get()), transaction,
+      *database, std::move(upgradeNeededEvent));
 
   return IPC_OK();
-}
-
-bool BackgroundDatabaseChild::
-    DeallocPBackgroundIDBVersionChangeTransactionChild(
-        PBackgroundIDBVersionChangeTransactionChild* aActor) {
-  MOZ_ASSERT(aActor);
-
-  delete static_cast<BackgroundVersionChangeTransactionChild*>(aActor);
-  return true;
 }
 
 PBackgroundMutableFileChild*
@@ -2008,7 +1768,7 @@ bool BackgroundDatabaseChild::DeallocPBackgroundMutableFileChild(
 }
 
 mozilla::ipc::IPCResult BackgroundDatabaseChild::RecvVersionChange(
-    const uint64_t& aOldVersion, const Maybe<uint64_t>& aNewVersion) {
+    const uint64_t aOldVersion, const Maybe<uint64_t> aNewVersion) {
   AssertIsOnOwningThread();
 
   MaybeCollectGarbageOnIPCMessage();
@@ -2057,9 +1817,8 @@ mozilla::ipc::IPCResult BackgroundDatabaseChild::RecvVersionChange(
     MOZ_ASSERT(versionChangeEvent);
   }
 
-  IDB_LOG_MARK("IndexedDB %s: Child : Firing \"versionchange\" event",
-               "IndexedDB %s: C: IDBDatabase \"versionchange\" event",
-               IDB_LOG_ID_STRING());
+  IDB_LOG_MARK("Child : Firing \"versionchange\" event",
+               "C: IDBDatabase \"versionchange\" event", IDB_LOG_ID_STRING());
 
   IgnoredErrorResult rv;
   kungFuDeathGrip->DispatchEvent(*versionChangeEvent, rv);
@@ -2104,12 +1863,11 @@ BackgroundDatabaseChild::RecvCloseAfterInvalidationComplete() {
  ******************************************************************************/
 
 BackgroundDatabaseRequestChild::BackgroundDatabaseRequestChild(
-    IDBDatabase* aDatabase, IDBRequest* aRequest)
-    : BackgroundRequestChildBase(aRequest), mDatabase(aDatabase) {
+    IDBDatabase* aDatabase, MovingNotNull<RefPtr<IDBRequest>> aRequest)
+    : BackgroundRequestChildBase(std::move(aRequest)), mDatabase(aDatabase) {
   // Can't assert owning thread here because IPDL has not yet set our manager!
   MOZ_ASSERT(aDatabase);
   aDatabase->AssertIsOnOwningThread();
-  MOZ_ASSERT(aRequest);
 
   MOZ_COUNT_CTOR(indexedDB::BackgroundDatabaseRequestChild);
 }
@@ -2142,13 +1900,9 @@ bool BackgroundDatabaseRequestChild::HandleResponse(
 
   mutableFileActor->EnsureDOMObject();
 
-  auto mutableFile =
-      static_cast<IDBMutableFile*>(mutableFileActor->GetDOMObject());
-  MOZ_ASSERT(mutableFile);
-
-  ResultHelper helper(mRequest, nullptr, mutableFile);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, nullptr,
+                                   *WrapNotNull(static_cast<IDBMutableFile*>(
+                                       mutableFileActor->GetDOMObject())));
 
   mutableFileActor->ReleaseDOMObject();
 
@@ -2158,7 +1912,6 @@ bool BackgroundDatabaseRequestChild::HandleResponse(
 mozilla::ipc::IPCResult BackgroundDatabaseRequestChild::Recv__delete__(
     const DatabaseRequestResponse& aResponse) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
 
   switch (aResponse.type()) {
     case DatabaseRequestResponse::Tnsresult:
@@ -2184,21 +1937,14 @@ mozilla::ipc::IPCResult BackgroundDatabaseRequestChild::Recv__delete__(
  * BackgroundTransactionBase
  ******************************************************************************/
 
-BackgroundTransactionBase::BackgroundTransactionBase() : mTransaction(nullptr) {
-  MOZ_COUNT_CTOR(indexedDB::BackgroundTransactionBase);
-}
-
 BackgroundTransactionBase::BackgroundTransactionBase(
-    IDBTransaction* aTransaction)
-    : mTemporaryStrongTransaction(aTransaction), mTransaction(aTransaction) {
-  MOZ_ASSERT(aTransaction);
-  aTransaction->AssertIsOnOwningThread();
+    SafeRefPtr<IDBTransaction> aTransaction)
+    : mTemporaryStrongTransaction(std::move(aTransaction)),
+      mTransaction(mTemporaryStrongTransaction.unsafeGetRawPtr()) {
+  MOZ_ASSERT(mTransaction);
+  mTransaction->AssertIsOnOwningThread();
 
-  MOZ_COUNT_CTOR(indexedDB::BackgroundTransactionBase);
-}
-
-BackgroundTransactionBase::~BackgroundTransactionBase() {
-  MOZ_COUNT_DTOR(indexedDB::BackgroundTransactionBase);
+  MOZ_COUNT_CTOR(BackgroundTransactionBase);
 }
 
 #ifdef DEBUG
@@ -2226,15 +1972,15 @@ void BackgroundTransactionBase::NoteActorDestroyed() {
 }
 
 void BackgroundTransactionBase::SetDOMTransaction(
-    IDBTransaction* aTransaction) {
+    SafeRefPtr<IDBTransaction> aTransaction) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aTransaction);
   aTransaction->AssertIsOnOwningThread();
   MOZ_ASSERT(!mTemporaryStrongTransaction);
   MOZ_ASSERT(!mTransaction);
 
-  mTemporaryStrongTransaction = aTransaction;
-  mTransaction = aTransaction;
+  mTemporaryStrongTransaction = std::move(aTransaction);
+  mTransaction = mTemporaryStrongTransaction.unsafeGetRawPtr();
 }
 
 void BackgroundTransactionBase::NoteComplete() {
@@ -2249,11 +1995,8 @@ void BackgroundTransactionBase::NoteComplete() {
  ******************************************************************************/
 
 BackgroundTransactionChild::BackgroundTransactionChild(
-    IDBTransaction* aTransaction)
-    : BackgroundTransactionBase(aTransaction) {
-  MOZ_ASSERT(aTransaction);
-  aTransaction->AssertIsOnOwningThread();
-
+    SafeRefPtr<IDBTransaction> aTransaction)
+    : BackgroundTransactionBase(std::move(aTransaction)) {
   MOZ_COUNT_CTOR(indexedDB::BackgroundTransactionChild);
 }
 
@@ -2288,7 +2031,7 @@ void BackgroundTransactionChild::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 mozilla::ipc::IPCResult BackgroundTransactionChild::RecvComplete(
-    const nsresult& aResult) {
+    const nsresult aResult) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mTransaction);
 
@@ -2328,7 +2071,7 @@ bool BackgroundTransactionChild::DeallocPBackgroundIDBCursorChild(
     PBackgroundIDBCursorChild* aActor) {
   MOZ_ASSERT(aActor);
 
-  delete static_cast<BackgroundCursorChild*>(aActor);
+  delete aActor;
   return true;
 }
 
@@ -2384,7 +2127,7 @@ void BackgroundVersionChangeTransactionChild::ActorDestroy(
 }
 
 mozilla::ipc::IPCResult BackgroundVersionChangeTransactionChild::RecvComplete(
-    const nsresult& aResult) {
+    const nsresult aResult) {
   AssertIsOnOwningThread();
 
   MaybeCollectGarbageOnIPCMessage();
@@ -2446,7 +2189,7 @@ bool BackgroundVersionChangeTransactionChild::DeallocPBackgroundIDBCursorChild(
     PBackgroundIDBCursorChild* aActor) {
   MOZ_ASSERT(aActor);
 
-  delete static_cast<BackgroundCursorChild*>(aActor);
+  delete aActor;
   return true;
 }
 
@@ -2546,9 +2289,10 @@ bool BackgroundMutableFileChild::DeallocPBackgroundFileHandleChild(
  * BackgroundRequestChild
  ******************************************************************************/
 
-BackgroundRequestChild::BackgroundRequestChild(IDBRequest* aRequest)
-    : BackgroundRequestChildBase(aRequest),
-      mTransaction(aRequest->GetTransaction()),
+BackgroundRequestChild::BackgroundRequestChild(
+    MovingNotNull<RefPtr<IDBRequest>> aRequest)
+    : BackgroundRequestChildBase(std::move(aRequest)),
+      mTransaction(mRequest->AcquireTransaction()),
       mRunningPreprocessHelpers(0),
       mCurrentCloneDataIndex(0),
       mPreprocessResultCode(NS_OK),
@@ -2590,25 +2334,29 @@ void BackgroundRequestChild::MaybeSendContinue() {
 void BackgroundRequestChild::OnPreprocessFinished(
     uint32_t aCloneDataIndex, UniquePtr<JSStructuredCloneData> aCloneData) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aCloneDataIndex < mPreprocessHelpers.Length());
+  MOZ_ASSERT(aCloneDataIndex < mCloneInfos.Length());
   MOZ_ASSERT(aCloneData);
-  MOZ_ASSERT(mPreprocessHelpers[aCloneDataIndex]);
-  MOZ_ASSERT(!mCloneDatas[aCloneDataIndex]);
 
-  mCloneDatas[aCloneDataIndex] = std::move(aCloneData);
+  auto& cloneInfo = mCloneInfos[aCloneDataIndex];
+  MOZ_ASSERT(cloneInfo.mPreprocessHelper);
+  MOZ_ASSERT(!cloneInfo.mCloneData);
+
+  cloneInfo.mCloneData = std::move(aCloneData);
 
   MaybeSendContinue();
 
-  mPreprocessHelpers[aCloneDataIndex] = nullptr;
+  cloneInfo.mPreprocessHelper = nullptr;
 }
 
 void BackgroundRequestChild::OnPreprocessFailed(uint32_t aCloneDataIndex,
                                                 nsresult aErrorCode) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aCloneDataIndex < mPreprocessHelpers.Length());
+  MOZ_ASSERT(aCloneDataIndex < mCloneInfos.Length());
   MOZ_ASSERT(NS_FAILED(aErrorCode));
-  MOZ_ASSERT(mPreprocessHelpers[aCloneDataIndex]);
-  MOZ_ASSERT(!mCloneDatas[aCloneDataIndex]);
+
+  auto& cloneInfo = mCloneInfos[aCloneDataIndex];
+  MOZ_ASSERT(cloneInfo.mPreprocessHelper);
+  MOZ_ASSERT(!cloneInfo.mCloneData);
 
   if (NS_SUCCEEDED(mPreprocessResultCode)) {
     mPreprocessResultCode = aErrorCode;
@@ -2616,18 +2364,15 @@ void BackgroundRequestChild::OnPreprocessFailed(uint32_t aCloneDataIndex,
 
   MaybeSendContinue();
 
-  mPreprocessHelpers[aCloneDataIndex] = nullptr;
+  cloneInfo.mPreprocessHelper = nullptr;
 }
 
 UniquePtr<JSStructuredCloneData> BackgroundRequestChild::GetNextCloneData() {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mCurrentCloneDataIndex < mCloneDatas.Length());
-  MOZ_ASSERT(mCloneDatas[mCurrentCloneDataIndex]);
+  MOZ_ASSERT(mCurrentCloneDataIndex < mCloneInfos.Length());
+  MOZ_ASSERT(mCloneInfos[mCurrentCloneDataIndex].mCloneData);
 
-  UniquePtr<JSStructuredCloneData> cloneData;
-  mCloneDatas[mCurrentCloneDataIndex++].swap(cloneData);
-
-  return cloneData;
+  return std::move(mCloneInfos[mCurrentCloneDataIndex++].mCloneData);
 }
 
 void BackgroundRequestChild::HandleResponse(nsresult aResponse) {
@@ -2636,152 +2381,97 @@ void BackgroundRequestChild::HandleResponse(nsresult aResponse) {
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aResponse) == NS_ERROR_MODULE_DOM_INDEXEDDB);
   MOZ_ASSERT(mTransaction);
 
-  DispatchErrorEvent(mRequest, aResponse, mTransaction);
+  DispatchErrorEvent(mRequest, aResponse, mTransaction.clonePtr());
 }
 
 void BackgroundRequestChild::HandleResponse(const Key& aResponse) {
   AssertIsOnOwningThread();
 
-  ResultHelper helper(mRequest, mTransaction, &aResponse);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, AcquireTransaction(), aResponse);
 }
 
 void BackgroundRequestChild::HandleResponse(const nsTArray<Key>& aResponse) {
   AssertIsOnOwningThread();
 
-  ResultHelper helper(mRequest, mTransaction, &aResponse);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, AcquireTransaction(), aResponse);
 }
 
 void BackgroundRequestChild::HandleResponse(
-    const SerializedStructuredCloneReadInfo& aResponse) {
+    SerializedStructuredCloneReadInfo&& aResponse) {
   AssertIsOnOwningThread();
 
-  // XXX Fix this somehow...
-  auto& serializedCloneInfo =
-      const_cast<SerializedStructuredCloneReadInfo&>(aResponse);
+  auto cloneReadInfo = DeserializeStructuredCloneReadInfo(
+      std::move(aResponse), mTransaction->Database(),
+      [this] { return std::move(*GetNextCloneData()); });
 
-  StructuredCloneReadInfo cloneReadInfo(std::move(serializedCloneInfo));
-
-  DeserializeStructuredCloneFiles(mTransaction->Database(), aResponse.files(),
-                                  /* aForPreprocess */ false,
-                                  cloneReadInfo.mFiles);
-
-  if (cloneReadInfo.mHasPreprocessInfo) {
-    UniquePtr<JSStructuredCloneData> cloneData = GetNextCloneData();
-    cloneReadInfo.mData = std::move(*cloneData);
-  }
-
-  ResultHelper helper(mRequest, mTransaction, &cloneReadInfo);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, AcquireTransaction(),
+                                   cloneReadInfo);
 }
 
 void BackgroundRequestChild::HandleResponse(
-    const nsTArray<SerializedStructuredCloneReadInfo>& aResponse) {
+    nsTArray<SerializedStructuredCloneReadInfo>&& aResponse) {
   AssertIsOnOwningThread();
 
-  nsTArray<StructuredCloneReadInfo> cloneReadInfos;
+  nsTArray<StructuredCloneReadInfoChild> cloneReadInfos;
 
   if (!aResponse.IsEmpty()) {
     const uint32_t count = aResponse.Length();
 
     cloneReadInfos.SetCapacity(count);
 
-    IDBDatabase* database = mTransaction->Database();
-
-    for (uint32_t index = 0; index < count; index++) {
-      // XXX Fix this somehow...
-      auto& serializedCloneInfo =
-          const_cast<SerializedStructuredCloneReadInfo&>(aResponse[index]);
-
-      StructuredCloneReadInfo* cloneReadInfo = cloneReadInfos.AppendElement();
-
-      // Move relevant data into the cloneReadInfo
-      *cloneReadInfo = std::move(serializedCloneInfo);
-
-      // Get the files
-      nsTArray<StructuredCloneFile> files;
-      DeserializeStructuredCloneFiles(database, serializedCloneInfo.files(),
-                                      /* aForPreprocess */ false, files);
-
-      cloneReadInfo->mFiles = std::move(files);
-
-      if (cloneReadInfo->mHasPreprocessInfo) {
-        UniquePtr<JSStructuredCloneData> cloneData = GetNextCloneData();
-        cloneReadInfo->mData = std::move(*cloneData);
-      }
-    }
+    std::transform(
+        std::make_move_iterator(aResponse.begin()),
+        std::make_move_iterator(aResponse.end()),
+        MakeBackInserter(cloneReadInfos),
+        [database = mTransaction->Database(),
+         this](SerializedStructuredCloneReadInfo&& serializedCloneInfo) {
+          return DeserializeStructuredCloneReadInfo(
+              std::move(serializedCloneInfo), database,
+              [this] { return std::move(*GetNextCloneData()); });
+        });
   }
 
-  ResultHelper helper(mRequest, mTransaction, &cloneReadInfos);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, AcquireTransaction(),
+                                   cloneReadInfos);
 }
 
 void BackgroundRequestChild::HandleResponse(JS::Handle<JS::Value> aResponse) {
   AssertIsOnOwningThread();
 
-  ResultHelper helper(mRequest, mTransaction, &aResponse);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(
+      mRequest, AcquireTransaction(),
+      const_cast<const JS::Handle<JS::Value>&>(aResponse));
 }
 
-void BackgroundRequestChild::HandleResponse(uint64_t aResponse) {
+void BackgroundRequestChild::HandleResponse(const uint64_t aResponse) {
   AssertIsOnOwningThread();
 
-  JS::Value response(JS::NumberValue(aResponse));
-
-  ResultHelper helper(mRequest, mTransaction, &response);
-
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(mRequest, AcquireTransaction(), aResponse);
 }
 
 nsresult BackgroundRequestChild::HandlePreprocess(
     const PreprocessInfo& aPreprocessInfo) {
-  AssertIsOnOwningThread();
-
-  IDBDatabase* database = mTransaction->Database();
-
-  mPreprocessHelpers.SetLength(1);
-
-  nsTArray<StructuredCloneFile> files;
-  DeserializeStructuredCloneFiles(database, aPreprocessInfo.files(),
-                                  /* aForPreprocess */ true, files);
-
-  MOZ_ASSERT(files.Length() == 1);
-
-  RefPtr<PreprocessHelper>& preprocessHelper = mPreprocessHelpers[0];
-  preprocessHelper = new PreprocessHelper(0, this);
-
-  nsresult rv = preprocessHelper->Init(files[0]);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  rv = preprocessHelper->Dispatch();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  mRunningPreprocessHelpers++;
-
-  mCloneDatas.SetLength(1);
-
-  return NS_OK;
+  return HandlePreprocessInternal(
+      AutoTArray<PreprocessInfo, 1>{aPreprocessInfo});
 }
 
 nsresult BackgroundRequestChild::HandlePreprocess(
     const nsTArray<PreprocessInfo>& aPreprocessInfos) {
   AssertIsOnOwningThread();
+  mGetAll = true;
+
+  return HandlePreprocessInternal(aPreprocessInfos);
+}
+
+nsresult BackgroundRequestChild::HandlePreprocessInternal(
+    const nsTArray<PreprocessInfo>& aPreprocessInfos) {
+  AssertIsOnOwningThread();
 
   IDBDatabase* database = mTransaction->Database();
 
-  uint32_t count = aPreprocessInfos.Length();
+  const uint32_t count = aPreprocessInfos.Length();
 
-  mPreprocessHelpers.SetLength(count);
+  mCloneInfos.SetLength(count);
 
   // TODO: Since we use the stream transport service, this can spawn 25 threads
   //       and has the potential to cause some annoying browser hiccups.
@@ -2789,14 +2479,14 @@ nsresult BackgroundRequestChild::HandlePreprocess(
   for (uint32_t index = 0; index < count; index++) {
     const PreprocessInfo& preprocessInfo = aPreprocessInfos[index];
 
-    nsTArray<StructuredCloneFile> files;
-    DeserializeStructuredCloneFiles(database, preprocessInfo.files(),
-                                    /* aForPreprocess */ true, files);
+    const auto files =
+        DeserializeStructuredCloneFiles(database, preprocessInfo.files(),
+                                        /* aForPreprocess */ true);
 
     MOZ_ASSERT(files.Length() == 1);
 
-    RefPtr<PreprocessHelper>& preprocessHelper = mPreprocessHelpers[index];
-    preprocessHelper = new PreprocessHelper(index, this);
+    auto& preprocessHelper = mCloneInfos[index].mPreprocessHelper;
+    preprocessHelper = MakeRefPtr<PreprocessHelper>(index, this);
 
     nsresult rv = preprocessHelper->Init(files[0]);
     if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -2811,10 +2501,6 @@ nsresult BackgroundRequestChild::HandlePreprocess(
     mRunningPreprocessHelpers++;
   }
 
-  mCloneDatas.SetLength(count);
-
-  mGetAll = true;
-
   return NS_OK;
 }
 
@@ -2823,21 +2509,19 @@ void BackgroundRequestChild::ActorDestroy(ActorDestroyReason aWhy) {
 
   MaybeCollectGarbageOnIPCMessage();
 
-  for (uint32_t count = mPreprocessHelpers.Length(), index = 0; index < count;
-       index++) {
-    RefPtr<PreprocessHelper>& preprocessHelper = mPreprocessHelpers[index];
+  for (auto& cloneInfo : mCloneInfos) {
+    const auto& preprocessHelper = cloneInfo.mPreprocessHelper;
 
     if (preprocessHelper) {
       preprocessHelper->ClearActor();
-
-      preprocessHelper = nullptr;
     }
   }
+  mCloneInfos.Clear();
 
   if (mTransaction) {
     mTransaction->AssertIsOnOwningThread();
 
-    mTransaction->OnRequestFinished(/* aActorDestroyedNormally */
+    mTransaction->OnRequestFinished(/* aRequestCompletedSuccessfully */
                                     aWhy == Deletion);
 #ifdef DEBUG
     mTransaction = nullptr;
@@ -2846,9 +2530,8 @@ void BackgroundRequestChild::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
-    const RequestResponse& aResponse) {
+    RequestResponse&& aResponse) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
   MOZ_ASSERT(mTransaction);
 
   MaybeCollectGarbageOnIPCMessage();
@@ -2872,7 +2555,8 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
         break;
 
       case RequestResponse::TObjectStoreGetResponse:
-        HandleResponse(aResponse.get_ObjectStoreGetResponse().cloneInfo());
+        HandleResponse(
+            std::move(aResponse.get_ObjectStoreGetResponse().cloneInfo()));
         break;
 
       case RequestResponse::TObjectStoreGetKeyResponse:
@@ -2880,7 +2564,8 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
         break;
 
       case RequestResponse::TObjectStoreGetAllResponse:
-        HandleResponse(aResponse.get_ObjectStoreGetAllResponse().cloneInfos());
+        HandleResponse(
+            std::move(aResponse.get_ObjectStoreGetAllResponse().cloneInfos()));
         break;
 
       case RequestResponse::TObjectStoreGetAllKeysResponse:
@@ -2888,9 +2573,6 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
         break;
 
       case RequestResponse::TObjectStoreDeleteResponse:
-        HandleResponse(JS::UndefinedHandleValue);
-        break;
-
       case RequestResponse::TObjectStoreClearResponse:
         HandleResponse(JS::UndefinedHandleValue);
         break;
@@ -2900,7 +2582,7 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
         break;
 
       case RequestResponse::TIndexGetResponse:
-        HandleResponse(aResponse.get_IndexGetResponse().cloneInfo());
+        HandleResponse(std::move(aResponse.get_IndexGetResponse().cloneInfo()));
         break;
 
       case RequestResponse::TIndexGetKeyResponse:
@@ -2908,7 +2590,8 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
         break;
 
       case RequestResponse::TIndexGetAllResponse:
-        HandleResponse(aResponse.get_IndexGetAllResponse().cloneInfos());
+        HandleResponse(
+            std::move(aResponse.get_IndexGetAllResponse().cloneInfos()));
         break;
 
       case RequestResponse::TIndexGetAllKeysResponse:
@@ -2924,7 +2607,7 @@ mozilla::ipc::IPCResult BackgroundRequestChild::Recv__delete__(
     }
   }
 
-  mTransaction->OnRequestFinished(/* aActorDestroyedNormally */ true);
+  mTransaction->OnRequestFinished(/* aRequestCompletedSuccessfully */ true);
 
   // Null this out so that we don't try to call OnRequestFinished() again in
   // ActorDestroy.
@@ -2944,8 +2627,7 @@ mozilla::ipc::IPCResult BackgroundRequestChild::RecvPreprocess(
 
   switch (aParams.type()) {
     case PreprocessParams::TObjectStoreGetPreprocessParams: {
-      ObjectStoreGetPreprocessParams params =
-          aParams.get_ObjectStoreGetPreprocessParams();
+      const auto& params = aParams.get_ObjectStoreGetPreprocessParams();
 
       rv = HandlePreprocess(params.preprocessInfo());
 
@@ -2953,8 +2635,7 @@ mozilla::ipc::IPCResult BackgroundRequestChild::RecvPreprocess(
     }
 
     case PreprocessParams::TObjectStoreGetAllPreprocessParams: {
-      ObjectStoreGetAllPreprocessParams params =
-          aParams.get_ObjectStoreGetAllPreprocessParams();
+      const auto& params = aParams.get_ObjectStoreGetAllPreprocessParams();
 
       rv = HandlePreprocess(params.preprocessInfos());
 
@@ -2976,10 +2657,10 @@ mozilla::ipc::IPCResult BackgroundRequestChild::RecvPreprocess(
 }
 
 nsresult BackgroundRequestChild::PreprocessHelper::Init(
-    const StructuredCloneFile& aFile) {
+    const StructuredCloneFileChild& aFile) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aFile.mBlob);
-  MOZ_ASSERT(aFile.mType == StructuredCloneFile::eStructuredClone);
+  MOZ_ASSERT(aFile.HasBlob());
+  MOZ_ASSERT(aFile.Type() == StructuredCloneFileBase::eStructuredClone);
   MOZ_ASSERT(mState == State::Initial);
 
   // The stream transport service is used for asynchronous processing. It has a
@@ -2992,13 +2673,13 @@ nsresult BackgroundRequestChild::PreprocessHelper::Init(
   // We use a TaskQueue here in order to be sure that the events are dispatched
   // in the correct order. This is not guaranteed in case we use the I/O thread
   // directly.
-  mTaskQueue = new TaskQueue(target.forget());
-  mTaskQueueEventTarget = mTaskQueue->WrapAsEventTarget();
+  mTaskQueue = MakeRefPtr<TaskQueue>(target.forget());
 
   ErrorResult errorResult;
 
   nsCOMPtr<nsIInputStream> stream;
-  aFile.mBlob->CreateInputStream(getter_AddRefs(stream), errorResult);
+  // XXX After Bug 1620560, MutableBlob is not needed here anymore.
+  aFile.MutableBlob().CreateInputStream(getter_AddRefs(stream), errorResult);
   if (NS_WARN_IF(errorResult.Failed())) {
     return errorResult.StealNSResult();
   }
@@ -3015,7 +2696,7 @@ nsresult BackgroundRequestChild::PreprocessHelper::Dispatch() {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mState == State::Initial);
 
-  nsresult rv = mTaskQueueEventTarget->Dispatch(this, NS_DISPATCH_NORMAL);
+  nsresult rv = mTaskQueue->Dispatch(this, NS_DISPATCH_NORMAL);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -3044,7 +2725,7 @@ nsresult BackgroundRequestChild::PreprocessHelper::Start() {
 
   nsCOMPtr<nsIAsyncFileMetadata> asyncFileMetadata = do_QueryInterface(mStream);
   if (asyncFileMetadata) {
-    rv = asyncFileMetadata->AsyncFileMetadataWait(this, mTaskQueueEventTarget);
+    rv = asyncFileMetadata->AsyncFileMetadataWait(this, mTaskQueue);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -3057,7 +2738,7 @@ nsresult BackgroundRequestChild::PreprocessHelper::Start() {
     return NS_ERROR_NO_INTERFACE;
   }
 
-  rv = asyncStream->AsyncWait(this, 0, 0, mTaskQueueEventTarget);
+  rv = asyncStream->AsyncWait(this, 0, 0, mTaskQueue);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -3075,7 +2756,8 @@ nsresult BackgroundRequestChild::PreprocessHelper::ProcessStream() {
   // SnappyUncompressInputStream doesn't support reading from async input
   // streams.
 
-  nsCOMPtr<mozIIPCBlobInputStream> blobInputStream = do_QueryInterface(mStream);
+  nsCOMPtr<mozIRemoteLazyInputStream> blobInputStream =
+      do_QueryInterface(mStream);
   MOZ_ASSERT(blobInputStream);
 
   nsCOMPtr<nsIInputStream> internalInputStream =
@@ -3207,77 +2889,45 @@ BackgroundRequestChild::PreprocessHelper::OnFileMetadataReady(
  * BackgroundCursorChild
  ******************************************************************************/
 
-// Does not need to be threadsafe since this only runs on one thread, but
-// inheriting from CancelableRunnable is easy.
-class BackgroundCursorChild::DelayedActionRunnable final
-    : public CancelableRunnable {
-  using ActionFunc = void (BackgroundCursorChild::*)();
-
-  BackgroundCursorChild* mActor;
-  RefPtr<IDBRequest> mRequest;
-  ActionFunc mActionFunc;
-
- public:
-  explicit DelayedActionRunnable(BackgroundCursorChild* aActor,
-                                 ActionFunc aActionFunc)
-      : CancelableRunnable(
-            "indexedDB::BackgroundCursorChild::DelayedActionRunnable"),
-        mActor(aActor),
-        mRequest(aActor->mRequest),
-        mActionFunc(aActionFunc) {
-    MOZ_ASSERT(aActor);
-    aActor->AssertIsOnOwningThread();
-    MOZ_ASSERT(mRequest);
-    MOZ_ASSERT(mActionFunc);
-  }
-
- private:
-  ~DelayedActionRunnable() {}
-
-  NS_DECL_NSIRUNNABLE
-  nsresult Cancel() override;
-};
-
-BackgroundCursorChild::BackgroundCursorChild(IDBRequest* aRequest,
-                                             IDBObjectStore* aObjectStore,
-                                             Direction aDirection)
+BackgroundCursorChildBase::BackgroundCursorChildBase(
+    const NotNull<IDBRequest*> aRequest, const Direction aDirection)
     : mRequest(aRequest),
-      mTransaction(aRequest->GetTransaction()),
-      mObjectStore(aObjectStore),
-      mIndex(nullptr),
-      mCursor(nullptr),
+      mTransaction(aRequest->MaybeTransactionRef()),
       mStrongRequest(aRequest),
       mDirection(aDirection) {
-  MOZ_ASSERT(aObjectStore);
-  aObjectStore->AssertIsOnOwningThread();
   MOZ_ASSERT(mTransaction);
-
-  MOZ_COUNT_CTOR(indexedDB::BackgroundCursorChild);
 }
 
-BackgroundCursorChild::BackgroundCursorChild(IDBRequest* aRequest,
-                                             IDBIndex* aIndex,
-                                             Direction aDirection)
-    : mRequest(aRequest),
-      mTransaction(aRequest->GetTransaction()),
-      mObjectStore(nullptr),
-      mIndex(aIndex),
+MovingNotNull<RefPtr<IDBRequest>> BackgroundCursorChildBase::AcquireRequest()
+    const {
+  AssertIsOnOwningThread();
+
+  // XXX This could be encapsulated by NotNull
+  return WrapNotNullUnchecked(RefPtr{mRequest->get()});
+}
+
+template <IDBCursorType CursorType>
+BackgroundCursorChild<CursorType>::BackgroundCursorChild(
+    const NotNull<IDBRequest*> aRequest, SourceType* aSource,
+    Direction aDirection)
+    : BackgroundCursorChildBase(aRequest, aDirection),
+      mSource(WrapNotNull(aSource)),
       mCursor(nullptr),
-      mStrongRequest(aRequest),
-      mDirection(aDirection) {
-  MOZ_ASSERT(aIndex);
-  aIndex->AssertIsOnOwningThread();
-  MOZ_ASSERT(mTransaction);
+      mInFlightResponseInvalidationNeeded(false) {
+  aSource->AssertIsOnOwningThread();
 
-  MOZ_COUNT_CTOR(indexedDB::BackgroundCursorChild);
+  MOZ_COUNT_CTOR(indexedDB::BackgroundCursorChild<CursorType>);
 }
 
-BackgroundCursorChild::~BackgroundCursorChild() {
-  MOZ_COUNT_DTOR(indexedDB::BackgroundCursorChild);
+template <IDBCursorType CursorType>
+BackgroundCursorChild<CursorType>::~BackgroundCursorChild() {
+  MOZ_COUNT_DTOR(indexedDB::BackgroundCursorChild<CursorType>);
 }
 
-void BackgroundCursorChild::SendContinueInternal(
-    const CursorRequestParams& aParams) {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::SendContinueInternal(
+    const CursorRequestParams& aParams,
+    const CursorData<CursorType>& aCurrentData) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
   MOZ_ASSERT(mTransaction);
@@ -3288,23 +2938,222 @@ void BackgroundCursorChild::SendContinueInternal(
   // Make sure all our DOM objects stay alive.
   mStrongCursor = mCursor;
 
-  MOZ_ASSERT(mRequest->ReadyState() == IDBRequestReadyState::Done);
-  mRequest->Reset();
+  MOZ_ASSERT(GetRequest()->ReadyState() == IDBRequestReadyState::Done);
+  GetRequest()->Reset();
 
   mTransaction->OnNewRequest();
 
-  MOZ_ALWAYS_TRUE(PBackgroundIDBCursorChild::SendContinue(aParams));
+  CursorRequestParams params = aParams;
+  Key currentKey = aCurrentData.mKey;
+  Key currentObjectStoreKey;
+  // TODO: This is still not nice.
+  if constexpr (!CursorTypeTraits<CursorType>::IsObjectStoreCursor) {
+    currentObjectStoreKey = aCurrentData.mObjectStoreKey;
+  }
+
+  switch (params.type()) {
+    case CursorRequestParams::TContinueParams: {
+      const auto& key = params.get_ContinueParams().key();
+      if (key.IsUnset()) {
+        break;
+      }
+
+      // Discard cache entries before the target key.
+      DiscardCachedResponses(
+          [&key, isLocaleAware = mCursor->IsLocaleAware(),
+           keyOperator = GetKeyOperator(mDirection),
+           transactionSerialNumber = mTransaction->LoggingSerialNumber(),
+           requestSerialNumber = GetRequest()->LoggingSerialNumber()](
+              const auto& currentCachedResponse) {
+            // This duplicates the logic from the parent. We could avoid this
+            // duplication if we invalidated the cached records always for any
+            // continue-with-key operation, but would lose the benefits of
+            // preloading then.
+            const auto& cachedSortKey =
+                currentCachedResponse.GetSortKey(isLocaleAware);
+            const bool discard = !(cachedSortKey.*keyOperator)(key);
+            if (discard) {
+              IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+                  "PRELOAD: Continue to key %s, discarding cached key %s/%s",
+                  "Continue, discarding%.0s%.0s%.0s", transactionSerialNumber,
+                  requestSerialNumber, key.GetBuffer().get(),
+                  cachedSortKey.GetBuffer().get(),
+                  currentCachedResponse.GetObjectStoreKeyForLogging());
+            } else {
+              IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+                  "PRELOAD: Continue to key %s, keeping cached key %s/%s and "
+                  "further",
+                  "Continue, keeping%.0s%.0s%.0s", transactionSerialNumber,
+                  requestSerialNumber, key.GetBuffer().get(),
+                  cachedSortKey.GetBuffer().get(),
+                  currentCachedResponse.GetObjectStoreKeyForLogging());
+            }
+
+            return discard;
+          });
+
+      break;
+    }
+
+    case CursorRequestParams::TContinuePrimaryKeyParams: {
+      if constexpr (!CursorTypeTraits<CursorType>::IsObjectStoreCursor) {
+        const auto& key = params.get_ContinuePrimaryKeyParams().key();
+        const auto& primaryKey =
+            params.get_ContinuePrimaryKeyParams().primaryKey();
+        if (key.IsUnset() || primaryKey.IsUnset()) {
+          break;
+        }
+
+        // Discard cache entries before the target key.
+        DiscardCachedResponses([&key, &primaryKey,
+                                isLocaleAware = mCursor->IsLocaleAware(),
+                                keyCompareOperator = GetKeyOperator(mDirection),
+                                transactionSerialNumber =
+                                    mTransaction->LoggingSerialNumber(),
+                                requestSerialNumber =
+                                    GetRequest()->LoggingSerialNumber()](
+                                   const auto& currentCachedResponse) {
+          // This duplicates the logic from the parent. We could avoid this
+          // duplication if we invalidated the cached records always for any
+          // continue-with-key operation, but would lose the benefits of
+          // preloading then.
+          const auto& cachedSortKey =
+              currentCachedResponse.GetSortKey(isLocaleAware);
+          const auto& cachedSortPrimaryKey =
+              currentCachedResponse.mObjectStoreKey;
+
+          const bool discard =
+              (cachedSortKey == key &&
+               !(cachedSortPrimaryKey.*keyCompareOperator)(primaryKey)) ||
+              !(cachedSortKey.*keyCompareOperator)(key);
+
+          if (discard) {
+            IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+                "PRELOAD: Continue to key %s with primary key %s, discarding "
+                "cached key %s with cached primary key %s",
+                "Continue, discarding%.0s%.0s%.0s%.0s", transactionSerialNumber,
+                requestSerialNumber, key.GetBuffer().get(),
+                primaryKey.GetBuffer().get(), cachedSortKey.GetBuffer().get(),
+                cachedSortPrimaryKey.GetBuffer().get());
+          } else {
+            IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+                "PRELOAD: Continue to key %s with primary key %s, keeping "
+                "cached key %s with cached primary key %s and further",
+                "Continue, keeping%.0s%.0s%.0s%.0s", transactionSerialNumber,
+                requestSerialNumber, key.GetBuffer().get(),
+                primaryKey.GetBuffer().get(), cachedSortKey.GetBuffer().get(),
+                cachedSortPrimaryKey.GetBuffer().get());
+          }
+
+          return discard;
+        });
+      } else {
+        MOZ_CRASH("Shouldn't get here");
+      }
+
+      break;
+    }
+
+    case CursorRequestParams::TAdvanceParams: {
+      uint32_t& advanceCount = params.get_AdvanceParams().count();
+      IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+          "PRELOAD: Advancing %" PRIu32 " records", "Advancing %" PRIu32,
+          mTransaction->LoggingSerialNumber(),
+          GetRequest()->LoggingSerialNumber(), advanceCount);
+
+      // Discard cache entries.
+      DiscardCachedResponses([&advanceCount, &currentKey,
+                              &currentObjectStoreKey](
+                                 const auto& currentCachedResponse) {
+        const bool res = advanceCount > 1;
+        if (res) {
+          --advanceCount;
+
+          // TODO: We only need to update currentKey on the last entry, the
+          // others are overwritten in the next iteration anyway.
+          currentKey = currentCachedResponse.mKey;
+          if constexpr (!CursorTypeTraits<CursorType>::IsObjectStoreCursor) {
+            currentObjectStoreKey = currentCachedResponse.mObjectStoreKey;
+          } else {
+            Unused << currentObjectStoreKey;
+          }
+        }
+        return res;
+      });
+      break;
+    }
+
+    default:
+      MOZ_CRASH("Should never get here!");
+  }
+
+  if (!mCachedResponses.empty()) {
+    // We need to remove the response here from mCachedResponses, since when
+    // requests are interleaved, other events may be processed before
+    // CompleteContinueRequestFromCache, which may modify mCachedResponses.
+    mDelayedResponses.emplace_back(std::move(mCachedResponses.front()));
+    mCachedResponses.pop_front();
+
+    // We cannot send the response right away, as we must preserve the request
+    // order. Dispatching a DelayedActionRunnable only partially addresses this.
+    // This is accompanied by invalidating cached entries at proper locations to
+    // make it correct. To avoid this, further changes are necessary, see Bug
+    // 1580499.
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(
+        MakeAndAddRef<DelayedActionRunnable<BackgroundCursorChild<CursorType>>>(
+            this, &BackgroundCursorChild::CompleteContinueRequestFromCache)));
+
+    // TODO: Could we preload further entries in the background when the size of
+    // mCachedResponses falls under some threshold? Or does the response
+    // handling model disallow this?
+  } else {
+    MOZ_ALWAYS_TRUE(PBackgroundIDBCursorChild::SendContinue(
+        params, currentKey, currentObjectStoreKey));
+  }
 }
 
-void BackgroundCursorChild::SendDeleteMeInternal() {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::CompleteContinueRequestFromCache() {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mTransaction);
+  MOZ_ASSERT(mCursor);
+  MOZ_ASSERT(mStrongCursor);
+  MOZ_ASSERT(!mDelayedResponses.empty());
+  MOZ_ASSERT(mCursor->GetType() == CursorType);
+
+  const RefPtr<IDBCursor> cursor = std::move(mStrongCursor);
+
+  mCursor->Reset(std::move(mDelayedResponses.front()));
+  mDelayedResponses.pop_front();
+
+  IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+      "PRELOAD: Consumed 1 cached response, %zu cached responses remaining",
+      "Consumed cached response, %zu remaining",
+      mTransaction->LoggingSerialNumber(), GetRequest()->LoggingSerialNumber(),
+      mDelayedResponses.size() + mCachedResponses.size());
+
+  SetResultAndDispatchSuccessEvent(
+      GetRequest(),
+      mTransaction
+          ? SafeRefPtr{&mTransaction.ref(), AcquireStrongRefFromRawPtr{}}
+          : nullptr,
+      *cursor);
+
+  mTransaction->OnRequestFinished(/* aRequestCompletedSuccessfully */ true);
+}
+
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::SendDeleteMeInternal() {
   AssertIsOnOwningThread();
   MOZ_ASSERT(!mStrongRequest);
   MOZ_ASSERT(!mStrongCursor);
 
-  mRequest = nullptr;
-  mTransaction = nullptr;
-  mObjectStore = nullptr;
-  mIndex = nullptr;
+  mRequest.destroy();
+  mTransaction = Nothing();
+  // TODO: The things until here could be pulled up to
+  // BackgroundCursorChildBase.
+
+  mSource.destroy();
 
   if (mCursor) {
     mCursor->ClearBackgroundActor();
@@ -3314,7 +3163,58 @@ void BackgroundCursorChild::SendDeleteMeInternal() {
   }
 }
 
-void BackgroundCursorChild::HandleResponse(nsresult aResponse) {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::InvalidateCachedResponses() {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mTransaction);
+  MOZ_ASSERT(mRequest);
+
+  // TODO: With more information on the reason for the invalidation, we might
+  // only selectively invalidate cached responses. If the reason is an updated
+  // value, we do not need to care for key-only cursors. If the key of the
+  // changed entry is not in the remaining range of the cursor, we also do not
+  // need to care, etc.
+
+  IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+      "PRELOAD: Invalidating all %zu cached responses", "Invalidating %zu",
+      mTransaction->LoggingSerialNumber(), GetRequest()->LoggingSerialNumber(),
+      mCachedResponses.size());
+
+  mCachedResponses.clear();
+
+  // We only hold a strong cursor reference in mStrongCursor when
+  // continue()/similar has been called. In those cases we expect a response
+  // that will be received in the future, and it may include prefetched data
+  // that needs to be discarded.
+  if (mStrongCursor) {
+    IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+        "PRELOAD: Setting flag to invalidate in-flight responses",
+        "Set flag to invalidate in-flight responses",
+        mTransaction->LoggingSerialNumber(),
+        GetRequest()->LoggingSerialNumber());
+
+    mInFlightResponseInvalidationNeeded = true;
+  }
+}
+
+template <IDBCursorType CursorType>
+template <typename Condition>
+void BackgroundCursorChild<CursorType>::DiscardCachedResponses(
+    const Condition& aConditionFunc) {
+  size_t discardedCount = 0;
+  while (!mCachedResponses.empty() &&
+         aConditionFunc(mCachedResponses.front())) {
+    mCachedResponses.pop_front();
+    ++discardedCount;
+  }
+  IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+      "PRELOAD: Discarded %zu cached responses, %zu remaining",
+      "Discarded %zu; remaining %zu", mTransaction->LoggingSerialNumber(),
+      GetRequest()->LoggingSerialNumber(), discardedCount,
+      mCachedResponses.size());
+}
+
+void BackgroundCursorChildBase::HandleResponse(nsresult aResponse) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(NS_FAILED(aResponse));
   MOZ_ASSERT(NS_ERROR_GET_MODULE(aResponse) == NS_ERROR_MODULE_DOM_INDEXEDDB);
@@ -3323,10 +3223,14 @@ void BackgroundCursorChild::HandleResponse(nsresult aResponse) {
   MOZ_ASSERT(!mStrongRequest);
   MOZ_ASSERT(!mStrongCursor);
 
-  DispatchErrorEvent(mRequest, aResponse, mTransaction);
+  DispatchErrorEvent(
+      GetRequest(), aResponse,
+      SafeRefPtr{&mTransaction.ref(), AcquireStrongRefFromRawPtr{}});
 }
 
-void BackgroundCursorChild::HandleResponse(const void_t& aResponse) {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::HandleResponse(
+    const void_t& aResponse) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
   MOZ_ASSERT(mTransaction);
@@ -3337,144 +3241,161 @@ void BackgroundCursorChild::HandleResponse(const void_t& aResponse) {
     mCursor->Reset();
   }
 
-  ResultHelper helper(mRequest, mTransaction, &JS::NullHandleValue);
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(
+      GetRequest(),
+      mTransaction
+          ? SafeRefPtr{&mTransaction.ref(), AcquireStrongRefFromRawPtr{}}
+          : nullptr,
+      JS::NullHandleValue);
 
   if (!mCursor) {
-    nsCOMPtr<nsIRunnable> deleteRunnable = new DelayedActionRunnable(
-        this, &BackgroundCursorChild::SendDeleteMeInternal);
     MOZ_ALWAYS_SUCCEEDS(this->GetActorEventTarget()->Dispatch(
-        deleteRunnable.forget(), NS_DISPATCH_NORMAL));
+        MakeAndAddRef<DelayedActionRunnable<BackgroundCursorChild<CursorType>>>(
+            this, &BackgroundCursorChild::SendDeleteMeInternal),
+        NS_DISPATCH_NORMAL));
   }
 }
 
-void BackgroundCursorChild::HandleResponse(
-    const nsTArray<ObjectStoreCursorResponse>& aResponses) {
+template <IDBCursorType CursorType>
+template <typename... Args>
+RefPtr<IDBCursor>
+BackgroundCursorChild<CursorType>::HandleIndividualCursorResponse(
+    const bool aUseAsCurrentResult, Args&&... aArgs) {
+  if (mCursor) {
+    if (aUseAsCurrentResult) {
+      mCursor->Reset(CursorData<CursorType>{std::forward<Args>(aArgs)...});
+    } else {
+      mCachedResponses.emplace_back(std::forward<Args>(aArgs)...);
+    }
+    return nullptr;
+  }
+
+  MOZ_ASSERT(aUseAsCurrentResult);
+
+  // TODO: This still looks quite dangerous to me. Why is mCursor not a
+  // RefPtr?
+  auto newCursor = IDBCursor::Create(this, std::forward<Args>(aArgs)...);
+  mCursor = newCursor;
+  return newCursor;
+}
+
+template <IDBCursorType CursorType>
+template <typename Func>
+void BackgroundCursorChild<CursorType>::HandleMultipleCursorResponses(
+    nsTArray<ResponseType>&& aResponses, const Func& aHandleRecord) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
   MOZ_ASSERT(mTransaction);
-  MOZ_ASSERT(mObjectStore);
   MOZ_ASSERT(!mStrongRequest);
   MOZ_ASSERT(!mStrongCursor);
+  MOZ_ASSERT(aResponses.Length() > 0);
 
-  MOZ_ASSERT(aResponses.Length() == 1);
+  IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+      "PRELOAD: Received %zu cursor responses", "Received %zu",
+      mTransaction->LoggingSerialNumber(), GetRequest()->LoggingSerialNumber(),
+      aResponses.Length());
+  MOZ_ASSERT_IF(aResponses.Length() > 1, mCachedResponses.empty());
 
-  // XXX Fix this somehow...
-  auto& responses =
-      const_cast<nsTArray<ObjectStoreCursorResponse>&>(aResponses);
+  // If a new cursor is created, we need to keep a reference to it until the
+  // SetResultAndDispatchSuccessEvent creates a DOM Binding.
+  RefPtr<IDBCursor> strongNewCursor;
 
-  for (ObjectStoreCursorResponse& response : responses) {
-    StructuredCloneReadInfo cloneReadInfo(std::move(response.cloneInfo()));
-    cloneReadInfo.mDatabase = mTransaction->Database();
+  bool isFirst = true;
+  for (auto& response : aResponses) {
+    IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+        "PRELOAD: Processing response for key %s", "Processing%.0s",
+        mTransaction->LoggingSerialNumber(),
+        GetRequest()->LoggingSerialNumber(), response.key().GetBuffer().get());
 
-    DeserializeStructuredCloneFiles(
-        mTransaction->Database(), response.cloneInfo().files(),
-        /* aForPreprocess */ false, cloneReadInfo.mFiles);
+    // TODO: At the moment, we only send a cursor request to the parent if
+    // requested by the user code. Therefore, the first result is always used
+    // as the current result, and the potential extra results are cached. If
+    // we extended this towards preloading in the background, all results
+    // might need to be cached.
+    auto maybeNewCursor =
+        aHandleRecord(/* aUseAsCurrentResult */ isFirst, std::move(response));
+    if (maybeNewCursor) {
+      MOZ_ASSERT(!strongNewCursor);
+      strongNewCursor = std::move(maybeNewCursor);
+    }
+    isFirst = false;
 
-    RefPtr<IDBCursor> newCursor;
+    if (mInFlightResponseInvalidationNeeded) {
+      IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
+          "PRELOAD: Discarding remaining responses since "
+          "mInFlightResponseInvalidationNeeded is set",
+          "Discarding responses", mTransaction->LoggingSerialNumber(),
+          GetRequest()->LoggingSerialNumber());
 
-    if (mCursor) {
-      mCursor->Reset(std::move(response.key()), std::move(cloneReadInfo));
-    } else {
-      newCursor = IDBCursor::Create(this, std::move(response.key()),
-                                    std::move(cloneReadInfo));
-      mCursor = newCursor;
+      mInFlightResponseInvalidationNeeded = false;
+      break;
     }
   }
 
-  ResultHelper helper(mRequest, mTransaction, mCursor);
-  DispatchSuccessEvent(&helper);
+  SetResultAndDispatchSuccessEvent(
+      GetRequest(),
+      mTransaction
+          ? SafeRefPtr{&mTransaction.ref(), AcquireStrongRefFromRawPtr{}}
+          : nullptr,
+      *static_cast<IDBCursor*>(mCursor));
 }
 
-void BackgroundCursorChild::HandleResponse(
-    const ObjectStoreKeyCursorResponse& aResponse) {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::HandleResponse(
+    nsTArray<ResponseType>&& aResponses) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
-  MOZ_ASSERT(mTransaction);
-  MOZ_ASSERT(mObjectStore);
-  MOZ_ASSERT(!mStrongRequest);
-  MOZ_ASSERT(!mStrongCursor);
 
-  // XXX Fix this somehow...
-  auto& response = const_cast<ObjectStoreKeyCursorResponse&>(aResponse);
+  if constexpr (CursorType == IDBCursorType::ObjectStore) {
+    MOZ_ASSERT(mTransaction);
 
-  RefPtr<IDBCursor> newCursor;
-
-  if (mCursor) {
-    mCursor->Reset(std::move(response.key()));
-  } else {
-    newCursor = IDBCursor::Create(this, std::move(response.key()));
-    mCursor = newCursor;
+    HandleMultipleCursorResponses(
+        std::move(aResponses), [this](const bool useAsCurrentResult,
+                                      ObjectStoreCursorResponse&& response) {
+          // TODO: Maybe move the deserialization of the clone-read-info into
+          // the cursor, so that it is only done for records actually accessed,
+          // which might not be the case for all cached records.
+          return HandleIndividualCursorResponse(
+              useAsCurrentResult, std::move(response.key()),
+              DeserializeStructuredCloneReadInfo(
+                  std::move(response.cloneInfo()), mTransaction->Database(),
+                  PreprocessingNotSupported));
+        });
   }
+  if constexpr (CursorType == IDBCursorType::ObjectStoreKey) {
+    HandleMultipleCursorResponses(
+        std::move(aResponses), [this](const bool useAsCurrentResult,
+                                      ObjectStoreKeyCursorResponse&& response) {
+          return HandleIndividualCursorResponse(useAsCurrentResult,
+                                                std::move(response.key()));
+        });
+  }
+  if constexpr (CursorType == IDBCursorType::Index) {
+    MOZ_ASSERT(mTransaction);
 
-  ResultHelper helper(mRequest, mTransaction, mCursor);
-  DispatchSuccessEvent(&helper);
+    HandleMultipleCursorResponses(
+        std::move(aResponses),
+        [this](const bool useAsCurrentResult, IndexCursorResponse&& response) {
+          return HandleIndividualCursorResponse(
+              useAsCurrentResult, std::move(response.key()),
+              std::move(response.sortKey()), std::move(response.objectKey()),
+              DeserializeStructuredCloneReadInfo(
+                  std::move(response.cloneInfo()), mTransaction->Database(),
+                  PreprocessingNotSupported));
+        });
+  }
+  if constexpr (CursorType == IDBCursorType::IndexKey) {
+    HandleMultipleCursorResponses(
+        std::move(aResponses), [this](const bool useAsCurrentResult,
+                                      IndexKeyCursorResponse&& response) {
+          return HandleIndividualCursorResponse(
+              useAsCurrentResult, std::move(response.key()),
+              std::move(response.sortKey()), std::move(response.objectKey()));
+        });
+  }
 }
 
-void BackgroundCursorChild::HandleResponse(
-    const IndexCursorResponse& aResponse) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
-  MOZ_ASSERT(mTransaction);
-  MOZ_ASSERT(mIndex);
-  MOZ_ASSERT(!mStrongRequest);
-  MOZ_ASSERT(!mStrongCursor);
-
-  // XXX Fix this somehow...
-  auto& response = const_cast<IndexCursorResponse&>(aResponse);
-
-  StructuredCloneReadInfo cloneReadInfo(std::move(response.cloneInfo()));
-  cloneReadInfo.mDatabase = mTransaction->Database();
-
-  DeserializeStructuredCloneFiles(
-      mTransaction->Database(), aResponse.cloneInfo().files(),
-      /* aForPreprocess */ false, cloneReadInfo.mFiles);
-
-  RefPtr<IDBCursor> newCursor;
-
-  if (mCursor) {
-    mCursor->Reset(std::move(response.key()), std::move(response.sortKey()),
-                   std::move(response.objectKey()), std::move(cloneReadInfo));
-  } else {
-    newCursor = IDBCursor::Create(
-        this, std::move(response.key()), std::move(response.sortKey()),
-        std::move(response.objectKey()), std::move(cloneReadInfo));
-    mCursor = newCursor;
-  }
-
-  ResultHelper helper(mRequest, mTransaction, mCursor);
-  DispatchSuccessEvent(&helper);
-}
-
-void BackgroundCursorChild::HandleResponse(
-    const IndexKeyCursorResponse& aResponse) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(mRequest);
-  MOZ_ASSERT(mTransaction);
-  MOZ_ASSERT(mIndex);
-  MOZ_ASSERT(!mStrongRequest);
-  MOZ_ASSERT(!mStrongCursor);
-
-  // XXX Fix this somehow...
-  auto& response = const_cast<IndexKeyCursorResponse&>(aResponse);
-
-  RefPtr<IDBCursor> newCursor;
-
-  if (mCursor) {
-    mCursor->Reset(std::move(response.key()), std::move(response.sortKey()),
-                   std::move(response.objectKey()));
-  } else {
-    newCursor = IDBCursor::Create(this, std::move(response.key()),
-                                  std::move(response.sortKey()),
-                                  std::move(response.objectKey()));
-    mCursor = newCursor;
-  }
-
-  ResultHelper helper(mRequest, mTransaction, mCursor);
-  DispatchSuccessEvent(&helper);
-}
-
-void BackgroundCursorChild::ActorDestroy(ActorDestroyReason aWhy) {
+template <IDBCursorType CursorType>
+void BackgroundCursorChild<CursorType>::ActorDestroy(ActorDestroyReason aWhy) {
   AssertIsOnOwningThread();
   MOZ_ASSERT_IF(aWhy == Deletion, !mStrongRequest);
   MOZ_ASSERT_IF(aWhy == Deletion, !mStrongCursor);
@@ -3482,7 +3403,7 @@ void BackgroundCursorChild::ActorDestroy(ActorDestroyReason aWhy) {
   MaybeCollectGarbageOnIPCMessage();
 
   if (mStrongRequest && !mStrongCursor && mTransaction) {
-    mTransaction->OnRequestFinished(/* aActorDestroyedNormally */
+    mTransaction->OnRequestFinished(/* aRequestCompletedSuccessfully */
                                     aWhy == Deletion);
   }
 
@@ -3494,15 +3415,15 @@ void BackgroundCursorChild::ActorDestroy(ActorDestroyReason aWhy) {
   }
 
 #ifdef DEBUG
-  mRequest = nullptr;
-  mTransaction = nullptr;
-  mObjectStore = nullptr;
-  mIndex = nullptr;
+  mRequest.maybeDestroy();
+  mTransaction = Nothing();
+  mSource.maybeDestroy();
 #endif
 }
 
-mozilla::ipc::IPCResult BackgroundCursorChild::RecvResponse(
-    const CursorResponse& aResponse) {
+template <IDBCursorType CursorType>
+mozilla::ipc::IPCResult BackgroundCursorChild<CursorType>::RecvResponse(
+    CursorResponse&& aResponse) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(aResponse.type() != CursorResponse::T__None);
   MOZ_ASSERT(mRequest);
@@ -3512,13 +3433,13 @@ mozilla::ipc::IPCResult BackgroundCursorChild::RecvResponse(
 
   MaybeCollectGarbageOnIPCMessage();
 
-  RefPtr<IDBRequest> request;
-  mStrongRequest.swap(request);
+  const RefPtr<IDBRequest> request = std::move(mStrongRequest);
+  Unused << request;  // XXX see Bug 1605075
+  const RefPtr<IDBCursor> cursor = std::move(mStrongCursor);
+  Unused << cursor;  // XXX see Bug 1605075
 
-  RefPtr<IDBCursor> cursor;
-  mStrongCursor.swap(cursor);
-
-  RefPtr<IDBTransaction> transaction = mTransaction;
+  const auto transaction =
+      SafeRefPtr{&mTransaction.ref(), AcquireStrongRefFromRawPtr{}};
 
   switch (aResponse.type()) {
     case CursorResponse::Tnsresult:
@@ -3530,32 +3451,56 @@ mozilla::ipc::IPCResult BackgroundCursorChild::RecvResponse(
       break;
 
     case CursorResponse::TArrayOfObjectStoreCursorResponse:
-      HandleResponse(aResponse.get_ArrayOfObjectStoreCursorResponse());
+      if constexpr (CursorType == IDBCursorType::ObjectStore) {
+        HandleResponse(
+            std::move(aResponse.get_ArrayOfObjectStoreCursorResponse()));
+      } else {
+        MOZ_CRASH("Response type mismatch");
+      }
       break;
 
-    case CursorResponse::TObjectStoreKeyCursorResponse:
-      HandleResponse(aResponse.get_ObjectStoreKeyCursorResponse());
+    case CursorResponse::TArrayOfObjectStoreKeyCursorResponse:
+      if constexpr (CursorType == IDBCursorType::ObjectStoreKey) {
+        HandleResponse(
+            std::move(aResponse.get_ArrayOfObjectStoreKeyCursorResponse()));
+      } else {
+        MOZ_CRASH("Response type mismatch");
+      }
       break;
 
-    case CursorResponse::TIndexCursorResponse:
-      HandleResponse(aResponse.get_IndexCursorResponse());
+    case CursorResponse::TArrayOfIndexCursorResponse:
+      if constexpr (CursorType == IDBCursorType::Index) {
+        HandleResponse(std::move(aResponse.get_ArrayOfIndexCursorResponse()));
+      } else {
+        MOZ_CRASH("Response type mismatch");
+      }
       break;
 
-    case CursorResponse::TIndexKeyCursorResponse:
-      HandleResponse(aResponse.get_IndexKeyCursorResponse());
+    case CursorResponse::TArrayOfIndexKeyCursorResponse:
+      if constexpr (CursorType == IDBCursorType::IndexKey) {
+        HandleResponse(
+            std::move(aResponse.get_ArrayOfIndexKeyCursorResponse()));
+      } else {
+        MOZ_CRASH("Response type mismatch");
+      }
       break;
 
     default:
       MOZ_CRASH("Should never get here!");
   }
 
-  transaction->OnRequestFinished(/* aActorDestroyedNormally */ true);
+  transaction->OnRequestFinished(/* aRequestCompletedSuccessfully */ true);
 
   return IPC_OK();
 }
 
-NS_IMETHODIMP
-BackgroundCursorChild::DelayedActionRunnable::Run() {
+template class BackgroundCursorChild<IDBCursorType::ObjectStore>;
+template class BackgroundCursorChild<IDBCursorType::ObjectStoreKey>;
+template class BackgroundCursorChild<IDBCursorType::Index>;
+template class BackgroundCursorChild<IDBCursorType::IndexKey>;
+
+template <typename T>
+NS_IMETHODIMP DelayedActionRunnable<T>::Run() {
   MOZ_ASSERT(mActor);
   mActor->AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
@@ -3569,7 +3514,8 @@ BackgroundCursorChild::DelayedActionRunnable::Run() {
   return NS_OK;
 }
 
-nsresult BackgroundCursorChild::DelayedActionRunnable::Cancel() {
+template <typename T>
+nsresult DelayedActionRunnable<T>::Cancel() {
   if (NS_WARN_IF(!mActor)) {
     return NS_ERROR_UNEXPECTED;
   }
@@ -3624,8 +3570,9 @@ void BackgroundFileHandleChild::NoteActorDestroyed() {
     mFileHandle->ClearBackgroundActor();
 
     // Normally this would be DEBUG-only but NoteActorDestroyed is also called
-    // from SendDeleteMeInternal. In that case we're going to receive an actual
-    // ActorDestroy call later and we don't want to touch a dead object.
+    // from SendDeleteMeInternal. In that case we're going to receive an
+    // actual ActorDestroy call later and we don't want to touch a dead
+    // object.
     mTemporaryStrongFileHandle = nullptr;
     mFileHandle = nullptr;
   }
@@ -3645,7 +3592,7 @@ void BackgroundFileHandleChild::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 mozilla::ipc::IPCResult BackgroundFileHandleChild::RecvComplete(
-    const bool& aAborted) {
+    const bool aAborted) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mFileHandle);
 
@@ -3713,41 +3660,27 @@ void BackgroundFileRequestChild::HandleResponse(nsresult aResponse) {
   DispatchFileHandleErrorEvent(mFileRequest, aResponse, mFileHandle);
 }
 
-void BackgroundFileRequestChild::HandleResponse(
-    const FileRequestGetFileResponse& aResponse) {
-  AssertIsOnOwningThread();
-
-  RefPtr<File> file = ConvertActorToFile(mFileHandle, aResponse);
-
-  FileHandleResultHelper helper(mFileRequest, mFileHandle, file);
-
-  DispatchFileHandleSuccessEvent(&helper);
-}
-
 void BackgroundFileRequestChild::HandleResponse(const nsCString& aResponse) {
   AssertIsOnOwningThread();
 
-  FileHandleResultHelper helper(mFileRequest, mFileHandle, &aResponse);
-
-  DispatchFileHandleSuccessEvent(&helper);
+  SetFileHandleResultAndDispatchSuccessEvent(mFileRequest, mFileHandle,
+                                             &aResponse);
 }
 
 void BackgroundFileRequestChild::HandleResponse(
     const FileRequestMetadata& aResponse) {
   AssertIsOnOwningThread();
 
-  FileHandleResultHelper helper(mFileRequest, mFileHandle, &aResponse);
-
-  DispatchFileHandleSuccessEvent(&helper);
+  SetFileHandleResultAndDispatchSuccessEvent(mFileRequest, mFileHandle,
+                                             &aResponse);
 }
 
 void BackgroundFileRequestChild::HandleResponse(
-    JS::Handle<JS::Value> aResponse) {
+    const JS::Handle<JS::Value> aResponse) {
   AssertIsOnOwningThread();
 
-  FileHandleResultHelper helper(mFileRequest, mFileHandle, &aResponse);
-
-  DispatchFileHandleSuccessEvent(&helper);
+  SetFileHandleResultAndDispatchSuccessEvent(mFileRequest, mFileHandle,
+                                             &aResponse);
 }
 
 void BackgroundFileRequestChild::ActorDestroy(ActorDestroyReason aWhy) {
@@ -3785,22 +3718,12 @@ mozilla::ipc::IPCResult BackgroundFileRequestChild::Recv__delete__(
         HandleResponse(aResponse.get_nsresult());
         break;
 
-      case FileRequestResponse::TFileRequestGetFileResponse:
-        HandleResponse(aResponse.get_FileRequestGetFileResponse());
-        break;
-
       case FileRequestResponse::TFileRequestReadResponse:
         HandleResponse(aResponse.get_FileRequestReadResponse().data());
         break;
 
       case FileRequestResponse::TFileRequestWriteResponse:
-        HandleResponse(JS::UndefinedHandleValue);
-        break;
-
       case FileRequestResponse::TFileRequestTruncateResponse:
-        HandleResponse(JS::UndefinedHandleValue);
-        break;
-
       case FileRequestResponse::TFileRequestFlushResponse:
         HandleResponse(JS::UndefinedHandleValue);
         break;
@@ -3825,7 +3748,7 @@ mozilla::ipc::IPCResult BackgroundFileRequestChild::Recv__delete__(
 }
 
 mozilla::ipc::IPCResult BackgroundFileRequestChild::RecvProgress(
-    const uint64_t& aProgress, const uint64_t& aProgressMax) {
+    const uint64_t aProgress, const uint64_t aProgressMax) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mFileRequest);
 

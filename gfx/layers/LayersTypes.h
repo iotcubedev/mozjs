@@ -16,7 +16,6 @@
 #include "mozilla/TimeStamp.h"  // for TimeStamp
 #include "mozilla/TypedEnumBits.h"
 #include "nsRegion.h"
-#include "nsStyleConsts.h"
 
 #include <stdio.h>            // FILE
 #include "mozilla/Logging.h"  // for PR_LOG
@@ -43,6 +42,9 @@ struct ParamTraits;
 }  // namespace IPC
 
 namespace mozilla {
+
+enum class StyleBorderStyle : uint8_t;
+
 namespace layers {
 
 class TextureHost;
@@ -51,7 +53,7 @@ class TextureHost;
 #undef OPAQUE
 
 struct LayersId {
-  uint64_t mId;
+  uint64_t mId = 0;
 
   bool IsValid() const { return mId != 0; }
 
@@ -82,11 +84,11 @@ struct BaseTransactionId {
 
   bool IsValid() const { return mId != 0; }
 
-  MOZ_MUST_USE BaseTransactionId<T> Next() const {
+  [[nodiscard]] BaseTransactionId<T> Next() const {
     return BaseTransactionId<T>{mId + 1};
   }
 
-  MOZ_MUST_USE BaseTransactionId<T> Prev() const {
+  [[nodiscard]] BaseTransactionId<T> Prev() const {
     return BaseTransactionId<T>{mId - 1};
   }
 
@@ -116,6 +118,10 @@ struct BaseTransactionId {
   bool operator==(const BaseTransactionId<T>& aOther) const {
     return mId == aOther.mId;
   }
+
+  bool operator!=(const BaseTransactionId<T>& aOther) const {
+    return mId != aOther.mId;
+  }
 };
 
 class TransactionIdType {};
@@ -124,7 +130,7 @@ typedef BaseTransactionId<TransactionIdType> TransactionId;
 struct LayersObserverEpoch {
   uint64_t mId;
 
-  MOZ_MUST_USE LayersObserverEpoch Next() const {
+  [[nodiscard]] LayersObserverEpoch Next() const {
     return LayersObserverEpoch{mId + 1};
   }
 
@@ -145,6 +151,20 @@ struct LayersObserverEpoch {
   }
 };
 
+// CompositionOpportunityId is a counter that goes up every time we have an
+// opportunity to composite. It increments even on no-op composites (if nothing
+// has changed) and while compositing is paused. It does not skip values if a
+// composite is delayed. It is meaningful per window.
+// This counter is used to differentiate intentionally-skipped video frames from
+// unintentionally-skipped video frames: If CompositionOpportunityIds are
+// observed by the video in +1 increments, then the video was onscreen the
+// entire time and compositing was not paused. But if gaps in
+// CompositionOpportunityIds are observed, that must mean that the video was not
+// considered during some composition opportunities, because compositing was
+// paused or because the video was not part of the on-screen scene.
+class CompositionOpportunityType {};
+typedef BaseTransactionId<CompositionOpportunityType> CompositionOpportunityId;
+
 enum class LayersBackend : int8_t {
   LAYERS_NONE = 0,
   LAYERS_BASIC,
@@ -155,6 +175,8 @@ enum class LayersBackend : int8_t {
   LAYERS_LAST
 };
 
+const char* GetLayersBackendName(LayersBackend aBackend);
+
 enum class TextureType : int8_t {
   Unknown = 0,
   D3D11,
@@ -162,6 +184,9 @@ enum class TextureType : int8_t {
   X11,
   MacIOSurface,
   AndroidNativeWindow,
+  AndroidHardwareBuffer,
+  DMABUF,
+  EGLImage,
   Last
 };
 
@@ -361,7 +386,7 @@ typedef gfx::Matrix4x4Typed<ParentLayerPixel, ParentLayerPixel>
 typedef gfx::Matrix4x4Typed<CSSTransformedLayerPixel, ParentLayerPixel>
     AsyncTransformMatrix;
 
-typedef Array<gfx::Color, 4> BorderColors;
+typedef Array<gfx::DeviceColor, 4> BorderColors;
 typedef Array<LayerSize, 4> BorderCorners;
 typedef Array<LayerCoord, 4> BorderWidths;
 typedef Array<StyleBorderStyle, 4> BorderStyles;
@@ -376,7 +401,7 @@ class LayerHandle final {
 
  public:
   LayerHandle() : mHandle(0) {}
-  LayerHandle(const LayerHandle& aOther) : mHandle(aOther.mHandle) {}
+  LayerHandle(const LayerHandle& aOther) = default;
   explicit LayerHandle(uint64_t aHandle) : mHandle(aHandle) {}
   bool IsValid() const { return mHandle != 0; }
   explicit operator bool() const { return IsValid(); }
@@ -398,8 +423,7 @@ class CompositableHandle final {
 
  public:
   CompositableHandle() : mHandle(0) {}
-  CompositableHandle(const CompositableHandle& aOther)
-      : mHandle(aOther.mHandle) {}
+  CompositableHandle(const CompositableHandle& aOther) = default;
   explicit CompositableHandle(uint64_t aHandle) : mHandle(aHandle) {}
   bool IsValid() const { return mHandle != 0; }
   explicit operator bool() const { return IsValid(); }
@@ -445,6 +469,8 @@ MOZ_DEFINE_ENUM_CLASS_WITH_BASE(CompositionPayloadType, uint8_t, (
   eContentPaint
 ));
 // clang-format on
+
+extern const char* kCompositionPayloadTypeNames[kCompositionPayloadTypeCount];
 
 struct CompositionPayload {
   bool operator==(const CompositionPayload& aOther) const {

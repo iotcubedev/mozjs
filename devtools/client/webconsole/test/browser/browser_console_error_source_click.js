@@ -24,7 +24,7 @@ add_task(async function() {
   }
 
   info("generate exception and wait for the message");
-  ContentTask.spawn(gBrowser.selectedBrowser, {}, () => {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     const button = content.document.querySelector("button");
     button.click();
   });
@@ -36,7 +36,10 @@ add_task(async function() {
 });
 
 async function waitForMessageAndViewSource(hud, message) {
-  const msg = await waitFor(() => findMessage(hud, message));
+  const msg = await waitFor(
+    () => findMessage(hud, message),
+    `Message "${message}" wasn't found`
+  );
   ok(msg, `Message found: "${message}"`);
 
   const locationNode = msg.querySelector(

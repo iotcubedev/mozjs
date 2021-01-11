@@ -58,11 +58,7 @@ class JSONHandler {
 
     try {
       const body = this.routes[request.path]();
-      const payload = JSON.stringify(
-        body,
-        sanitise,
-        Log.verbose ? "\t" : undefined
-      );
+      const payload = JSON.stringify(body, null, Log.verbose ? "\t" : null);
 
       response.setStatusLine(request.httpVersion, 200, "OK");
       response.setHeader("Content-Type", "application/json");
@@ -76,14 +72,6 @@ class JSONHandler {
   // XPCOM
 
   get QueryInterface() {
-    return ChromeUtils.generateQI([Ci.nsIHttpRequestHandler]);
+    return ChromeUtils.generateQI(["nsIHttpRequestHandler"]);
   }
-}
-
-// Filters out null and empty strings
-function sanitise(key, value) {
-  if (value === null || (typeof value == "string" && value.length == 0)) {
-    return undefined;
-  }
-  return value;
 }

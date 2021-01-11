@@ -20,8 +20,18 @@ ChromeUtils.defineModuleGetter(
 );
 ChromeUtils.defineModuleGetter(
   this,
-  "formAutofillParent",
+  "FormAutofillStatus",
   "resource://formautofill/FormAutofillParent.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "FormAutofillParent",
+  "resource://formautofill/FormAutofillParent.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "AutoCompleteParent",
+  "resource://gre/actors/AutoCompleteParent.jsm"
 );
 
 XPCOMUtils.defineLazyServiceGetter(
@@ -50,8 +60,7 @@ function insertStyleSheet(domWindow, url) {
   }
 }
 
-function onMaybeOpenPopup(evt) {
-  let domWindow = evt.target.ownerGlobal;
+function ensureCssLoaded(domWindow) {
   if (CACHED_STYLESHEETS.has(domWindow)) {
     // This window already has autofill stylesheets.
     return;
@@ -163,18 +172,29 @@ this.formautofill = class extends ExtensionAPI {
       );
     }
 
-    // Listen for the autocomplete popup message to lazily append our stylesheet related to the popup.
-    Services.mm.addMessageListener(
-      "FormAutoComplete:MaybeOpenPopup",
-      onMaybeOpenPopup
-    );
+    // Listen for the autocomplete popup message
+    // or the form submitted message (which may trigger a
+    // doorhanger) to lazily append our stylesheets related
+    // to the autocomplete feature.
+    AutoCompleteParent.addPopupStateListener(ensureCssLoaded);
+    FormAutofillParent.addMessageObserver(this);
+    this.onFormSubmitted = (data, window) => ensureCssLoaded(window);
 
-    formAutofillParent.init().catch(Cu.reportError);
-    Services.mm.loadFrameScript(
-      "chrome://formautofill/content/FormAutofillFrameScript.js",
-      true,
-      true
-    );
+    FormAutofillStatus.init();
+
+    ChromeUtils.registerWindowActor("FormAutofill", {
+      parent: {
+        moduleURI: "resource://formautofill/FormAutofillParent.jsm",
+      },
+      child: {
+        moduleURI: "resource://formautofill/FormAutofillChild.jsm",
+        events: {
+          focusin: {},
+          DOMFormBeforeSubmit: {},
+        },
+      },
+      allFrames: true,
+    });
   }
 
   onShutdown(isAppShutdown) {
@@ -193,10 +213,10 @@ this.formautofill = class extends ExtensionAPI {
       );
     }
 
-    Services.mm.removeMessageListener(
-      "FormAutoComplete:MaybeOpenPopup",
-      onMaybeOpenPopup
-    );
+    ChromeUtils.unregisterWindowActor("FormAutofill");
+
+    AutoCompleteParent.removePopupStateListener(ensureCssLoaded);
+    FormAutofillParent.removeMessageObserver(this);
 
     for (let win of Services.wm.getEnumerator("navigator:browser")) {
       let cachedStyleSheets = CACHED_STYLESHEETS.get(win);

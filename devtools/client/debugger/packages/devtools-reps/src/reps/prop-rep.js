@@ -3,11 +3,11 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+
 const { maybeEscapePropertyName, wrapRender } = require("./rep-utils");
 const { MODE } = require("./constants");
-
-const { span } = require("react-dom-factories");
 
 /**
  * Property for Obj (local JS objects), Grip (remote JS objects)
@@ -28,6 +28,7 @@ PropRep.propTypes = {
   // when unquoted; but this flag can be used to suppress the
   // quoting.
   suppressQuotes: PropTypes.bool,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 /**
@@ -37,9 +38,11 @@ PropRep.propTypes = {
  * @param {Object} props
  * @return {Array} Array of React elements.
  */
+
 function PropRep(props) {
   const Grip = require("./grip");
   const { Rep } = require("./rep");
+  const shouldRenderTooltip = props.shouldRenderTooltip;
 
   let { name, mode, equal, suppressQuotes } = props;
 
@@ -50,7 +53,13 @@ function PropRep(props) {
     if (!suppressQuotes) {
       name = maybeEscapePropertyName(name);
     }
-    key = span({ className: "nodeName" }, name);
+    key = span(
+      {
+        className: "nodeName",
+        title: shouldRenderTooltip ? name : null,
+      },
+      name
+    );
   } else {
     key = Rep({
       ...props,

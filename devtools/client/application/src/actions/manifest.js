@@ -4,16 +4,45 @@
 
 "use strict";
 
-const { UPDATE_MANIFEST } = require("../constants");
+const { l10n } = require("devtools/client/application/src/modules/l10n");
 
-function updateManifest(manifest, errorMessage) {
-  return {
-    type: UPDATE_MANIFEST,
-    manifest,
-    errorMessage,
+const {
+  services,
+  ManifestDevToolsError,
+} = require("devtools/client/application/src/modules/application-services");
+const {
+  FETCH_MANIFEST_FAILURE,
+  FETCH_MANIFEST_START,
+  FETCH_MANIFEST_SUCCESS,
+  RESET_MANIFEST,
+} = require("devtools/client/application/src/constants");
+
+function fetchManifest() {
+  return async (dispatch, getState) => {
+    dispatch({ type: FETCH_MANIFEST_START });
+    try {
+      const manifest = await services.fetchManifest();
+      dispatch({ type: FETCH_MANIFEST_SUCCESS, manifest });
+    } catch (error) {
+      let errorMessage = error.message;
+
+      // since Firefox DevTools errors may not make sense for the user, swap
+      // their message for a generic one.
+      if (error instanceof ManifestDevToolsError) {
+        console.error(error);
+        errorMessage = l10n.getString("manifest-loaded-devtools-error");
+      }
+
+      dispatch({ type: FETCH_MANIFEST_FAILURE, error: errorMessage });
+    }
   };
 }
 
+function resetManifest() {
+  return { type: RESET_MANIFEST };
+}
+
 module.exports = {
-  updateManifest,
+  fetchManifest,
+  resetManifest,
 };

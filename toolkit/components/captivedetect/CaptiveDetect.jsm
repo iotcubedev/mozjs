@@ -34,9 +34,13 @@ function URLFetcher(url, timeout) {
   // Prevent privacy leaks
   xhr.channel.loadFlags |= Ci.nsIRequest.LOAD_ANONYMOUS;
   // Use the system's resolver for this check
-  xhr.channel.loadFlags |= Ci.nsIRequest.LOAD_DISABLE_TRR;
+  xhr.channel.setTRRMode(Ci.nsIRequest.TRR_DISABLED_MODE);
   // We except this from being classified
   xhr.channel.loadFlags |= Ci.nsIChannel.LOAD_BYPASS_URL_CLASSIFIER;
+  // Prevent HTTPS-Only Mode from upgrading the request.
+  xhr.channel.loadInfo.httpsOnlyStatus |= Ci.nsILoadInfo.HTTPS_ONLY_EXEMPT;
+  // Allow deprecated HTTP request from SystemPrincipal
+  xhr.channel.loadInfo.allowDeprecatedSystemRequests = true;
 
   // We don't want to follow _any_ redirects
   xhr.channel.QueryInterface(Ci.nsIHttpChannel).redirectionLimit = 0;
@@ -145,8 +149,8 @@ function LoginObserver(captivePortalDetector) {
   // Public interface of LoginObserver
   let observer = {
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsIHttpActivityObserver,
-      Ci.nsITimerCallback,
+      "nsIHttpActivityObserver",
+      "nsITimerCallback",
     ]),
 
     attach: function attach() {
@@ -279,7 +283,7 @@ function CaptivePortalDetector() {
 
 CaptivePortalDetector.prototype = {
   classID: kCAPTIVEPORTALDETECTOR_CID,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalDetector]),
+  QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalDetector"]),
 
   // nsICaptivePortalDetector
   checkCaptivePortal: function checkCaptivePortal(aInterfaceName, aCallback) {

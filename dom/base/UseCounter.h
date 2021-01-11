@@ -51,11 +51,25 @@ enum UseCounter : int16_t {
   eUseCounter_FirstCountedUnknownProperty = eUseCounter_EndCSSProperties,
   __reset_hack_2 = eUseCounter_FirstCountedUnknownProperty - 1,
 
-#define COUNTED_UNKNOWN_PROPERTY(name_, method_) eUseCounter_unknown_property_##method_,
+#define COUNTED_UNKNOWN_PROPERTY(name_, method_) \
+  eUseCounter_unknown_property_##method_,
 #include "mozilla/CountedUnknownProperties.h"
 #undef COUNTED_UNKNOWN_PROPERTY
 
   eUseCounter_Count
+};
+
+enum class UseCounterWorker : int16_t {
+  Unknown = -1,
+#define USE_COUNTER_DOM_METHOD(interface_, name_) interface_##_##name_,
+#define USE_COUNTER_DOM_ATTRIBUTE(interface_, name_) \
+  interface_##_##name_##_getter, interface_##_##name_##_setter,
+#define USE_COUNTER_CUSTOM(name_, desc_) Custom_##name_,
+#include "mozilla/dom/UseCounterWorkerList.h"
+#undef USE_COUNTER_DOM_METHOD
+#undef USE_COUNTER_DOM_ATTRIBUTE
+#undef USE_COUNTER_CUSTOM
+  Count
 };
 
 }  // namespace mozilla

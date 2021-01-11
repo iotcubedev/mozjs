@@ -71,8 +71,8 @@ class WindowManagerMixin(object):
                         "Newly opened browsing context is of type {} and not tab.".format(
                             result["type"]))
         except Exception:
-            exc, val, tb = sys.exc_info()
-            reraise(exc, 'Failed to trigger opening a new tab: {}'.format(val), tb)
+            exc_cls, exc, tb = sys.exc_info()
+            reraise(exc_cls, exc_cls('Failed to trigger opening a new tab: {}'.format(exc)), tb)
         else:
             Wait(self.marionette).until(
                 lambda mn: len(mn.window_handles) == len(current_tabs) + 1,
@@ -83,7 +83,7 @@ class WindowManagerMixin(object):
 
             return new_tab
 
-    def open_window(self, callback=None, focus=False):
+    def open_window(self, callback=None, focus=False, private=False):
         current_windows = self.marionette.chrome_window_handles
         current_tabs = self.marionette.window_handles
 
@@ -92,7 +92,7 @@ class WindowManagerMixin(object):
                 return self.marionette.execute_script("""
                   Components.utils.import("resource://gre/modules/Services.jsm");
 
-                  let win = Services.wm.getOuterWindowWithId(Number(arguments[0]));
+                  const win = BrowsingContext.get(Number(arguments[0])).window;
                   return win.document.readyState == "complete";
                 """, script_args=[handle])
 
@@ -100,14 +100,14 @@ class WindowManagerMixin(object):
             if callable(callback):
                 callback(focus)
             else:
-                result = self.marionette.open(type="window", focus=focus)
+                result = self.marionette.open(type="window", focus=focus, private=private)
                 if result["type"] != "window":
                     raise Exception(
                         "Newly opened browsing context is of type {} and not window.".format(
                             result["type"]))
         except Exception:
-            exc, val, tb = sys.exc_info()
-            reraise(exc, 'Failed to trigger opening a new window: {}'.format(val), tb)
+            exc_cls, exc, tb = sys.exc_info()
+            reraise(exc_cls, exc_cls('Failed to trigger opening a new window: {}'.format(exc)), tb)
         else:
             Wait(self.marionette).until(
                 lambda mn: len(mn.chrome_window_handles) == len(current_windows) + 1,
@@ -174,7 +174,7 @@ class WindowManagerMixin(object):
                       await focused;
                     }
 
-                    resolve(win.windowUtils.outerWindowID);
+                    resolve(win.docShell.browsingContext.id);
                   })();
                 """, script_args=(url, focus))
 

@@ -10,7 +10,6 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include "PlatformDecoderModule.h"
 #include "mozilla/Vector.h"
-#include "nsIThread.h"
 #include "AudioConverter.h"
 
 namespace mozilla {
@@ -32,7 +31,7 @@ class AppleATDecoder : public MediaDataDecoder,
   RefPtr<ShutdownPromise> Shutdown() override;
 
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("apple coremedia decoder");
+    return "apple coremedia decoder"_ns;
   }
 
   // Callbacks also need access to the config.

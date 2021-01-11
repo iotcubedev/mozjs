@@ -3,11 +3,11 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 from __future__ import print_function
 
+from io import StringIO
 import optparse
 import os
 import sys
-from cStringIO import StringIO
-from ConfigParser import RawConfigParser
+from configparser import RawConfigParser
 
 import ipdl
 
@@ -74,6 +74,11 @@ log(2, 'Reading sync message list')
 parser = RawConfigParser()
 parser.readfp(open(options.syncMsgList))
 syncMsgList = parser.sections()
+
+for section in syncMsgList:
+    if not parser.get(section, "description"):
+        print('Error: Sync message %s lacks a description' % section, file=sys.stderr)
+        sys.exit(1)
 
 # Read message metadata. Right now we only have 'segment_capacity'
 # for the standard segment size used for serialization.

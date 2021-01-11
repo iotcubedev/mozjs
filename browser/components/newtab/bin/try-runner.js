@@ -23,6 +23,7 @@ function logErrors(tool, errors) {
 }
 
 function execOut(...args) {
+  let exitCode = 0;
   let out;
   let err;
 
@@ -39,18 +40,51 @@ function execOut(...args) {
 
     out = e && e.stdout;
     err = e && e.stderr;
+    exitCode = e && e.status;
   }
-  return { out: out && out.toString(), err: err && err.toString() };
+  return { exitCode, out: out && out.toString(), err: err && err.toString() };
 }
 
 function logStart(name) {
   console.log(`TEST START | ${name}`);
 }
 
+function checkBundles() {
+  logStart("checkBundles");
+
+  const ASbundle = path.join("data", "content", "activity-stream.bundle.js");
+  const AWbundle = path.join(
+    "aboutwelcome",
+    "content",
+    "aboutwelcome.bundle.js"
+  );
+  let errors = [];
+
+  let ASbefore = readFileSync(ASbundle, "utf8");
+  let AWbefore = readFileSync(AWbundle, "utf8");
+
+  execOut("npm", ["run", "bundle"]);
+
+  let ASafter = readFileSync(ASbundle, "utf8");
+  let AWafter = readFileSync(AWbundle, "utf8");
+
+  if (ASbefore !== ASafter) {
+    errors.push("Activity Stream bundle out of date");
+  }
+
+  if (AWbefore !== AWafter) {
+    errors.push("About:welcome bundle out of date");
+  }
+
+  logErrors("checkBundles", errors);
+  return errors.length === 0;
+}
+
 function karma() {
   logStart("karma");
 
-  const { out } = execOut("npm", [
+  const errors = [];
+  const { exitCode, out } = execOut("npm", [
     "run",
     "testmc:unit",
     // , "--", "--log-level", "--verbose",
@@ -63,6 +97,7 @@ function karma() {
     return false;
   }
 
+  // Detect mocha failures
   let jsonContent;
   try {
     // Note that this will be overwritten at each run, but that shouldn't
@@ -72,32 +107,35 @@ function karma() {
     console.error("exception reading karma-run-results.json: ", ex);
     return false;
   }
-
   const results = JSON.parse(jsonContent);
-
-  const failed = results.summary.failed === 0;
-
-  let errors = [];
   // eslint-disable-next-line guard-for-in
   for (let testArray in results.result) {
     let failedTests = Array.from(results.result[testArray]).filter(
       test => !test.success && !test.skipped
     );
 
-    let errs = failedTests.map(test => {
-      return `${test.suite.join(":")} ${test.description}: ${test.log[0]}`;
-    });
+    errors.push(
+      ...failedTests.map(
+        test => `${test.suite.join(":")} ${test.description}: ${test.log[0]}`
+      )
+    );
+  }
 
-    errors = errors.concat(errs);
+  // Detect istanbul failures (coverage thresholds set in karma config)
+  const coverage = out.match(/ERROR.+coverage-istanbul.+/g);
+  if (coverage) {
+    errors.push(...coverage.map(line => line.match(/Coverage.+/)[0]));
   }
 
   logErrors("karma", errors);
-  return failed;
+
+  // Pass if there's no detected errors and nothing unexpected.
+  return errors.length === 0 && !exitCode;
 }
 
 function sasslint() {
   logStart("sasslint");
-  const { out } = execOut("npm", [
+  const { exitCode, out } = execOut("npm", [
     "run",
     "--silent",
     "lint:sasslint",
@@ -106,7 +144,8 @@ function sasslint() {
     "json",
   ]);
 
-  if (!out.length) {
+  // Successful exit and no output means sasslint passed.
+  if (!exitCode && !out.length) {
     return true;
   }
 
@@ -119,26 +158,22 @@ function sasslint() {
   let errorString;
   filesWithIssues.forEach(file => {
     file.messages.forEach(messageObj => {
-      errorString = `${file.filePath}(${messageObj.line}, ${
-        messageObj.column
-      }): ${messageObj.message} (${messageObj.ruleId})`;
+      errorString = `${file.filePath}(${messageObj.line}, ${messageObj.column}): ${messageObj.message} (${messageObj.ruleId})`;
       errs.push(errorString);
     });
   });
 
   const errors = logErrors("sasslint", errs);
-  return errors.length === 0;
+
+  // Pass if there's no detected errors and nothing unexpected.
+  return errors.length === 0 && !exitCode;
 }
 
-const karmaPassed = karma();
-const sasslintPassed = sasslint();
-
-const success = karmaPassed && sasslintPassed;
-
-console.log({
-  karmaPassed,
-  sasslintPassed,
-});
+const tests = {};
+const success = [checkBundles, karma, sasslint].every(
+  t => (tests[t.name] = t())
+);
+console.log(tests);
 
 process.exitCode = success ? 0 : 1;
 console.log("CODE", process.exitCode);

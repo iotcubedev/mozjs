@@ -21,7 +21,7 @@ const kAboutPagesRegistered = Promise.all([
 add_task(async function test_principal_click() {
   await kAboutPagesRegistered;
   await SpecialPowers.pushPrefEnv({
-    set: [["csp.skip_about_page_has_csp_assert", true]],
+    set: [["dom.security.skip_about_page_has_csp_assert", true]],
   });
   await BrowserTestUtils.withNewTab(
     "about:test-about-principal-parent",
@@ -37,7 +37,7 @@ add_task(async function test_principal_click() {
       myLink.click();
       await loadPromise;
 
-      await ContentTask.spawn(gBrowser.selectedBrowser, {}, async function() {
+      await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
         let channel = content.docShell.currentDocumentChannel;
         is(
           channel.originalURI.asciiSpec,
@@ -74,7 +74,7 @@ add_task(async function test_principal_ctrl_click() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["security.sandbox.content.level", 1],
-      ["csp.skip_about_page_has_csp_assert", true],
+      ["dom.security.skip_about_page_has_csp_assert", true],
     ],
   });
 
@@ -83,7 +83,8 @@ add_task(async function test_principal_ctrl_click() {
     async function(browser) {
       let loadPromise = BrowserTestUtils.waitForNewTab(
         gBrowser,
-        "about:test-about-principal-child"
+        "about:test-about-principal-child",
+        true
       );
       // simulate ctrl+click
       BrowserTestUtils.synthesizeMouseAtCenter(
@@ -94,7 +95,7 @@ add_task(async function test_principal_ctrl_click() {
       let tab = await loadPromise;
       gBrowser.selectTabAtIndex(2);
 
-      await ContentTask.spawn(gBrowser.selectedBrowser, {}, async function() {
+      await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
         let channel = content.docShell.currentDocumentChannel;
         is(
           channel.originalURI.asciiSpec,
@@ -132,7 +133,7 @@ add_task(async function test_principal_right_click_open_link_in_new_tab() {
   await SpecialPowers.pushPrefEnv({
     set: [
       ["security.sandbox.content.level", 1],
-      ["csp.skip_about_page_has_csp_assert", true],
+      ["dom.security.skip_about_page_has_csp_assert", true],
     ],
   });
 
@@ -141,7 +142,8 @@ add_task(async function test_principal_right_click_open_link_in_new_tab() {
     async function(browser) {
       let loadPromise = BrowserTestUtils.waitForNewTab(
         gBrowser,
-        "about:test-about-principal-child"
+        "about:test-about-principal-child",
+        true
       );
 
       // simulate right-click open link in tab
@@ -160,7 +162,7 @@ add_task(async function test_principal_right_click_open_link_in_new_tab() {
       let tab = await loadPromise;
       gBrowser.selectTabAtIndex(2);
 
-      await ContentTask.spawn(gBrowser.selectedBrowser, {}, async function() {
+      await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
         let channel = content.docShell.currentDocumentChannel;
         is(
           channel.originalURI.asciiSpec,

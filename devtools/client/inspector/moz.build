@@ -6,6 +6,7 @@ DIRS += [
     'animation',
     'boxmodel',
     'changes',
+    'compatibility',
     'components',
     'computed',
     'extensions',
@@ -24,7 +25,6 @@ DevToolsModules(
     'inspector.js',
     'node-picker.js',
     'panel.js',
-    'reducers.js',
     'store.js',
     'toolsidebar.js',
 )

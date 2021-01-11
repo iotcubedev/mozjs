@@ -19,10 +19,10 @@ add_task(async function checkFormStateSaved() {
   await BrowserTestUtils.withNewTab(
     TEST_PATH + "file_form_state.html",
     async browser => {
-      await ContentTask.spawn(browser, { textareas, textboxes }, fillform);
+      await SpecialPowers.spawn(browser, [{ textareas, textboxes }], fillform);
       let fileURISpec = await new Promise((resolve, reject) => {
         let stack = Components.stack.caller;
-        browser.frameLoader.startPersistence(0, {
+        browser.frameLoader.startPersistence(null, {
           onDocumentReady(document) {
             // Note that 'document' here is going to be an nsIWebBrowserPersistDocument,
             // not a regular DOM document.
@@ -40,9 +40,9 @@ add_task(async function checkFormStateSaved() {
         });
       });
       await BrowserTestUtils.withNewTab(fileURISpec, async otherBrowser => {
-        await ContentTask.spawn(
+        await SpecialPowers.spawn(
           otherBrowser,
-          { textareas, textboxes },
+          [{ textareas, textboxes }],
           checkform
         );
       });

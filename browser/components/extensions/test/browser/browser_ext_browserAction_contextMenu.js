@@ -6,6 +6,12 @@ const { TelemetryTestUtils } = ChromeUtils.import(
   "resource://testing-common/TelemetryTestUtils.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "AbuseReporter",
+  "resource://gre/modules/AbuseReporter.jsm"
+);
+
 XPCOMUtils.defineLazyPreferenceGetter(
   this,
   "ABUSE_REPORT_ENABLED",
@@ -451,7 +457,7 @@ add_task(async function browseraction_contextmenu_remove_extension() {
   let { prompt } = Services;
   let promptService = {
     _response: 1,
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIPromptService]),
+    QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
     confirmEx: function(...args) {
       promptService._confirmExArgs = args;
       return promptService._response;
@@ -566,7 +572,7 @@ add_task(async function browseraction_contextmenu_report_extension() {
   SpecialPowers.pushPrefEnv({
     set: [["extensions.abuseReport.enabled", true]],
   });
-  let win = await BrowserTestUtils.openNewBrowserWindow();
+  let win;
   let id = "addon_id@example.com";
   let name = "Bad Add-on";
   let buttonId = `${makeWidgetId(id)}-browser-action`;
@@ -581,6 +587,35 @@ add_task(async function browseraction_contextmenu_report_extension() {
     },
     useAddonManager: "temporary",
   });
+
+  async function testReportDialog() {
+    const reportDialogWindow = await BrowserTestUtils.waitForCondition(
+      () => AbuseReporter.getOpenDialog(),
+      "Wait for the abuse report dialog to have been opened"
+    );
+
+    const reportDialogParams = reportDialogWindow.arguments[0].wrappedJSObject;
+    is(
+      reportDialogParams.report.addon.id,
+      id,
+      "Abuse report dialog has the expected addon id"
+    );
+    is(
+      reportDialogParams.report.reportEntryPoint,
+      "toolbar_context_menu",
+      "Abuse report dialog has the expected reportEntryPoint"
+    );
+
+    info("Wait the report dialog to complete rendering");
+    await reportDialogParams.promiseReportPanel;
+    info("Close the report dialog");
+    reportDialogWindow.close();
+    is(
+      await reportDialogParams.promiseReport,
+      undefined,
+      "Report resolved as user cancelled when the window is closed"
+    );
+  }
 
   async function testContextMenu(menuId, customizing) {
     info(`Open browserAction context menu in ${menuId}`);
@@ -612,26 +647,7 @@ add_task(async function browseraction_contextmenu_report_extension() {
 
     await BrowserTestUtils.browserLoaded(browser);
 
-    const abuseReportFrame = await BrowserTestUtils.waitForCondition(() => {
-      return browser.contentDocument.querySelector(
-        "addon-abuse-report-xulframe"
-      );
-    }, "Wait the abuse report frame");
-
-    ok(
-      !abuseReportFrame.hidden,
-      "Abuse report frame has the expected visibility"
-    );
-    is(
-      abuseReportFrame.report.addon.id,
-      id,
-      "Abuse report frame has the expected addon id"
-    );
-    is(
-      abuseReportFrame.report.reportEntryPoint,
-      "toolbar_context_menu",
-      "Abuse report frame has the expected reportEntryPoint"
-    );
+    await testReportDialog();
 
     // Close the new about:addons tab when running in customize mode,
     // or cancel the abuse report if the about:addons page has been
@@ -654,6 +670,8 @@ add_task(async function browseraction_contextmenu_report_extension() {
 
   await extension.startup();
 
+  win = await BrowserTestUtils.openNewBrowserWindow();
+
   info("Run tests in normal mode");
   await runTestContextMenu({
     buttonId,
@@ -670,7 +688,6 @@ add_task(async function browseraction_contextmenu_report_extension() {
     win,
   });
 
-  await extension.unload();
-
   await BrowserTestUtils.closeWindow(win);
+  await extension.unload();
 });

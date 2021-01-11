@@ -6,7 +6,7 @@
 
 // TODO: other background-* properties
 <%helpers:shorthand name="background"
-                    engines="gecko servo-2013"
+                    engines="gecko servo-2013 servo-2020"
                     sub_properties="background-color background-position-x background-position-y background-repeat
                                     background-attachment background-image background-size background-origin
                                     background-clip"
@@ -59,19 +59,19 @@
             % endfor
             loop {
                 if background_color.is_none() {
-                    if let Ok(value) = input.try(|i| Color::parse(context, i)) {
+                    if let Ok(value) = input.try_parse(|i| Color::parse(context, i)) {
                         background_color = Some(value);
                         continue
                     }
                 }
                 if position.is_none() {
-                    if let Ok(value) = input.try(|input| {
+                    if let Ok(value) = input.try_parse(|input| {
                         Position::parse_three_value_quirky(context, input, AllowQuirks::No)
                     }) {
                         position = Some(value);
 
                         // Parse background size, if applicable.
-                        size = input.try(|input| {
+                        size = input.try_parse(|input| {
                             input.expect_delim('/')?;
                             background_size::single_value::parse(context, input)
                         }).ok();
@@ -81,7 +81,7 @@
                 }
                 % for name in "image repeat attachment origin clip".split():
                     if ${name}.is_none() {
-                        if let Ok(value) = input.try(|input| background_${name}::single_value
+                        if let Ok(value) = input.try_parse(|input| background_${name}::single_value
                                                                                ::parse(context, input)) {
                             ${name} = Some(value);
                             continue
@@ -194,7 +194,7 @@
 </%helpers:shorthand>
 
 <%helpers:shorthand name="background-position"
-                    engines="gecko servo-2013"
+                    engines="gecko servo-2013 servo-2020"
                     flags="SHORTHAND_IN_GETCS"
                     sub_properties="background-position-x background-position-y"
                     spec="https://drafts.csswg.org/css-backgrounds-4/#the-background-position">

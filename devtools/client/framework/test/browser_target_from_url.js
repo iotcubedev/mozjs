@@ -46,17 +46,20 @@ add_task(async function() {
   is(target.isLocalTab, false);
   is(target.chrome, true);
   is(target.isBrowsingContext, true);
+  await target.client.close();
 
   info("Test tab");
   windowId = browser.outerWindowID;
   target = await targetFromURL(new URL("http://foo?type=tab&id=" + windowId));
   assertTarget(target, TEST_URI);
+  await target.client.close();
 
   info("Test tab with chrome privileges");
   target = await targetFromURL(
     new URL("http://foo?type=tab&id=" + windowId + "&chrome")
   );
   assertTarget(target, TEST_URI, true);
+  await target.client.close();
 
   info("Test invalid tab id");
   try {
@@ -73,6 +76,7 @@ add_task(async function() {
   target = await targetFromURL(new URL("http://foo?type=process"));
   const topWindow = Services.wm.getMostRecentWindow("navigator:browser");
   assertTarget(target, topWindow.location.href, true);
+  await target.client.close();
 
   await testRemoteTCP();
   await testRemoteWebSocket();
@@ -80,42 +84,42 @@ add_task(async function() {
   gBrowser.removeCurrentTab();
 });
 
-async function setupDebuggerServer(webSocket) {
-  info("Create a separate loader instance for the DebuggerServer.");
+async function setupDevToolsServer(webSocket) {
+  info("Create a separate loader instance for the DevToolsServer.");
   const loader = new DevToolsLoader();
-  const { DebuggerServer } = loader.require("devtools/server/debugger-server");
+  const { DevToolsServer } = loader.require("devtools/server/devtools-server");
   const { SocketListener } = loader.require("devtools/shared/security/socket");
 
-  DebuggerServer.init();
-  DebuggerServer.registerAllActors();
-  DebuggerServer.allowChromeProcess = true;
+  DevToolsServer.init();
+  DevToolsServer.registerAllActors();
+  DevToolsServer.allowChromeProcess = true;
   const socketOptions = {
     // Pass -1 to automatically choose an available port
     portOrPath: -1,
     webSocket,
   };
 
-  const listener = new SocketListener(DebuggerServer, socketOptions);
+  const listener = new SocketListener(DevToolsServer, socketOptions);
   ok(listener, "Socket listener created");
   await listener.open();
-  is(DebuggerServer.listeningSockets, 1, "1 listening socket");
+  is(DevToolsServer.listeningSockets, 1, "1 listening socket");
 
-  return { DebuggerServer, listener };
+  return { DevToolsServer, listener };
 }
 
-function teardownDebuggerServer({ DebuggerServer, listener }) {
+function teardownDevToolsServer({ DevToolsServer, listener }) {
   info("Close the listener socket");
   listener.close();
-  is(DebuggerServer.listeningSockets, 0, "0 listening sockets");
+  is(DevToolsServer.listeningSockets, 0, "0 listening sockets");
 
-  info("Destroy the temporary debugger server");
-  DebuggerServer.destroy();
+  info("Destroy the temporary devtools server");
+  DevToolsServer.destroy();
 }
 
 async function testRemoteTCP() {
   info("Test remote process via TCP Connection");
 
-  const server = await setupDebuggerServer(false);
+  const server = await setupDevToolsServer(false);
 
   const { port } = server.listener;
   const target = await targetFromURL(
@@ -126,18 +130,18 @@ async function testRemoteTCP() {
 
   const settings = target.client._transport.connectionSettings;
   is(settings.host, "127.0.0.1");
-  is(settings.port, port);
+  is(parseInt(settings.port, 10), port);
   is(settings.webSocket, false);
 
   await target.client.close();
 
-  teardownDebuggerServer(server);
+  teardownDevToolsServer(server);
 }
 
 async function testRemoteWebSocket() {
   info("Test remote process via WebSocket Connection");
 
-  const server = await setupDebuggerServer(true);
+  const server = await setupDevToolsServer(true);
 
   const { port } = server.listener;
   const target = await targetFromURL(
@@ -148,9 +152,9 @@ async function testRemoteWebSocket() {
 
   const settings = target.client._transport.connectionSettings;
   is(settings.host, "127.0.0.1");
-  is(settings.port, port);
+  is(parseInt(settings.port, 10), port);
   is(settings.webSocket, true);
   await target.client.close();
 
-  teardownDebuggerServer(server);
+  teardownDevToolsServer(server);
 }

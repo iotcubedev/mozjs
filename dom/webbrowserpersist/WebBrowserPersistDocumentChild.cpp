@@ -13,10 +13,11 @@
 #include "WebBrowserPersistLocalDocument.h"
 #include "WebBrowserPersistResourcesChild.h"
 #include "WebBrowserPersistSerializeChild.h"
+#include "mozilla/StaticPrefs_fission.h"
 
 namespace mozilla {
 
-WebBrowserPersistDocumentChild::WebBrowserPersistDocumentChild() {}
+WebBrowserPersistDocumentChild::WebBrowserPersistDocumentChild() = default;
 
 WebBrowserPersistDocumentChild::~WebBrowserPersistDocumentChild() = default;
 
@@ -55,7 +56,11 @@ void WebBrowserPersistDocumentChild::Start(
   ENSURE(aDocument->GetCharacterSet(attrs.characterSet()));
   ENSURE(aDocument->GetTitle(attrs.title()));
   ENSURE(aDocument->GetContentDisposition(attrs.contentDisposition()));
-  ENSURE(aDocument->GetCacheKey(&(attrs.cacheKey())));
+
+  if (!StaticPrefs::fission_sessionHistoryInParent()) {
+    attrs.sessionHistoryEntryOrCacheKey() = aDocument->GetCacheKey();
+  }
+
   ENSURE(aDocument->GetPersistFlags(&(attrs.persistFlags())));
 
   ENSURE(aDocument->GetPrincipal(getter_AddRefs(principal)));

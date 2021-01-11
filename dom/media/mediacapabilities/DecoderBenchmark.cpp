@@ -7,33 +7,35 @@
 #include "DecoderBenchmark.h"
 #include "mozilla/BenchmarkStorageChild.h"
 #include "mozilla/media/MediaUtils.h"
+#include "mozilla/StaticPrefs_media.h"
 
 namespace mozilla {
 
 void DecoderBenchmark::StoreScore(const nsACString& aDecoderName,
                                   const nsACString& aKey,
                                   RefPtr<FrameStatistics> aStats) {
-  uint64_t parsedFrames = aStats->GetParsedFrames();
-  uint64_t droppedFrames = aStats->GetDroppedFrames();
+  FrameStatisticsData statsData = aStats->GetFrameStatisticsData();
+  uint64_t totalFrames = FrameStatistics::GetTotalFrames(statsData);
+  uint64_t droppedFrames = FrameStatistics::GetDroppedFrames(statsData);
 
-  MOZ_ASSERT(droppedFrames <= parsedFrames);
-  MOZ_ASSERT(parsedFrames >= mLastParsedFrames);
+  MOZ_ASSERT(droppedFrames <= totalFrames);
+  MOZ_ASSERT(totalFrames >= mLastTotalFrames);
   MOZ_ASSERT(droppedFrames >= mLastDroppedFrames);
 
-  uint64_t diffParsedFrames = parsedFrames - mLastParsedFrames;
+  uint64_t diffTotalFrames = totalFrames - mLastTotalFrames;
   uint64_t diffDroppedFrames = droppedFrames - mLastDroppedFrames;
 
   /* Update now in case the method returns at the if check bellow. */
-  mLastParsedFrames = parsedFrames;
+  mLastTotalFrames = totalFrames;
   mLastDroppedFrames = droppedFrames;
 
   /* A minimum number of 10 frames is required to store the score. */
-  if (diffParsedFrames < 10) {
+  if (diffTotalFrames < 10) {
     return;
   }
 
   int32_t percentage =
-      100 - 100 * float(diffDroppedFrames) / float(diffParsedFrames);
+      100 - 100 * float(diffDroppedFrames) / float(diffTotalFrames);
 
   MOZ_ASSERT(percentage >= 0);
 
@@ -69,7 +71,7 @@ RefPtr<BenchmarkScorePromise> DecoderBenchmark::Get(
   const nsCString name(aDecoderName);
   const nsCString key(aKey);
   return BenchmarkStorageChild::Instance()->SendGet(name, key)->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [](int32_t aResult) {
         return BenchmarkScorePromise::CreateAndResolve(aResult, __func__);
       },
@@ -110,7 +112,7 @@ nsCString KeyUtil::FindLevel(const uint32_t aLevels[], const size_t length,
                              uint32_t aValue) {
   MOZ_ASSERT(aValue);
   if (aValue <= aLevels[0]) {
-    return NS_LITERAL_CSTRING("Level0");
+    return "Level0"_ns;
   }
   nsAutoCString level("Level");
   size_t lastIndex = length - 1;
@@ -130,21 +132,21 @@ nsCString KeyUtil::FindLevel(const uint32_t aLevels[], const size_t length,
     return std::move(level);
   }
   MOZ_CRASH("Array is not sorted");
-  return NS_LITERAL_CSTRING("");
+  return ""_ns;
 }
 
 /* static */
 nsCString KeyUtil::BitDepthToStr(uint8_t aBitDepth) {
   switch (aBitDepth) {
     case 8:  // ColorDepth::COLOR_8
-      return NS_LITERAL_CSTRING("-8bit");
+      return "-8bit"_ns;
     case 10:  // ColorDepth::COLOR_10
     case 12:  // ColorDepth::COLOR_12
     case 16:  // ColorDepth::COLOR_16
-      return NS_LITERAL_CSTRING("-non8bit");
+      return "-non8bit"_ns;
   }
   MOZ_ASSERT_UNREACHABLE("invalid color depth value");
-  return NS_LITERAL_CSTRING("");
+  return ""_ns;
 }
 
 /* static */
@@ -197,7 +199,7 @@ static nsDataHashtable<nsCStringHashKey, int32_t> DecoderVersionTable() {
    * will be erased. An example of assigning the version number `1` for AV1
    * decoder is:
    *
-   * decoderVersionTable.Put(NS_LITERAL_CSTRING("video/av1"), 1);
+   * decoderVersionTable.Put("video/av1"_ns, 1);
    *
    * For the decoders not listed here the `CheckVersion` method exits early, to
    * avoid sending unecessary IPC messages.
@@ -211,6 +213,10 @@ void DecoderBenchmark::CheckVersion(const nsACString& aDecoderName) {
   if (!XRE_IsContentProcess()) {
     NS_WARNING(
         "Checking version is only allowed only from the content process.");
+    return;
+  }
+
+  if (!StaticPrefs::media_mediacapabilities_from_database()) {
     return;
   }
 

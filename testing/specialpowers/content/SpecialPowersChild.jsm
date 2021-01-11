@@ -1,8 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-/* This code is loaded in every child process that is started by mochitest in
- * order to be used as a replacement for UniversalXPConnect
+/* This code is loaded in every child process that is started by mochitest.
  */
 
 "use strict";
@@ -55,27 +54,57 @@ ChromeUtils.defineModuleGetter(
   "AppConstants",
   "resource://gre/modules/AppConstants.jsm"
 );
-
 ChromeUtils.defineModuleGetter(
   this,
   "PerTestCoverageUtils",
   "resource://testing-common/PerTestCoverageUtils.jsm"
 );
+ChromeUtils.defineModuleGetter(
+  this,
+  "ContentTaskUtils",
+  "resource://testing-common/ContentTaskUtils.jsm"
+);
 
-// Allow stuff from this scope to be accessed from non-privileged scopes. This
-// would crash if used outside of automation.
-Cu.forcePermissiveCOWs();
+Cu.crashIfNotInAutomation();
 
 function bindDOMWindowUtils(aWindow) {
-  return aWindow && WrapPrivileged.wrap(aWindow.windowUtils);
+  return aWindow && WrapPrivileged.wrap(aWindow.windowUtils, aWindow);
+}
+
+function defineSpecialPowers(sp) {
+  let window = sp.contentWindow;
+  window.SpecialPowers = sp;
+  if (window === window.wrappedJSObject) {
+    return;
+  }
+  // We can't use a generic |defineLazyGetter| because it does not
+  // allow customizing the re-definition behavior.
+  Object.defineProperty(window.wrappedJSObject, "SpecialPowers", {
+    get() {
+      let value = WrapPrivileged.wrap(sp, window);
+      // If we bind |window.wrappedJSObject| when defining the getter
+      // and use it here, it might become a dead wrapper.
+      // We have to retrieve |wrappedJSObject| again.
+      Object.defineProperty(window.wrappedJSObject, "SpecialPowers", {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true,
+      });
+      return value;
+    },
+    configurable: true,
+    enumerable: true,
+  });
 }
 
 // SPConsoleListener reflects nsIConsoleMessage objects into JS in a
 // tidy, XPCOM-hiding way.  Messages that are nsIScriptError objects
 // have their properties exposed in detail.  It also auto-unregisters
 // itself when it receives a "sentinel" message.
-function SPConsoleListener(callback) {
+function SPConsoleListener(callback, contentWindow) {
   this.callback = callback;
+  this.contentWindow = contentWindow;
 }
 
 SPConsoleListener.prototype = {
@@ -95,8 +124,6 @@ SPConsoleListener.prototype = {
       isScriptError: false,
       isConsoleEvent: false,
       isWarning: false,
-      isException: false,
-      isStrict: false,
     };
     if (msg instanceof Ci.nsIScriptError) {
       m.errorMessage = msg.errorMessage;
@@ -110,8 +137,6 @@ SPConsoleListener.prototype = {
       m.innerWindowID = msg.innerWindowID;
       m.isScriptError = true;
       m.isWarning = (msg.flags & Ci.nsIScriptError.warningFlag) === 1;
-      m.isException = (msg.flags & Ci.nsIScriptError.exceptionFlag) === 1;
-      m.isStrict = (msg.flags & Ci.nsIScriptError.strictFlag) === 1;
     } else if (topic === "console-api-log-event") {
       // This is a dom/console event.
       let unwrapped = msg.wrappedJSObject;
@@ -130,7 +155,7 @@ SPConsoleListener.prototype = {
     // Run in a separate runnable since console listeners aren't
     // supposed to touch content and this one might.
     Services.tm.dispatchToMainThread(() => {
-      this.callback.call(undefined, m);
+      this.callback.call(undefined, Cu.cloneInto(m, this.contentWindow));
     });
 
     if (!m.isScriptError && !m.isConsoleEvent && m.message === "SENTINEL") {
@@ -139,10 +164,7 @@ SPConsoleListener.prototype = {
     }
   },
 
-  QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIConsoleListener,
-    Ci.nsIObserver,
-  ]),
+  QueryInterface: ChromeUtils.generateQI(["nsIConsoleListener", "nsIObserver"]),
 };
 
 class SpecialPowersChild extends JSWindowActorChild {
@@ -150,7 +172,6 @@ class SpecialPowersChild extends JSWindowActorChild {
     super();
 
     this._windowID = null;
-    this.DOMWindowUtils = null;
 
     this._encounteredCrashDumpFiles = [];
     this._unexpectedCrashDumpFiles = {};
@@ -160,7 +181,7 @@ class SpecialPowersChild extends JSWindowActorChild {
     Object.defineProperty(this, "Components", {
       configurable: true,
       enumerable: true,
-      value: this.getFullComponents(),
+      value: Components,
     });
     this._createFilesOnError = null;
     this._createFilesOnSuccess = null;
@@ -168,6 +189,7 @@ class SpecialPowersChild extends JSWindowActorChild {
     this._messageListeners = new ExtensionUtils.DefaultMap(() => new Set());
 
     this._consoleListeners = [];
+    this._spawnTaskImports = {};
     this._encounteredCrashDumpFiles = [];
     this._unexpectedCrashDumpFiles = {};
     this._crashDumpDir = null;
@@ -181,11 +203,24 @@ class SpecialPowersChild extends JSWindowActorChild {
 
     this._nextExtensionID = 0;
     this._extensionListeners = null;
+
+    WrapPrivileged.disableAutoWrap(
+      this.unwrap,
+      this.isWrapper,
+      this.wrapCallback,
+      this.wrapCallbackObject,
+      this.setWrapped,
+      this.nondeterministicGetWeakMapKeys,
+      this.snapshotWindowWithOptions,
+      this.snapshotWindow,
+      this.snapshotRect,
+      this.getDOMRequestService
+    );
   }
 
-  handleEvent(aEvent) {
-    // We don't actually care much about the "DOMWindowCreated" event.
-    // We only listen to it to force creation of the actor.
+  observe(aSubject, aTopic, aData) {
+    // Ignore the "{chrome/content}-document-global-created" event. It
+    // is only observed to force creation of the actor.
   }
 
   actorCreated() {
@@ -194,12 +229,11 @@ class SpecialPowersChild extends JSWindowActorChild {
 
   attachToWindow() {
     let window = this.contentWindow;
-    if (!window.wrappedJSObject.SpecialPowers) {
+    // We should not invoke the getter.
+    if (!("SpecialPowers" in window.wrappedJSObject)) {
       this._windowID = window.windowUtils.currentInnerWindowID;
-      this.DOMWindowUtils = bindDOMWindowUtils(window);
 
-      window.SpecialPowers = this;
-      window.wrappedJSObject.SpecialPowers = this;
+      defineSpecialPowers(this);
       if (this.IsInNestedFrame) {
         this.addPermission("allowXULXBL", true, window.document);
       }
@@ -277,17 +311,23 @@ class SpecialPowersChild extends JSWindowActorChild {
         break;
 
       case "Spawn":
-        let { task, args, caller, taskId } = message.data;
-        return this._spawnTask(task, args, caller, taskId);
+        let { task, args, caller, taskId, imports } = message.data;
+        return this._spawnTask(task, args, caller, taskId, imports);
 
       case "Assert":
         {
+          if ("info" in message.data) {
+            this.SimpleTest.info(message.data.info);
+            break;
+          }
+
           // An assertion has been done in a mochitest chrome script
-          let { name, passed, stack, diag } = message.data;
+          let { name, passed, stack, diag, expectFail } = message.data;
 
           let { SimpleTest } = this;
           if (SimpleTest) {
-            SimpleTest.record(passed, name, diag, stack);
+            let expected = expectFail ? "fail" : "pass";
+            SimpleTest.record(passed, name, diag, stack, expected);
           } else {
             // Well, this is unexpected.
             dump(name + "\n");
@@ -337,13 +377,20 @@ class SpecialPowersChild extends JSWindowActorChild {
    *    and shouldn't be a problem.
    */
   wrap(obj) {
-    return WrapPrivileged.wrap(obj);
+    return obj;
   }
   unwrap(obj) {
     return WrapPrivileged.unwrap(obj);
   }
   isWrapper(val) {
     return WrapPrivileged.isWrapper(val);
+  }
+
+  /*
+   * Wrap objects on a specified global.
+   */
+  wrapFor(obj, win) {
+    return WrapPrivileged.wrap(obj, win);
   }
 
   /*
@@ -354,10 +401,10 @@ class SpecialPowersChild extends JSWindowActorChild {
    * reach content.
    */
   wrapCallback(func) {
-    return WrapPrivileged.wrapCallback(func);
+    return WrapPrivileged.wrapCallback(func, this.contentWindow);
   }
   wrapCallbackObject(obj) {
-    return WrapPrivileged.wrapCallbackObject(obj);
+    return WrapPrivileged.wrapCallbackObject(obj, this.contentWindow);
   }
 
   /*
@@ -415,7 +462,7 @@ class SpecialPowersChild extends JSWindowActorChild {
   // then that data will be written to the file.
   createFiles(fileRequests, onCreation, onError) {
     return this.sendQuery("SpecialPowers.CreateFiles", fileRequests).then(
-      onCreation,
+      files => onCreation(Cu.cloneInto(files, this.contentWindow)),
       onError
     );
   }
@@ -479,13 +526,9 @@ class SpecialPowersChild extends JSWindowActorChild {
     var window = this.contentWindow;
     var mc = new window.MessageChannel();
     sb.port = mc.port1;
-    try {
-      let blob = new Blob([str], { type: "application/javascript" });
-      let blobUrl = URL.createObjectURL(blob);
-      Services.scriptloader.loadSubScript(blobUrl, sb);
-    } catch (e) {
-      throw WrapPrivileged.wrap(e);
-    }
+    let blob = new Blob([str], { type: "application/javascript" });
+    let blobUrl = URL.createObjectURL(blob);
+    Services.scriptloader.loadSubScript(blobUrl, sb);
 
     return mc.port2;
   }
@@ -619,7 +662,7 @@ class SpecialPowersChild extends JSWindowActorChild {
     };
     this._addMessageListener("SPChromeScriptMessage", chromeScript);
 
-    return this.wrap(chromeScript);
+    return chromeScript;
   }
 
   async importInMainProcess(importString) {
@@ -633,43 +676,44 @@ class SpecialPowersChild extends JSWindowActorChild {
   }
 
   get Services() {
-    return WrapPrivileged.wrap(Services);
-  }
-
-  /*
-   * A getter for the privileged Components object we have.
-   */
-  getFullComponents() {
-    return Components;
+    return Services;
   }
 
   /*
    * Convenient shortcuts to the standard Components abbreviations.
    */
   get Cc() {
-    return WrapPrivileged.wrap(this.getFullComponents().classes);
+    return Cc;
   }
   get Ci() {
-    return WrapPrivileged.wrap(this.getFullComponents().interfaces);
+    return Ci;
   }
   get Cu() {
-    return WrapPrivileged.wrap(this.getFullComponents().utils);
+    return Cu;
   }
   get Cr() {
-    return WrapPrivileged.wrap(this.getFullComponents().results);
+    return Cr;
+  }
+
+  get addProfilerMarker() {
+    return ChromeUtils.addProfilerMarker;
+  }
+
+  get DOMWindowUtils() {
+    return this.contentWindow.windowUtils;
   }
 
   getDOMWindowUtils(aWindow) {
-    if (aWindow == this.contentWindow && this.DOMWindowUtils != null) {
-      return this.DOMWindowUtils;
+    if (aWindow == this.contentWindow) {
+      return aWindow.windowUtils;
     }
 
-    return bindDOMWindowUtils(aWindow);
+    return bindDOMWindowUtils(Cu.unwaiveXrays(aWindow));
   }
 
   async toggleMuteState(aMuted, aWindow) {
     let actor = aWindow
-      ? aWindow.getWindowGlobalChild().getActor("SpecialPowers")
+      ? aWindow.windowGlobalChild.getActor("SpecialPowers")
       : this;
     return actor.sendQuery("SPToggleMuteAudio", { mute: aMuted });
   }
@@ -680,15 +724,15 @@ class SpecialPowersChild extends JSWindowActorChild {
   getNoXULDOMParser() {
     // If we create it with a system subject principal (so it gets a
     // nullprincipal), it won't be able to parse XUL by default.
-    return WrapPrivileged.wrap(new DOMParser());
+    return new DOMParser();
   }
 
   get InspectorUtils() {
-    return WrapPrivileged.wrap(InspectorUtils);
+    return InspectorUtils;
   }
 
   get PromiseDebugging() {
-    return WrapPrivileged.wrap(PromiseDebugging);
+    return PromiseDebugging;
   }
 
   async waitForCrashes(aExpectingProcessCrash) {
@@ -792,7 +836,7 @@ class SpecialPowersChild extends JSWindowActorChild {
     for (var p in inPermissions) {
       var permission = inPermissions[p];
       var originalValue = Ci.nsIPermissionManager.UNKNOWN_ACTION;
-      var context = Cu.unwaiveXrays(permission.context); // Sometimes |context| is a DOM object on which we expect
+      var context = WrapPrivileged.unwrap(Cu.unwaiveXrays(permission.context)); // Sometimes |context| is a DOM object on which we expect
       // to be able to access .nodePrincipal, so we need to unwaive.
       if (
         await this.testPermission(
@@ -910,13 +954,18 @@ class SpecialPowersChild extends JSWindowActorChild {
         }
       }
       this._permissionsUndoStack.push(cleanupPermissions);
-      this._pendingPermissions.push([
-        pendingPermissions,
-        this._delayCallbackTwice(callback),
-      ]);
-      this._applyPermissions();
+      await new Promise(resolve => {
+        this._pendingPermissions.push([
+          pendingPermissions,
+          this._delayCallbackTwice(resolve),
+        ]);
+        this._applyPermissions();
+      });
     } else {
-      this._setTimeout(callback);
+      await this.promiseTimeout();
+    }
+    if (callback) {
+      callback();
     }
   }
 
@@ -1062,7 +1111,10 @@ class SpecialPowersChild extends JSWindowActorChild {
       typeof obs == "object" &&
       obs.observe.name != "SpecialPowersCallbackWrapper"
     ) {
-      obs.observe = WrapPrivileged.wrapCallback(obs.observe);
+      obs.observe = WrapPrivileged.wrapCallback(
+        Cu.unwaiveXrays(obs.observe),
+        this.contentWindow
+      );
     }
     Services.obs.addObserver(obs, notification, weak);
   }
@@ -1089,7 +1141,10 @@ class SpecialPowersChild extends JSWindowActorChild {
       typeof obs == "object" &&
       obs.observe.name != "SpecialPowersCallbackWrapper"
     ) {
-      obs.observe = WrapPrivileged.wrapCallback(obs.observe);
+      obs.observe = WrapPrivileged.wrapCallback(
+        Cu.unwaiveXrays(obs.observe),
+        this.contentWindow
+      );
     }
     let asyncObs = (...args) => {
       Services.tm.dispatchToMainThread(() => {
@@ -1223,7 +1278,7 @@ class SpecialPowersChild extends JSWindowActorChild {
   // XXX: these APIs really ought to be removed, they're not e10s-safe.
   // (also they're pretty Firefox-specific)
   _getTopChromeWindow(window) {
-    return window.docShell.rootTreeItem.domWindow;
+    return window.browsingContext.topChromeWindow;
   }
   _getAutoCompletePopup(window) {
     return this._getTopChromeWindow(window).document.getElementById(
@@ -1239,7 +1294,7 @@ class SpecialPowersChild extends JSWindowActorChild {
   get formHistory() {
     let tmp = {};
     ChromeUtils.import("resource://gre/modules/FormHistory.jsm", tmp);
-    return WrapPrivileged.wrap(tmp.FormHistory);
+    return tmp.FormHistory;
   }
   getFormFillController(window) {
     return Cc["@mozilla.org/satchel/form-fill-controller;1"].getService(
@@ -1247,13 +1302,13 @@ class SpecialPowersChild extends JSWindowActorChild {
     );
   }
   attachFormFillControllerTo(window) {
-    this.getFormFillController().attachPopupElementToBrowser(
-      window.docShell,
+    this.getFormFillController().attachPopupElementToDocument(
+      window.document,
       this._getAutoCompletePopup(window)
     );
   }
   detachFormFillControllerFrom(window) {
-    this.getFormFillController().detachFromBrowser(window.docShell);
+    this.getFormFillController().detachFromDocument(window.document);
   }
   isBackButtonEnabled(window) {
     return !this._getTopChromeWindow(window)
@@ -1278,6 +1333,10 @@ class SpecialPowersChild extends JSWindowActorChild {
     );
   }
 
+  async generateMediaControlKeyTestEvent(event) {
+    await this.sendQuery("SPGenerateMediaControlKeyTestEvent", { event });
+  }
+
   // Note: each call to registerConsoleListener MUST be paired with a
   // call to postConsoleSentinel; when the callback receives the
   // sentinel it will unregister itself (_after_ calling the
@@ -1285,7 +1344,7 @@ class SpecialPowersChild extends JSWindowActorChild {
   // If you register more than one console listener, a call to
   // postConsoleSentinel will zap all of them.
   registerConsoleListener(callback) {
-    let listener = new SPConsoleListener(callback);
+    let listener = new SPConsoleListener(callback, this.contentWindow);
     Services.console.registerListener(listener);
 
     // listen for dom/console events as well
@@ -1299,19 +1358,20 @@ class SpecialPowersChild extends JSWindowActorChild {
   }
 
   getFullZoom(window) {
-    return this._getMUDV(window).fullZoom;
+    return BrowsingContext.getFromWindow(window).fullZoom;
   }
+
   getDeviceFullZoom(window) {
-    return this._getMUDV(window).deviceFullZoom;
+    return this._getMUDV(window).deviceFullZoomForTest;
   }
   setFullZoom(window, zoom) {
-    this._getMUDV(window).fullZoom = zoom;
+    BrowsingContext.getFromWindow(window).fullZoom = zoom;
   }
   getTextZoom(window) {
-    return this._getMUDV(window).textZoom;
+    return BrowsingContext.getFromWindow(window).textZoom;
   }
   setTextZoom(window, zoom) {
-    this._getMUDV(window).textZoom = zoom;
+    BrowsingContext.getFromWindow(window).textZoom = zoom;
   }
 
   getOverrideDPPX(window) {
@@ -1408,9 +1468,17 @@ class SpecialPowersChild extends JSWindowActorChild {
     // return a <canvas> element rather than an ImageData object, so we
     // need to convert the result from the remote snapshot to a local
     // canvas.
-    return this.spawn(content, [rect, bgcolor, options], getImageData).then(
-      toCanvas
-    );
+    let promise = this.spawn(
+      content,
+      [rect, bgcolor, options],
+      getImageData
+    ).then(toCanvas);
+    if (Cu.isXrayWrapper(this.contentWindow)) {
+      return new this.contentWindow.Promise((resolve, reject) => {
+        promise.then(resolve, reject);
+      });
+    }
+    return promise;
   }
 
   snapshotWindow(win, withCaret, rect, bgcolor) {
@@ -1424,7 +1492,7 @@ class SpecialPowersChild extends JSWindowActorChild {
   }
 
   gc() {
-    this.DOMWindowUtils.garbageCollect();
+    this.contentWindow.windowUtils.garbageCollect();
   }
 
   forceGC() {
@@ -1470,14 +1538,24 @@ class SpecialPowersChild extends JSWindowActorChild {
   }
 
   nondeterministicGetWeakMapKeys(m) {
-    return ChromeUtils.nondeterministicGetWeakMapKeys(m);
+    let keys = ChromeUtils.nondeterministicGetWeakMapKeys(m);
+    if (!keys) {
+      return undefined;
+    }
+    return this.contentWindow.Array.from(keys);
   }
 
   getMemoryReports() {
     try {
       Cc["@mozilla.org/memory-reporter-manager;1"]
         .getService(Ci.nsIMemoryReporterManager)
-        .getReports(() => {}, null, () => {}, null, false);
+        .getReports(
+          () => {},
+          null,
+          () => {},
+          null,
+          false
+        );
     } catch (e) {}
   }
 
@@ -1563,7 +1641,7 @@ class SpecialPowersChild extends JSWindowActorChild {
         return serv[prop].apply(serv, arguments);
       };
     }
-    return res;
+    return Cu.cloneInto(res, this.contentWindow, { cloneFunctions: true });
   }
 
   addCategoryEntry(category, entry, value, persists, replace) {
@@ -1607,6 +1685,17 @@ class SpecialPowersChild extends JSWindowActorChild {
     }
 
     return BrowsingContext.getFromWindow(target);
+  }
+
+  getBrowsingContextID(target) {
+    return this._browsingContextForTarget(target).id;
+  }
+
+  *getGroupTopLevelWindows(target) {
+    let { group } = this._browsingContextForTarget(target);
+    for (let bc of group.getToplevels()) {
+      yield bc.window;
+    }
   }
 
   /**
@@ -1653,8 +1742,24 @@ class SpecialPowersChild extends JSWindowActorChild {
       browsingContext,
       args,
       task: String(task),
-      caller: SpecialPowersSandbox.getCallerInfo(Components.stack.caller),
+      caller: Cu.getFunctionSourceLocation(task),
       hasHarness: typeof this.SimpleTest === "object",
+      imports: this._spawnTaskImports,
+    });
+  }
+
+  /**
+   * Like `spawn`, but spawns a chrome task in the parent process,
+   * instead. The task additionally has access to `windowGlobalParent`
+   * and `browsingContext` globals corresponding to the window from
+   * which the task was spawned.
+   */
+  spawnChrome(args, task) {
+    return this.sendQuery("SpawnChrome", {
+      args,
+      task: String(task),
+      caller: Cu.getFunctionSourceLocation(task),
+      imports: this._spawnTaskImports,
     });
   }
 
@@ -1670,20 +1775,46 @@ class SpecialPowersChild extends JSWindowActorChild {
     });
   }
 
-  _spawnTask(task, args, caller, taskId) {
-    let sb = new SpecialPowersSandbox(null, data => {
-      this.sendAsyncMessage("ProxiedAssert", { taskId, data });
+  getSecurityState(target) {
+    let browsingContext = this._browsingContextForTarget(target);
+
+    return this.sendQuery("SecurityState", {
+      browsingContext,
     });
+  }
+
+  _spawnTask(task, args, caller, taskId, imports) {
+    let sb = new SpecialPowersSandbox(
+      null,
+      data => {
+        this.sendAsyncMessage("ProxiedAssert", { taskId, data });
+      },
+      { imports }
+    );
 
     sb.sandbox.SpecialPowers = this;
-    Object.defineProperty(sb.sandbox, "content", {
-      get: () => {
-        return this.contentWindow;
-      },
-      enumerable: true,
-    });
+    sb.sandbox.ContentTaskUtils = ContentTaskUtils;
+    for (let [global, prop] of Object.entries({
+      content: "contentWindow",
+      docShell: "docShell",
+    })) {
+      Object.defineProperty(sb.sandbox, global, {
+        get: () => {
+          return this[prop];
+        },
+        enumerable: true,
+      });
+    }
 
     return sb.execute(task, args, caller);
+  }
+
+  /**
+   * Automatically imports the given symbol from the given JSM for any
+   * task spawned by this SpecialPowers instance.
+   */
+  addTaskImport(symbol, url) {
+    this._spawnTaskImports[symbol] = url;
   }
 
   get SimpleTest() {
@@ -1728,7 +1859,7 @@ class SpecialPowersChild extends JSWindowActorChild {
 
     try {
       let actor = aWindow
-        ? aWindow.getWindowGlobalChild().getActor("SpecialPowers")
+        ? aWindow.windowGlobalChild.getActor("SpecialPowers")
         : this;
       actor.sendAsyncMessage("SpecialPowers.Focus", {});
     } catch (e) {
@@ -1811,13 +1942,6 @@ class SpecialPowersChild extends JSWindowActorChild {
   assertionCount() {
     var debugsvc = Cc["@mozilla.org/xpcom/debug;1"].getService(Ci.nsIDebug2);
     return debugsvc.assertionCount;
-  }
-
-  /**
-   * Get the message manager associated with an <iframe mozbrowser>.
-   */
-  getBrowserFrameMessageManager(aFrameElement) {
-    return this.wrap(aFrameElement.frameLoader.messageManager);
   }
 
   _getPrincipalFromArg(arg) {
@@ -2054,9 +2178,7 @@ class SpecialPowersChild extends JSWindowActorChild {
 
   createChromeCache(name, url) {
     let principal = this._getPrincipalFromArg(url);
-    return WrapPrivileged.wrap(
-      new this.contentWindow.CacheStorage(name, principal)
-    );
+    return new this.contentWindow.CacheStorage(name, principal);
   }
 
   loadChannelAndReturnStatus(url, loadUsingSystemPrincipal) {
@@ -2133,12 +2255,13 @@ class SpecialPowersChild extends JSWindowActorChild {
     walker.showAnonymousContent = showAnonymousContent;
     walker.init(node.ownerDocument, NodeFilter.SHOW_ALL);
     walker.currentNode = node;
+    let contentWindow = this.contentWindow;
     return {
       get firstChild() {
-        return WrapPrivileged.wrap(walker.firstChild());
+        return WrapPrivileged.wrap(walker.firstChild(), contentWindow);
       },
       get lastChild() {
-        return WrapPrivileged.wrap(walker.lastChild());
+        return WrapPrivileged.wrap(walker.lastChild(), contentWindow);
       },
     };
   }
@@ -2150,8 +2273,23 @@ class SpecialPowersChild extends JSWindowActorChild {
     });
   }
 
-  doCommand(window, cmd) {
-    return window.docShell.doCommand(cmd);
+  doCommand(window, cmd, param) {
+    switch (cmd) {
+      case "cmd_align":
+      case "cmd_backgroundColor":
+      case "cmd_fontColor":
+      case "cmd_fontFace":
+      case "cmd_fontSize":
+      case "cmd_highlight":
+      case "cmd_insertImageNoUI":
+      case "cmd_insertLinkNoUI":
+      case "cmd_paragraphState":
+        let params = Cu.createCommandParams();
+        params.setStringValue("state_attribute", param);
+        return window.docShell.doCommandWithParams(cmd, params);
+      default:
+        return window.docShell.doCommand(cmd);
+    }
   }
 
   isCommandEnabled(window, cmd) {
@@ -2202,11 +2340,11 @@ class SpecialPowersChild extends JSWindowActorChild {
     let wrapCallback = results => {
       Services.tm.dispatchToMainThread(() => {
         if (typeof callback == "function") {
-          callback(WrapPrivileged.wrap(results));
+          callback(WrapPrivileged.wrap(results, this.contentWindow));
         } else {
           callback.onClassifyComplete.call(
             undefined,
-            WrapPrivileged.wrap(results)
+            WrapPrivileged.wrap(results, this.contentWindow)
           );
         }
       });
@@ -2220,7 +2358,7 @@ class SpecialPowersChild extends JSWindowActorChild {
     return classifierService.asyncClassifyLocalWithFeatures(
       WrapPrivileged.unwrap(uri),
       [feature],
-      Ci.nsIUrlClassifierFeature.blacklist,
+      Ci.nsIUrlClassifierFeature.blocklist,
       wrapCallback
     );
   }
@@ -2238,6 +2376,34 @@ SpecialPowersChild.prototype._proxiedObservers = {
 
   "specialpowers-service-worker-shutdown": function(aMessage) {
     Services.obs.notifyObservers(null, "specialpowers-service-worker-shutdown");
+  },
+
+  "specialpowers-csp-on-violate-policy": function(aMessage) {
+    let subject = null;
+
+    try {
+      subject = Services.io.newURI(aMessage.data.subject);
+    } catch (ex) {
+      // if it's not a valid URI it must be an nsISupportsCString
+      subject = Cc["@mozilla.org/supports-cstring;1"].createInstance(
+        Ci.nsISupportsCString
+      );
+      subject.data = aMessage.data.subject;
+    }
+    Services.obs.notifyObservers(
+      subject,
+      "specialpowers-csp-on-violate-policy",
+      aMessage.data.data
+    );
+  },
+
+  "specialpowers-xfo-on-violate-policy": function(aMessage) {
+    let subject = Services.io.newURI(aMessage.data.subject);
+    Services.obs.notifyObservers(
+      subject,
+      "specialpowers-xfo-on-violate-policy",
+      aMessage.data.data
+    );
   },
 };
 

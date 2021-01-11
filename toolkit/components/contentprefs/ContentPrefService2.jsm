@@ -139,16 +139,16 @@ ContentPrefService2.prototype = {
       return this._connPromise;
     }
 
-    return (this._connPromise = new Promise(async (resolve, reject) => {
+    return (this._connPromise = (async () => {
       let conn;
       try {
         conn = await this._getConnection();
       } catch (e) {
         this.log("Failed to establish database connection: " + e);
-        reject(e);
+        throw e;
       }
-      resolve(conn);
-    }));
+      return conn;
+    })());
   },
 
   // nsIContentPrefService
@@ -940,7 +940,7 @@ ContentPrefService2.prototype = {
           ? Ci.nsIContentPrefCallback2.COMPLETE_OK
           : Ci.nsIContentPrefCallback2.COMPLETE_ERROR,
         ok,
-        rows && rows.length > 0
+        rows && !!rows.length
       );
     } catch (e) {
       Cu.reportError(e);
@@ -1216,14 +1216,7 @@ ContentPrefService2.prototype = {
     // Note: this could cause database corruption if the OS crashes or machine
     // loses power before the data gets written to disk, but this is considered
     // a reasonable risk for the not-so-critical data stored in this database.
-    //
-    // If you really don't want to take this risk, however, just set the
-    // toolkit.storage.synchronous pref to 1 (NORMAL synchronization) or 2
-    // (FULL synchronization), in which case mozStorageConnection::Initialize
-    // will use that value, and we won't override it here.
-    if (!Services.prefs.prefHasUserValue("toolkit.storage.synchronous")) {
-      await conn.execute("PRAGMA synchronous = OFF");
-    }
+    await conn.execute("PRAGMA synchronous = OFF");
 
     return conn;
   },

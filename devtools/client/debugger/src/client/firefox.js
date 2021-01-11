@@ -7,44 +7,68 @@
 import { setupCommands, clientCommands } from "./firefox/commands";
 import { setupEvents, clientEvents } from "./firefox/events";
 import { features, prefs } from "../utils/prefs";
-import type { Grip } from "../types";
-let DebuggerClient;
 
-function createObjectClient(grip: Grip) {
-  return DebuggerClient.createObjectClient(grip);
+let actions;
+
+export async function onConnect(
+  connection: any,
+  _actions: Object
+): Promise<void> {
+  const { devToolsClient, targetList } = connection;
+  actions = _actions;
+
+  setupCommands({ devToolsClient, targetList });
+  setupEvents({ actions, devToolsClient });
+  const { targetFront } = targetList;
+  if (targetFront.isBrowsingContext || targetFront.isParentProcess) {
+    targetList.listenForWorkers = true;
+    if (targetFront.localTab && features.windowlessServiceWorkers) {
+      targetList.listenForServiceWorkers = true;
+      targetList.destroyServiceWorkersOnNavigation = true;
+    }
+    await targetList.startListening();
+  }
+
+  await targetList.watchTargets(
+    targetList.ALL_TYPES,
+    onTargetAvailable,
+    onTargetDestroyed
+  );
 }
 
-export async function onConnect(connection: any, actions: Object) {
-  const {
-    tabConnection: { tabTarget, threadFront, debuggerClient },
-  } = connection;
-
-  DebuggerClient = debuggerClient;
-
-  if (!tabTarget || !threadFront || !debuggerClient) {
+async function onTargetAvailable({
+  targetFront,
+  isTargetSwitching,
+}): Promise<void> {
+  if (!targetFront.isTopLevel) {
+    await actions.addTarget(targetFront);
     return;
   }
 
-  const supportsWasm =
-    features.wasm && !!debuggerClient.mainRoot.traits.wasmBinarySource;
+  if (isTargetSwitching) {
+    // Simulate navigation actions when target switching.
+    // The will-navigate event will be missed when using target switching,
+    // however `navigate` corresponds more or less to the load event, so it
+    // should still be received on the new target.
+    actions.willNavigate({ url: targetFront.url });
+  }
 
-  setupCommands({
-    threadFront,
-    tabTarget,
-    debuggerClient,
-    supportsWasm,
-  });
+  // Make sure targetFront.threadFront is availabled and attached.
+  await targetFront.onThreadAttached;
 
-  setupEvents({ threadFront, tabTarget, actions, supportsWasm });
+  const { threadFront } = targetFront;
+  if (!threadFront) {
+    return;
+  }
 
-  tabTarget.on("will-navigate", actions.willNavigate);
-  tabTarget.on("navigate", actions.navigated);
+  targetFront.on("will-navigate", actions.willNavigate);
+  targetFront.on("navigate", actions.navigated);
 
   await threadFront.reconfigure({
     observeAsmJS: true,
     pauseWorkersUntilAttach: true,
-    wasmBinarySource: supportsWasm,
     skipBreakpoints: prefs.skipPausing,
+    logEventBreakpoints: prefs.logEventBreakpoints,
   });
 
   // Retrieve possible event listener breakpoints
@@ -54,32 +78,24 @@ export async function onConnect(connection: any, actions: Object) {
   // they are active once attached.
   actions.addEventListenerBreakpoints([]).catch(e => console.error(e));
 
-  // In Firefox, we need to initially request all of the sources. This
-  // usually fires off individual `newSource` notifications as the
-  // debugger finds them, but there may be existing sources already in
-  // the debugger (if it's paused already, or if loading the page from
-  // bfcache) so explicity fire `newSource` events for all returned
-  // sources.
-  const traits = tabTarget.traits;
+  const { traits } = targetFront;
   await actions.connect(
-    tabTarget.url,
+    targetFront.url,
     threadFront.actor,
-    traits && traits.canRewind,
-    tabTarget.isWebExtension
+    traits,
+    targetFront.isWebExtension
   );
 
-  const fetched = clientCommands
-    .fetchSources()
-    .then(sources => actions.newGeneratedSources(sources));
-
-  // If the threadFront is already paused, make sure to show a
-  // paused state.
-  const pausedPacket = threadFront.getLastPausePacket();
-  if (pausedPacket) {
-    clientEvents.paused(threadFront, pausedPacket);
-  }
-
-  return fetched;
+  await clientCommands.checkIfAlreadyPaused();
+  await actions.addTarget(targetFront);
 }
 
-export { createObjectClient, clientCommands, clientEvents };
+function onTargetDestroyed({ targetFront }): void {
+  if (targetFront.isTopLevel) {
+    targetFront.off("will-navigate", actions.willNavigate);
+    targetFront.off("navigate", actions.navigated);
+  }
+  actions.removeTarget(targetFront);
+}
+
+export { clientCommands, clientEvents };

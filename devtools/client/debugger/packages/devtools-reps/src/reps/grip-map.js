@@ -3,9 +3,10 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 const { lengthBubble } = require("../shared/grip-length-bubble");
-const PropTypes = require("prop-types");
 const {
   interleave,
   isGrip,
@@ -16,12 +17,11 @@ const PropRep = require("./prop-rep");
 const { MODE } = require("./constants");
 const { ModePropType } = require("./array");
 
-const { span } = require("react-dom-factories");
-
 /**
  * Renders an map. A map is represented by a list of its
  * entries enclosed in curly brackets.
  */
+
 GripMap.propTypes = {
   object: PropTypes.object,
   // @TODO Change this to Object.values when supported in Node's version of V8
@@ -31,14 +31,16 @@ GripMap.propTypes = {
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
   title: PropTypes.string,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function GripMap(props) {
-  const { mode, object } = props;
+  const { mode, object, shouldRenderTooltip } = props;
 
   const config = {
     "data-link-actor-id": object.actor,
     className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? getTooltip(object, props) : null,
   };
 
   const title = getTitle(props, object);
@@ -84,6 +86,12 @@ function getTitle(props, object) {
       showZeroLength: true,
     })
   );
+}
+
+function getTooltip(object, props) {
+  const tooltip =
+    props.title || (object && object.class ? object.class : "Map");
+  return `${tooltip}(${getLength(object)})`;
 }
 
 function safeEntriesIterator(props, object, max) {
@@ -152,9 +160,9 @@ function getEntries(props, entries, indexes) {
       entryValue.value !== undefined ? entryValue.value : entryValue;
 
     return PropRep({
-      name: key,
+      name: key && key.getGrip ? key.getGrip() : key,
       equal: " \u2192 ",
-      object: value,
+      object: value && value.getGrip ? value.getGrip() : value,
       mode: MODE.TINY,
       onDOMNodeMouseOver,
       onDOMNodeMouseOut,

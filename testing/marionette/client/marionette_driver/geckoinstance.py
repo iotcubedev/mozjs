@@ -11,6 +11,7 @@
 
 from __future__ import absolute_import
 
+import codecs
 import os
 import sys
 import tempfile
@@ -23,6 +24,7 @@ import mozversion
 
 from mozprofile import Profile
 from mozrunner import Runner, FennecEmulatorRunner
+import six
 from six import reraise
 
 from . import errors
@@ -42,8 +44,6 @@ class GeckoInstance(object):
         "apz.content_response_timeout": 60000,
 
         # Do not send Firefox health reports to the production server
-        # removed in Firefox 59
-        "datareporting.healthreport.about.reportUrl": "http://%(server)s/dummy/abouthealthreport/",
         "datareporting.healthreport.documentServerURI": "http://%(server)s/dummy/healthreport/",
 
         # Do not show datareporting policy notifications which can interfer with tests
@@ -70,17 +70,12 @@ class GeckoInstance(object):
         "extensions.getAddons.cache.enabled": False,
         # Disable intalling any distribution add-ons
         "extensions.installDistroAddons": False,
-        # Make sure Shield doesn't hit the network.
-        # Removed in Firefox 60.
-        "extensions.shield-recipe-client.api_url": "",
-        # Disable extensions compatibility dialogue.
-        # Removed in Firefox 61.
-        "extensions.showMismatchUI": False,
+
         # Turn off extension updates so they don't bother tests
         "extensions.update.enabled": False,
         "extensions.update.notifyUser": False,
         # Make sure opening about:addons won"t hit the network
-        "extensions.webservice.discoverURL": "http://%(server)s/dummy/discoveryURL",
+        "extensions.getAddons.discovery.api_url": "data:, ",
 
         # Allow the application to have focus even it runs in the background
         "focusmanager.testmode": True,
@@ -94,10 +89,12 @@ class GeckoInstance(object):
         # Do not scan Wifi
         "geo.wifi.scan": False,
 
+        # Disable idle-daily notifications to avoid expensive operations
+        # that may cause unexpected test timeouts.
+        "idle.lastDailyNotification": -1,
+
         "javascript.options.showInConsole": True,
 
-        # Enable Marionette component
-        "marionette.enabled": True,
         # (deprecated and can be removed when Firefox 60 ships)
         "marionette.defaultPrefs.enabled": True,
 
@@ -111,9 +108,6 @@ class GeckoInstance(object):
 
         # Do not prompt for temporary redirects
         "network.http.prompt-temp-redirect": False,
-        # Disable speculative connections so they aren"t reported as leaking when they"re
-        # hanging around
-        "network.http.speculative-parallel-limit": 0,
         # Do not automatically switch between offline and online
         "network.manage-offline-status": False,
         # Make sure SNTP requests don't hit the network
@@ -208,7 +202,7 @@ class GeckoInstance(object):
         self._update_profile(value)
 
     def _update_profile(self, profile=None, profile_name=None):
-        """Check if the profile has to be created, or replaced
+        """Check if the profile has to be created, or replaced.
 
         :param profile: A Profile instance to be used.
         :param name: Profile name to be used in the path.
@@ -227,7 +221,7 @@ class GeckoInstance(object):
             profile_path = profile
 
             # If a path to a profile is given then clone it
-            if isinstance(profile_path, basestring):
+            if isinstance(profile_path, six.string_types):
                 profile_args["path_from"] = profile_path
                 profile_args["path_to"] = tempfile.mkdtemp(
                     suffix=u".{}".format(profile_name or os.path.basename(profile_path)),
@@ -306,8 +300,8 @@ class GeckoInstance(object):
             instance_class = apps[app]
         except (IOError, KeyError):
             exc, val, tb = sys.exc_info()
-            msg = 'Application "{0}" unknown (should be one of {1})'
-            reraise(NotImplementedError, msg.format(app, apps.keys()), tb)
+            msg = 'Application "{0}" unknown (should be one of {1})'.format(app, list(apps.keys()))
+            reraise(NotImplementedError, NotImplementedError(msg), tb)
 
         return instance_class(*args, **kwargs)
 
@@ -319,10 +313,14 @@ class GeckoInstance(object):
     def _get_runner_args(self):
         process_args = {
             "processOutputLine": [NullOutput()],
+            "universal_newlines": True,
         }
 
         if self.gecko_log == "-":
-            process_args["stream"] = sys.stdout
+            if six.PY2:
+                process_args["stream"] = codecs.getwriter('utf-8')(sys.stdout)
+            else:
+                process_args["stream"] = codecs.getwriter('utf-8')(sys.stdout.buffer)
         else:
             process_args["logfile"] = self.gecko_log
 
@@ -454,10 +452,10 @@ class FennecInstance(GeckoInstance):
             if self.connect_to_running_emulator:
                 self.runner.device.connect()
             self.runner.start()
-        except Exception as e:
-            exc, val, tb = sys.exc_info()
-            message = "Error possibly due to runner or device args: {}"
-            reraise(exc, message.format(e.message), tb)
+        except Exception:
+            exc_cls, exc, tb = sys.exc_info()
+            reraise(exc_cls, exc_cls(
+                "Error possibly due to runner or device args: {}".format(exc)), tb)
 
         # forward marionette port
         self.runner.device.device.forward(
@@ -467,6 +465,7 @@ class FennecInstance(GeckoInstance):
     def _get_runner_args(self):
         process_args = {
             "processOutputLine": [NullOutput()],
+            "universal_newlines": True,
         }
 
         env = {} if self.env is None else self.env.copy()
@@ -566,16 +565,10 @@ class DesktopInstance(GeckoInstance):
         # Don't check for the default web browser during startup
         "browser.shell.checkDefaultBrowser": False,
 
-        # Disable e10s by default
-        "browser.tabs.remote.autostart": False,
-
         # Needed for branded builds to prevent opening a second tab on startup
         "browser.startup.homepage_override.mstone": "ignore",
         # Start with a blank page by default
         "browser.startup.page": 0,
-
-        # Disable browser animations
-        "toolkit.cosmeticAnimations.enabled": False,
 
         # Bug 1557457: Disable because modal dialogs might not appear in Firefox
         "browser.tabs.remote.separatePrivilegedContentProcess": False,
@@ -596,10 +589,6 @@ class DesktopInstance(GeckoInstance):
         # Turn off search suggestions in the location bar so as not to trigger network
         # connections.
         "browser.urlbar.suggest.searches": False,
-
-        # Turn off the location bar search suggestions opt-in.  It interferes with
-        # tests that don't expect it to be there.
-        "browser.urlbar.userMadeSearchSuggestionsChoice": True,
 
         # Don't warn when exiting the browser
         "browser.warnOnQuit": False,

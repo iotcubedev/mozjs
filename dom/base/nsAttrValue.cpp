@@ -20,6 +20,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoUtils.h"
+#include "mozilla/ShadowParts.h"
 #include "mozilla/DeclarationBlock.h"
 #include "nsContentUtils.h"
 #include "nsReadableUtils.h"
@@ -27,6 +28,7 @@
 #include "nsStyledElement.h"
 #include "nsIURI.h"
 #include "mozilla/dom/Document.h"
+#include "ReferrerInfo.h"
 #include <algorithm>
 
 using namespace mozilla;
@@ -38,7 +40,7 @@ using namespace mozilla;
 MiscContainer* nsAttrValue::AllocMiscContainer() {
   MOZ_ASSERT(NS_IsMainThread());
   MiscContainer* cont = nullptr;
-  Swap(cont, sMiscContainerCache);
+  std::swap(cont, sMiscContainerCache);
 
   if (cont) {
     return new (cont) MiscContainer;
@@ -169,10 +171,9 @@ nsAttrValue::nsAttrValue(const nsIntMargin& aValue) : mBits(0) {
 nsAttrValue::~nsAttrValue() { ResetIfSet(); }
 
 /* static */
-nsresult nsAttrValue::Init() {
-  NS_ASSERTION(!sEnumTableArray, "nsAttrValue already initialized");
+void nsAttrValue::Init() {
+  MOZ_ASSERT(!sEnumTableArray, "nsAttrValue already initialized");
   sEnumTableArray = new nsTArray<const EnumTable*>;
-  return NS_OK;
 }
 
 /* static */
@@ -280,6 +281,7 @@ void nsAttrValue::SetTo(const nsAttrValue& aOther) {
       cont->mValue.mColor = otherCont->mValue.mColor;
       break;
     }
+    case eShadowParts:
     case eCSSDeclaration: {
       MOZ_CRASH("These should be refcounted!");
     }
@@ -288,11 +290,13 @@ void nsAttrValue::SetTo(const nsAttrValue& aOther) {
       break;
     }
     case eAtomArray: {
-      if (!EnsureEmptyAtomArray() ||
-          !GetAtomArrayValue()->AppendElements(*otherCont->mValue.mAtomArray)) {
+      if (!EnsureEmptyAtomArray()) {
         Reset();
         return;
       }
+      // XXX(Bug 1631371) Check if this should use a fallible operation as it
+      // pretended earlier.
+      GetAtomArrayValue()->AppendElements(*otherCont->mValue.mAtomArray);
       break;
     }
     case eDoubleValue: {
@@ -300,9 +304,10 @@ void nsAttrValue::SetTo(const nsAttrValue& aOther) {
       break;
     }
     case eIntMarginValue: {
-      if (otherCont->mValue.mIntMargin)
+      if (otherCont->mValue.mIntMargin) {
         cont->mValue.mIntMargin =
             new nsIntMargin(*otherCont->mValue.mIntMargin);
+      }
       break;
     }
     default: {
@@ -547,7 +552,7 @@ void nsAttrValue::ToString(nsAString& aResult) const {
       } else {
         str.AppendInt(GetIntInternal());
       }
-      aResult = str + NS_LITERAL_STRING("%");
+      aResult = str + u"%"_ns;
 
       break;
     }
@@ -976,6 +981,99 @@ bool nsAttrValue::Equals(const nsAtom* aValue,
   return aValue->Equals(val);
 }
 
+struct HasPrefixFn {
+  static bool Check(const char16_t* aAttrValue, size_t aAttrLen,
+                    const nsAString& aSearchValue,
+                    nsCaseTreatment aCaseSensitive) {
+    if (aCaseSensitive == eCaseMatters) {
+      if (aSearchValue.Length() > aAttrLen) {
+        return false;
+      }
+      return !memcmp(aAttrValue, aSearchValue.BeginReading(),
+                     aSearchValue.Length() * sizeof(char16_t));
+    }
+    return StringBeginsWith(nsDependentString(aAttrValue, aAttrLen),
+                            aSearchValue,
+                            nsASCIICaseInsensitiveStringComparator);
+  }
+};
+
+struct HasSuffixFn {
+  static bool Check(const char16_t* aAttrValue, size_t aAttrLen,
+                    const nsAString& aSearchValue,
+                    nsCaseTreatment aCaseSensitive) {
+    if (aCaseSensitive == eCaseMatters) {
+      if (aSearchValue.Length() > aAttrLen) {
+        return false;
+      }
+      return !memcmp(aAttrValue + aAttrLen - aSearchValue.Length(),
+                     aSearchValue.BeginReading(),
+                     aSearchValue.Length() * sizeof(char16_t));
+    }
+    return StringEndsWith(nsDependentString(aAttrValue, aAttrLen), aSearchValue,
+                          nsASCIICaseInsensitiveStringComparator);
+  }
+};
+
+struct HasSubstringFn {
+  static bool Check(const char16_t* aAttrValue, size_t aAttrLen,
+                    const nsAString& aSearchValue,
+                    nsCaseTreatment aCaseSensitive) {
+    if (aCaseSensitive == eCaseMatters) {
+      if (aSearchValue.IsEmpty()) {
+        return true;
+      }
+      const char16_t* end = aAttrValue + aAttrLen;
+      return std::search(aAttrValue, end, aSearchValue.BeginReading(),
+                         aSearchValue.EndReading()) != end;
+    }
+    return FindInReadable(aSearchValue, nsDependentString(aAttrValue, aAttrLen),
+                          nsASCIICaseInsensitiveStringComparator);
+  }
+};
+
+template <typename F>
+bool nsAttrValue::SubstringCheck(const nsAString& aValue,
+                                 nsCaseTreatment aCaseSensitive) const {
+  switch (BaseType()) {
+    case eStringBase: {
+      auto str = static_cast<nsStringBuffer*>(GetPtr());
+      if (str) {
+        return F::Check(static_cast<char16_t*>(str->Data()),
+                        str->StorageSize() / sizeof(char16_t) - 1, aValue,
+                        aCaseSensitive);
+      }
+      return aValue.IsEmpty();
+    }
+    case eAtomBase: {
+      auto atom = static_cast<nsAtom*>(GetPtr());
+      return F::Check(atom->GetUTF16String(), atom->GetLength(), aValue,
+                      aCaseSensitive);
+    }
+    default:
+      break;
+  }
+
+  nsAutoString val;
+  ToString(val);
+  return F::Check(val.BeginReading(), val.Length(), aValue, aCaseSensitive);
+}
+
+bool nsAttrValue::HasPrefix(const nsAString& aValue,
+                            nsCaseTreatment aCaseSensitive) const {
+  return SubstringCheck<HasPrefixFn>(aValue, aCaseSensitive);
+}
+
+bool nsAttrValue::HasSuffix(const nsAString& aValue,
+                            nsCaseTreatment aCaseSensitive) const {
+  return SubstringCheck<HasSuffixFn>(aValue, aCaseSensitive);
+}
+
+bool nsAttrValue::HasSubstring(const nsAString& aValue,
+                               nsCaseTreatment aCaseSensitive) const {
+  return SubstringCheck<HasSubstringFn>(aValue, aCaseSensitive);
+}
+
 bool nsAttrValue::EqualsAsStrings(const nsAttrValue& aOther) const {
   if (Type() == aOther.Type()) {
     return Equals(aOther);
@@ -1122,10 +1220,9 @@ void nsAttrValue::ParseAtomArray(const nsAString& aValue) {
 
   AtomArray* array = GetAtomArrayValue();
 
-  if (!array->AppendElement(std::move(classAtom))) {
-    Reset();
-    return;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  array->AppendElement(std::move(classAtom));
 
   // parse the rest of the classnames
   while (iter != end) {
@@ -1137,10 +1234,9 @@ void nsAttrValue::ParseAtomArray(const nsAString& aValue) {
 
     classAtom = NS_AtomizeMainThread(Substring(start, iter));
 
-    if (!array->AppendElement(std::move(classAtom))) {
-      Reset();
-      return;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    array->AppendElement(std::move(classAtom));
 
     // skip whitespace
     while (iter != end && nsContentUtils::IsHTMLWhitespace(*iter)) {
@@ -1154,12 +1250,23 @@ void nsAttrValue::ParseAtomArray(const nsAString& aValue) {
 void nsAttrValue::ParseStringOrAtom(const nsAString& aValue) {
   uint32_t len = aValue.Length();
   // Don't bother with atoms if it's an empty string since
-  // we can store those efficently anyway.
+  // we can store those efficiently anyway.
   if (len && len <= NS_ATTRVALUE_MAX_STRINGLENGTH_ATOM) {
     ParseAtom(aValue);
   } else {
     SetTo(aValue);
   }
+}
+
+void nsAttrValue::ParsePartMapping(const nsAString& aValue) {
+  ResetIfSet();
+  MiscContainer* cont = EnsureEmptyMiscContainer();
+
+  cont->mType = eShadowParts;
+  cont->mValue.mShadowParts = new ShadowParts(ShadowParts::Parse(aValue));
+  NS_ADDREF(cont);
+  SetMiscAtomOrString(&aValue);
+  MOZ_ASSERT(cont->mValue.mRefCount == 1);
 }
 
 void nsAttrValue::SetIntValueAndType(int32_t aValue, ValueType aType,
@@ -1624,7 +1731,7 @@ bool nsAttrValue::ParseStyleAttribute(const nsAString& aString,
   }
 
   nsCOMPtr<nsIReferrerInfo> referrerInfo =
-      ReferrerInfo::CreateForInternalCSSResources(ownerDoc);
+      dom::ReferrerInfo::CreateForInternalCSSResources(ownerDoc);
   RefPtr<URLExtraData> data =
       new URLExtraData(baseURI, referrerInfo, principal);
   RefPtr<DeclarationBlock> decl = DeclarationBlock::FromCssText(
@@ -1737,6 +1844,12 @@ MiscContainer* nsAttrValue::ClearMiscContainer() {
           cont->Release();
           cont->Evict();
           NS_RELEASE(cont->mValue.mCSSDeclaration);
+          break;
+        }
+        case eShadowParts: {
+          MOZ_ASSERT(cont->mValue.mRefCount == 1);
+          cont->Release();
+          delete cont->mValue.mShadowParts;
           break;
         }
         case eURL: {

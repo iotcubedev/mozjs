@@ -4,17 +4,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_SMILAnimationController_h
-#define mozilla_SMILAnimationController_h
+#ifndef DOM_SMIL_SMILANIMATIONCONTROLLER_H_
+#define DOM_SMIL_SMILANIMATIONCONTROLLER_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILCompositorTable.h"
 #include "mozilla/SMILMilestone.h"
 #include "mozilla/SMILTimeContainer.h"
-#include "nsAutoPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
-#include "nsITimer.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRefreshDriver.h"
@@ -112,12 +111,11 @@ class SMILAnimationController final : public SMILTimeContainer,
  protected:
   ~SMILAnimationController();
 
-  // Typedefs
-  typedef nsPtrHashKey<SMILTimeContainer> TimeContainerPtrKey;
-  typedef nsTHashtable<TimeContainerPtrKey> TimeContainerHashtable;
-  typedef nsPtrHashKey<mozilla::dom::SVGAnimationElement>
-      AnimationElementPtrKey;
-  typedef nsTHashtable<AnimationElementPtrKey> AnimationElementHashtable;
+  // alias declarations
+  using TimeContainerPtrKey = nsPtrHashKey<SMILTimeContainer>;
+  using TimeContainerHashtable = nsTHashtable<TimeContainerPtrKey>;
+  using AnimationElementPtrKey = nsPtrHashKey<dom::SVGAnimationElement>;
+  using AnimationElementHashtable = nsTHashtable<AnimationElementPtrKey>;
 
   // Returns mDocument's refresh driver, if it's got one.
   nsRefreshDriver* GetRefreshDriver();
@@ -202,9 +200,9 @@ class SMILAnimationController final : public SMILTimeContainer,
   // so we can detect when an element/attribute used to be animated,
   // but isn't anymore for some reason. (e.g. if its <animate> element is
   // removed or retargeted)
-  nsAutoPtr<SMILCompositorTable> mLastCompositorTable;
+  UniquePtr<SMILCompositorTable> mLastCompositorTable;
 };
 
 }  // namespace mozilla
 
-#endif  // mozilla_SMILAnimationController_h
+#endif  // DOM_SMIL_SMILANIMATIONCONTROLLER_H_

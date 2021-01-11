@@ -19,15 +19,26 @@
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace gfx {
+namespace mozilla::gfx {
 
 PuppetSession::PuppetSession() : VRSession() {}
 
 PuppetSession::~PuppetSession() { Shutdown(); }
 
-bool PuppetSession::Initialize(mozilla::gfx::VRSystemState& aSystemState) {
+bool PuppetSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
+                               bool aDetectRuntimesOnly) {
   if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_puppet_enabled()) {
+    return false;
+  }
+  if (!VRPuppetCommandBuffer::IsCreated()) {
+    // We only want to initialize VRPuppetCommandBuffer on the main thread.
+    // We can assume if it is not initialized, that the puppet display
+    // would not be enumerated.
+    return false;
+  }
+  if (aDetectRuntimesOnly) {
+    aSystemState.displayState.capabilityFlags |=
+        VRDisplayCapabilityFlags::Cap_ImmersiveVR;
     return false;
   }
   VRPuppetCommandBuffer::Get().Run(aSystemState);
@@ -110,5 +121,4 @@ void PuppetSession::StopAllHaptics() {
   VRPuppetCommandBuffer::Get().StopAllHaptics();
 }
 
-}  // namespace gfx
-}  // namespace mozilla
+}  // namespace mozilla::gfx

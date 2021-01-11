@@ -15,13 +15,13 @@ var tests = [
   // All disabled.
   { config: [ false, false ], loadExpected: true },
 
-  // Just whitelisted.
+  // Just entitylisted.
   { config: [ false, true ], loadExpected: true },
 
-  // Just blacklisted.
+  // Just blocklisted.
   { config: [ true, false ], loadExpected: false },
 
-  // whitelist + blacklist: whitelist wins
+  // entitylist + blocklist: entitylist wins
   { config: [ true, true ], loadExpected: true },
 ];
 
@@ -32,7 +32,7 @@ function prefValue(value, what) {
 async function runTest(test) {
   await SpecialPowers.pushPrefEnv({set: [
     [ "urlclassifier.features.cryptomining.blacklistHosts", prefValue(test.config[0], "example.com") ],
-    [ "urlclassifier.features.cryptomining.whitelistHosts", prefValue(test.config[1], "mochi.test") ],
+    [ "urlclassifier.features.cryptomining.whitelistHosts", prefValue(test.config[1], "mochi.test,mochi.xorigin-test") ],
     [ "urlclassifier.features.cryptomining.blacklistTables", prefValue(test.config[0], "mochitest1-track-simple") ],
     [ "urlclassifier.features.cryptomining.whitelistTables", "" ],
     [ "privacy.trackingprotection.enabled", false ],
@@ -42,7 +42,7 @@ async function runTest(test) {
     [ "privacy.trackingprotection.socialtracking.enabled", false ],
   ]});
 
-  info("Testing: " + test.config.toSource() + "\n");
+  info("Testing: " + JSON.stringify(test.config) + "\n");
 
   // Let's load an image with a random query string, just to avoid network cache.
   let result = await new Promise(resolve => {

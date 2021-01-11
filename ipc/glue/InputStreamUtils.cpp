@@ -10,20 +10,26 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/dom/File.h"
-#include "mozilla/dom/IPCBlobInputStream.h"
-#include "mozilla/dom/IPCBlobInputStreamStorage.h"
+#include "mozilla/dom/quota/DecryptingInputStream_impl.h"
+#include "mozilla/dom/quota/IPCStreamCipherStrategy.h"
 #include "mozilla/ipc/IPCStreamDestination.h"
 #include "mozilla/ipc/IPCStreamSource.h"
 #include "mozilla/InputStreamLengthHelper.h"
+#include "mozilla/RemoteLazyInputStream.h"
+#include "mozilla/RemoteLazyInputStreamChild.h"
+#include "mozilla/RemoteLazyInputStreamStorage.h"
 #include "mozilla/SlicedInputStream.h"
 #include "mozilla/InputStreamLengthWrapper.h"
+#include "nsBufferedStreams.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDebug.h"
+#include "nsFileStreams.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIAsyncOutputStream.h"
 #include "nsID.h"
+#include "nsIMIMEInputStream.h"
+#include "nsIMultiplexInputStream.h"
 #include "nsIPipe.h"
-#include "nsIXULRuntime.h"
 #include "nsMIMEInputStream.h"
 #include "nsMultiplexInputStream.h"
 #include "nsNetCID.h"
@@ -87,10 +93,13 @@ void SerializeInputStreamAsPipeInternal(nsIInputStream* aInputStream,
     length = -1;
   }
 
+  nsCOMPtr<nsIAsyncInputStream> asyncStream = do_QueryInterface(aInputStream);
+
   // As a fallback, attempt to stream the data across using a IPCStream
   // actor. For blocking streams, create a nonblocking pipe instead,
-  nsCOMPtr<nsIAsyncInputStream> asyncStream = do_QueryInterface(aInputStream);
-  if (!asyncStream) {
+  bool nonBlocking = false;
+  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(aInputStream->IsNonBlocking(&nonBlocking)));
+  if (!nonBlocking || !asyncStream) {
     const uint32_t kBufferSize = 32768;  // matches IPCStream buffer size.
     nsCOMPtr<nsIAsyncOutputStream> sink;
     nsresult rv = NS_NewPipe2(getter_AddRefs(asyncStream), getter_AddRefs(sink),
@@ -108,11 +117,16 @@ void SerializeInputStreamAsPipeInternal(nsIInputStream* aInputStream,
       return;
     }
   }
+  MOZ_DIAGNOSTIC_ASSERT(asyncStream);
 
-  MOZ_ASSERT(asyncStream);
+  auto* streamSource = IPCStreamSource::Create(asyncStream, aManager);
+  if (NS_WARN_IF(!streamSource)) {
+    // Failed to create IPCStreamSource, which would cause a failure should we
+    // attempt to serialize it later. So abort now.
+    return;
+  }
 
-  aParams = IPCRemoteStreamParams(
-      aDelayedStart, IPCStreamSource::Create(asyncStream, aManager), length);
+  aParams = IPCRemoteStreamParams(aDelayedStart, streamSource, length);
 }
 
 }  // namespace
@@ -120,7 +134,8 @@ void SerializeInputStreamAsPipeInternal(nsIInputStream* aInputStream,
 void InputStreamHelper::SerializeInputStream(
     nsIInputStream* aInputStream, InputStreamParams& aParams,
     nsTArray<FileDescriptor>& aFileDescriptors, bool aDelayedStart,
-    uint32_t aMaxSize, uint32_t* aSizeUsed, ContentChild* aManager) {
+    uint32_t aMaxSize, uint32_t* aSizeUsed,
+    ParentToChildStreamActorManager* aManager) {
   SerializeInputStreamInternal(aInputStream, aParams, aFileDescriptors,
                                aDelayedStart, aMaxSize, aSizeUsed, aManager);
 }
@@ -128,54 +143,22 @@ void InputStreamHelper::SerializeInputStream(
 void InputStreamHelper::SerializeInputStream(
     nsIInputStream* aInputStream, InputStreamParams& aParams,
     nsTArray<FileDescriptor>& aFileDescriptors, bool aDelayedStart,
-    uint32_t aMaxSize, uint32_t* aSizeUsed, PBackgroundChild* aManager) {
+    uint32_t aMaxSize, uint32_t* aSizeUsed,
+    ChildToParentStreamActorManager* aManager) {
   SerializeInputStreamInternal(aInputStream, aParams, aFileDescriptors,
                                aDelayedStart, aMaxSize, aSizeUsed, aManager);
 }
 
-void InputStreamHelper::SerializeInputStream(
+void InputStreamHelper::SerializeInputStreamAsPipe(
     nsIInputStream* aInputStream, InputStreamParams& aParams,
-    nsTArray<FileDescriptor>& aFileDescriptors, bool aDelayedStart,
-    uint32_t aMaxSize, uint32_t* aSizeUsed, ContentParent* aManager) {
-  SerializeInputStreamInternal(aInputStream, aParams, aFileDescriptors,
-                               aDelayedStart, aMaxSize, aSizeUsed, aManager);
-}
-
-void InputStreamHelper::SerializeInputStream(
-    nsIInputStream* aInputStream, InputStreamParams& aParams,
-    nsTArray<FileDescriptor>& aFileDescriptors, bool aDelayedStart,
-    uint32_t aMaxSize, uint32_t* aSizeUsed, PBackgroundParent* aManager) {
-  SerializeInputStreamInternal(aInputStream, aParams, aFileDescriptors,
-                               aDelayedStart, aMaxSize, aSizeUsed, aManager);
-}
-
-void InputStreamHelper::SerializeInputStreamAsPipe(nsIInputStream* aInputStream,
-                                                   InputStreamParams& aParams,
-                                                   bool aDelayedStart,
-                                                   ContentChild* aManager) {
-  SerializeInputStreamAsPipeInternal(aInputStream, aParams, aDelayedStart,
-                                     aManager);
-}
-
-void InputStreamHelper::SerializeInputStreamAsPipe(nsIInputStream* aInputStream,
-                                                   InputStreamParams& aParams,
-                                                   bool aDelayedStart,
-                                                   PBackgroundChild* aManager) {
-  SerializeInputStreamAsPipeInternal(aInputStream, aParams, aDelayedStart,
-                                     aManager);
-}
-
-void InputStreamHelper::SerializeInputStreamAsPipe(nsIInputStream* aInputStream,
-                                                   InputStreamParams& aParams,
-                                                   bool aDelayedStart,
-                                                   ContentParent* aManager) {
+    bool aDelayedStart, ParentToChildStreamActorManager* aManager) {
   SerializeInputStreamAsPipeInternal(aInputStream, aParams, aDelayedStart,
                                      aManager);
 }
 
 void InputStreamHelper::SerializeInputStreamAsPipe(
     nsIInputStream* aInputStream, InputStreamParams& aParams,
-    bool aDelayedStart, PBackgroundParent* aManager) {
+    bool aDelayedStart, ChildToParentStreamActorManager* aManager) {
   SerializeInputStreamAsPipeInternal(aInputStream, aParams, aDelayedStart,
                                      aManager);
 }
@@ -265,7 +248,10 @@ void InputStreamHelper::PostSerializationActivation(InputStreamParams& aParams,
     case InputStreamParams::TFileInputStreamParams:
       break;
 
-    case InputStreamParams::TIPCBlobInputStreamParams:
+    case InputStreamParams::TRemoteLazyInputStreamParams:
+      break;
+
+    case InputStreamParams::TEncryptedFileInputStreamParams:
       break;
 
     default:
@@ -287,16 +273,34 @@ void InputStreamHelper::PostSerializationActivation(
 already_AddRefed<nsIInputStream> InputStreamHelper::DeserializeInputStream(
     const InputStreamParams& aParams,
     const nsTArray<FileDescriptor>& aFileDescriptors) {
-  // IPCBlobInputStreams are not deserializable on the parent side.
-  if (aParams.type() == InputStreamParams::TIPCBlobInputStreamParams) {
-    MOZ_ASSERT(XRE_IsParentProcess());
+  if (aParams.type() == InputStreamParams::TRemoteLazyInputStreamParams) {
+    const RemoteLazyInputStreamParams& params =
+        aParams.get_RemoteLazyInputStreamParams();
 
-    nsCOMPtr<nsIInputStream> stream;
-    IPCBlobInputStreamStorage::Get()->GetStream(
-        aParams.get_IPCBlobInputStreamParams().id(),
-        aParams.get_IPCBlobInputStreamParams().start(),
-        aParams.get_IPCBlobInputStreamParams().length(),
-        getter_AddRefs(stream));
+    // RemoteLazyInputStreamRefs are not deserializable on the parent side,
+    // because the parent is the only one that has a copy of the original stream
+    // in the RemoteLazyInputStreamStorage.
+    if (params.type() ==
+        RemoteLazyInputStreamParams::TRemoteLazyInputStreamRef) {
+      MOZ_ASSERT(XRE_IsParentProcess());
+      const RemoteLazyInputStreamRef& ref =
+          params.get_RemoteLazyInputStreamRef();
+
+      auto storage = RemoteLazyInputStreamStorage::Get().unwrapOr(nullptr);
+      MOZ_ASSERT(storage);
+      nsCOMPtr<nsIInputStream> stream;
+      storage->GetStream(ref.id(), ref.start(), ref.length(),
+                         getter_AddRefs(stream));
+      return stream.forget();
+    }
+
+    // parent -> child serializations receive an RemoteLazyInputStream actor.
+    MOZ_ASSERT(params.type() ==
+               RemoteLazyInputStreamParams::TPRemoteLazyInputStreamChild);
+    RemoteLazyInputStreamChild* actor =
+        static_cast<RemoteLazyInputStreamChild*>(
+            params.get_PRemoteLazyInputStreamChild());
+    nsCOMPtr<nsIInputStream> stream = actor->CreateStream();
     return stream.forget();
   }
 
@@ -325,25 +329,39 @@ already_AddRefed<nsIInputStream> InputStreamHelper::DeserializeInputStream(
   nsCOMPtr<nsIIPCSerializableInputStream> serializable;
 
   switch (aParams.type()) {
-    case InputStreamParams::TStringInputStreamParams:
-      serializable = do_CreateInstance(kStringInputStreamCID);
-      break;
+    case InputStreamParams::TStringInputStreamParams: {
+      nsCOMPtr<nsIInputStream> stream;
+      NS_NewCStringInputStream(getter_AddRefs(stream), EmptyCString());
+      serializable = do_QueryInterface(stream);
+    } break;
 
-    case InputStreamParams::TFileInputStreamParams:
-      serializable = do_CreateInstance(kFileInputStreamCID);
-      break;
+    case InputStreamParams::TFileInputStreamParams: {
+      nsCOMPtr<nsIFileInputStream> stream;
+      nsFileInputStream::Create(nullptr, NS_GET_IID(nsIFileInputStream),
+                                getter_AddRefs(stream));
+      serializable = do_QueryInterface(stream);
+    } break;
 
-    case InputStreamParams::TBufferedInputStreamParams:
-      serializable = do_CreateInstance(kBufferedInputStreamCID);
-      break;
+    case InputStreamParams::TBufferedInputStreamParams: {
+      nsCOMPtr<nsIBufferedInputStream> stream;
+      nsBufferedInputStream::Create(nullptr, NS_GET_IID(nsIBufferedInputStream),
+                                    getter_AddRefs(stream));
+      serializable = do_QueryInterface(stream);
+    } break;
 
-    case InputStreamParams::TMIMEInputStreamParams:
-      serializable = do_CreateInstance(kMIMEInputStreamCID);
-      break;
+    case InputStreamParams::TMIMEInputStreamParams: {
+      nsCOMPtr<nsIMIMEInputStream> stream;
+      nsMIMEInputStreamConstructor(nullptr, NS_GET_IID(nsIMIMEInputStream),
+                                   getter_AddRefs(stream));
+      serializable = do_QueryInterface(stream);
+    } break;
 
-    case InputStreamParams::TMultiplexInputStreamParams:
-      serializable = do_CreateInstance(kMultiplexInputStreamCID);
-      break;
+    case InputStreamParams::TMultiplexInputStreamParams: {
+      nsCOMPtr<nsIMultiplexInputStream> stream;
+      nsMultiplexInputStreamConstructor(
+          nullptr, NS_GET_IID(nsIMultiplexInputStream), getter_AddRefs(stream));
+      serializable = do_QueryInterface(stream);
+    } break;
 
     case InputStreamParams::TSlicedInputStreamParams:
       serializable = new SlicedInputStream();
@@ -351,6 +369,12 @@ already_AddRefed<nsIInputStream> InputStreamHelper::DeserializeInputStream(
 
     case InputStreamParams::TInputStreamLengthWrapperParams:
       serializable = new InputStreamLengthWrapper();
+      break;
+
+    case InputStreamParams::TEncryptedFileInputStreamParams:
+      serializable = new dom::quota::DecryptingInputStream<
+          dom::quota::IPCStreamCipherStrategy>(
+          dom::quota::IPCStreamCipherStrategy{});
       break;
 
     default:

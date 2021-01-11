@@ -51,7 +51,15 @@ function promiseTimeout(delay) {
  * An Error subclass for which complete error messages are always passed
  * to extensions, rather than being interpreted as an unknown error.
  */
-class ExtensionError extends Error {}
+class ExtensionError extends DOMException {
+  constructor(message) {
+    super(message, "ExtensionError");
+  }
+  // Custom JS classes can't survive IPC, so need to check error name.
+  static [Symbol.hasInstance](e) {
+    return e instanceof DOMException && e.name === "ExtensionError";
+  }
+}
 
 function filterStack(error) {
   return String(error.stack).replace(
@@ -100,13 +108,8 @@ class DefaultMap extends Map {
   }
 }
 
-const _winUtils = new DefaultWeakMap(win => {
-  return win.windowUtils;
-});
-const getWinUtils = win => _winUtils.get(win);
-
 function getInnerWindowID(window) {
-  return getWinUtils(window).currentInnerWindowID;
+  return window.windowUtils.currentInnerWindowID;
 }
 
 /**
@@ -279,6 +282,22 @@ function getMessageManager(target) {
 function flushJarCache(jarPath) {
   Services.obs.notifyObservers(null, "flush-cache-entry", jarPath);
 }
+function parseMatchPatterns(patterns, options) {
+  try {
+    return new MatchPatternSet(patterns, options);
+  } catch (e) {
+    let pattern;
+    for (pattern of patterns) {
+      try {
+        new MatchPattern(pattern, options);
+      } catch (e) {
+        throw new ExtensionError(`Invalid url pattern: ${pattern}`);
+      }
+    }
+    // Unexpectedly MatchPatternSet threw, but MatchPattern did not.
+    throw e;
+  }
+}
 
 var ExtensionUtils = {
   flushJarCache,
@@ -286,7 +305,7 @@ var ExtensionUtils = {
   getMessageManager,
   getUniqueId,
   filterStack,
-  getWinUtils,
+  parseMatchPatterns,
   promiseDocumentIdle,
   promiseDocumentLoaded,
   promiseDocumentReady,

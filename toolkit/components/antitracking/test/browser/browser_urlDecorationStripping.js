@@ -53,9 +53,8 @@ add_task(async _ => {
       data: { current: records },
     });
   }
-  let collection = await RemoteSettings(COLLECTION_NAME).openCollection();
-  await collection.create(records[0], { useRecordId: true });
-  await collection.db.saveLastModified(42);
+  let db = await RemoteSettings(COLLECTION_NAME).db;
+  await db.importChanges({}, 42, [records[0]]);
   await emitSync();
 
   await uds.ensureUpdated();
@@ -120,7 +119,7 @@ add_task(async _ => {
 
   registerCleanupFunction(async _ => {
     records = [];
-    await collection.clear();
+    await db.clear();
     await emitSync();
   });
 });
@@ -144,7 +143,35 @@ AntiTracking._createTask({
       ok(false, "No query parameters should be found");
     }
   },
-  extraPrefs: null,
+  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 3]],
+  expectedBlockingNotifications: 0,
+  runInPrivateWindow: false,
+  iframeSandbox: null,
+  accessRemoval: null,
+  callbackAfterRemoval: null,
+  topPage: TOP_PAGE_WITHOUT_TRACKING_IDENTIFIER,
+});
+
+AntiTracking._createTask({
+  name:
+    "Test that we do not downgrade document.referrer when it does not contain a tracking identifier even though it gets downgraded to origin only due to the default referrer policy",
+  cookieBehavior: BEHAVIOR_REJECT_TRACKER,
+  blockingByContentBlockingRTUI: true,
+  allowList: false,
+  callback: async _ => {
+    let ref = new URL(document.referrer);
+    is(
+      ref.hostname,
+      "sub1.xn--hxajbheg2az3al.xn--jxalpdlp",
+      "Hostname shouldn't be stripped"
+    );
+    is(ref.pathname.length, 1, "Path must be trimmed");
+    // eslint-disable-next-line no-unused-vars
+    for (let entry of ref.searchParams.entries()) {
+      ok(false, "No query parameters should be found");
+    }
+  },
+  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 2]],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
   iframeSandbox: null,
@@ -172,7 +199,35 @@ AntiTracking._createTask({
       ok(false, "No query parameters should be found");
     }
   },
-  extraPrefs: null,
+  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 3]],
+  expectedBlockingNotifications: 0,
+  runInPrivateWindow: false,
+  iframeSandbox: null,
+  accessRemoval: null,
+  callbackAfterRemoval: null,
+  topPage: TOP_PAGE_WITH_TRACKING_IDENTIFIER,
+});
+
+AntiTracking._createTask({
+  name:
+    "Test that we don't downgrade document.referrer when it contains a tracking identifier if it gets downgraded to origin only due to the default referrer policy because the tracking identifier wouldn't be present in the referrer any more",
+  cookieBehavior: BEHAVIOR_REJECT_TRACKER,
+  blockingByContentBlockingRTUI: true,
+  allowList: false,
+  callback: async _ => {
+    let ref = new URL(document.referrer);
+    is(
+      ref.hostname,
+      "sub1.xn--hxajbheg2az3al.xn--jxalpdlp",
+      "Hostname shouldn't be stripped"
+    );
+    is(ref.pathname.length, 1, "Path must be trimmed");
+    // eslint-disable-next-line no-unused-vars
+    for (let entry of ref.searchParams.entries()) {
+      ok(false, "No query parameters should be found");
+    }
+  },
+  extraPrefs: [["network.http.referer.defaultPolicy.trackers", 2]],
   expectedBlockingNotifications: 0,
   runInPrivateWindow: false,
   iframeSandbox: null,

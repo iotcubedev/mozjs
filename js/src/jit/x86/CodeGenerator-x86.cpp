@@ -127,7 +127,7 @@ void CodeGenerator::visitCompareB(LCompareB* lir) {
   const LAllocation* rhs = lir->rhs();
   const Register output = ToRegister(lir->output());
 
-  MOZ_ASSERT(mir->jsop() == JSOP_STRICTEQ || mir->jsop() == JSOP_STRICTNE);
+  MOZ_ASSERT(mir->jsop() == JSOp::StrictEq || mir->jsop() == JSOp::StrictNe);
 
   Label notBoolean, done;
   masm.branchTestBoolean(Assembler::NotEqual, lhs, &notBoolean);
@@ -141,7 +141,7 @@ void CodeGenerator::visitCompareB(LCompareB* lir) {
     masm.jump(&done);
   }
   masm.bind(&notBoolean);
-  { masm.move32(Imm32(mir->jsop() == JSOP_STRICTNE), output); }
+  { masm.move32(Imm32(mir->jsop() == JSOp::StrictNe), output); }
 
   masm.bind(&done);
 }
@@ -151,10 +151,10 @@ void CodeGenerator::visitCompareBAndBranch(LCompareBAndBranch* lir) {
   const ValueOperand lhs = ToValue(lir, LCompareBAndBranch::Lhs);
   const LAllocation* rhs = lir->rhs();
 
-  MOZ_ASSERT(mir->jsop() == JSOP_STRICTEQ || mir->jsop() == JSOP_STRICTNE);
+  MOZ_ASSERT(mir->jsop() == JSOp::StrictEq || mir->jsop() == JSOp::StrictNe);
 
   Assembler::Condition cond = masm.testBoolean(Assembler::NotEqual, lhs);
-  jumpToBlock((mir->jsop() == JSOP_STRICTEQ) ? lir->ifFalse() : lir->ifTrue(),
+  jumpToBlock((mir->jsop() == JSOp::StrictEq) ? lir->ifFalse() : lir->ifTrue(),
               cond);
 
   if (rhs->isConstant()) {
@@ -196,8 +196,8 @@ void CodeGenerator::visitCompareBitwiseAndBranch(
   const ValueOperand lhs = ToValue(lir, LCompareBitwiseAndBranch::LhsInput);
   const ValueOperand rhs = ToValue(lir, LCompareBitwiseAndBranch::RhsInput);
 
-  MOZ_ASSERT(mir->jsop() == JSOP_EQ || mir->jsop() == JSOP_STRICTEQ ||
-             mir->jsop() == JSOP_NE || mir->jsop() == JSOP_STRICTNE);
+  MOZ_ASSERT(mir->jsop() == JSOp::Eq || mir->jsop() == JSOp::StrictEq ||
+             mir->jsop() == JSOp::Ne || mir->jsop() == JSOp::StrictNe);
 
   MBasicBlock* notEqual =
       (cond == Assembler::Equal) ? lir->ifFalse() : lir->ifTrue();
@@ -207,6 +207,9 @@ void CodeGenerator::visitCompareBitwiseAndBranch(
   masm.cmp32(lhs.payloadReg(), rhs.payloadReg());
   emitBranch(cond, lir->ifTrue(), lir->ifFalse());
 }
+
+// See ../CodeGenerator.cpp for more information.
+void CodeGenerator::visitWasmRegisterResult(LWasmRegisterResult* lir) {}
 
 void CodeGenerator::visitWasmUint32ToDouble(LWasmUint32ToDouble* lir) {
   Register input = ToRegister(lir->input());
@@ -231,6 +234,12 @@ void CodeGenerator::visitWasmUint32ToFloat32(LWasmUint32ToFloat32* lir) {
 
   // Beware: convertUInt32ToFloat32 clobbers input.
   masm.convertUInt32ToFloat32(temp, output);
+}
+
+void CodeGenerator::visitWasmHeapBase(LWasmHeapBase* ins) {
+  masm.loadPtr(
+      Address(ToRegister(ins->tlsPtr()), offsetof(wasm::TlsData, memoryBase)),
+      ToRegister(ins->output()));
 }
 
 template <typename T>

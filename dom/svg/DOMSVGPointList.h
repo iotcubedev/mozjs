@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_DOMSVGPOINTLIST_H__
-#define MOZILLA_DOMSVGPOINTLIST_H__
+#ifndef DOM_SVG_DOMSVGPOINTLIST_H_
+#define DOM_SVG_DOMSVGPOINTLIST_H_
 
 #include "nsCycleCollectionParticipant.h"
 #include "nsDebug.h"
@@ -18,9 +18,12 @@
 
 namespace mozilla {
 
+class SVGAnimatedPointList;
+
+namespace dom {
+
 class DOMSVGPoint;
 class nsISVGPoint;
-class SVGAnimatedPointList;
 
 /**
  * Class DOMSVGPointList
@@ -50,7 +53,7 @@ class SVGAnimatedPointList;
 class DOMSVGPointList final : public nsISupports, public nsWrapperCache {
   friend class AutoChangePointListNotifier;
   friend class nsISVGPoint;
-  friend class mozilla::DOMSVGPoint;
+  friend class DOMSVGPoint;
 
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -188,6 +191,8 @@ class DOMSVGPointList final : public nsISupports, public nsWrapperCache {
   void MaybeInsertNullInAnimValListAt(uint32_t aIndex);
   void MaybeRemoveItemFromAnimValListAt(uint32_t aIndex);
 
+  void RemoveFromTearoffTable();
+
   // Weak refs to our nsISVGPoint items. The items are friends and take care
   // of clearing our pointer to them when they die.
   FallibleTArray<nsISVGPoint*> mItems;
@@ -199,6 +204,7 @@ class DOMSVGPointList final : public nsISupports, public nsWrapperCache {
   bool mIsAnimValList;
 };
 
+}  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_DOMSVGPOINTLIST_H__
+#endif  // DOM_SVG_DOMSVGPOINTLIST_H_

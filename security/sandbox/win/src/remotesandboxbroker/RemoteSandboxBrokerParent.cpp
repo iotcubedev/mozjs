@@ -12,7 +12,7 @@
 namespace mozilla {
 
 RefPtr<GenericPromise> RemoteSandboxBrokerParent::Launch(
-    const nsTArray<uint64_t>& aHandlesToShare) {
+    const nsTArray<uint64_t>& aHandlesToShare, nsISerialEventTarget* aThread) {
   MOZ_ASSERT(!mProcess);
   if (mProcess) {
     // Don't re-init.
@@ -27,7 +27,7 @@ RefPtr<GenericPromise> RemoteSandboxBrokerParent::Launch(
   // Note: we rely on the caller to keep this instance alive while we launch
   // the process, so that these closures point to valid memory.
   auto resolve = [this](base::ProcessHandle handle) {
-    mOpened = Open(mProcess->GetChannel(), base::GetProcId(handle));
+    mOpened = Open(mProcess->TakeChannel(), base::GetProcId(handle));
     if (!mOpened) {
       mProcess->Destroy();
       mProcess = nullptr;
@@ -45,8 +45,7 @@ RefPtr<GenericPromise> RemoteSandboxBrokerParent::Launch(
     return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   };
 
-  return mProcess->AsyncLaunch()->Then(GetCurrentThreadSerialEventTarget(),
-                                       __func__, std::move(resolve),
+  return mProcess->AsyncLaunch()->Then(aThread, __func__, std::move(resolve),
                                        std::move(reject));
 }
 
@@ -60,7 +59,7 @@ bool RemoteSandboxBrokerParent::DuplicateFromLauncher(HANDLE aLauncherHandle,
 void RemoteSandboxBrokerParent::ActorDestroy(ActorDestroyReason aWhy) {
   if (AbnormalShutdown == aWhy) {
     Telemetry::Accumulate(Telemetry::SUBPROCESS_ABNORMAL_ABORT,
-                          nsDependentCString(XRE_ChildProcessTypeToString(
+                          nsDependentCString(XRE_GeckoProcessTypeToString(
                               GeckoProcessType_RemoteSandboxBroker)),
                           1);
     GenerateCrashReport(OtherPid());

@@ -30,7 +30,7 @@ TEST(PrioEncoder, BooleanLimitExceeded)
 
   mozilla::dom::GlobalObject global(cx, xpc::PrivilegedJunkScope());
 
-  nsCString batchID = NS_LITERAL_CSTRING("abc123");
+  nsCString batchID = "abc123"_ns;
 
   mozilla::dom::PrioParams prioParams;
   FallibleTArray<bool> sequence;
@@ -44,7 +44,7 @@ TEST(PrioEncoder, BooleanLimitExceeded)
     *(sequence.AppendElement(mozilla::fallible)) = rand() % 2;
   }
 
-  prioParams.mBooleans.Assign(sequence);
+  ASSERT_TRUE(prioParams.mBooleans.Assign(sequence));
 
   mozilla::dom::RootedDictionary<mozilla::dom::PrioEncodedData> prioEncodedData(
       cx);
@@ -183,7 +183,7 @@ TEST(PrioEncoder, VerifyFull)
   *(sequence.AppendElement(mozilla::fallible)) = dataItems[0];
   *(sequence.AppendElement(mozilla::fallible)) = dataItems[1];
   *(sequence.AppendElement(mozilla::fallible)) = dataItems[2];
-  prioParams.mBooleans.Assign(sequence);
+  ASSERT_TRUE(prioParams.mBooleans.Assign(sequence));
 
   mozilla::dom::RootedDictionary<mozilla::dom::PrioEncodedData> prioEncodedData(
       cx);
@@ -198,8 +198,8 @@ TEST(PrioEncoder, VerifyFull)
                                     prioEncodedData, rv);
   ASSERT_FALSE(rv.Failed());
 
-  prioEncodedData.mA.Value().ComputeLengthAndData();
-  prioEncodedData.mB.Value().ComputeLengthAndData();
+  prioEncodedData.mA.Value().ComputeState();
+  prioEncodedData.mB.Value().ComputeState();
 
   forServerA = prioEncodedData.mA.Value().Data();
   forServerB = prioEncodedData.mB.Value().Data();

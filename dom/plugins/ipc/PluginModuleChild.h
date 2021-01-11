@@ -97,7 +97,7 @@ class PluginModuleChild : public PPluginModuleChild {
   mozilla::ipc::IPCResult RecvSetParentHangTimeout(const uint32_t& aSeconds);
 
   mozilla::ipc::IPCResult AnswerInitCrashReporter(
-      Shmem&& aShmem, mozilla::dom::NativeThreadId* aId);
+      mozilla::dom::NativeThreadId* aId);
 
   virtual void ActorDestroy(ActorDestroyReason why) override;
 
@@ -121,7 +121,7 @@ class PluginModuleChild : public PPluginModuleChild {
   // aPluginFilename is UTF8, not native-charset!
   bool InitForChrome(const std::string& aPluginFilename,
                      base::ProcessId aParentPid, MessageLoop* aIOLoop,
-                     IPC::Channel* aChannel);
+                     UniquePtr<IPC::Channel> aChannel);
 
   bool InitForContent(Endpoint<PPluginModuleChild>&& aEndpoint);
 

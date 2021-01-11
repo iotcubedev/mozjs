@@ -7,7 +7,7 @@
 #include "MediaStreamAudioSourceNode.h"
 #include "mozilla/dom/MediaStreamAudioSourceNodeBinding.h"
 #include "AudioNodeEngine.h"
-#include "AudioNodeExternalInputStream.h"
+#include "AudioNodeExternalInputTrack.h"
 #include "AudioStreamTrack.h"
 #include "mozilla/dom/Document.h"
 #include "nsContentUtils.h"
@@ -47,15 +47,15 @@ MediaStreamAudioSourceNode::MediaStreamAudioSourceNode(
 already_AddRefed<MediaStreamAudioSourceNode> MediaStreamAudioSourceNode::Create(
     AudioContext& aAudioContext, const MediaStreamAudioSourceOptions& aOptions,
     ErrorResult& aRv) {
-  if (aAudioContext.IsOffline()) {
-    aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
-    return nullptr;
-  }
+  // The spec has a pointless check here.  See
+  // https://github.com/WebAudio/web-audio-api/issues/2149
+  MOZ_RELEASE_ASSERT(!aAudioContext.IsOffline(), "Bindings messed up?");
 
   RefPtr<MediaStreamAudioSourceNode> node =
       new MediaStreamAudioSourceNode(&aAudioContext, LockOnTrackPicked);
 
-  node->Init(aOptions.mMediaStream, aRv);
+  // aOptions.mMediaStream is not nullable.
+  node->Init(*aOptions.mMediaStream, aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -63,21 +63,16 @@ already_AddRefed<MediaStreamAudioSourceNode> MediaStreamAudioSourceNode::Create(
   return node.forget();
 }
 
-void MediaStreamAudioSourceNode::Init(DOMMediaStream* aMediaStream,
+void MediaStreamAudioSourceNode::Init(DOMMediaStream& aMediaStream,
                                       ErrorResult& aRv) {
-  if (!aMediaStream) {
-    aRv.Throw(NS_ERROR_FAILURE);
-    return;
-  }
-
-  mInputStream = aMediaStream;
+  mInputStream = &aMediaStream;
   AudioNodeEngine* engine = new MediaStreamAudioSourceNodeEngine(this);
-  mStream = AudioNodeExternalInputStream::Create(Context()->Graph(), engine);
+  mTrack = AudioNodeExternalInputTrack::Create(Context()->Graph(), engine);
   mInputStream->AddConsumerToKeepAlive(ToSupports(this));
 
   mInputStream->RegisterTrackListener(this);
-  if (mInputStream->Active()) {
-    NotifyActive();
+  if (mInputStream->Audible()) {
+    NotifyAudible();
   }
   AttachToRightTrack(mInputStream, aRv);
 }
@@ -98,27 +93,31 @@ void MediaStreamAudioSourceNode::AttachToTrack(
   MOZ_ASSERT(aTrack->AsAudioStreamTrack());
   MOZ_DIAGNOSTIC_ASSERT(!aTrack->Ended());
 
-  if (!mStream) {
+  if (!mTrack) {
     return;
   }
 
   if (NS_WARN_IF(Context()->Graph() != aTrack->Graph())) {
     nsCOMPtr<nsPIDOMWindowInner> pWindow = Context()->GetParentObject();
     Document* document = pWindow ? pWindow->GetExtantDoc() : nullptr;
-    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
-                                    NS_LITERAL_CSTRING("Web Audio"), document,
-                                    nsContentUtils::eDOM_PROPERTIES,
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    document, nsContentUtils::eDOM_PROPERTIES,
                                     "MediaStreamAudioSourceNodeDifferentRate");
-    aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+    // This is not a spec-required exception, just a limitation of our
+    // implementation.
+    aRv.ThrowNotSupportedError(
+        "Connecting AudioNodes from AudioContexts with different sample-rate "
+        "is currently not supported.");
     return;
   }
 
   mInputTrack = aTrack;
-  ProcessedMediaStream* outputStream =
-      static_cast<ProcessedMediaStream*>(mStream.get());
-  mInputPort = mInputTrack->ForwardTrackContentsTo(outputStream);
+  ProcessedMediaTrack* outputTrack =
+      static_cast<ProcessedMediaTrack*>(mTrack.get());
+  mInputPort = mInputTrack->ForwardTrackContentsTo(outputTrack);
   PrincipalChanged(mInputTrack);  // trigger enabling/disabling of the connector
   mInputTrack->AddPrincipalChangeObserver(this);
+  MarkActive();
 }
 
 void MediaStreamAudioSourceNode::DetachFromTrack() {
@@ -148,7 +147,7 @@ void MediaStreamAudioSourceNode::AttachToRightTrack(
   aMediaStream->GetAudioTracks(tracks);
 
   if (tracks.IsEmpty() && mBehavior == LockOnTrackPicked) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    aRv.ThrowInvalidStateError("No audio tracks in MediaStream");
     return;
   }
 
@@ -165,7 +164,6 @@ void MediaStreamAudioSourceNode::AttachToRightTrack(
 
     if (!track->Ended()) {
       AttachToTrack(track, aRv);
-      MarkActive();
     }
     return;
   }
@@ -202,22 +200,22 @@ void MediaStreamAudioSourceNode::NotifyTrackRemoved(
   }
 }
 
-void MediaStreamAudioSourceNode::NotifyActive() {
+void MediaStreamAudioSourceNode::NotifyAudible() {
   MOZ_ASSERT(mInputStream);
   Context()->StartBlockedAudioContextIfAllowed();
 }
 
 /**
  * Changes the principal. Note that this will be called on the main thread, but
- * changes will be enacted on the MediaStreamGraph thread. If the principal
+ * changes will be enacted on the MediaTrackGraph thread. If the principal
  * change results in the document principal losing access to the stream, then
  * there needs to be other measures in place to ensure that any media that is
- * governed by the new stream principal is not available to the MediaStreamGraph
+ * governed by the new stream principal is not available to the MediaTrackGraph
  * before this change completes. Otherwise, a site could get access to
  * media that they are not authorized to receive.
  *
  * One solution is to block the altered content, call this method, then dispatch
- * another change request to the MediaStreamGraph thread that allows the content
+ * another change request to the MediaTrackGraph thread that allows the content
  * under the new principal to flow. This might be unnecessary if the principal
  * change is changing to be the document principal.
  */
@@ -238,14 +236,14 @@ void MediaStreamAudioSourceNode::PrincipalChanged(
       }
     }
   }
-  auto stream = static_cast<AudioNodeExternalInputStream*>(mStream.get());
+  auto track = static_cast<AudioNodeExternalInputTrack*>(mTrack.get());
   bool enabled = subsumes;
-  stream->SetInt32Parameter(MediaStreamAudioSourceNodeEngine::ENABLE, enabled);
+  track->SetInt32Parameter(MediaStreamAudioSourceNodeEngine::ENABLE, enabled);
 
   if (!enabled && doc) {
-    nsContentUtils::ReportToConsole(
-        nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Web Audio"), doc,
-        nsContentUtils::eDOM_PROPERTIES, CrossOriginErrorString());
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    doc, nsContentUtils::eDOM_PROPERTIES,
+                                    CrossOriginErrorString());
   }
 }
 
@@ -265,12 +263,12 @@ size_t MediaStreamAudioSourceNode::SizeOfIncludingThis(
   return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
 
-void MediaStreamAudioSourceNode::DestroyMediaStream() {
+void MediaStreamAudioSourceNode::DestroyMediaTrack() {
   if (mInputPort) {
     mInputPort->Destroy();
     mInputPort = nullptr;
   }
-  AudioNode::DestroyMediaStream();
+  AudioNode::DestroyMediaTrack();
 }
 
 JSObject* MediaStreamAudioSourceNode::WrapObject(

@@ -16,6 +16,7 @@
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/TreeContentViewBinding.h"
+#include "mozilla/dom/XULTreeElement.h"
 #include "nsServiceManagerUtils.h"
 #include "mozilla/dom/Document.h"
 
@@ -37,7 +38,7 @@ class Row {
         mSubtreeSize(0),
         mFlags(0) {}
 
-  ~Row() {}
+  ~Row() = default;
 
   void SetContainer(bool aContainer) {
     aContainer ? mFlags |= ROW_FLAG_CONTAINER : mFlags &= ~ROW_FLAG_CONTAINER;
@@ -146,7 +147,7 @@ nsTreeContentView::SetSelection(nsITreeSelection* aSelection) {
 void nsTreeContentView::SetSelection(nsITreeSelection* aSelection,
                                      ErrorResult& aError) {
   if (aSelection && !CanTrustTreeSelection(aSelection)) {
-    aError.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    aError.ThrowSecurityError("Not allowed to set tree selection");
     return;
   }
 
@@ -215,7 +216,7 @@ void nsTreeContentView::GetColumnProperties(nsTreeColumn& aColumn,
   RefPtr<Element> element = aColumn.Element();
 
   if (element) {
-    element->GetAttribute(NS_LITERAL_STRING("properties"), aProperties);
+    element->GetAttr(nsGkAtoms::properties, aProperties);
   }
 }
 
@@ -520,7 +521,7 @@ nsTreeContentView::SetTree(XULTreeElement* aTree) {
 
     RefPtr<dom::Element> bodyElement = mTree->GetTreeBody();
     if (bodyElement) {
-      mBody = bodyElement.forget();
+      mBody = std::move(bodyElement);
       int32_t index = 0;
       Serialize(mBody, -1, &index, mRows);
     }
@@ -540,11 +541,11 @@ void nsTreeContentView::ToggleOpenState(int32_t aRow, ErrorResult& aError) {
   Row* row = mRows[aRow].get();
 
   if (row->IsOpen())
-    row->mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::open,
-                           NS_LITERAL_STRING("false"), true);
+    row->mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::open, u"false"_ns,
+                           true);
   else
-    row->mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::open,
-                           NS_LITERAL_STRING("true"), true);
+    row->mContent->SetAttr(kNameSpaceID_None, nsGkAtoms::open, u"true"_ns,
+                           true);
 }
 
 NS_IMETHODIMP

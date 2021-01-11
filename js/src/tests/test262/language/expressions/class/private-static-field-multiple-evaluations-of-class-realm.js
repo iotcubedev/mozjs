@@ -1,4 +1,4 @@
-// |reftest| skip -- class-static-fields-private is not supported
+// |reftest| shell-option(--enable-private-fields) skip-if(!xulRuntime.shell) -- requires shell-options
 // Copyright (C) 2019 Caio Lima (Igalia SL). All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -36,7 +36,7 @@ info: |
     ...
     8. If fieldName is a Private Name,
       a. Perform ? PrivateFieldAdd(fieldName, receiver, initValue).
-features: [class, class-static-fields-private]
+features: [class, class-static-fields-private, cross-realm]
 flags: [noStrict]
 ---*/
 

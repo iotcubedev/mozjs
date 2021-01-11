@@ -8,21 +8,62 @@
 #include "mozilla/EventQueue.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_threads.h"
+#include "mozilla/ipc/IdleSchedulerChild.h"
 #include "nsThreadManager.h"
 #include "nsXPCOMPrivate.h"  // for gXPCOMThreadsShutDown
 #include "InputEventStatistics.h"
+#include "MainThreadUtils.h"
 
 using namespace mozilla;
 
+PrioritizedEventQueue::PrioritizedEventQueue(
+    already_AddRefed<nsIIdlePeriod>&& aIdlePeriod)
+    : mHighQueue(MakeUnique<EventQueue>(EventQueuePriority::High)),
+      mInputQueue(
+          MakeUnique<EventQueueSized<32>>(EventQueuePriority::InputHigh)),
+      mMediumHighQueue(MakeUnique<EventQueue>(EventQueuePriority::MediumHigh)),
+      mNormalQueue(MakeUnique<EventQueueSized<64>>(EventQueuePriority::Normal)),
+      mDeferredTimersQueue(
+          MakeUnique<EventQueue>(EventQueuePriority::DeferredTimers)),
+      mIdleQueue(MakeUnique<EventQueue>(EventQueuePriority::Idle)) {
+  mInputTaskManager = new InputTaskManager();
+  mIdleTaskManager = new IdleTaskManager(std::move(aIdlePeriod));
+  TaskController::Get()->SetIdleTaskManager(mIdleTaskManager);
+}
+
+PrioritizedEventQueue::~PrioritizedEventQueue() = default;
+
 void PrioritizedEventQueue::PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
                                      EventQueuePriority aPriority,
-                                     const MutexAutoLock& aProofOfLock) {
-  // Double check the priority with a QI.
+                                     const MutexAutoLock& aProofOfLock,
+                                     mozilla::TimeDuration* aDelay) {
   RefPtr<nsIRunnable> event(aEvent);
+
+  if (UseTaskController()) {
+    TaskController* tc = TaskController::Get();
+
+    TaskManager* manager = nullptr;
+    if (aPriority == EventQueuePriority::InputHigh) {
+      if (mInputTaskManager->State() == InputTaskManager::STATE_DISABLED) {
+        aPriority = EventQueuePriority::Normal;
+      } else {
+        manager = mInputTaskManager;
+      }
+    } else if (aPriority == EventQueuePriority::DeferredTimers ||
+               aPriority == EventQueuePriority::Idle) {
+      manager = mIdleTaskManager;
+    }
+
+    tc->DispatchRunnable(event.forget(), static_cast<uint32_t>(aPriority),
+                         manager);
+    return;
+  }
+
+  // Double check the priority with a QI.
   EventQueuePriority priority = aPriority;
 
-  if (priority == EventQueuePriority::Input &&
-      mInputQueueState == STATE_DISABLED) {
+  if (priority == EventQueuePriority::InputHigh &&
+      mInputTaskManager->State() == InputTaskManager::STATE_DISABLED) {
     priority = EventQueuePriority::Normal;
   } else if (priority == EventQueuePriority::MediumHigh &&
              !StaticPrefs::threads_medium_high_event_queue_enabled()) {
@@ -31,131 +72,104 @@ void PrioritizedEventQueue::PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
 
   switch (priority) {
     case EventQueuePriority::High:
-      mHighQueue->PutEvent(event.forget(), priority, aProofOfLock);
+      mHighQueue->PutEvent(event.forget(), priority, aProofOfLock, aDelay);
       break;
-    case EventQueuePriority::Input:
-      mInputQueue->PutEvent(event.forget(), priority, aProofOfLock);
+    case EventQueuePriority::InputHigh:
+      mInputQueue->PutEvent(event.forget(), priority, aProofOfLock, aDelay);
       break;
     case EventQueuePriority::MediumHigh:
-      mMediumHighQueue->PutEvent(event.forget(), priority, aProofOfLock);
+      mMediumHighQueue->PutEvent(event.forget(), priority, aProofOfLock,
+                                 aDelay);
       break;
     case EventQueuePriority::Normal:
-      mNormalQueue->PutEvent(event.forget(), priority, aProofOfLock);
+      mNormalQueue->PutEvent(event.forget(), priority, aProofOfLock, aDelay);
       break;
-    case EventQueuePriority::DeferredTimers:
-      mDeferredTimersQueue->PutEvent(event.forget(), priority, aProofOfLock);
+    case EventQueuePriority::InputLow:
+      MOZ_ASSERT(false, "InputLow is a TaskController's internal priority!");
       break;
-    case EventQueuePriority::Idle:
-      mIdleQueue->PutEvent(event.forget(), priority, aProofOfLock);
+    case EventQueuePriority::DeferredTimers: {
+      if (NS_IsMainThread()) {
+        mDeferredTimersQueue->PutEvent(event.forget(), priority, aProofOfLock,
+                                       aDelay);
+      } else {
+        // We don't want to touch our idle queues from off the main
+        // thread.  Queue it indirectly.
+        IndirectlyQueueRunnable(event.forget(), priority, aProofOfLock, aDelay);
+      }
       break;
+    }
+    case EventQueuePriority::Idle: {
+      if (NS_IsMainThread()) {
+        mIdleQueue->PutEvent(event.forget(), priority, aProofOfLock, aDelay);
+      } else {
+        // We don't want to touch our idle queues from off the main
+        // thread.  Queue it indirectly.
+        IndirectlyQueueRunnable(event.forget(), priority, aProofOfLock, aDelay);
+      }
+      break;
+    }
     case EventQueuePriority::Count:
       MOZ_CRASH("EventQueuePriority::Count isn't a valid priority");
       break;
   }
 }
 
-TimeStamp PrioritizedEventQueue::GetIdleDeadline() {
-  // If we are shutting down, we won't honor the idle period, and we will
-  // always process idle runnables.  This will ensure that the idle queue
-  // gets exhausted at shutdown time to prevent intermittently leaking
-  // some runnables inside that queue and even worse potentially leaving
-  // some important cleanup work unfinished.
-  if (gXPCOMThreadsShutDown ||
-      nsThreadManager::get().GetCurrentThread()->ShuttingDown()) {
-    return TimeStamp::Now();
-  }
-
-  TimeStamp idleDeadline;
-  {
-    // Releasing the lock temporarily since getting the idle period
-    // might need to lock the timer thread. Unlocking here might make
-    // us receive an event on the main queue, but we've committed to
-    // run an idle event anyhow.
-    MutexAutoUnlock unlock(*mMutex);
-    mIdlePeriod->GetIdlePeriodHint(&idleDeadline);
-  }
-
-  // If HasPendingEvents() has been called and it has returned true because of
-  // pending idle events, there is a risk that we may decide here that we aren't
-  // idle and return null, in which case HasPendingEvents() has effectively
-  // lied.  Since we can't go back and fix the past, we have to adjust what we
-  // do here and forcefully pick the idle queue task here.  Note that this means
-  // that we are choosing to run a task from the idle queue when we would
-  // normally decide that we aren't in an idle period, but this can only happen
-  // if we fall out of the idle period in between the call to HasPendingEvents()
-  // and here, which should hopefully be quite rare.  We are effectively
-  // choosing to prioritize the sanity of our API semantics over the optimal
-  // scheduling.
-  if (!mHasPendingEventsPromisedIdleEvent &&
-      (!idleDeadline || idleDeadline < TimeStamp::Now())) {
-    return TimeStamp();
-  }
-  if (mHasPendingEventsPromisedIdleEvent && !idleDeadline) {
-    // If HasPendingEvents() has been called and it has returned true, but we're
-    // no longer in the idle period, we must return a valid timestamp to pretend
-    // that we are still in the idle period.
-    return TimeStamp::Now();
-  }
-  return idleDeadline;
-}
-
 EventQueuePriority PrioritizedEventQueue::SelectQueue(
     bool aUpdateState, const MutexAutoLock& aProofOfLock) {
   size_t inputCount = mInputQueue->Count(aProofOfLock);
 
-  if (aUpdateState && mInputQueueState == STATE_ENABLED &&
-      mInputHandlingStartTime.IsNull() && inputCount > 0) {
-    mInputHandlingStartTime =
-        InputEventStatistics::Get().GetInputHandlingStartTime(inputCount);
+  if (aUpdateState &&
+      mInputTaskManager->State() == InputTaskManager::STATE_ENABLED &&
+      mInputTaskManager->InputHandlingStartTime().IsNull() && inputCount > 0) {
+    mInputTaskManager->SetInputHandlingStartTime(
+        InputEventStatistics::Get().GetInputHandlingStartTime(inputCount));
   }
 
   // We check the different queues in the following order. The conditions we use
   // are meant to avoid starvation and to ensure that we don't process an event
   // at the wrong time.
   //
-  // HIGH: if mProcessHighPriorityQueue
-  // INPUT: if inputCount > 0 && TimeStamp::Now() > mInputHandlingStartTime
-  // MEDIUMHIGH: if medium high pending
-  // NORMAL: if normal pending
+  // HIGH:
+  // INPUT: if inputCount > 0 && TimeStamp::Now() >
+  //        mInputTaskManager->InputHandlingStartTime(...);
+  // MEDIUMHIGH: if medium high
+  // pending NORMAL: if normal pending
   //
   // If we still don't have an event, then we take events from the queues
   // in the following order:
-  //
-  // HIGH
   // INPUT
-  // DEFERREDTIMERS: if GetIdleDeadline()
-  // IDLE: if GetIdleDeadline()
+  // DEFERREDTIMERS: if GetLocalIdleDeadline()
+  // IDLE: if GetLocalIdleDeadline()
   //
   // If we don't get an event in this pass, then we return null since no events
   // are ready.
 
   // This variable determines which queue we will take an event from.
   EventQueuePriority queue;
-  bool highPending = !mHighQueue->IsEmpty(aProofOfLock);
-
-  if (mProcessHighPriorityQueue) {
+  if (!mHighQueue->IsEmpty(aProofOfLock)) {
     queue = EventQueuePriority::High;
-  } else if (inputCount > 0 && (mInputQueueState == STATE_FLUSHING ||
-                                (mInputQueueState == STATE_ENABLED &&
-                                 !mInputHandlingStartTime.IsNull() &&
-                                 TimeStamp::Now() > mInputHandlingStartTime))) {
-    queue = EventQueuePriority::Input;
+  } else if (inputCount > 0 &&
+             (mInputTaskManager->State() == InputTaskManager::STATE_FLUSHING ||
+              (mInputTaskManager->State() == InputTaskManager::STATE_ENABLED &&
+               !mInputTaskManager->InputHandlingStartTime().IsNull() &&
+               TimeStamp::Now() >
+                   mInputTaskManager->InputHandlingStartTime()))) {
+    queue = EventQueuePriority::InputHigh;
   } else if (!mMediumHighQueue->IsEmpty(aProofOfLock)) {
     MOZ_ASSERT(
-        mInputQueueState != STATE_FLUSHING,
+        mInputTaskManager->State() != InputTaskManager::STATE_FLUSHING,
         "Shouldn't consume medium high event when flushing input events");
     queue = EventQueuePriority::MediumHigh;
   } else if (!mNormalQueue->IsEmpty(aProofOfLock)) {
-    MOZ_ASSERT(mInputQueueState != STATE_FLUSHING,
+    MOZ_ASSERT(mInputTaskManager->State() != InputTaskManager::STATE_FLUSHING,
                "Shouldn't consume normal event when flushing input events");
     queue = EventQueuePriority::Normal;
-  } else if (highPending) {
-    queue = EventQueuePriority::High;
-  } else if (inputCount > 0 && mInputQueueState != STATE_SUSPEND) {
+  } else if (inputCount > 0 &&
+             mInputTaskManager->State() != InputTaskManager::STATE_SUSPEND) {
     MOZ_ASSERT(
-        mInputQueueState != STATE_DISABLED,
+        mInputTaskManager->State() != InputTaskManager::STATE_DISABLED,
         "Shouldn't consume input events when the input queue is disabled");
-    queue = EventQueuePriority::Input;
+    queue = EventQueuePriority::InputHigh;
   } else if (!mDeferredTimersQueue->IsEmpty(aProofOfLock)) {
     // We may not actually return an idle event in this case.
     queue = EventQueuePriority::DeferredTimers;
@@ -165,94 +179,139 @@ EventQueuePriority PrioritizedEventQueue::SelectQueue(
   }
 
   MOZ_ASSERT_IF(
-      queue == EventQueuePriority::Input,
-      mInputQueueState != STATE_DISABLED && mInputQueueState != STATE_SUSPEND);
-
-  if (aUpdateState) {
-    mProcessHighPriorityQueue = highPending;
-  }
+      queue == EventQueuePriority::InputHigh ||
+          queue == EventQueuePriority::InputLow,
+      mInputTaskManager->State() != InputTaskManager::STATE_DISABLED &&
+          mInputTaskManager->State() != InputTaskManager::STATE_SUSPEND);
 
   return queue;
 }
 
+void PrioritizedEventQueue::IndirectlyQueueRunnable(
+    already_AddRefed<nsIRunnable>&& aEvent, EventQueuePriority aPriority,
+    const MutexAutoLock& aProofOfLock, mozilla::TimeDuration* aDelay) {
+  nsCOMPtr<nsIRunnable> event(aEvent);
+
+  nsCOMPtr<nsIRunnable> mainThreadRunnable = NS_NewRunnableFunction(
+      "idle runnable shim",
+      [event = std::move(event), priority = aPriority]() mutable {
+        NS_DispatchToCurrentThreadQueue(event.forget(), priority);
+      });
+  mNormalQueue->PutEvent(mainThreadRunnable.forget(),
+                         EventQueuePriority::Normal, aProofOfLock, aDelay);
+}
+
+// The delay returned is the queuing delay a hypothetical Input event would
+// see due to the current running event if it had arrived while the current
+// event was queued.  This means that any event running at  priority below
+// Input doesn't cause queuing delay for Input events, and we return
+// TimeDuration() for those cases.
 already_AddRefed<nsIRunnable> PrioritizedEventQueue::GetEvent(
-    EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock) {
-  auto guard =
-      MakeScopeExit([&] { mHasPendingEventsPromisedIdleEvent = false; });
+    EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock,
+    TimeDuration* aHypotheticalInputEventDelay) {
+  MOZ_ASSERT_UNREACHABLE("Who is managing to call this?");
+  bool ignored;
+  return GetEvent(aPriority, aProofOfLock, aHypotheticalInputEventDelay,
+                  &ignored);
+}
 
-#ifndef RELEASE_OR_BETA
-  // Clear mNextIdleDeadline so that it is possible to determine that
-  // we're running an idle runnable in ProcessNextEvent.
-  *mNextIdleDeadline = TimeStamp();
-#endif
-
+already_AddRefed<nsIRunnable> PrioritizedEventQueue::GetEvent(
+    EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock,
+    TimeDuration* aHypotheticalInputEventDelay, bool* aIsIdleEvent) {
   EventQueuePriority queue = SelectQueue(true, aProofOfLock);
 
   if (aPriority) {
     *aPriority = queue;
   }
+  *aIsIdleEvent = false;
 
-  if (queue == EventQueuePriority::High) {
-    nsCOMPtr<nsIRunnable> event = mHighQueue->GetEvent(aPriority, aProofOfLock);
-    MOZ_ASSERT(event);
-    mInputHandlingStartTime = TimeStamp();
-    mProcessHighPriorityQueue = false;
-    return event.forget();
-  }
+  // Since Input events will only be delayed behind Input or High events,
+  // the amount of time a lower-priority event spent in the queue is
+  // irrelevant in knowing how long an input event would be delayed.
+  // Alternatively, we could export the delay and let the higher-level code
+  // key off the returned priority level (though then it'd need to know
+  // if the thread's queue was a PrioritizedEventQueue or normal/other
+  // EventQueue).
+  nsCOMPtr<nsIRunnable> event;
+  switch (queue) {
+    default:
+      MOZ_CRASH();
+      break;
 
-  if (queue == EventQueuePriority::Input) {
-    nsCOMPtr<nsIRunnable> event =
-        mInputQueue->GetEvent(aPriority, aProofOfLock);
-    MOZ_ASSERT(event);
-    return event.forget();
-  }
+    case EventQueuePriority::High:
+      event = mHighQueue->GetEvent(nullptr, aProofOfLock,
+                                   aHypotheticalInputEventDelay);
+      MOZ_ASSERT(event);
+      mInputTaskManager->SetInputHandlingStartTime(TimeStamp());
+      break;
 
-  if (queue == EventQueuePriority::MediumHigh) {
-    nsCOMPtr<nsIRunnable> event =
-        mMediumHighQueue->GetEvent(aPriority, aProofOfLock);
-    return event.forget();
-  }
+    case EventQueuePriority::InputHigh:
+      event = mInputQueue->GetEvent(nullptr, aProofOfLock,
+                                    aHypotheticalInputEventDelay);
+      MOZ_ASSERT(event);
+      break;
 
-  if (queue == EventQueuePriority::Normal) {
-    nsCOMPtr<nsIRunnable> event =
-        mNormalQueue->GetEvent(aPriority, aProofOfLock);
-    return event.forget();
-  }
+      // All queue priorities below Input don't add their queuing time to the
+      // time an input event will be delayed, so report 0 for time-in-queue
+      // if we're below Input; input events will only be delayed by the time
+      // an event actually runs (if the event is below Input event's priority)
+    case EventQueuePriority::MediumHigh:
+      event = mMediumHighQueue->GetEvent(nullptr, aProofOfLock);
+      *aHypotheticalInputEventDelay = TimeDuration();
+      break;
 
-  // If we get here, then all queues except deferredtimers and idle are empty.
-  MOZ_ASSERT(queue == EventQueuePriority::Idle ||
-             queue == EventQueuePriority::DeferredTimers);
+    case EventQueuePriority::Normal:
+      event = mNormalQueue->GetEvent(nullptr, aProofOfLock);
+      *aHypotheticalInputEventDelay = TimeDuration();
+      break;
 
-  if (mIdleQueue->IsEmpty(aProofOfLock) &&
-      mDeferredTimersQueue->IsEmpty(aProofOfLock)) {
-    MOZ_ASSERT(!mHasPendingEventsPromisedIdleEvent);
-    return nullptr;
-  }
+    case EventQueuePriority::Idle:
+    case EventQueuePriority::DeferredTimers:
+      *aHypotheticalInputEventDelay = TimeDuration();
+      // If we get here, then all queues except deferredtimers and idle are
+      // empty.
 
-  TimeStamp idleDeadline = GetIdleDeadline();
-  if (!idleDeadline) {
-    return nullptr;
-  }
+      if (!HasIdleRunnables(aProofOfLock)) {
+        return nullptr;
+      }
 
-  nsCOMPtr<nsIRunnable> event =
-      mDeferredTimersQueue->GetEvent(aPriority, aProofOfLock);
+      TimeStamp idleDeadline =
+          mIdleTaskManager->State().GetCachedIdleDeadline();
+      if (!idleDeadline) {
+        return nullptr;
+      }
+
+      event = mDeferredTimersQueue->GetEvent(nullptr, aProofOfLock);
+      if (!event) {
+        event = mIdleQueue->GetEvent(nullptr, aProofOfLock);
+      }
+      if (event) {
+        *aIsIdleEvent = true;
+        nsCOMPtr<nsIIdleRunnable> idleEvent = do_QueryInterface(event);
+        if (idleEvent) {
+          idleEvent->SetDeadline(idleDeadline);
+        }
+      }
+      break;
+  }  // switch (queue)
+
   if (!event) {
-    event = mIdleQueue->GetEvent(aPriority, aProofOfLock);
+    *aHypotheticalInputEventDelay = TimeDuration();
   }
-  if (event) {
-    nsCOMPtr<nsIIdleRunnable> idleEvent = do_QueryInterface(event);
-    if (idleEvent) {
-      idleEvent->SetDeadline(idleDeadline);
-    }
 
-#ifndef RELEASE_OR_BETA
-    // Store the next idle deadline to be able to determine budget use
-    // in ProcessNextEvent.
-    *mNextIdleDeadline = idleDeadline;
-#endif
-  }
+  MOZ_ASSERT_IF(aPriority, *aPriority == queue);
 
   return event.forget();
+}
+
+void PrioritizedEventQueue::DidRunEvent(const MutexAutoLock& aProofOfLock) {
+  if (IsEmpty(aProofOfLock)) {
+    // Certainly no more idle tasks.  Unlocking here is OK, because
+    // our caller does nothing after this except return, which unlocks
+    // its lock anyway.
+    MutexAutoUnlock unlock(*mMutex);
+    mIdleTaskManager->State().RanOutOfTasks(unlock);
+  }
 }
 
 bool PrioritizedEventQueue::IsEmpty(const MutexAutoLock& aProofOfLock) {
@@ -267,13 +326,13 @@ bool PrioritizedEventQueue::IsEmpty(const MutexAutoLock& aProofOfLock) {
 }
 
 bool PrioritizedEventQueue::HasReadyEvent(const MutexAutoLock& aProofOfLock) {
-  mHasPendingEventsPromisedIdleEvent = false;
+  mIdleTaskManager->State().ForgetPendingTaskGuarantee();
 
   EventQueuePriority queue = SelectQueue(false, aProofOfLock);
 
   if (queue == EventQueuePriority::High) {
     return mHighQueue->HasReadyEvent(aProofOfLock);
-  } else if (queue == EventQueuePriority::Input) {
+  } else if (queue == EventQueuePriority::InputHigh) {
     return mInputQueue->HasReadyEvent(aProofOfLock);
   } else if (queue == EventQueuePriority::MediumHigh) {
     return mMediumHighQueue->HasReadyEvent(aProofOfLock);
@@ -291,10 +350,19 @@ bool PrioritizedEventQueue::HasReadyEvent(const MutexAutoLock& aProofOfLock) {
     return false;
   }
 
-  TimeStamp idleDeadline = GetIdleDeadline();
+  // Temporarily unlock so we can peek our idle deadline.
+  {
+    MutexAutoUnlock unlock(*mMutex);
+    mIdleTaskManager->State().CachePeekedIdleDeadline(unlock);
+  }
+  TimeStamp idleDeadline = mIdleTaskManager->State().GetCachedIdleDeadline();
+  mIdleTaskManager->State().ClearCachedIdleDeadline();
+
+  // Re-check the emptiness of the queues, since we had the lock released for a
+  // bit.
   if (idleDeadline && (mDeferredTimersQueue->HasReadyEvent(aProofOfLock) ||
                        mIdleQueue->HasReadyEvent(aProofOfLock))) {
-    mHasPendingEventsPromisedIdleEvent = true;
+    mIdleTaskManager->State().EnforcePendingTaskGuarantee();
     return true;
   }
 
@@ -306,34 +374,73 @@ bool PrioritizedEventQueue::HasPendingHighPriorityEvents(
   return !mHighQueue->IsEmpty(aProofOfLock);
 }
 
+bool PrioritizedEventQueue::HasIdleRunnables(
+    const MutexAutoLock& aProofOfLock) const {
+  return !mIdleQueue->IsEmpty(aProofOfLock) ||
+         !mDeferredTimersQueue->IsEmpty(aProofOfLock);
+}
+
 size_t PrioritizedEventQueue::Count(const MutexAutoLock& aProofOfLock) const {
   MOZ_CRASH("unimplemented");
 }
 
-void PrioritizedEventQueue::EnableInputEventPrioritization(
-    const MutexAutoLock& aProofOfLock) {
+void InputTaskManager::EnableInputEventPrioritization() {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mInputQueueState == STATE_DISABLED);
   mInputQueueState = STATE_ENABLED;
   mInputHandlingStartTime = TimeStamp();
 }
 
-void PrioritizedEventQueue::FlushInputEventPrioritization(
-    const MutexAutoLock& aProofOfLock) {
+void InputTaskManager::FlushInputEventPrioritization() {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mInputQueueState == STATE_ENABLED ||
              mInputQueueState == STATE_SUSPEND);
   mInputQueueState =
       mInputQueueState == STATE_ENABLED ? STATE_FLUSHING : STATE_SUSPEND;
 }
 
-void PrioritizedEventQueue::SuspendInputEventPrioritization(
-    const MutexAutoLock& aProofOfLock) {
+void InputTaskManager::SuspendInputEventPrioritization() {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mInputQueueState == STATE_ENABLED ||
              mInputQueueState == STATE_FLUSHING);
   mInputQueueState = STATE_SUSPEND;
 }
 
-void PrioritizedEventQueue::ResumeInputEventPrioritization(
-    const MutexAutoLock& aProofOfLock) {
+void InputTaskManager::ResumeInputEventPrioritization() {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mInputQueueState == STATE_SUSPEND);
   mInputQueueState = STATE_ENABLED;
+}
+
+int32_t InputTaskManager::GetPriorityModifierForEventLoopTurn(
+    const MutexAutoLock& aProofOfLock) {
+  size_t inputCount = PendingTaskCount();
+  if (State() == STATE_ENABLED && InputHandlingStartTime().IsNull() &&
+      inputCount > 0) {
+    SetInputHandlingStartTime(
+        InputEventStatistics::Get().GetInputHandlingStartTime(inputCount));
+  }
+
+  if (inputCount > 0 && (State() == InputTaskManager::STATE_FLUSHING ||
+                         (State() == InputTaskManager::STATE_ENABLED &&
+                          !InputHandlingStartTime().IsNull() &&
+                          TimeStamp::Now() > InputHandlingStartTime()))) {
+    return 0;
+  }
+
+  int32_t modifier = static_cast<int32_t>(EventQueuePriority::InputLow) -
+                     static_cast<int32_t>(EventQueuePriority::MediumHigh);
+  return modifier;
+}
+
+void InputTaskManager::WillRunTask() {
+  TaskManager::WillRunTask();
+  mStartTimes.AppendElement(TimeStamp::Now());
+}
+
+void InputTaskManager::DidRunTask() {
+  TaskManager::DidRunTask();
+  MOZ_ASSERT(!mStartTimes.IsEmpty());
+  TimeStamp start = mStartTimes.PopLastElement();
+  InputEventStatistics::Get().UpdateInputDuration(TimeStamp::Now() - start);
 }

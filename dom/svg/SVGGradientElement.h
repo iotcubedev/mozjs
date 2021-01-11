@@ -4,19 +4,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGGRADIENTELEMENT_H__
-#define __NS_SVGGRADIENTELEMENT_H__
+#ifndef DOM_SVG_SVGGRADIENTELEMENT_H_
+#define DOM_SVG_SVGGRADIENTELEMENT_H_
 
-#include "nsAutoPtr.h"
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 #include "SVGAnimatedString.h"
 #include "SVGAnimatedTransformList.h"
 #include "mozilla/dom/SVGElement.h"
-
-class nsSVGGradientFrame;
-class nsSVGLinearGradientFrame;
-class nsSVGRadialGradientFrame;
+#include "mozilla/UniquePtr.h"
 
 nsresult NS_NewSVGLinearGradientElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
@@ -24,16 +20,20 @@ nsresult NS_NewSVGRadialGradientElement(
     nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
+class SVGGradientFrame;
+class SVGLinearGradientFrame;
+class SVGRadialGradientFrame;
+
 namespace dom {
 
 class DOMSVGAnimatedTransformList;
 
 //--------------------- Gradients------------------------
 
-typedef SVGElement SVGGradientElementBase;
+using SVGGradientElementBase = SVGElement;
 
 class SVGGradientElement : public SVGGradientElementBase {
-  friend class ::nsSVGGradientFrame;
+  friend class mozilla::SVGGradientFrame;
 
  protected:
   explicit SVGGradientElement(
@@ -73,15 +73,15 @@ class SVGGradientElement : public SVGGradientElementBase {
   static StringInfo sStringInfo[2];
 
   // SVGGradientElement values
-  nsAutoPtr<SVGAnimatedTransformList> mGradientTransform;
+  UniquePtr<SVGAnimatedTransformList> mGradientTransform;
 };
 
 //---------------------Linear Gradients------------------------
 
-typedef SVGGradientElement SVGLinearGradientElementBase;
+using SVGLinearGradientElementBase = SVGGradientElement;
 
 class SVGLinearGradientElement : public SVGLinearGradientElementBase {
-  friend class ::nsSVGLinearGradientFrame;
+  friend class mozilla::SVGLinearGradientFrame;
   friend nsresult(::NS_NewSVGLinearGradientElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -111,10 +111,10 @@ class SVGLinearGradientElement : public SVGLinearGradientElementBase {
 
 //-------------------------- Radial Gradients ----------------------------
 
-typedef SVGGradientElement SVGRadialGradientElementBase;
+using SVGRadialGradientElementBase = SVGGradientElement;
 
 class SVGRadialGradientElement : public SVGRadialGradientElementBase {
-  friend class ::nsSVGRadialGradientFrame;
+  friend class mozilla::SVGRadialGradientFrame;
   friend nsresult(::NS_NewSVGRadialGradientElement(
       nsIContent** aResult,
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
@@ -147,4 +147,4 @@ class SVGRadialGradientElement : public SVGRadialGradientElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif
+#endif  // DOM_SVG_SVGGRADIENTELEMENT_H_

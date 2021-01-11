@@ -72,7 +72,7 @@ const webExtensionTargetPrototype = extend({}, parentProcessTargetPrototype);
  * - When the WebExtensions OOP mode has been introduced, this actor has been refactored
  *   and moved from the main process to the new child extension process.
  *
- * @param {DebuggerServerConnection} conn
+ * @param {DevToolsServerConnection} conn
  *        The connection to the client.
  * @param {nsIMessageSender} chromeGlobal.
  *        The chromeGlobal where this actor has been injected by the
@@ -338,7 +338,7 @@ webExtensionTargetPrototype._allowSource = function(source) {
   const url = source.url.split(" -> ").pop();
 
   // Filter out the code introduced by evaluating code in the webconsole.
-  if (url === "debugger eval code") {
+  if (url === "debugger eval code" || url === "debugger eager eval code") {
     return false;
   }
 

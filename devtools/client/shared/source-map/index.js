@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
+ 
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory();
@@ -423,8 +423,8 @@ WorkerDispatcher.prototype = {
   start(url, win = window) {
     this.worker = new win.Worker(url);
 
-    this.worker.onerror = () => {
-      console.error(`Error in worker ${url}`);
+    this.worker.onerror = err => {
+      console.error(`Error in worker ${url}`, err.message);
     };
   },
 
@@ -604,7 +604,9 @@ var _utils = __webpack_require__(64);
 
 var self = _interopRequireWildcard(__webpack_require__(182));
 
-function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } else { var newObj = {}; if (obj != null) { for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { var desc = Object.defineProperty && Object.getOwnPropertyDescriptor ? Object.getOwnPropertyDescriptor(obj, key) : {}; if (desc.get || desc.set) { Object.defineProperty(newObj, key, desc); } else { newObj[key] = obj[key]; } } } } newObj.default = obj; return newObj; } }
+function _getRequireWildcardCache() { if (typeof WeakMap !== "function") return null; var cache = new WeakMap(); _getRequireWildcardCache = function () { return cache; }; return cache; }
+
+function _interopRequireWildcard(obj) { if (obj && obj.__esModule) { return obj; } if (obj === null || typeof obj !== "object" && typeof obj !== "function") { return { default: obj }; } var cache = _getRequireWildcardCache(); if (cache && cache.has(obj)) { return cache.get(obj); } var newObj = {}; var hasPropertyDescriptor = Object.defineProperty && Object.getOwnPropertyDescriptor; for (var key in obj) { if (Object.prototype.hasOwnProperty.call(obj, key)) { var desc = hasPropertyDescriptor ? Object.getOwnPropertyDescriptor(obj, key) : null; if (desc && (desc.get || desc.set)) { Object.defineProperty(newObj, key, desc); } else { newObj[key] = obj[key]; } } } newObj.default = obj; if (cache) { cache.set(obj, newObj); } return newObj; }
 
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -768,8 +770,8 @@ function originalToGeneratedId(sourceId) {
     return sourceId;
   }
 
-  const match = sourceId.match(/(.*)\/originalSource/);
-  return match ? match[1] : "";
+  const lastIndex = sourceId.lastIndexOf("/originalSource");
+  return lastIndex !== -1 ? sourceId.slice(0, lastIndex) : "";
 }
 
 const getMd5 = memoize(url => md5(url));
@@ -779,7 +781,7 @@ function generatedToOriginalId(generatedId, url) {
 }
 
 function isOriginalId(id) {
-  return /\/originalSource/.test(id);
+  return id.includes("/originalSource");
 }
 
 function isGeneratedId(id) {
@@ -792,11 +794,14 @@ function isGeneratedId(id) {
 
 function trimUrlQuery(url) {
   const length = url.length;
-  const q1 = url.indexOf("?");
-  const q2 = url.indexOf("&");
-  const q3 = url.indexOf("#");
-  const q = Math.min(q1 != -1 ? q1 : length, q2 != -1 ? q2 : length, q3 != -1 ? q3 : length);
-  return url.slice(0, q);
+
+  for (let i = 0; i < length; ++i) {
+    if (url[i] === "?" || url[i] === "&" || url[i] === "#") {
+      return url.slice(0, i);
+    }
+  }
+
+  return url;
 } // Map suffix to content type.
 
 

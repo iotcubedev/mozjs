@@ -33,6 +33,7 @@ STAGE = mozpath.join(buildconfig.topobjdir, 'dist', 'test-stage')
 
 TEST_HARNESS_BINS = [
     'BadCertAndPinningServer',
+    'DelegatedCredentialsServer',
     'GenerateOCSPResponse',
     'OCSPStaplingServer',
     'SanctionsTestServer',
@@ -41,6 +42,7 @@ TEST_HARNESS_BINS = [
     'crashinject',
     'fileid',
     'geckodriver',
+    'http3server',
     'minidumpwriter',
     'pk12util',
     'screenshot',
@@ -102,6 +104,7 @@ ARCHIVE_FILES = {
             'pattern': '**',
             'ignore': [
                 'cppunittest/**',
+                'condprof/**',
                 'gtest/**',
                 'mochitest/**',
                 'reftest/**',
@@ -111,6 +114,10 @@ ARCHIVE_FILES = {
                 'web-platform/**',
                 'xpcshell/**',
                 'updater-dep/**',
+                'jsreftest/**',
+                'jit-test/**',
+                'jittest/**',  # To make the ignore checker happy
+                'perftests/**',
             ],
         },
         {
@@ -124,21 +131,18 @@ ARCHIVE_FILES = {
             'patterns': [
                 'client/**',
                 'harness/**',
-                'puppeteer/**',
                 'mach_test_package_commands.py',
             ],
             'dest': 'marionette',
             'ignore': [
                 'client/docs',
                 'harness/marionette_harness/tests',
-                'puppeteer/firefox/docs',
             ],
         },
         {
             'source': buildconfig.topsrcdir,
             'base': '',
             'manifests': [
-                'dom/media/test/marionette/manifest.ini',
                 'testing/marionette/harness/marionette_harness/tests/unit-tests.ini',
                 'gfx/tests/marionette/manifest.ini'
             ],
@@ -170,42 +174,6 @@ ARCHIVE_FILES = {
             'base': 'toolkit/components/telemetry/tests/marionette',
             'pattern': '/**',
             'dest': 'telemetry/marionette',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src',
-            'pattern': 'jit-test/**',
-            'dest': 'jit-test',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src/tests',
-            'pattern': 'non262/shell.js',
-            'dest': 'jit-test/tests',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src/tests',
-            'pattern': 'non262/Math/shell.js',
-            'dest': 'jit-test/tests',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src/tests',
-            'pattern': 'non262/reflect-parse/Match.js',
-            'dest': 'jit-test/tests',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src/tests',
-            'pattern': 'lib/**',
-            'dest': 'jit-test/tests',
-        },
-        {
-            'source': buildconfig.topsrcdir,
-            'base': 'js/src',
-            'pattern': 'jsapi.h',
-            'dest': 'jit-test',
         },
         {
             'source': buildconfig.topsrcdir,
@@ -246,6 +214,12 @@ ARCHIVE_FILES = {
             'base': 'third_party/python/six',
             'pattern': '**',
             'dest': 'tools/six',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'third_party/python/distro',
+            'pattern': '**',
+            'dest': 'tools/distro',
         },
         {
             'source': buildconfig.topobjdir,
@@ -290,9 +264,7 @@ ARCHIVE_FILES = {
             'base': 'dist/bin',
             'patterns': [
                 'dmd.py',
-                'fix_linux_stack.py',
-                'fix_macosx_stack.py',
-                'fix_stack_using_bpsyms.py',
+                'fix_stacks.py',
             ],
             'dest': 'bin',
         },
@@ -406,6 +378,12 @@ ARCHIVE_FILES = {
         },
         {
             'source': buildconfig.topsrcdir,
+            'base': 'third_party/python/virtualenv',
+            'dest': 'mozharness/third_party/python/virtualenv',
+            'pattern': '**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
             'base': 'testing/mozbase/manifestparser',
             'pattern': 'manifestparser/**',
             'dest': 'mozharness',
@@ -434,6 +412,12 @@ ARCHIVE_FILES = {
             'pattern': 'six.py',
             'dest': 'mozharness',
         },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'third_party/python/distro',
+            'pattern': 'distro.py',
+            'dest': 'mozharness',
+        },
     ],
     'reftest': [
         {
@@ -452,6 +436,7 @@ ARCHIVE_FILES = {
             'base': '',
             'manifests': [
                 'layout/reftests/reftest.list',
+                'layout/reftests/reftest-qr.list',
                 'testing/crashtest/crashtests.list',
             ],
             'dest': 'reftest/tests',
@@ -486,6 +471,101 @@ ARCHIVE_FILES = {
             'base': 'third_party/webkit/PerformanceTests',
             'pattern': '**',
             'dest': 'talos/talos/tests/webkit/PerformanceTests/',
+        },
+    ],
+    'perftests': [
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'testing/mozbase/**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'testing/condprofile/**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'third_party/python/**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'tools/lint/eslint/**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': '**/perftest_*.js'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': '**/hooks_*py'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'build/autoconf/**'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'build/moz.configure/**'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'python/**'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'build/mach_bootstrap.py'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'build/virtualenv_packages.txt'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'mach/**'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern': 'testing/web-platform/tests/tools/third_party/certifi/**'
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'pattern':  'testing/mozharness/**'
+        }
+    ],
+    'condprof': [
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing',
+            'pattern': 'condprofile/**',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing/mozbase/mozfile',
+            'pattern': '**',
+            'dest': 'condprofile/mozfile',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing/mozbase/mozprofile',
+            'pattern': '**',
+            'dest': 'condprofile/mozprofile',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing/mozbase/mozdevice',
+            'pattern': '**',
+            'dest': 'condprofile/mozdevice',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'testing/mozbase/mozlog',
+            'pattern': '**',
+            'dest': 'condprofile/mozlog',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'third_party/python/virtualenv',
+            'pattern': '**',
+            'dest': 'condprofile/virtualenv',
         },
     ],
     'raptor': [
@@ -529,6 +609,10 @@ ARCHIVE_FILES = {
             'source': buildconfig.topsrcdir,
             'base': 'testing',
             'pattern': 'web-platform/tests/**',
+            'ignore': [
+                'web-platform/tests/tools/wptserve',
+                'web-platform/tests/tools/wpt_third_party',
+            ],
         },
         {
             'source': buildconfig.topobjdir,
@@ -583,6 +667,18 @@ ARCHIVE_FILES = {
             'pattern': '**',
             'dest': 'xpcshell/profile_data',
         },
+        {
+            'source': buildconfig.topobjdir,
+            'base': 'dist/bin',
+            'pattern': 'http3server%s' % buildconfig.substs['BIN_SUFFIX'],
+            'dest': 'xpcshell/http3server',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'netwerk/test/http3serverDB',
+            'pattern': '**',
+            'dest': 'xpcshell/http3server/http3serverDB',
+        },
     ],
     'updater-dep': [
         {
@@ -599,6 +695,51 @@ ARCHIVE_FILES = {
             'dest': 'updater-dep',
         },
     ],
+    'jsreftest': [
+        {
+            'source': STAGE,
+            'base': '',
+            'pattern': 'jsreftest/**',
+        },
+    ],
+    'jittest': [
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src',
+            'pattern': 'jit-test/**',
+            'dest': 'jit-test',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src/tests',
+            'pattern': 'non262/shell.js',
+            'dest': 'jit-test/tests',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src/tests',
+            'pattern': 'non262/Math/shell.js',
+            'dest': 'jit-test/tests',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src/tests',
+            'pattern': 'non262/reflect-parse/Match.js',
+            'dest': 'jit-test/tests',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src/tests',
+            'pattern': 'lib/**',
+            'dest': 'jit-test/tests',
+        },
+        {
+            'source': buildconfig.topsrcdir,
+            'base': 'js/src',
+            'pattern': 'jsapi.h',
+            'dest': 'jit-test',
+        },
+    ]
 }
 
 if buildconfig.substs.get('MOZ_CODE_COVERAGE'):

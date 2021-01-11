@@ -10,7 +10,7 @@
 
 var { Ci, Cc, Cu, components } = require("chrome");
 var Services = require("Services");
-var flags = require("./flags");
+var flags = require("devtools/shared/flags");
 var {
   getStack,
   callFunctionWithAsyncStack,
@@ -28,25 +28,10 @@ loader.lazyRequireGetter(
 var DevToolsUtils = exports;
 
 // Re-export the thread-safe utils.
-const ThreadSafeDevToolsUtils = require("./ThreadSafeDevToolsUtils.js");
+const ThreadSafeDevToolsUtils = require("devtools/shared/ThreadSafeDevToolsUtils.js");
 for (const key of Object.keys(ThreadSafeDevToolsUtils)) {
   exports[key] = ThreadSafeDevToolsUtils[key];
 }
-
-/**
- * Helper for Cu.isCrossProcessWrapper that works with Debugger.Objects.
- * This will always return false in workers (see the implementation in
- * ThreadSafeDevToolsUtils.js).
- *
- * @param Debugger.Object debuggerObject
- * @return bool
- */
-exports.isCPOW = function(debuggerObject) {
-  try {
-    return Cu.isCrossProcessWrapper(debuggerObject.unsafeDereference());
-  } catch (e) {}
-  return false;
-};
 
 /**
  * Waits for the next tick in the event loop to execute a callback.
@@ -182,7 +167,7 @@ exports.getProperty = function(object, key, invokeUnsafeGetters = false) {
  *        objects belong to this case.
  *      - Otherwise, if the debuggee doesn't subsume object's compartment, returns `null`.
  *      - Otherwise, if the object belongs to an invisible-to-debugger compartment,
- *        returns `undefined`. Note CPOW objects belong to this case.
+ *        returns `undefined`.
  *      - Otherwise, returns the unwrapped object.
  */
 exports.unwrap = function unwrap(obj) {
@@ -194,7 +179,6 @@ exports.unwrap = function unwrap(obj) {
   // Attempt to unwrap via `obj.unwrap()`. Note that:
   // - This will return `null` if the debuggee does not subsume object's compartment.
   // - This will throw if the object belongs to an invisible-to-debugger compartment.
-  //   This case includes CPOWs (see bug 1391449).
   // - This will return `obj` if there is no wrapper.
   let unwrapped;
   try {
@@ -216,18 +200,13 @@ exports.unwrap = function unwrap(obj) {
  * Checks whether a debuggee object is safe. Unsafe objects may run proxy traps or throw
  * when using `proto`, `isExtensible`, `isFrozen` or `isSealed`. Note that safe objects
  * may still throw when calling `getOwnPropertyNames`, `getOwnPropertyDescriptor`, etc.
- * Also note CPOW objects are considered to be unsafe, and DeadObject objects to be safe.
+ * Also note DeadObject objects are considered safe.
  *
  * @param obj Debugger.Object
  *        The debuggee object to be checked.
  * @return boolean
  */
 exports.isSafeDebuggerObject = function(obj) {
-  // CPOW usage is forbidden outside tests (bug 1465911)
-  if (exports.isCPOW(obj)) {
-    return false;
-  }
-
   const unwrapped = exports.unwrap(obj);
 
   // Objects belonging to an invisible-to-debugger compartment might be proxies,
@@ -266,7 +245,7 @@ exports.hasSafeGetter = function(desc) {
   // unwrapping.
   let fn = desc.get;
   fn = fn && exports.unwrap(fn);
-  return fn && fn.callable && fn.class == "Function" && fn.script === undefined;
+  return fn?.callable && fn?.class == "Function" && fn?.script === undefined;
 };
 
 /**
@@ -538,19 +517,23 @@ function mainThreadFetch(
       return;
     }
 
+    channel.loadInfo.isInDevToolsContext = true;
+
     // Set the channel options.
     channel.loadFlags = aOptions.loadFromCache
       ? channel.LOAD_FROM_CACHE
       : channel.LOAD_BYPASS_CACHE;
 
-    // When loading from cache, the cacheKey allows us to target a specific
-    // SHEntry and offer ways to restore POST requests from cache.
-    if (
-      aOptions.loadFromCache &&
-      aOptions.cacheKey != 0 &&
-      channel instanceof Ci.nsICacheInfoChannel
-    ) {
-      channel.cacheKey = aOptions.cacheKey;
+    if (aOptions.loadFromCache && channel instanceof Ci.nsICacheInfoChannel) {
+      // If DevTools intents to load the content from the cache,
+      // we make the LOAD_FROM_CACHE flag preferred over LOAD_BYPASS_CACHE.
+      channel.preferCacheLoadOverBypass = true;
+
+      // When loading from cache, the cacheKey allows us to target a specific
+      // SHEntry and offer ways to restore POST requests from cache.
+      if (aOptions.cacheKey != 0) {
+        channel.cacheKey = aOptions.cacheKey;
+      }
     }
 
     if (aOptions.window) {
@@ -560,7 +543,7 @@ function mainThreadFetch(
       ).loadGroup;
     }
 
-    /* eslint-disable complexity */
+    // eslint-disable-next-line complexity
     const onResponse = (stream, status, request) => {
       if (!components.isSuccessCode(status)) {
         reject(new Error(`Failed to fetch ${url}. Code ${status}.`));
@@ -694,7 +677,8 @@ function newChannelForURL(
   { policy, window, principal },
   recursing = false
 ) {
-  const securityFlags = Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL;
+  const securityFlags =
+    Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL;
 
   let uri;
   try {
@@ -802,11 +786,24 @@ exports.openFileStream = function(filePath) {
  *        The data to write to the file.
  * @param {String} fileName
  *        The suggested filename.
+ * @param {Array} filters
+ *        An array of object of the following shape:
+ *          - pattern: A pattern for accepted files (example: "*.js")
+ *          - label: The label that will be displayed in the save file dialog.
  */
-exports.saveAs = async function(parentWindow, dataArray, fileName = "") {
+exports.saveAs = async function(
+  parentWindow,
+  dataArray,
+  fileName = "",
+  filters = []
+) {
   let returnFile;
   try {
-    returnFile = await exports.showSaveFileDialog(parentWindow, fileName);
+    returnFile = await exports.showSaveFileDialog(
+      parentWindow,
+      fileName,
+      filters
+    );
   } catch (ex) {
     return;
   }
@@ -819,16 +816,23 @@ exports.saveAs = async function(parentWindow, dataArray, fileName = "") {
 /**
  * Show file picker and return the file user selected.
  *
- * @param nsIWindow parentWindow
+ * @param {nsIWindow} parentWindow
  *        Optional parent window. If null the parent window of the file picker
  *        will be the window of the attached input element.
- * @param AString suggestedFilename
- *        The suggested filename when toSave is true.
- *
- * @return Promise
+ * @param {String} suggestedFilename
+ *        The suggested filename.
+ * @param {Array} filters
+ *        An array of object of the following shape:
+ *          - pattern: A pattern for accepted files (example: "*.js")
+ *          - label: The label that will be displayed in the save file dialog.
+ * @return {Promise}
  *         A promise that is resolved after the file is selected by the file picker
  */
-exports.showSaveFileDialog = function(parentWindow, suggestedFilename) {
+exports.showSaveFileDialog = function(
+  parentWindow,
+  suggestedFilename,
+  filters = []
+) {
   const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
 
   if (suggestedFilename) {
@@ -836,7 +840,13 @@ exports.showSaveFileDialog = function(parentWindow, suggestedFilename) {
   }
 
   fp.init(parentWindow, null, fp.modeSave);
-  fp.appendFilters(fp.filterAll);
+  if (Array.isArray(filters) && filters.length > 0) {
+    for (const { pattern, label } of filters) {
+      fp.appendFilter(label, pattern);
+    }
+  } else {
+    fp.appendFilters(fp.filterAll);
+  }
 
   return new Promise((resolve, reject) => {
     fp.open(result => {

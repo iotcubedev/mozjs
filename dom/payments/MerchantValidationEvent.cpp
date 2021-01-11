@@ -45,21 +45,8 @@ already_AddRefed<MerchantValidationEvent> MerchantValidationEvent::Constructor(
   RefPtr<MerchantValidationEvent> e = new MerchantValidationEvent(aOwner);
   bool trusted = e->Init(aOwner);
   e->InitEvent(aType, aEventInitDict.mBubbles, aEventInitDict.mCancelable);
-  nsString errMsg;
-  Result<Ok, nsresult> rv = e->init(aEventInitDict, errMsg);
-  if (rv.isErr()) {
-    auto err = rv.unwrapErr();
-    switch (err) {
-      case NS_ERROR_TYPE_ERR:
-        aRv.ThrowRangeError<MSG_ILLEGAL_RANGE_PR_CONSTRUCTOR>(errMsg);
-        break;
-      case NS_ERROR_MALFORMED_URI:
-        aRv.ThrowTypeError<MSG_INVALID_URL>(aEventInitDict.mValidationURL);
-        break;
-      default:
-        aRv.Throw(err);
-        break;
-    }
+  e->init(aEventInitDict, aRv);
+  if (aRv.Failed()) {
     return nullptr;
   }
   e->SetTrusted(trusted);
@@ -67,26 +54,31 @@ already_AddRefed<MerchantValidationEvent> MerchantValidationEvent::Constructor(
   return e.forget();
 }
 
-Result<Ok, nsresult> MerchantValidationEvent::init(
-    const MerchantValidationEventInit& aEventInitDict, nsString& errMsg) {
+void MerchantValidationEvent::init(
+    const MerchantValidationEventInit& aEventInitDict, ErrorResult& aRv) {
   // Check methodName is valid
   if (!aEventInitDict.mMethodName.IsEmpty()) {
-    nsresult rv = PaymentRequest::IsValidPaymentMethodIdentifier(
-        aEventInitDict.mMethodName, errMsg);
-    if (NS_FAILED(rv)) {
-      return Err(rv);
+    PaymentRequest::IsValidPaymentMethodIdentifier(aEventInitDict.mMethodName,
+                                                   aRv);
+    if (aRv.Failed()) {
+      return;
     }
   }
   SetMethodName(aEventInitDict.mMethodName);
   nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(GetParentObject());
   auto doc = window->GetExtantDoc();
   if (!doc) {
-    return Err(NS_ERROR_UNEXPECTED);
+    aRv.ThrowAbortError("The owner document does not exist");
+    return;
   }
 
-  MOZ_TRY_VAR(mValidationURL,
-              doc->ResolveWithBaseURI(aEventInitDict.mValidationURL));
-  return Ok();
+  Result<nsCOMPtr<nsIURI>, nsresult> rv =
+      doc->ResolveWithBaseURI(aEventInitDict.mValidationURL);
+  if (rv.isErr()) {
+    aRv.ThrowTypeError("validationURL cannot be parsed");
+    return;
+  }
+  mValidationURL = rv.unwrap();
 }
 
 MerchantValidationEvent::MerchantValidationEvent(EventTarget* aOwner)
@@ -112,7 +104,10 @@ void MerchantValidationEvent::ResolvedCallback(JSContext* aCx,
   // conformance, which is why at this point we throw a
   // NS_ERROR_DOM_NOT_SUPPORTED_ERR.
 
-  mRequest->AbortUpdate(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+  ErrorResult result;
+  result.ThrowNotSupportedError(
+      "complete() is not supported by Firefox currently");
+  mRequest->AbortUpdate(result);
   mRequest->SetUpdating(false);
 }
 
@@ -123,20 +118,31 @@ void MerchantValidationEvent::RejectedCallback(JSContext* aCx,
     return;
   }
   mWaitForUpdate = false;
-  mRequest->AbortUpdate(NS_ERROR_DOM_ABORT_ERR);
+  ErrorResult result;
+  result.ThrowAbortError(
+      "The promise for MerchantValidtaionEvent.complete() is rejected");
+  mRequest->AbortUpdate(result);
   mRequest->SetUpdating(false);
 }
 
 void MerchantValidationEvent::Complete(Promise& aPromise, ErrorResult& aRv) {
   if (!IsTrusted()) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    aRv.ThrowInvalidStateError("Called on an untrusted event");
     return;
   }
 
   MOZ_ASSERT(mRequest);
 
-  if (mWaitForUpdate || !mRequest->ReadyForUpdate()) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+  if (mWaitForUpdate) {
+    aRv.ThrowInvalidStateError(
+        "The MerchantValidationEvent is waiting for update");
+    return;
+  }
+
+  if (!mRequest->ReadyForUpdate()) {
+    aRv.ThrowInvalidStateError(
+        "The PaymentRequest state is not eInteractive or the PaymentRequest is "
+        "updating");
     return;
   }
 

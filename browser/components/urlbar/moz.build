@@ -6,17 +6,26 @@ with Files("**"):
     BUG_COMPONENT = ("Firefox", "Address Bar")
 
 EXTRA_JS_MODULES += [
-    'UrlbarContextualTip.jsm',
     'UrlbarController.jsm',
     'UrlbarEventBufferer.jsm',
     'UrlbarInput.jsm',
     'UrlbarMuxerUnifiedComplete.jsm',
     'UrlbarPrefs.jsm',
+    'UrlbarProviderAutofill.jsm',
     'UrlbarProviderExtension.jsm',
+    'UrlbarProviderHeuristicFallback.jsm',
+    'UrlbarProviderInterventions.jsm',
+    'UrlbarProviderOmnibox.jsm',
     'UrlbarProviderOpenTabs.jsm',
+    'UrlbarProviderPrivateSearch.jsm',
+    'UrlbarProviderSearchSuggestions.jsm',
+    'UrlbarProviderSearchTips.jsm',
     'UrlbarProvidersManager.jsm',
+    'UrlbarProviderTokenAliasEngines.jsm',
+    'UrlbarProviderTopSites.jsm',
     'UrlbarProviderUnifiedComplete.jsm',
     'UrlbarResult.jsm',
+    'UrlbarSearchUtils.jsm',
     'UrlbarTokenizer.jsm',
     'UrlbarUtils.jsm',
     'UrlbarValueFormatter.jsm',
@@ -27,8 +36,10 @@ TESTING_JS_MODULES += [
     'tests/UrlbarTestUtils.jsm',
 ]
 BROWSER_CHROME_MANIFESTS += [
+    'tests/browser-tips/browser.ini',
     'tests/browser/browser.ini',
+    'tests/ext/browser/browser.ini',
 ]
 XPCSHELL_TESTS_MANIFESTS += ['tests/unit/xpcshell.ini']
 
-SPHINX_TREES['/browser/browser/urlbar'] = 'docs'
+SPHINX_TREES['/browser/urlbar'] = 'docs'

@@ -58,6 +58,9 @@ class RegExpObject : public NativeObject {
   static_assert(RegExpObject::FLAGS_SLOT == REGEXP_FLAGS_SLOT,
                 "FLAGS_SLOT values should be in sync with self-hosted JS");
 
+  static RegExpObject* create(JSContext* cx, HandleAtom source,
+                              NewObjectKind newKind);
+
  public:
   static const unsigned RESERVED_SLOTS = 3;
   static const unsigned PRIVATE_SLOT = 3;
@@ -72,6 +75,16 @@ class RegExpObject : public NativeObject {
   template <typename CharT>
   static RegExpObject* create(JSContext* cx, const CharT* chars, size_t length,
                               JS::RegExpFlags flags, NewObjectKind newKind);
+
+  // This variant assumes that the characters have already previously been
+  // syntax checked.
+  static RegExpObject* createSyntaxChecked(JSContext* cx, const char16_t* chars,
+                                           size_t length, JS::RegExpFlags flags,
+                                           NewObjectKind newKind);
+
+  static RegExpObject* createSyntaxChecked(JSContext* cx, HandleAtom source,
+                                           JS::RegExpFlags flags,
+                                           NewObjectKind newKind);
 
   template <typename CharT>
   static RegExpObject* create(JSContext* cx, const CharT* chars, size_t length,
@@ -120,7 +133,7 @@ class RegExpObject : public NativeObject {
     setSlot(LAST_INDEX_SLOT, Int32Value(0));
   }
 
-  JSFlatString* toString(JSContext* cx) const;
+  JSLinearString* toString(JSContext* cx) const;
 
   JSAtom* getSource() const {
     return &getSlot(SOURCE_SLOT).toString()->asAtom();
@@ -142,6 +155,7 @@ class RegExpObject : public NativeObject {
   bool global() const { return getFlags().global(); }
   bool ignoreCase() const { return getFlags().ignoreCase(); }
   bool multiline() const { return getFlags().multiline(); }
+  bool dotAll() const { return getFlags().dotAll(); }
   bool unicode() const { return getFlags().unicode(); }
   bool sticky() const { return getFlags().sticky(); }
 
@@ -175,7 +189,6 @@ class RegExpObject : public NativeObject {
 #ifdef DEBUG
   static MOZ_MUST_USE bool dumpBytecode(JSContext* cx,
                                         Handle<RegExpObject*> regexp,
-                                        bool match_only,
                                         HandleLinearString input);
 #endif
 

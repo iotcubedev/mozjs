@@ -8,6 +8,11 @@ import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.annotation.WrapForJNI;
 import org.mozilla.gecko.util.ThreadUtils;
 
+/**
+ * This class represents a single <a href="https://developer.mozilla.org/en-US/docs/Web/API/Notification">Web Notification</a>.
+ * These can be received by connecting a {@link WebNotificationDelegate} to
+ * {@link GeckoRuntime} via {@link GeckoRuntime#setWebNotificationDelegate(WebNotificationDelegate)}.
+ */
 public class WebNotification {
 
     /**
@@ -69,11 +74,17 @@ public class WebNotification {
      */
     public final @NonNull boolean requireInteraction;
 
+    /**
+     * This is the URL of the page or Service Worker that generated the notification.
+     */
+    public final @NonNull String source;
+
     @WrapForJNI
     /* package */ WebNotification(@Nullable final String title, @NonNull final String tag,
                         @Nullable final String cookie, @Nullable final String text,
                         @Nullable final String imageUrl, @Nullable final String textDirection,
-                        @Nullable final String lang, @NonNull final boolean requireInteraction) {
+                        @Nullable final String lang, @NonNull final boolean requireInteraction,
+                        @NonNull final String source) {
         this.tag = tag;
         this.mCookie = cookie;
         this.title = title;
@@ -82,8 +93,14 @@ public class WebNotification {
         this.textDirection = textDirection;
         this.lang = lang;
         this.requireInteraction = requireInteraction;
+        this.source = source;
     }
 
+    /**
+     * This should be called when the user taps or clicks a notification. Note that this
+     * does not automatically dismiss the notification as far as Web Content is concerned.
+     * For that, see {@link #dismiss()}.
+     */
     @UiThread
     public void click() {
         ThreadUtils.assertOnUiThread();
@@ -91,6 +108,11 @@ public class WebNotification {
 
     }
 
+    /**
+     * This should be called when the app stops showing the notification. This is
+     * important, as there may be a limit to the number of active notifications each site
+     * can display.
+     */
     @UiThread
     public void dismiss() {
         ThreadUtils.assertOnUiThread();

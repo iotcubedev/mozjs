@@ -3,43 +3,73 @@
 
 "use strict";
 
-// Verify RDM closes synchronously when tabs change remoteness.
+// Verify Fission-enabled RDM remains open when tab changes remoteness.
+
+const { PromiseTestUtils } = ChromeUtils.import(
+  "resource://testing-common/PromiseTestUtils.jsm"
+);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Permission denied to access property "document" on cross-origin object/
+);
+
+const Types = require("devtools/client/responsive/types");
 
 const TEST_URL = "http://example.com/";
 
-add_task(async function() {
-  const tab = await addTab(TEST_URL);
+addRDMTask(
+  null,
+  async function() {
+    const tab = await addTab(TEST_URL);
 
-  const { ui } = await openRDM(tab);
-  const clientClosed = waitForClientClose(ui);
+    const { ui } = await openRDM(tab);
+    const { store } = ui.toolWindow;
+    await waitUntilState(
+      store,
+      state =>
+        state.viewports.length == 1 &&
+        state.devices.listState == Types.loadableState.LOADED
+    );
+    const clientClosed = waitForClientClose(ui);
 
-  closeRDM(tab, {
-    reason: "BeforeTabRemotenessChange",
-  });
+    closeRDM(tab, {
+      reason: "BeforeTabRemotenessChange",
+    });
 
-  // This flag is set at the end of `ResponsiveUI.destroy`.  If it is true
-  // without waiting for `closeRDM` above, then we must have closed
-  // synchronously.
-  is(ui.destroyed, true, "RDM closed synchronously");
+    // This flag is set at the end of `ResponsiveUI.destroy`.  If it is true
+    // without waiting for `closeRDM` above, then we must have closed
+    // synchronously.
+    is(ui.destroyed, true, "RDM closed synchronously");
 
-  await clientClosed;
-  await removeTab(tab);
-});
+    await clientClosed;
+    await removeTab(tab);
+  },
+  { onlyPrefAndTask: true }
+);
 
-add_task(async function() {
-  const tab = await addTab(TEST_URL);
+addRDMTask(
+  null,
+  async function() {
+    const tab = await addTab(TEST_URL);
 
-  const { ui } = await openRDM(tab);
-  const clientClosed = waitForClientClose(ui);
+    const { ui } = await openRDM(tab);
+    const { store } = ui.toolWindow;
+    await waitUntilState(
+      store,
+      state =>
+        state.viewports.length == 1 &&
+        state.devices.listState == Types.loadableState.LOADED
+    );
 
-  // Load URL that requires the main process, forcing a remoteness flip
-  await load(tab.linkedBrowser, "about:robots");
+    // Load URL that requires the main process, forcing a remoteness flip
+    await navigateToNewDomain("about:robots", ui);
 
-  // This flag is set at the end of `ResponsiveUI.destroy`.  If it is true without
-  // waiting for `closeRDM` itself and only removing the tab, then we must have closed
-  // synchronously in response to tab closing.
-  is(ui.destroyed, true, "RDM closed synchronously");
+    // Bug 1625501: RDM will remain open when the embedded browser UI is enabled.
+    is(ui.destroyed, false, "RDM is still open.");
 
-  await clientClosed;
-  await removeTab(tab);
-});
+    info("Close RDM");
+    await closeRDM(tab);
+
+    await removeTab(tab);
+  },
+  { onlyPrefAndTask: true }
+);

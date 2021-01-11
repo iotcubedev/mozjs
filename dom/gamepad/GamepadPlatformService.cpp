@@ -13,7 +13,6 @@
 
 #include "nsCOMPtr.h"
 #include "nsHashKeys.h"
-#include "nsIThread.h"
 
 using namespace mozilla::ipc;
 
@@ -93,6 +92,7 @@ uint32_t GamepadPlatformService::AddGamepad(
                  aHand, 0, aNumButtons, aNumAxes, aHaptics, aNumLightIndicator,
                  aNumTouchEvents);
 
+  mGamepadAdded.emplace(index, a);
   NotifyGamepadChange<GamepadAdded>(index, a);
   return index;
 }
@@ -104,6 +104,7 @@ void GamepadPlatformService::RemoveGamepad(uint32_t aIndex) {
   MOZ_ASSERT(!NS_IsMainThread());
   GamepadRemoved a;
   NotifyGamepadChange<GamepadRemoved>(aIndex, a);
+  mGamepadAdded.erase(aIndex);
 }
 
 void GamepadPlatformService::NewButtonEvent(uint32_t aIndex, uint32_t aButton,
@@ -208,6 +209,17 @@ void GamepadPlatformService::AddChannelParent(
   // We use mutex here to prevent race condition with monitor thread
   MutexAutoLock autoLock(mMutex);
   mChannelParents.AppendElement(aParent);
+
+  // For a new GamepadEventChannel, we have to send the exising GamepadAdded
+  // to it to make it can have the same amount of gamepads with others.
+  if (mChannelParents.Length() > 1) {
+    for (const auto& evt : mGamepadAdded) {
+      GamepadChangeEventBody body(evt.second);
+      GamepadChangeEvent e(evt.first, GamepadServiceType::Standard, body);
+      aParent->DispatchUpdateEvent(e);
+    }
+  }
+
   FlushPendingEvents();
 }
 
@@ -276,6 +288,7 @@ void GamepadPlatformService::MaybeShutdown() {
     if (isChannelParentEmpty) {
       kungFuDeathGrip = gGamepadPlatformServiceSingleton;
       gGamepadPlatformServiceSingleton = nullptr;
+      mGamepadAdded.clear();
     }
   }
 }

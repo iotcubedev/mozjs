@@ -18,9 +18,9 @@ function makeThreadCLient(resp) {
 
 function makeDependencies() {
   return {
-    debuggerClient: (null: any),
-    supportsWasm: true,
-    tabTarget: (null: any),
+    devToolsClient: (null: any),
+    currentTarget: (null: any),
+    targetList: (null: any),
   };
 }
 

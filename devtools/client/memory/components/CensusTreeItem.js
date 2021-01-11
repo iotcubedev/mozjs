@@ -10,10 +10,14 @@ const {
 } = require("devtools/client/shared/vendor/react");
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
-const { L10N, formatNumber, formatPercent } = require("../utils");
+const {
+  L10N,
+  formatNumber,
+  formatPercent,
+} = require("devtools/client/memory/utils");
 const Frame = createFactory(require("devtools/client/shared/components/Frame"));
-const { TREE_ROW_HEIGHT } = require("../constants");
-const models = require("../models");
+const { TREE_ROW_HEIGHT } = require("devtools/client/memory/constants");
+const models = require("devtools/client/memory/models");
 
 class CensusTreeItem extends Component {
   static get propTypes() {
@@ -47,11 +51,11 @@ class CensusTreeItem extends Component {
     );
   }
 
-  toLabel(name, linkToDebugger) {
+  toLabel(name, onViewSourceInDebugger) {
     if (isSavedFrame(name)) {
       return Frame({
         frame: name,
-        onClick: () => linkToDebugger(name),
+        onClick: onViewSourceInDebugger,
         showFunctionName: true,
         showHost: true,
       });
@@ -107,7 +111,7 @@ class CensusTreeItem extends Component {
     let pointer;
     if (inverted && depth > 0) {
       pointer = dom.span({ className: "children-pointer" }, "↖");
-    } else if (!inverted && item.children && item.children.length) {
+    } else if (!inverted && item.children?.length) {
       pointer = dom.span({ className: "children-pointer" }, "↘");
     }
 

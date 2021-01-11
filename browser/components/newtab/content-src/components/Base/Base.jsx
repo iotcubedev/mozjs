@@ -130,22 +130,21 @@ export class BaseContent extends React.PureComponent {
 
     const isDiscoveryStream =
       props.DiscoveryStream.config && props.DiscoveryStream.config.enabled;
-    let filteredSections = props.Sections;
+    let filteredSections = props.Sections.filter(
+      section => section.id !== "topstories"
+    );
 
-    // Filter out highlights for DS
-    if (isDiscoveryStream) {
-      filteredSections = filteredSections.filter(
-        section => section.id !== "highlights"
-      );
-    }
+    const pocketEnabled =
+      prefs["feeds.section.topstories"] && prefs["feeds.system.topstories"];
     const noSectionsEnabled =
       !prefs["feeds.topsites"] &&
+      !pocketEnabled &&
       filteredSections.filter(section => section.enabled).length === 0;
     const searchHandoffEnabled = prefs["improvesearch.handoffToAwesomebar"];
 
     const outerClassName = [
       "outer-wrapper",
-      isDiscoveryStream && "ds-outer-wrapper-search-alignment",
+      isDiscoveryStream && pocketEnabled && "ds-outer-wrapper-search-alignment",
       isDiscoveryStream && "ds-outer-wrapper-breakpoint-override",
       prefs.showSearch &&
         this.state.fixedSearch &&
@@ -172,13 +171,14 @@ export class BaseContent extends React.PureComponent {
               </div>
             )}
             <ASRouterUISurface
+              appUpdateChannel={this.props.Prefs.values.appUpdateChannel}
               fxaEndpoint={this.props.Prefs.values.fxa_endpoint}
               dispatch={this.props.dispatch}
             />
             <div className={`body-wrapper${initialized ? " on" : ""}`}>
               {isDiscoveryStream ? (
                 <ErrorBoundary className="borderless-error">
-                  <DiscoveryStreamBase />
+                  <DiscoveryStreamBase locale={props.App.locale} />
                 </ErrorBoundary>
               ) : (
                 <Sections />

@@ -7,9 +7,10 @@
 #define nsBaseChannel_h__
 
 #include "mozilla/net/NeckoTargetHolder.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/UniquePtr.h"
 #include "nsString.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsHashPropertyBag.h"
 #include "nsInputStreamPump.h"
@@ -64,9 +65,6 @@ class nsBaseChannel
   NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
   nsBaseChannel();
-
-  // This method must be called to initialize the basechannel instance.
-  nsresult Init() { return NS_OK; }
 
  protected:
   // -----------------------------------------------
@@ -297,9 +295,10 @@ class nsBaseChannel
   nsCOMPtr<nsIStreamListener> mListener;
   nsresult mStatus;
   uint32_t mContentDispositionHint;
-  nsAutoPtr<nsString> mContentDispositionFilename;
+  mozilla::UniquePtr<nsString> mContentDispositionFilename;
   int64_t mContentLength;
   bool mWasOpened;
+  bool mCanceled;
 
   friend class mozilla::net::PrivateBrowsingChannel<nsBaseChannel>;
 };

@@ -18,9 +18,8 @@ XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 XPCOMUtils.defineLazyModuleGetters(this, {
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
-  findAllCssSelectors: "resource://gre/modules/css-selector.js",
   SpellCheckHelper: "resource://gre/modules/InlineSpellChecker.jsm",
-  LoginManagerContent: "resource://gre/modules/LoginManagerContent.jsm",
+  LoginManagerChild: "resource://gre/modules/LoginManagerChild.jsm",
   WebNavigationFrames: "resource://gre/modules/WebNavigationFrames.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   InlineSpellCheckerContent:
@@ -224,6 +223,8 @@ class ContextMenuChild extends JSWindowActorChild {
         let ctxDraw = canvas.getContext("2d");
         ctxDraw.drawImage(video, 0, 0);
 
+        // Note: if changing the content type, don't forget to update
+        // consumers that also hardcode this content type.
         return Promise.resolve(canvas.toDataURL("image/jpeg", ""));
       }
 
@@ -523,7 +524,12 @@ class ContextMenuChild extends JSWindowActorChild {
 
     let defaultPrevented = aEvent.defaultPrevented;
 
-    if (!Services.prefs.getBoolPref("dom.event.contextmenu.enabled")) {
+    if (
+      // If the event is not from a chrome-privileged document, and if
+      // `dom.event.contextmenu.enabled` is false, force defaultPrevented=false.
+      !aEvent.composedTarget.nodePrincipal.isSystemPrincipal &&
+      !Services.prefs.getBoolPref("dom.event.contextmenu.enabled")
+    ) {
       let plugin = null;
 
       try {
@@ -560,10 +566,11 @@ class ContextMenuChild extends JSWindowActorChild {
       baseURI,
     } = doc;
     docLocation = docLocation && docLocation.spec;
-    let frameOuterWindowID = WebNavigationFrames.getFrameId(doc.defaultView);
-    let loginFillInfo = LoginManagerContent.getFieldContext(
-      aEvent.composedTarget
-    );
+    let frameID = WebNavigationFrames.getFrameId(doc.defaultView);
+    let frameBrowsingContextID = doc.defaultView.docShell.browsingContext.id;
+    let loginFillInfo = LoginManagerChild.forWindow(
+      doc.defaultView
+    ).getFieldContext(aEvent.composedTarget);
 
     // The same-origin check will be done in nsContextMenu.openLinkInTab.
     let parentAllowsMixedContent = !!this.docShell.mixedContentChannel;
@@ -609,7 +616,6 @@ class ContextMenuChild extends JSWindowActorChild {
     let selectionInfo = BrowserUtils.getSelectionDetails(this.contentWindow);
     let loadContext = this.docShell.QueryInterface(Ci.nsILoadContext);
     let userContextId = loadContext.originAttributes.userContextId;
-    let popupNodeSelectors = findAllCssSelectors(aEvent.composedTarget);
 
     this._setContext(aEvent);
     let context = this.context;
@@ -623,7 +629,7 @@ class ContextMenuChild extends JSWindowActorChild {
     let referrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
       Ci.nsIReferrerInfo
     );
-    referrerInfo.initWithNode(aEvent.composedTarget);
+    referrerInfo.initWithElement(aEvent.composedTarget);
     referrerInfo = E10SUtils.serializeReferrerInfo(referrerInfo);
 
     // In the case "onLink" we may have to send link referrerInfo to use in
@@ -633,7 +639,7 @@ class ContextMenuChild extends JSWindowActorChild {
       linkReferrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
         Ci.nsIReferrerInfo
       );
-      linkReferrerInfo.initWithNode(context.link);
+      linkReferrerInfo.initWithElement(context.link);
     }
 
     let target = context.target;
@@ -677,8 +683,8 @@ class ContextMenuChild extends JSWindowActorChild {
       userContextId,
       customMenuItems,
       contentDisposition,
-      frameOuterWindowID,
-      popupNodeSelectors,
+      frameID,
+      frameBrowsingContextID,
       disableSetDesktopBackground,
       parentAllowsMixedContent,
     };
@@ -702,16 +708,10 @@ class ContextMenuChild extends JSWindowActorChild {
       "on-prepare-contextmenu"
     );
 
-    // For now, JS Window Actors don't serialize Principals automatically, so we
-    // have to do it ourselves. See bug 1557852.
-    data.principal = E10SUtils.serializePrincipal(doc.nodePrincipal);
-    data.context.principal = E10SUtils.serializePrincipal(context.principal);
-    data.storagePrincipal = E10SUtils.serializePrincipal(
-      doc.effectiveStoragePrincipal
-    );
-    data.context.storagePrincipal = E10SUtils.serializePrincipal(
-      context.storagePrincipal
-    );
+    data.principal = doc.nodePrincipal;
+    data.context.principal = context.principal;
+    data.storagePrincipal = doc.effectiveStoragePrincipal;
+    data.context.storagePrincipal = context.storagePrincipal;
 
     // In the event that the content is running in the parent process, we don't
     // actually want the contextmenu events to reach the parent - we'll dispatch
@@ -856,6 +856,7 @@ class ContextMenuChild extends JSWindowActorChild {
     context.hasMultipleBGImages = false;
     context.isDesignMode = false;
     context.inFrame = false;
+    context.inPDFViewer = false;
     context.inSrcdocFrame = false;
     context.inSyntheticDoc = false;
     context.inTabBrowser = true;
@@ -874,6 +875,7 @@ class ContextMenuChild extends JSWindowActorChild {
     context.onCTPPlugin = false;
     context.onDRMMedia = false;
     context.onPiPVideo = false;
+    context.onMediaStreamVideo = false;
     context.onEditable = false;
     context.onImage = false;
     context.onKeywordField = false;
@@ -898,9 +900,19 @@ class ContextMenuChild extends JSWindowActorChild {
       context.target.ownerDocument.effectiveStoragePrincipal;
     context.csp = E10SUtils.serializeCSP(context.target.ownerDocument.csp);
 
-    context.frameOuterWindowID = WebNavigationFrames.getFrameId(
+    context.frameID = WebNavigationFrames.getFrameId(
       context.target.ownerGlobal
     );
+
+    context.frameOuterWindowID =
+      context.target.ownerGlobal.windowUtils.outerWindowID;
+
+    context.frameBrowsingContextID =
+      context.target.ownerGlobal.browsingContext.id;
+
+    // Check if we are in the PDF Viewer.
+    context.inPDFViewer =
+      context.target.ownerDocument.nodePrincipal.origin == "resource://pdf.js";
 
     // Check if we are in a synthetic document (stand alone image, video, etc.).
     context.inSyntheticDoc = context.target.ownerDocument.mozSyntheticDocument;
@@ -966,6 +978,13 @@ class ContextMenuChild extends JSWindowActorChild {
         height: context.target.height,
         imageText: context.target.title || context.target.alt,
       };
+      const { SVGAnimatedLength } = context.target.ownerGlobal;
+      if (context.imageInfo.height instanceof SVGAnimatedLength) {
+        context.imageInfo.height = context.imageInfo.height.animVal.value;
+      }
+      if (context.imageInfo.width instanceof SVGAnimatedLength) {
+        context.imageInfo.width = context.imageInfo.width.animVal.value;
+      }
 
       const request = context.target.getRequest(
         Ci.nsIImageLoadingContent.CURRENT_REQUEST
@@ -987,9 +1006,20 @@ class ContextMenuChild extends JSWindowActorChild {
       // currentRequestFinalURI.  We should use that as the URL for purposes of
       // deciding on the filename, if it is present. It might not be present
       // if images are blocked.
-      context.mediaURL = (
-        context.target.currentRequestFinalURI || context.target.currentURI
-      ).spec;
+      //
+      // It is important to check both the final and the current URI, as they
+      // could be different blob URIs, see bug 1625786.
+      context.mediaURL = (() => {
+        let finalURI = context.target.currentRequestFinalURI?.spec;
+        if (finalURI && this._isMediaURLReusable(finalURI)) {
+          return finalURI;
+        }
+        let currentURI = context.target.currentURI?.spec;
+        if (currentURI && this._isMediaURLReusable(currentURI)) {
+          return currentURI;
+        }
+        return "";
+      })();
 
       const descURL = context.target.getAttribute("longdesc");
 
@@ -1015,6 +1045,8 @@ class ContextMenuChild extends JSWindowActorChild {
       if (context.target.isCloningElementVisually) {
         context.onPiPVideo = true;
       }
+
+      context.onMediaStreamVideo = !!context.target.srcObject;
 
       // Firefox always creates a HTMLVideoElement when loading an ogg file
       // directly. If the media is actually audio, be smarter and provide a
@@ -1138,7 +1170,7 @@ class ContextMenuChild extends JSWindowActorChild {
           try {
             if (elem.download) {
               // Ignore download attribute on cross-origin links
-              context.principal.checkMayLoad(context.linkURI, false, true);
+              context.principal.checkMayLoad(context.linkURI, true);
               context.linkDownload = elem.download;
             }
           } catch (ex) {}
@@ -1197,5 +1229,21 @@ class ContextMenuChild extends JSWindowActorChild {
         context.shouldInitInlineSpellCheckerUIWithChildren = true;
       }
     }
+  }
+
+  _destructionObservers = new Set();
+  registerDestructionObserver(obj) {
+    this._destructionObservers.add(obj);
+  }
+
+  unregisterDestructionObserver(obj) {
+    this._destructionObservers.delete(obj);
+  }
+
+  didDestroy() {
+    for (let obs of this._destructionObservers) {
+      obs.actorDestroyed(this);
+    }
+    this._destructionObservers = null;
   }
 }

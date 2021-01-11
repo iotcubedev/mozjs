@@ -276,6 +276,17 @@ typedef struct inheritanceStr inheritance;
 
 /************************************************************************/
 
+/* SSL Session Cache has a smaller set of functions to initialize than 
+ * ssl does. some ssl_functions can't be initialized before NSS has been
+ * initialized, and the cache may be configured before NSS is initialized
+ * so thus the special init function */
+static SECStatus
+ssl_InitSessionCache()
+{
+    /* currently only one function, which is itself idempotent */
+    return ssl_InitializePRErrorTable();
+}
+
 /* This is used to set locking times for the cache.  It is not used to set the
  * PRTime attributes of sessions, which are driven by ss->now(). */
 static PRUint32
@@ -692,7 +703,7 @@ ServerSessionIDLookup(PRTime sslNow, const PRIPv6Addr *addr,
                 /* what the ??.  Didn't get the cert cache lock.
                 ** Don't invalidate the SID cache entry, but don't find it.
                 */
-                PORT_Assert(!("Didn't get cert Cache Lock!"));
+                PORT_AssertNotReached("Didn't get cert Cache Lock!");
                 psce = 0;
                 pcce = 0;
             }
@@ -719,7 +730,7 @@ ServerSessionIDLookup(PRTime sslNow, const PRIPv6Addr *addr,
                 /* what the ??.  Didn't get the cert cache lock.
                 ** Don't invalidate the SID cache entry, but don't find it.
                 */
-                PORT_Assert(!("Didn't get name Cache Lock!"));
+                PORT_AssertNotReached("Didn't get name Cache Lock!");
                 psce = 0;
                 psnce = 0;
             }
@@ -1165,7 +1176,7 @@ ssl_ConfigServerSessionIDCacheInstanceWithOpt(cacheDesc *cache,
 {
     SECStatus rv;
 
-    rv = ssl_Init();
+    rv = ssl_InitSessionCache();
     if (rv != SECSuccess) {
         return rv;
     }
@@ -1341,7 +1352,7 @@ SSL_InheritMPServerSIDCacheInstance(cacheDesc *cache, const char *envString)
     int locks_initialized = 0;
     int locks_to_initialize = 0;
 #endif
-    SECStatus status = ssl_Init();
+    SECStatus status = ssl_InitSessionCache();
 
     if (status != SECSuccess) {
         return status;
@@ -1693,30 +1704,34 @@ ssl_SetSelfEncryptKeyPair(SECKEYPublicKey *pubKey,
                           SECKEYPrivateKey *privKey,
                           PRBool explicitConfig)
 {
-    SECKEYPublicKey *pubKeyCopy;
-    SECKEYPrivateKey *privKeyCopy;
+    SECKEYPublicKey *pubKeyCopy, *oldPubKey;
+    SECKEYPrivateKey *privKeyCopy, *oldPrivKey;
 
     PORT_Assert(ssl_self_encrypt_key_pair.lock);
-
     pubKeyCopy = SECKEY_CopyPublicKey(pubKey);
-    if (!pubKeyCopy) {
-        PORT_SetError(SEC_ERROR_NO_MEMORY);
-        return SECFailure;
-    }
-
     privKeyCopy = SECKEY_CopyPrivateKey(privKey);
-    if (!privKeyCopy) {
+
+    if (!pubKeyCopy || !privKeyCopy) {
         SECKEY_DestroyPublicKey(pubKeyCopy);
+        SECKEY_DestroyPrivateKey(privKeyCopy);
         PORT_SetError(SEC_ERROR_NO_MEMORY);
         return SECFailure;
     }
 
     PR_RWLock_Wlock(ssl_self_encrypt_key_pair.lock);
-    ssl_CleanupSelfEncryptKeyPair();
+    oldPubKey = ssl_self_encrypt_key_pair.pubKey;
+    oldPrivKey = ssl_self_encrypt_key_pair.privKey;
     ssl_self_encrypt_key_pair.pubKey = pubKeyCopy;
     ssl_self_encrypt_key_pair.privKey = privKeyCopy;
     ssl_self_encrypt_key_pair.configured = explicitConfig;
     PR_RWLock_Unlock(ssl_self_encrypt_key_pair.lock);
+
+    if (oldPubKey) {
+        PORT_Assert(oldPrivKey);
+        SECKEY_DestroyPublicKey(oldPubKey);
+        SECKEY_DestroyPrivateKey(oldPrivKey);
+    }
+
     return SECSuccess;
 }
 
@@ -1775,16 +1790,33 @@ ssl_GetSelfEncryptKeyPair(SECKEYPublicKey **pubKey,
         return SECFailure;
     }
 
+    SECKEYPublicKey *pubKeyCopy = NULL;
+    SECKEYPrivateKey *privKeyCopy = NULL;
+    PRBool noKey = PR_FALSE;
+
     PR_RWLock_Rlock(ssl_self_encrypt_key_pair.lock);
-    *pubKey = ssl_self_encrypt_key_pair.pubKey;
-    *privKey = ssl_self_encrypt_key_pair.privKey;
+    if (ssl_self_encrypt_key_pair.pubKey && ssl_self_encrypt_key_pair.privKey) {
+        pubKeyCopy = SECKEY_CopyPublicKey(ssl_self_encrypt_key_pair.pubKey);
+        privKeyCopy = SECKEY_CopyPrivateKey(ssl_self_encrypt_key_pair.privKey);
+    } else {
+        noKey = PR_TRUE;
+    }
     PR_RWLock_Unlock(ssl_self_encrypt_key_pair.lock);
-    if (!*pubKey) {
-        PORT_Assert(!*privKey);
+
+    if (noKey) {
         PORT_SetError(SEC_ERROR_LIBRARY_FAILURE);
         return SECFailure;
     }
-    PORT_Assert(*privKey);
+
+    if (!pubKeyCopy || !privKeyCopy) {
+        SECKEY_DestroyPublicKey(pubKeyCopy);
+        SECKEY_DestroyPrivateKey(privKeyCopy);
+        PORT_SetError(SEC_ERROR_NO_MEMORY);
+        return SECFailure;
+    }
+
+    *pubKey = pubKeyCopy;
+    *privKey = privKeyCopy;
     return SECSuccess;
 }
 
@@ -2053,35 +2085,43 @@ static SECStatus
 ssl_GenerateSelfEncryptKeys(void *pwArg, PRUint8 *keyName,
                             PK11SymKey **encKey, PK11SymKey **macKey)
 {
-    SECKEYPrivateKey *svrPrivKey;
-    SECKEYPublicKey *svrPubKey;
+    SECKEYPrivateKey *svrPrivKey = NULL;
+    SECKEYPublicKey *svrPubKey = NULL;
     PRUint32 now;
-    SECStatus rv;
     cacheDesc *cache = &globalCache;
 
-    rv = ssl_GetSelfEncryptKeyPair(&svrPubKey, &svrPrivKey);
+    SECStatus rv = ssl_GetSelfEncryptKeyPair(&svrPubKey, &svrPrivKey);
     if (rv != SECSuccess || !cache->cacheMem) {
         /* No key pair for wrapping, or the cache is uninitialized. Generate
          * keys and return them without caching. */
-        return GenerateSelfEncryptKeys(pwArg, keyName, encKey, macKey);
-    }
-
-    now = LockSidCacheLock(cache->keyCacheLock, 0);
-    if (!now)
-        return SECFailure;
-
-    if (*(cache->ticketKeysValid)) {
-        rv = UnwrapCachedSelfEncryptKeys(svrPrivKey, keyName, encKey, macKey);
+        rv = GenerateSelfEncryptKeys(pwArg, keyName, encKey, macKey);
     } else {
-        /* Keys do not exist, create them. */
-        rv = GenerateAndWrapSelfEncryptKeys(svrPubKey, pwArg, keyName,
-                                            encKey, macKey);
-        if (rv == SECSuccess) {
-            *(cache->ticketKeysValid) = 1;
+        now = LockSidCacheLock(cache->keyCacheLock, 0);
+        if (!now) {
+            goto loser;
         }
+
+        if (*(cache->ticketKeysValid)) {
+            rv = UnwrapCachedSelfEncryptKeys(svrPrivKey, keyName, encKey, macKey);
+        } else {
+            /* Keys do not exist, create them. */
+            rv = GenerateAndWrapSelfEncryptKeys(svrPubKey, pwArg, keyName,
+                                                encKey, macKey);
+            if (rv == SECSuccess) {
+                *(cache->ticketKeysValid) = 1;
+            }
+        }
+        UnlockSidCacheLock(cache->keyCacheLock);
     }
-    UnlockSidCacheLock(cache->keyCacheLock);
+    SECKEY_DestroyPublicKey(svrPubKey);
+    SECKEY_DestroyPrivateKey(svrPrivKey);
     return rv;
+
+loser:
+    UnlockSidCacheLock(cache->keyCacheLock);
+    SECKEY_DestroyPublicKey(svrPubKey);
+    SECKEY_DestroyPrivateKey(svrPrivKey);
+    return SECFailure;
 }
 
 /* The caller passes in the new value it wants

@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsContentUtils.h"
+#include "nsCRT.h"
 #include "ViewportMetaData.h"
 
 using namespace mozilla;
@@ -55,6 +57,8 @@ static void ProcessViewportToken(ViewportMetaData& aData,
     aData.mMaximumScale.Assign(value);
   } else if (key_atom == nsGkAtoms::user_scalable) {
     aData.mUserScalable.Assign(value);
+  } else if (key_atom == nsGkAtoms::viewport_fit) {
+    aData.mViewportFit.Assign(value);
   }
 }
 

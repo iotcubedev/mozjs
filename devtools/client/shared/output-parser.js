@@ -16,12 +16,19 @@ const STYLE_INSPECTOR_PROPERTIES =
 const { LocalizationHelper } = require("devtools/shared/l10n");
 const STYLE_INSPECTOR_L10N = new LocalizationHelper(STYLE_INSPECTOR_PROPERTIES);
 
+const CONIC_GRADIENT_ENABLED = Services.prefs.getBoolPref(
+  "layout.css.conic-gradient.enabled"
+);
+
 // Functions that accept an angle argument.
 const ANGLE_TAKING_FUNCTIONS = [
   "linear-gradient",
   "-moz-linear-gradient",
   "repeating-linear-gradient",
   "-moz-repeating-linear-gradient",
+  ...(CONIC_GRADIENT_ENABLED
+    ? ["conic-gradient", "repeating-conic-gradient"]
+    : []),
   "rotate",
   "rotateX",
   "rotateY",
@@ -50,6 +57,9 @@ const COLOR_TAKING_FUNCTIONS = [
   "-moz-radial-gradient",
   "repeating-radial-gradient",
   "-moz-repeating-radial-gradient",
+  ...(CONIC_GRADIENT_ENABLED
+    ? ["conic-gradient", "repeating-conic-gradient"]
+    : []),
   "drop-shadow",
 ];
 // Functions that accept a shape argument.
@@ -58,9 +68,6 @@ const BASIC_SHAPE_FUNCTIONS = ["polygon", "circle", "ellipse", "inset"];
 const BACKDROP_FILTER_ENABLED = Services.prefs.getBoolPref(
   "layout.css.backdrop-filter.enabled"
 );
-const SHARED_SWATCH_CLASS = "ruleview-swatch";
-const COLOR_SWATCH_CLASS = "ruleview-colorswatch";
-
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
 /**
@@ -131,7 +138,9 @@ OutputParser.prototype = {
     options.expectShape = name === "clip-path" || name === "shape-outside";
     options.expectFont = name === "font-family";
     options.supportsColor =
-      this.supportsType(name, "color") || this.supportsType(name, "gradient");
+      this.supportsType(name, "color") ||
+      this.supportsType(name, "gradient") ||
+      (name.startsWith("--") && colorUtils.isValidCSSColor(value));
 
     // The filter property is special in that we want to show the
     // swatch even if the value is invalid, because this way the user
@@ -199,16 +208,11 @@ OutputParser.prototype = {
       } else if (
         token.tokenType === "function" &&
         token.text === "var" &&
-        options.isVariableInUse
+        options.getVariableValue
       ) {
         sawVariable = true;
-        const variableNode = this._parseVariable(
-          token,
-          text,
-          tokenStream,
-          options
-        );
-        functionData.push(variableNode);
+        const { node } = this._parseVariable(token, text, tokenStream, options);
+        functionData.push(node);
       } else if (token.tokenType === "function") {
         ++depth;
       }
@@ -216,7 +220,7 @@ OutputParser.prototype = {
       if (
         token.tokenType !== "function" ||
         token.text !== "var" ||
-        !options.isVariableInUse
+        !options.getVariableValue
       ) {
         functionData.push(text.substring(token.startOffset, token.endOffset));
       }
@@ -243,10 +247,11 @@ OutputParser.prototype = {
    * @param  {Object} options
    *         The options object in use; @see _mergeOptions.
    * @return {Object}
-   *         A node for the variable, with the appropriate text and
-   *         title. Eg. a span with "var(--var1)" as the textContent
-   *         and a title for --var1 like "--var1 = 10" or
-   *         "--var1 is not set".
+   *         - node: A node for the variable, with the appropriate text and
+   *           title. Eg. a span with "var(--var1)" as the textContent
+   *           and a title for --var1 like "--var1 = 10" or
+   *           "--var1 is not set".
+   *         - value: The value for the variable.
    */
   _parseVariable: function(initialToken, text, tokenStream, options) {
     // Handle the "var(".
@@ -274,7 +279,7 @@ OutputParser.prototype = {
 
     // Get the variable value if it is in use.
     if (tokens && tokens.length === 1) {
-      varValue = options.isVariableInUse(tokens[0].text);
+      varValue = options.getVariableValue(tokens[0].text);
     }
 
     // Get the variable name.
@@ -321,10 +326,9 @@ OutputParser.prototype = {
     }
     variableNode.appendChild(this.doc.createTextNode(")"));
 
-    return variableNode;
+    return { node: variableNode, value: varValue };
   },
 
-  /* eslint-disable complexity */
   /**
    * The workhorse for @see _parse. This parses some CSS text,
    * stopping at EOF; or optionally when an umatched close paren is
@@ -341,6 +345,7 @@ OutputParser.prototype = {
    * @return {DocumentFragment}
    *         A document fragment.
    */
+  // eslint-disable-next-line complexity
   _doParse: function(text, options, tokenStream, stopAtCloseParen) {
     let parenDepth = stopAtCloseParen ? 1 : 0;
     let outerMostFunctionTakesColor = false;
@@ -397,14 +402,25 @@ OutputParser.prototype = {
               );
             }
             ++parenDepth;
-          } else if (token.text === "var" && options.isVariableInUse) {
-            const variableNode = this._parseVariable(
+          } else if (token.text === "var" && options.getVariableValue) {
+            const { node: variableNode, value } = this._parseVariable(
               token,
               text,
               tokenStream,
               options
             );
-            this.parsed.push(variableNode);
+            if (
+              value &&
+              colorOK() &&
+              colorUtils.isValidCSSColor(value, this.cssColor4)
+            ) {
+              this._appendColor(value, {
+                ...options,
+                variableContainer: variableNode,
+              });
+            } else {
+              this.parsed.push(variableNode);
+            }
           } else {
             const { functionData, sawVariable } = this._parseMatchingParens(
               text,
@@ -592,7 +608,6 @@ OutputParser.prototype = {
 
     return result;
   },
-  /* eslint-enable complexity */
 
   /**
    * Parse a string.
@@ -664,6 +679,8 @@ OutputParser.prototype = {
     if (options.bezierSwatchClass) {
       const swatch = this._createNode("span", {
         class: options.bezierSwatchClass,
+        tabindex: "0",
+        role: "button",
       });
       container.appendChild(swatch);
     }
@@ -738,6 +755,8 @@ OutputParser.prototype = {
 
     const toggle = this._createNode("span", {
       class: options.shapeSwatchClass,
+      tabindex: "0",
+      role: "button",
     });
 
     for (const { prefix, coordParser } of shapeTypes) {
@@ -773,7 +792,7 @@ OutputParser.prototype = {
    *        The node to which spans containing points are added.
    * @returns {Node} The container to which spans have been added.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   _addPolygonPointNodes: function(coords, container) {
     const tokenStream = getCSSLexer(coords);
     let token = tokenStream.nextToken();
@@ -912,7 +931,6 @@ OutputParser.prototype = {
     }
     return container;
   },
-  /* eslint-enable complexity */
 
   /**
    * Parse the given circle coordinates and populate the given container appropriately
@@ -924,7 +942,7 @@ OutputParser.prototype = {
    *        The node to which the definition is added.
    * @returns {Node} The container to which the definition has been added.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   _addCirclePointNodes: function(coords, container) {
     const tokenStream = getCSSLexer(coords);
     let token = tokenStream.nextToken();
@@ -1074,7 +1092,6 @@ OutputParser.prototype = {
     }
     return container;
   },
-  /* eslint-enable complexity */
 
   /**
    * Parse the given ellipse coordinates and populate the given container appropriately
@@ -1086,7 +1103,7 @@ OutputParser.prototype = {
    *        The node to which the definition is added.
    * @returns {Node} The container to which the definition has been added.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   _addEllipsePointNodes: function(coords, container) {
     const tokenStream = getCSSLexer(coords);
     let token = tokenStream.nextToken();
@@ -1246,7 +1263,6 @@ OutputParser.prototype = {
     }
     return container;
   },
-  /* eslint-enable complexity */
 
   /**
    * Parse the given inset coordinates and populate the given container appropriately.
@@ -1257,7 +1273,7 @@ OutputParser.prototype = {
    *        The node to which the definition is added.
    * @returns {Node} The container to which the definition has been added.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   _addInsetPointNodes: function(coords, container) {
     const insetPoints = ["top", "right", "bottom", "left"];
     const tokenStream = getCSSLexer(coords);
@@ -1392,7 +1408,6 @@ OutputParser.prototype = {
 
     return container;
   },
-  /* eslint-enable complexity */
 
   /**
    * Append a angle value to the output
@@ -1412,6 +1427,8 @@ OutputParser.prototype = {
     if (options.angleSwatchClass) {
       const swatch = this._createNode("span", {
         class: options.angleSwatchClass,
+        tabindex: "0",
+        role: "button",
       });
       this.angleSwatches.set(swatch, angleObj);
       swatch.addEventListener("mousedown", this._onAngleSwatchMouseDown);
@@ -1485,19 +1502,25 @@ OutputParser.prototype = {
       });
 
       if (options.colorSwatchClass) {
-        const swatch = this._createNode(
-          options.colorSwatchClass ===
-            `${SHARED_SWATCH_CLASS} ${COLOR_SWATCH_CLASS}`
-            ? "button"
-            : "span",
-          {
-            class: options.colorSwatchClass,
-            style: "background-color:" + color,
-          }
-        );
+        let attributes = {
+          class: options.colorSwatchClass,
+          style: "background-color:" + color,
+        };
+
+        // Color swatches next to values trigger the color editor everywhere aside from
+        // the Computed panel where values are read-only.
+        if (!options.colorSwatchClass.startsWith("computed-")) {
+          attributes = { ...attributes, tabindex: "0", role: "button" };
+        }
+
+        // The swatch is a <span> instead of a <button> intentionally. See Bug 1597125.
+        // It is made keyboard accessible via `tabindex` and has keydown handlers
+        // attached for pressing SPACE and RETURN in SwatchBasedEditorTooltip.js
+        const swatch = this._createNode("span", attributes);
         this.colorSwatches.set(swatch, colorObj);
         swatch.addEventListener("mousedown", this._onColorSwatchMouseDown);
         EventEmitter.decorate(swatch);
+
         container.appendChild(swatch);
       }
 
@@ -1511,15 +1534,27 @@ OutputParser.prototype = {
       color = colorObj.toString();
       container.dataset.color = color;
 
-      const value = this._createNode(
-        "span",
-        {
-          class: options.colorClass,
-        },
-        color
-      );
+      // Next we create the markup to show the value of the property.
+      if (options.variableContainer) {
+        // If we are creating a color swatch for a CSS variable we simply reuse
+        // the markup created for the variableContainer.
+        if (options.colorClass) {
+          options.variableContainer.classList.add(options.colorClass);
+        }
+        container.appendChild(options.variableContainer);
+      } else {
+        // Otherwise we create a new element with the `color` as textContent.
+        const value = this._createNode(
+          "span",
+          {
+            class: options.colorClass,
+          },
+          color
+        );
 
-      container.appendChild(value);
+        container.appendChild(value);
+      }
+
       this.parsed.push(container);
     } else {
       this._appendTextNode(color);
@@ -1547,6 +1582,8 @@ OutputParser.prototype = {
     if (options.filterSwatchClass) {
       const swatch = this._createNode("span", {
         class: options.filterSwatchClass,
+        tabindex: "0",
+        role: "button",
       });
       container.appendChild(swatch);
     }
@@ -1573,6 +1610,7 @@ OutputParser.prototype = {
     const val = color.nextColorUnit();
 
     swatch.nextElementSibling.textContent = val;
+    swatch.parentNode.dataset.color = val;
     swatch.emit("unit-change", val);
   },
 
@@ -1839,7 +1877,7 @@ OutputParser.prototype = {
    *           - fontFamilyClass: ""    // The class to be used for font families.
    *           - baseURI: undefined     // A string used to resolve
    *                                    // relative links.
-   *           - isVariableInUse        // A function taking a single
+   *           - getVariableValue       // A function taking a single
    *                                    // argument, the name of a variable.
    *                                    // This should return the variable's
    *                                    // value, if it is in use; or null.
@@ -1868,7 +1906,7 @@ OutputParser.prototype = {
       urlClass: "",
       fontFamilyClass: "",
       baseURI: undefined,
-      isVariableInUse: null,
+      getVariableValue: null,
       unmatchedVariableClass: null,
     };
 

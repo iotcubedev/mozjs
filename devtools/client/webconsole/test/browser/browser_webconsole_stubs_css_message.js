@@ -5,71 +5,89 @@
 
 const {
   STUBS_UPDATE_ENV,
-  formatPacket,
-  formatStub,
-  formatFile,
-  getStubFilePath,
-} = require("devtools/client/webconsole/test/browser/stub-generator-helpers");
-const { prepareMessage } = require("devtools/client/webconsole/utils/messages");
+  createResourceWatcherForTab,
+  getCleanedPacket,
+  getStubFile,
+  writeStubsToFile,
+} = require(`${CHROME_URL_ROOT}stub-generator-helpers`);
 
 const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/test/browser/stub-generators/test-css-message.html";
+const STUB_FILE = "cssMessage.js";
 
 add_task(async function() {
   const isStubsUpdate = env.get(STUBS_UPDATE_ENV) == "true";
-  const filePath = getStubFilePath("cssMessage.js", env);
-  info(`${isStubsUpdate ? "Update" : "Check"} stubs at ${filePath}`);
+  info(`${isStubsUpdate ? "Update" : "Check"} ${STUB_FILE}`);
 
   const generatedStubs = await generateCssMessageStubs();
 
   if (isStubsUpdate) {
-    await OS.File.writeAtomic(filePath, generatedStubs);
-    ok(true, `${filePath} was successfully updated`);
+    await writeStubsToFile(env, STUB_FILE, generatedStubs);
+    ok(true, `${STUB_FILE} was updated`);
     return;
   }
 
-  const repoStubFileContent = await OS.File.read(filePath, {
-    encoding: "utf-8",
-  });
-  is(generatedStubs, repoStubFileContent, "stubs file is up to date");
+  const existingStubs = getStubFile(STUB_FILE);
+  const FAILURE_MSG =
+    "The cssMessage stubs file needs to be updated by running `" +
+    `mach test ${getCurrentTestFilePath()} --headless --setenv WEBCONSOLE_STUBS_UPDATE=true` +
+    "`";
 
-  if (generatedStubs != repoStubFileContent) {
-    ok(
-      false,
-      "The cssMessage stubs file needs to be updated by running " +
-        "`mach test devtools/client/webconsole/test/browser/" +
-        "browser_webconsole_stubs_css_message.js --headless " +
-        "--setenv WEBCONSOLE_STUBS_UPDATE=true`"
+  if (generatedStubs.size !== existingStubs.stubPackets.size) {
+    ok(false, FAILURE_MSG);
+    return;
+  }
+
+  let failed = false;
+  for (const [key, packet] of generatedStubs) {
+    const packetStr = JSON.stringify(packet, null, 2);
+    const existingPacketStr = JSON.stringify(
+      existingStubs.stubPackets.get(key),
+      null,
+      2
     );
+    is(packetStr, existingPacketStr, `"${key}" packet has expected value`);
+    failed = failed || packetStr !== existingPacketStr;
+  }
+
+  if (failed) {
+    ok(false, FAILURE_MSG);
+  } else {
+    ok(true, "Stubs are up to date");
   }
 });
 
 async function generateCssMessageStubs() {
-  const stubs = {
-    preparedMessages: [],
-    packets: [],
+  const stubs = new Map();
+
+  const tab = await addTab(TEST_URI);
+  const resourceWatcher = await createResourceWatcherForTab(tab);
+
+  // The resource-watcher only supports a single call to watch/unwatch per
+  // instance, so we attach a unique watch callback, which will forward the
+  // resource to `handleErrorMessage`, dynamically updated for each command.
+  let handleCSSMessage = function() {};
+
+  const onCSSMessageAvailable = ({ resource }) => {
+    handleCSSMessage(resource);
   };
 
-  const toolbox = await openNewTabAndToolbox(TEST_URI, "webconsole");
+  await resourceWatcher.watchResources([resourceWatcher.TYPES.CSS_MESSAGE], {
+    onAvailable: onCSSMessageAvailable,
+  });
 
   for (const code of getCommands()) {
     const received = new Promise(resolve => {
-      /* CSS errors are considered as pageError on the server */
-      toolbox.target.activeConsole.on("pageError", function onPacket(packet) {
-        toolbox.target.activeConsole.off("pageError", onPacket);
-        info(
-          "Received css message: pageError " +
-            JSON.stringify(packet, null, "\t")
-        );
-
-        const message = prepareMessage(packet, { getNextId: () => 1 });
-        stubs.packets.push(formatPacket(message.messageText, packet));
-        stubs.preparedMessages.push(formatStub(message.messageText, packet));
+      handleCSSMessage = function(packet) {
+        const key = packet.pageError.errorMessage;
+        stubs.set(key, getCleanedPacket(key, packet));
         resolve();
-      });
+      };
     });
 
-    await ContentTask.spawn(gBrowser.selectedBrowser, code, function(subCode) {
+    await SpecialPowers.spawn(gBrowser.selectedBrowser, [code], function(
+      subCode
+    ) {
       content.docShell.cssErrorReportingEnabled = true;
       const style = content.document.createElement("style");
       style.append(content.document.createTextNode(subCode));
@@ -79,8 +97,12 @@ async function generateCssMessageStubs() {
     await received;
   }
 
-  await closeTabAndToolbox();
-  return formatFile(stubs, "ConsoleMessage");
+  resourceWatcher.unwatchResources([resourceWatcher.TYPES.CSS_MESSAGE], {
+    onAvailable: onCSSMessageAvailable,
+  });
+
+  await closeTabAndToolbox().catch(() => {});
+  return stubs;
 }
 
 function getCommands() {

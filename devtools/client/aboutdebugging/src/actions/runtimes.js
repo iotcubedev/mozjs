@@ -6,19 +6,21 @@
 
 const Services = require("Services");
 
-const Actions = require("./index");
+const Actions = require("devtools/client/aboutdebugging/src/actions/index");
 
 const {
   getAllRuntimes,
   getCurrentRuntime,
   findRuntimeById,
-} = require("../modules/runtimes-state-helper");
+} = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
 
-const { l10n } = require("../modules/l10n");
-const { createClientForRuntime } = require("../modules/runtime-client-factory");
+const { l10n } = require("devtools/client/aboutdebugging/src/modules/l10n");
+const {
+  createClientForRuntime,
+} = require("devtools/client/aboutdebugging/src/modules/runtime-client-factory");
 const {
   isSupportedDebugTargetPane,
-} = require("../modules/debug-target-support");
+} = require("devtools/client/aboutdebugging/src/modules/debug-target-support");
 
 const {
   remoteClientManager,
@@ -45,13 +47,10 @@ const {
   UPDATE_CONNECTION_PROMPT_SETTING_FAILURE,
   UPDATE_CONNECTION_PROMPT_SETTING_START,
   UPDATE_CONNECTION_PROMPT_SETTING_SUCCESS,
-  UPDATE_RUNTIME_CANDEBUGSW_FAILURE,
-  UPDATE_RUNTIME_CANDEBUGSW_START,
-  UPDATE_RUNTIME_CANDEBUGSW_SUCCESS,
   WATCH_RUNTIME_FAILURE,
   WATCH_RUNTIME_START,
   WATCH_RUNTIME_SUCCESS,
-} = require("../constants");
+} = require("devtools/client/aboutdebugging/src/constants");
 
 const CONNECTION_TIMING_OUT_DELAY = 3000;
 const CONNECTION_CANCEL_DELAY = 13000;
@@ -73,13 +72,9 @@ async function getRuntimeIcon(runtime, channel) {
     : "chrome://devtools/skin/images/aboutdebugging-firefox-nightly.svg";
 }
 
-function onRemoteDebuggerClientClosed() {
+function onRemoteDevToolsClientClosed() {
   window.AboutDebugging.onNetworkLocationsUpdated();
   window.AboutDebugging.onUSBRuntimesUpdated();
-}
-
-function onCanDebugServiceWorkersUpdated() {
-  window.AboutDebugging.store.dispatch(updateCanDebugServiceWorkers());
 }
 
 function connectRuntime(id) {
@@ -174,15 +169,10 @@ function connectRuntime(id) {
         serviceWorkersAvailable,
       };
 
-      const deviceFront = await clientWrapper.getFront("device");
-      if (deviceFront) {
-        deviceFront.on("can-debug-sw-updated", onCanDebugServiceWorkersUpdated);
-      }
-
       if (runtime.type !== RUNTIMES.THIS_FIREFOX) {
         // `closed` event will be emitted when disabling remote debugging
         // on the connected remote runtime.
-        clientWrapper.once("closed", onRemoteDebuggerClientClosed);
+        clientWrapper.once("closed", onRemoteDevToolsClientClosed);
       }
 
       dispatch({
@@ -230,16 +220,8 @@ function disconnectRuntime(id, shouldRedirect = false) {
       const runtime = findRuntimeById(id, getState().runtimes);
       const { clientWrapper } = runtime.runtimeDetails;
 
-      const deviceFront = await clientWrapper.getFront("device");
-      if (deviceFront) {
-        deviceFront.off(
-          "can-debug-sw-updated",
-          onCanDebugServiceWorkersUpdated
-        );
-      }
-
       if (runtime.type !== RUNTIMES.THIS_FIREFOX) {
-        clientWrapper.off("closed", onRemoteDebuggerClientClosed);
+        clientWrapper.off("closed", onRemoteDevToolsClientClosed);
       }
       await clientWrapper.close();
       if (shouldRedirect) {
@@ -289,28 +271,6 @@ function updateConnectionPromptSetting(connectionPromptEnabled) {
   };
 }
 
-function updateCanDebugServiceWorkers() {
-  return async (dispatch, getState) => {
-    dispatch({ type: UPDATE_RUNTIME_CANDEBUGSW_START });
-    try {
-      const runtime = getCurrentRuntime(getState().runtimes);
-      const { clientWrapper } = runtime.runtimeDetails;
-      // Re-get actual value from the runtime.
-      const {
-        canDebugServiceWorkers,
-      } = await clientWrapper.getDeviceDescription();
-
-      dispatch({
-        type: UPDATE_RUNTIME_CANDEBUGSW_SUCCESS,
-        runtime,
-        canDebugServiceWorkers,
-      });
-    } catch (e) {
-      dispatch({ type: UPDATE_RUNTIME_CANDEBUGSW_FAILURE, error: e });
-    }
-  };
-}
-
 function watchRuntime(id) {
   return async (dispatch, getState) => {
     dispatch({ type: WATCH_RUNTIME_START });
@@ -326,7 +286,9 @@ function watchRuntime(id) {
       await dispatch({ type: WATCH_RUNTIME_SUCCESS, runtime });
 
       dispatch(Actions.requestExtensions());
-      dispatch(Actions.requestTabs());
+      // we have to wait for tabs, otherwise the requests to getTarget may interfer
+      // with listProcesses
+      await dispatch(Actions.requestTabs());
       dispatch(Actions.requestWorkers());
 
       if (
@@ -414,7 +376,7 @@ function updateUSBRuntimes(adbRuntimes) {
 
 /**
  * Check that a given runtime can still be found in the provided array of runtimes, and
- * that the connection of the associated DebuggerClient is still valid.
+ * that the connection of the associated DevToolsClient is still valid.
  * Note that this check is only valid for runtimes which match the type of the runtimes
  * in the array.
  */
@@ -461,8 +423,7 @@ function updateRemoteRuntimes(runtimes, type) {
     runtimes.forEach(runtime => {
       const existingRuntime = findRuntimeById(runtime.id, getState().runtimes);
       const isConnectionValid =
-        existingRuntime &&
-        existingRuntime.runtimeDetails &&
+        existingRuntime?.runtimeDetails &&
         !existingRuntime.runtimeDetails.clientWrapper.isClosed();
       runtime.runtimeDetails = isConnectionValid
         ? existingRuntime.runtimeDetails
@@ -527,7 +488,7 @@ function removeRuntimeListeners() {
     for (const runtime of remoteRuntimes) {
       if (runtime.runtimeDetails) {
         const { clientWrapper } = runtime.runtimeDetails;
-        clientWrapper.off("closed", onRemoteDebuggerClientClosed);
+        clientWrapper.off("closed", onRemoteDevToolsClientClosed);
       }
     }
   };

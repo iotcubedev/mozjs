@@ -420,6 +420,7 @@ function promiseStartLegacyDownload(aSourceUrl, aOptions) {
           null,
           null,
           targetFile,
+          Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
           isPrivate
         );
       })
@@ -526,6 +527,37 @@ function promiseDownloadMidway(aDownload) {
         !aDownload.stopped &&
         !aDownload.canceled &&
         aDownload.progress == 50
+      ) {
+        aDownload.onchange = null;
+        resolve();
+      }
+    };
+
+    // Register for the notification, but also call the function directly in
+    // case the download already reached the expected progress.
+    aDownload.onchange = onchange;
+    onchange();
+  });
+}
+
+/**
+ * Waits for a download to make any amount of progress.
+ *
+ * @param aDownload
+ *        The Download object to wait upon.
+ *
+ * @return {Promise}
+ * @resolves When the download has transfered any number of bytes.
+ * @rejects Never.
+ */
+function promiseDownloadStarted(aDownload) {
+  return new Promise(resolve => {
+    // Wait for the download to transfer some amount of bytes.
+    let onchange = function() {
+      if (
+        !aDownload.stopped &&
+        !aDownload.canceled &&
+        aDownload.currentBytes > 0
       ) {
         aDownload.onchange = null;
         resolve();
@@ -830,6 +862,17 @@ add_task(function test_common_initialize() {
   );
 
   registerInterruptibleHandler(
+    "/interruptible_nosize.txt",
+    function firstPart(aRequest, aResponse) {
+      aResponse.setHeader("Content-Type", "text/plain", false);
+      aResponse.write(TEST_DATA_SHORT);
+    },
+    function secondPart(aRequest, aResponse) {
+      aResponse.write(TEST_DATA_SHORT);
+    }
+  );
+
+  registerInterruptibleHandler(
     "/interruptible_resumable.txt",
     function firstPart(aRequest, aResponse) {
       aResponse.setHeader("Content-Type", "text/plain", false);
@@ -916,6 +959,20 @@ add_task(function test_common_initialize() {
     }
   );
 
+  gHttpServer.registerPathHandler("/busy.txt", function(aRequest, aResponse) {
+    aResponse.setStatusLine("1.1", 504, "Gateway Timeout");
+    aResponse.setHeader("Content-Type", "text/plain", false);
+    aResponse.setHeader("Content-Length", "" + TEST_DATA_SHORT.length, false);
+    aResponse.write(TEST_DATA_SHORT);
+  });
+
+  gHttpServer.registerPathHandler("/redirect", function(aRequest, aResponse) {
+    aResponse.setStatusLine("1.1", 301, "Moved Permanently");
+    aResponse.setHeader("Location", httpUrl("busy.txt"), false);
+    aResponse.setHeader("Content-Type", "text/javascript", false);
+    aResponse.setHeader("Content-Length", "0", false);
+  });
+
   // This URL will emulate being blocked by Windows Parental controls
   gHttpServer.registerPathHandler("/parentalblocked.zip", function(
     aRequest,
@@ -985,7 +1042,7 @@ add_task(function test_common_initialize() {
   // Make sure that downloads started using nsIExternalHelperAppService are
   // saved to disk without asking for a destination interactively.
   let mock = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIHelperAppLauncherDialog]),
+    QueryInterface: ChromeUtils.generateQI(["nsIHelperAppLauncherDialog"]),
     promptForSaveToFileAsync(
       aLauncher,
       aWindowContext,

@@ -4,27 +4,27 @@ async function clickToReportAndAwaitReportTabLoad() {
   await openPageActions();
   await isPanelItemEnabled();
 
-  let screenshotPromise;
-  let newTabPromise = new Promise(resolve => {
+  // click on "report site issue" and wait for the new tab to open
+  const tab = await new Promise(resolve => {
     gBrowser.tabContainer.addEventListener(
       "TabOpen",
       event => {
-        let tab = event.target;
-        screenshotPromise = BrowserTestUtils.waitForContentEvent(
-          tab.linkedBrowser,
-          "ScreenshotReceived",
-          false,
-          null,
-          true
-        );
-        resolve(tab);
+        resolve(event.target);
       },
       { once: true }
     );
+    document.getElementById(WC_PAGE_ACTION_PANEL_ID).click();
   });
-  document.getElementById(WC_PAGE_ACTION_PANEL_ID).click();
-  const tab = await newTabPromise;
-  await screenshotPromise;
+
+  // wait for the new tab to acknowledge that it received a screenshot
+  await BrowserTestUtils.waitForContentEvent(
+    gBrowser.selectedBrowser,
+    "ScreenshotReceived",
+    false,
+    null,
+    true
+  );
+
   return tab;
 }
 
@@ -36,6 +36,7 @@ add_task(async function start_issue_server() {
   // ./head.js sets the value for PREF_WC_REPORTER_ENDPOINT
   await SpecialPowers.pushPrefEnv({
     set: [
+      ["datareporting.healthreport.uploadEnabled", true],
       [PREF_WC_REPORTER_ENABLED, true],
       [PREF_WC_REPORTER_ENDPOINT, serverLanding],
     ],
@@ -48,7 +49,7 @@ add_task(async function test_opened_page() {
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_PAGE);
   let tab2 = await clickToReportAndAwaitReportTabLoad();
 
-  await ContentTask.spawn(tab2.linkedBrowser, { TEST_PAGE }, async function(
+  await SpecialPowers.spawn(tab2.linkedBrowser, [{ TEST_PAGE }], async function(
     args
   ) {
     async function isGreen(dataUrl) {
@@ -85,18 +86,8 @@ add_task(async function test_opened_page() {
 
     let docShell = content.docShell;
     is(
-      typeof docShell.hasMixedActiveContentBlocked,
-      "boolean",
-      "docShell.hasMixedActiveContentBlocked is available"
-    );
-    is(
-      typeof docShell.hasMixedDisplayContentBlocked,
-      "boolean",
-      "docShell.hasMixedDisplayContentBlocked is available"
-    );
-    is(
-      typeof docShell.hasTrackingContentBlocked,
-      "boolean",
+      typeof docShell.getHasTrackingContentBlocked,
+      "function",
       "docShell.hasTrackingContentBlocked is available"
     );
 
@@ -160,7 +151,7 @@ add_task(async function test_opened_page() {
 
     const log5 = details.consoleLog[4];
     ok(
-      log5.log[0] === "TypeError: document.access is undefined",
+      log5.log[0].match(/TypeError: .*document\.access is undefined/),
       "Script errors are logged"
     );
     ok(log5.level === "error", "Reports correct log level");
@@ -213,6 +204,35 @@ add_task(async function test_opened_page() {
       typeof details["image.mem.shared"] == "boolean",
       "Details has image.mem.shared."
     );
+    if (
+      Services.prefs.getBoolPref("gfx.webrender.all", false) ||
+      Services.prefs.getBoolPref("gfx.webrender.enabled", false)
+    ) {
+      ok(typeof details.GPUs == "object", "Details has GPUs");
+      ok(typeof details.GPUs[0] == "object", "Details has GPUs[0]");
+      ok(
+        typeof details.GPUs[0].active == "boolean",
+        "Details has GPUs[0].active"
+      );
+      ok(
+        typeof details.GPUs[0].description == "string",
+        "Details has GPUs[0].description"
+      );
+      ok(
+        typeof details.GPUs[0].deviceID == "string",
+        "Details has GPUs[0].deviceID"
+      );
+      ok(
+        typeof details.GPUs[0].driverVersion == "string",
+        "Details has GPUs[0].driverVersion"
+      );
+      ok(
+        typeof details.GPUs[0].vendorID == "string",
+        "Details has GPUs[0].vendorID"
+      );
+    } else {
+      ok(!("GPUs" in details), "Details does not have GPUs");
+    }
 
     is(
       preview.innerText,
@@ -239,7 +259,7 @@ add_task(async function test_framework_detection() {
   );
   let tab2 = await clickToReportAndAwaitReportTabLoad();
 
-  await ContentTask.spawn(tab2.linkedBrowser, {}, async function(args) {
+  await SpecialPowers.spawn(tab2.linkedBrowser, [], async function(args) {
     let doc = content.document;
     let detailsParam = doc.getElementById("details").innerText;
     const details = JSON.parse(detailsParam);
@@ -263,7 +283,7 @@ add_task(async function test_fastclick_detection() {
   );
   let tab2 = await clickToReportAndAwaitReportTabLoad();
 
-  await ContentTask.spawn(tab2.linkedBrowser, {}, async function(args) {
+  await SpecialPowers.spawn(tab2.linkedBrowser, [], async function(args) {
     let doc = content.document;
     let detailsParam = doc.getElementById("details").innerText;
     const details = JSON.parse(detailsParam);
@@ -285,7 +305,7 @@ add_task(async function test_framework_label() {
   );
   let tab2 = await clickToReportAndAwaitReportTabLoad();
 
-  await ContentTask.spawn(tab2.linkedBrowser, {}, async function(args) {
+  await SpecialPowers.spawn(tab2.linkedBrowser, [], async function(args) {
     let doc = content.document;
     let labelParam = doc.getElementById("label").innerText;
     const label = JSON.parse(labelParam);

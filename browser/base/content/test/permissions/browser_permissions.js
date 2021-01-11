@@ -13,8 +13,10 @@ const kStrictKeyPressEvents = SpecialPowers.getBoolPref(
 
 function openIdentityPopup() {
   let promise = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   return promise;
@@ -31,13 +33,12 @@ function closeIdentityPopup() {
 
 add_task(async function testMainViewVisible() {
   await BrowserTestUtils.withNewTab(PERMISSIONS_PAGE, async function() {
+    await openIdentityPopup();
+
     let permissionsList = document.getElementById(
       "identity-popup-permission-list"
     );
     let emptyLabel = permissionsList.nextElementSibling.nextElementSibling;
-
-    await openIdentityPopup();
-
     ok(!BrowserTestUtils.is_hidden(emptyLabel), "List of permissions is empty");
 
     await closeIdentityPopup();
@@ -296,7 +297,7 @@ add_task(async function testPermissionShortcuts() {
 
     async function tryKey(desc, expectedValue) {
       await EventUtils.synthesizeAndWaitKey("c", { accelKey: true });
-      let result = await ContentTask.spawn(browser, null, function() {
+      let result = await SpecialPowers.spawn(browser, [], function() {
         return {
           keydowns: content.wrappedJSObject.gKeyDowns,
           keypresses: content.wrappedJSObject.gKeyPresses,

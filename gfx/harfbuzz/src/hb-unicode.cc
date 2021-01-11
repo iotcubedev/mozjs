@@ -212,7 +212,7 @@ DEFINE_NULL_INSTANCE (hb_unicode_funcs_t) =
 hb_unicode_funcs_t *
 hb_unicode_funcs_get_empty ()
 {
-  return const_cast<hb_unicode_funcs_t *> (&Null(hb_unicode_funcs_t));
+  return const_cast<hb_unicode_funcs_t *> (&Null (hb_unicode_funcs_t));
 }
 
 /**
@@ -270,9 +270,9 @@ hb_unicode_funcs_destroy (hb_unicode_funcs_t *ufuncs)
  **/
 hb_bool_t
 hb_unicode_funcs_set_user_data (hb_unicode_funcs_t *ufuncs,
-			        hb_user_data_key_t *key,
-			        void *              data,
-			        hb_destroy_func_t   destroy,
+				hb_user_data_key_t *key,
+				void *              data,
+				hb_destroy_func_t   destroy,
 				hb_bool_t           replace)
 {
   return hb_object_set_user_data (ufuncs, key, data, destroy, replace);
@@ -291,7 +291,7 @@ hb_unicode_funcs_set_user_data (hb_unicode_funcs_t *ufuncs,
  **/
 void *
 hb_unicode_funcs_get_user_data (hb_unicode_funcs_t *ufuncs,
-			        hb_user_data_key_t *key)
+				hb_user_data_key_t *key)
 {
   return hb_object_get_user_data (ufuncs, key);
 }

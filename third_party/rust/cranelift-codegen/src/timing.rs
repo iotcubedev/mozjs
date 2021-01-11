@@ -62,6 +62,7 @@ define_passes! {
     gvn: "Global value numbering",
     licm: "Loop invariant code motion",
     unreachable_code: "Remove unreachable blocks",
+    remove_constant_phis: "Remove constant phi-nodes",
 
     regalloc: "Register allocation",
     ra_liveness: "RA liveness analysis",
@@ -141,7 +142,7 @@ mod details {
 
     impl Default for PassTimes {
         fn default() -> Self {
-            PassTimes {
+            Self {
                 pass: [Default::default(); NUM_PASSES],
             }
         }
@@ -252,7 +253,7 @@ mod details {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::string::ToString;
+    use alloc::string::ToString;
 
     #[test]
     fn display() {

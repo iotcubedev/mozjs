@@ -9,6 +9,8 @@ FINAL_LIBRARY = 'mozglue'
 EXPORTS.mozilla += [
     'AutoProfilerLabel.h',
     'decimal/Decimal.h',
+    'decimal/DoubleConversion.h',
+    'MmapFaultHandler.h',
     'PlatformConditionVariable.h',
     'PlatformMutex.h',
     'Printf.h',
@@ -18,6 +20,7 @@ EXPORTS.mozilla += [
 
 EXPORTS.mozilla.glue += [
     'Debug.h',
+    'WinUtils.h',
 ]
 
 if CONFIG['OS_ARCH'] == 'WINNT':
@@ -28,6 +31,7 @@ if CONFIG['OS_ARCH'] == 'WINNT':
 
 SOURCES += [
     'AutoProfilerLabel.cpp',
+    'MmapFaultHandler.cpp',
     'Printf.cpp',
     'StackWalk.cpp',
     'TimeStamp.cpp',
@@ -49,10 +53,14 @@ if CONFIG['OS_ARCH'] == 'WINNT':
         'WindowsMapRemoteView.h',
         'WindowsProcessMitigations.h',
     ]
+    EXPORTS.mozilla.glue += [
+        'WindowsUnicode.h',
+    ]
     SOURCES += [
         'TimeStamp_windows.cpp',
         'WindowsMapRemoteView.cpp',
         'WindowsProcessMitigations.cpp',
+        'WindowsUnicode.cpp',
     ]
     OS_LIBS += ['dbghelp']
 elif CONFIG['HAVE_CLOCK_MONOTONIC']:
@@ -75,6 +83,11 @@ else:
     SOURCES += [
         'ConditionVariable_posix.cpp',
         'Mutex_posix.cpp',
+    ]
+
+if CONFIG['MOZ_LINKER'] and CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
+    LOCAL_INCLUDES += [
+        '/mozglue/linker',
     ]
 
 SOURCES += [

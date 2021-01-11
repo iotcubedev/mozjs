@@ -31,13 +31,16 @@ class ThreadEventTarget;
 template <class InnerQueueT>
 class ThreadEventQueue final : public SynchronizedEventQueue {
  public:
-  explicit ThreadEventQueue(UniquePtr<InnerQueueT> aQueue);
+  explicit ThreadEventQueue(UniquePtr<InnerQueueT> aQueue,
+                            bool aIsMainThread = false);
 
   bool PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
                 EventQueuePriority aPriority) final;
 
-  already_AddRefed<nsIRunnable> GetEvent(bool aMayWait,
-                                         EventQueuePriority* aPriority) final;
+  already_AddRefed<nsIRunnable> GetEvent(
+      bool aMayWait, EventQueuePriority* aPriority,
+      mozilla::TimeDuration* aLastEventDelay = nullptr) final;
+  void DidRunEvent() final;
   bool HasPendingEvent() final;
   bool HasPendingHighPriorityEvents() final;
 

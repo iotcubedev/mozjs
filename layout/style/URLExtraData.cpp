@@ -18,7 +18,7 @@ StaticRefPtr<URLExtraData> URLExtraData::sDummy;
 
 /* static */
 void URLExtraData::InitDummy() {
-  RefPtr<nsIURI> baseURI = NullPrincipalURI::Create();
+  RefPtr<nsIURI> baseURI = new NullPrincipalURI();
   nsCOMPtr<nsIReferrerInfo> referrerInfo = new dom::ReferrerInfo(nullptr);
   sDummy = new URLExtraData(baseURI.forget(), referrerInfo.forget(),
                             NullPrincipal::CreateWithoutOriginAttributes());
@@ -29,8 +29,7 @@ void URLExtraData::ReleaseDummy() { sDummy = nullptr; }
 
 URLExtraData::~URLExtraData() {
   if (!NS_IsMainThread()) {
-    NS_ReleaseOnMainThreadSystemGroup("URLExtraData::mPrincipal",
-                                      mPrincipal.forget());
+    NS_ReleaseOnMainThread("URLExtraData::mPrincipal", mPrincipal.forget());
   }
 }
 

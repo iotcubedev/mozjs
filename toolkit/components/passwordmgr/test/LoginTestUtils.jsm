@@ -20,6 +20,12 @@ const { TestUtils } = ChromeUtils.import(
   "resource://testing-common/TestUtils.jsm"
 );
 
+const { FileTestUtils } = ChromeUtils.import(
+  "resource://testing-common/FileTestUtils.jsm"
+);
+
+const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
+
 const LoginInfo = Components.Constructor(
   "@mozilla.org/login-manager/loginInfo;1",
   "nsILoginInfo",
@@ -78,27 +84,44 @@ this.LoginTestUtils = {
     let { LoginManagerParent } = ChromeUtils.import(
       "resource://gre/modules/LoginManagerParent.jsm"
     );
-    LoginManagerParent._generatedPasswordsByPrincipalOrigin.clear();
+    LoginManagerParent.getGeneratedPasswordsByPrincipalOrigin().clear();
   },
 
   /**
    * Checks that the currently stored list of nsILoginInfo matches the provided
-   * array.  The comparison uses the "equals" method of nsILoginInfo, that does
-   * not include nsILoginMetaInfo properties in the test.
+   * array.  If no `checkFn` is provided, the comparison uses the "equals"
+   * method of nsILoginInfo, that does not include nsILoginMetaInfo properties in the test.
    */
-  checkLogins(expectedLogins) {
-    this.assertLoginListsEqual(Services.logins.getAllLogins(), expectedLogins);
+  checkLogins(expectedLogins, msg = "checkLogins", checkFn = undefined) {
+    this.assertLoginListsEqual(
+      Services.logins.getAllLogins(),
+      expectedLogins,
+      msg,
+      checkFn
+    );
   },
 
   /**
    * Checks that the two provided arrays of nsILoginInfo have the same length,
-   * and every login in "expected" is also found in "actual".  The comparison
-   * uses the "equals" method of nsILoginInfo, that does not include
-   * nsILoginMetaInfo properties in the test.
+   * and every login in "expected" is also found in "actual".  If no `checkFn`
+   * is provided, the comparison uses the "equals" method of nsILoginInfo, that
+   * does not include nsILoginMetaInfo properties in the test.
    */
-  assertLoginListsEqual(actual, expected) {
-    Assert.equal(expected.length, actual.length);
-    Assert.ok(expected.every(e => actual.some(a => a.equals(e))));
+  assertLoginListsEqual(
+    actual,
+    expected,
+    msg = "assertLoginListsEqual",
+    checkFn = undefined
+  ) {
+    Assert.equal(expected.length, actual.length, msg);
+    Assert.ok(
+      expected.every(e =>
+        actual.some(a => {
+          return checkFn ? checkFn(a, e) : a.equals(e);
+        })
+      ),
+      msg
+    );
   },
 
   /**
@@ -126,7 +149,7 @@ this.LoginTestUtils = {
  * Any modification to the test data requires updating the tests accordingly, in
  * particular the search tests.
  */
-this.LoginTestUtils.testData = {
+LoginTestUtils.testData = {
   /**
    * Returns a new nsILoginInfo for use with form submits.
    *
@@ -147,6 +170,9 @@ this.LoginTestUtils.testData = {
     loginInfo.QueryInterface(Ci.nsILoginMetaInfo);
     if (modifications) {
       for (let [name, value] of Object.entries(modifications)) {
+        if (name == "httpRealm" && value !== null) {
+          throw new Error("httpRealm not supported for form logins");
+        }
         loginInfo[name] = value;
       }
     }
@@ -171,6 +197,11 @@ this.LoginTestUtils.testData = {
     loginInfo.QueryInterface(Ci.nsILoginMetaInfo);
     if (modifications) {
       for (let [name, value] of Object.entries(modifications)) {
+        if (name == "formActionOrigin" && value !== null) {
+          throw new Error(
+            "formActionOrigin not supported for HTTP auth. logins"
+          );
+        }
         loginInfo[name] = value;
       }
     }
@@ -207,7 +238,7 @@ this.LoginTestUtils.testData = {
         "form_field_password"
       ),
 
-      // Subdomains are treated as completely different sites.
+      // Subdomains can be treated as completely different sites depending on the UI invoked.
       new LoginInfo(
         "https://example.com",
         "https://example.com",
@@ -424,11 +455,11 @@ this.LoginTestUtils.testData = {
         "the password two"
       ),
 
-      // -- file:/// URIs throw accessing nsIURI.host
+      // -- file:// URIs throw accessing nsIURI.host
 
       new LoginInfo(
-        "file:///",
-        "file:///",
+        "file://",
+        "file://",
         null,
         "file: username",
         "file: password"
@@ -447,7 +478,7 @@ this.LoginTestUtils.testData = {
   },
 };
 
-this.LoginTestUtils.recipes = {
+LoginTestUtils.recipes = {
   getRecipeParent() {
     let { LoginManagerParent } = ChromeUtils.import(
       "resource://gre/modules/LoginManagerParent.jsm"
@@ -461,7 +492,7 @@ this.LoginTestUtils.recipes = {
   },
 };
 
-this.LoginTestUtils.masterPassword = {
+LoginTestUtils.masterPassword = {
   masterPassword: "omgsecret!",
 
   _set(enable) {
@@ -504,7 +535,7 @@ this.LoginTestUtils.masterPassword = {
 /**
  * Utilities related to interacting with login fields in content.
  */
-this.LoginTestUtils.loginField = {
+LoginTestUtils.loginField = {
   checkPasswordMasked(field, expected, msg) {
     let { editor } = field;
     let valueLength = field.value.length;
@@ -526,13 +557,18 @@ this.LoginTestUtils.loginField = {
   },
 };
 
-this.LoginTestUtils.generation = {
+LoginTestUtils.generation = {
   LENGTH: 15,
   REGEX: /^[a-km-np-zA-HJ-NP-Z2-9]{15}$/,
 };
 
-this.LoginTestUtils.telemetry = {
-  async waitForEventCount(count, process = "content", category = "pwmgr") {
+LoginTestUtils.telemetry = {
+  async waitForEventCount(
+    count,
+    process = "content",
+    category = "pwmgr",
+    method = undefined
+  ) {
     let events = await TestUtils.waitForCondition(() => {
       let events = Services.telemetry.snapshotEvents(
         Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
@@ -543,11 +579,31 @@ this.LoginTestUtils.telemetry = {
         return null;
       }
 
-      events = events.filter(e => e[1] == category);
+      events = events.filter(
+        e => e[1] == category && (!method || e[2] == method)
+      );
       dump(`Waiting for ${count} events, got ${events.length}\n`);
       return events.length == count ? events : null;
     }, "waiting for telemetry event count of: " + count);
     Assert.equal(events.length, count, "waiting for telemetry event count");
     return events;
+  },
+};
+
+LoginTestUtils.file = {
+  /**
+   * Given an array of strings it creates a temporary CSV file that has them as content.
+   *
+   * @param {string[]} csvLines
+   *        The lines that make up the CSV file.
+   * @returns {window.File} The File to the CSV file that was created.
+   */
+  async setupCsvFileWithLines(csvLines) {
+    let tmpFile = FileTestUtils.getTempFile("firefox_logins.csv");
+    await OS.File.writeAtomic(
+      tmpFile.path,
+      new TextEncoder().encode(csvLines.join("\r\n"))
+    );
+    return tmpFile;
   },
 };

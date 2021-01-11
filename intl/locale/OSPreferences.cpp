@@ -54,19 +54,7 @@ void OSPreferences::Refresh() {
  * It returns true if the canonicalization was successful.
  */
 bool OSPreferences::CanonicalizeLanguageTag(nsCString& aLoc) {
-  char langTag[512];
-
-  UErrorCode status = U_ZERO_ERROR;
-
-  int32_t langTagLen = uloc_toLanguageTag(aLoc.get(), langTag,
-                                          sizeof(langTag) - 1, false, &status);
-
-  if (U_FAILURE(status)) {
-    return false;
-  }
-
-  aLoc.Assign(langTag, langTagLen);
-  return true;
+  return LocaleService::CanonicalizeLanguageId(aLoc);
 }
 
 /**
@@ -249,19 +237,19 @@ bool OSPreferences::GetDateTimeConnectorPattern(const nsACString& aLocale,
 NS_IMETHODIMP
 OSPreferences::GetSystemLocales(nsTArray<nsCString>& aRetVal) {
   if (!mSystemLocales.IsEmpty()) {
-    aRetVal = mSystemLocales;
+    aRetVal = mSystemLocales.Clone();
     return NS_OK;
   }
 
   if (ReadSystemLocales(aRetVal)) {
-    mSystemLocales = aRetVal;
+    mSystemLocales = aRetVal.Clone();
     return NS_OK;
   }
 
   // If we failed to get the system locale, we still need
   // to return something because there are tests out there that
   // depend on system locale to be set.
-  aRetVal.AppendElement(NS_LITERAL_CSTRING("en-US"));
+  aRetVal.AppendElement("en-US"_ns);
   return NS_ERROR_FAILURE;
 }
 
@@ -282,16 +270,18 @@ OSPreferences::GetSystemLocale(nsACString& aRetVal) {
 NS_IMETHODIMP
 OSPreferences::GetRegionalPrefsLocales(nsTArray<nsCString>& aRetVal) {
   if (!mRegionalPrefsLocales.IsEmpty()) {
-    aRetVal = mRegionalPrefsLocales;
+    aRetVal = mRegionalPrefsLocales.Clone();
     return NS_OK;
   }
 
   if (ReadRegionalPrefsLocales(aRetVal)) {
-    mRegionalPrefsLocales = aRetVal;
+    mRegionalPrefsLocales = aRetVal.Clone();
     return NS_OK;
   }
 
-  return NS_ERROR_FAILURE;
+  // If we failed to read regional prefs locales,
+  // use system locales as last fallback.
+  return GetSystemLocales(aRetVal);
 }
 
 static OSPreferences::DateTimeFormatStyle ToDateTimeFormatStyle(

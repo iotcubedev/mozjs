@@ -188,6 +188,15 @@ add_task(async function test_user_defined_commands() {
   await BrowserTestUtils.loadURI(win1.gBrowser.selectedBrowser, "about:robots");
   await BrowserTestUtils.browserLoaded(win1.gBrowser.selectedBrowser);
 
+  // We would have previously focused the window's content area after the
+  // navigation from about:blank to about:robots, but bug 1596738 changed this
+  // to prevent the browser element from stealing focus from the urlbar.
+  //
+  // Some of these command tests (specifically alt-a on linux) were designed
+  // based on focus being in the browser content, so we need to manually focus
+  // the browser here to preserve that assumption.
+  win1.gBrowser.selectedBrowser.focus();
+
   let commands = {};
   let isMac = AppConstants.platform == "macosx";
   let totalMacOnlyCommands = 0;
@@ -234,12 +243,13 @@ add_task(async function test_user_defined_commands() {
   let waitForConsole = new Promise(resolve => {
     SimpleTest.monitorConsole(resolve, [
       {
-        message: /Reading manifest: Error processing commands.*.unrecognized_property: An unexpected property was found/,
+        message: /Reading manifest: Warning processing commands.*.unrecognized_property: An unexpected property was found/,
       },
     ]);
   });
-
+  ExtensionTestUtils.failOnSchemaWarnings(false);
   await extension.startup();
+  ExtensionTestUtils.failOnSchemaWarnings(true);
   await extension.awaitMessage("ready");
 
   async function runTest(window) {
@@ -252,9 +262,7 @@ add_task(async function test_user_defined_commands() {
       is(
         message,
         testCommand.name,
-        `Expected onCommand listener to fire with the correct name: ${
-          testCommand.name
-        }`
+        `Expected onCommand listener to fire with the correct name: ${testCommand.name}`
       );
     }
   }
@@ -263,6 +271,9 @@ add_task(async function test_user_defined_commands() {
   let win2 = await BrowserTestUtils.openNewBrowserWindow();
   await BrowserTestUtils.loadURI(win2.gBrowser.selectedBrowser, "about:robots");
   await BrowserTestUtils.browserLoaded(win2.gBrowser.selectedBrowser);
+
+  // See comment above.
+  win2.gBrowser.selectedBrowser.focus();
 
   let totalTestCommands =
     Object.keys(testCommands).length + numberNumericCommands;
@@ -303,6 +314,10 @@ add_task(async function test_user_defined_commands() {
     "about:robots"
   );
   await BrowserTestUtils.browserLoaded(privateWin.gBrowser.selectedBrowser);
+
+  // See comment above.
+  privateWin.gBrowser.selectedBrowser.focus();
+
   keyset = privateWin.document.getElementById(keysetID);
   is(keyset, null, "Expected keyset is not added to private windows");
 
@@ -323,7 +338,11 @@ add_task(async function test_user_defined_commands() {
     incognitoOverride: "spanning",
     background,
   });
+
+  // unrecognized_property in manifest triggers warning.
+  ExtensionTestUtils.failOnSchemaWarnings(false);
   await extension.startup();
+  ExtensionTestUtils.failOnSchemaWarnings(true);
   await extension.awaitMessage("ready");
   keysetID = `ext-keyset-id-${makeWidgetId(extension.id)}`;
 

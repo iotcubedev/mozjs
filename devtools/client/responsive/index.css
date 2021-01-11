@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 /* TODO: May break up into component local CSS.  Pending future discussions by
  * React component group on how to best handle CSS. */
 
@@ -11,6 +15,7 @@
   --viewport-active-color: #3b3b3b;
   --input-invalid-border-color: var(--red-60);
   --custom-device-button-hover: var(--grey-30);
+  --device-list-grid-template-columns: auto auto max-content 1fr;
 }
 
 :root.theme-dark {
@@ -41,6 +46,7 @@ body,
 #root {
   height: 100%;
   overflow: hidden;
+  color: var(--theme-body-color);
 }
 
 input:-moz-focusring {
@@ -104,9 +110,10 @@ input:-moz-focusring {
 }
 
 #toolbar-center-controls {
+  grid-gap: 2px;
   grid-template-columns:
     [device-selector]
-    minmax(auto, 90px)
+    minmax(auto, 120px)
     [separator]
     max-content
     [size-selector]
@@ -120,7 +127,7 @@ input:-moz-focusring {
     [separator]
     max-content
     [throttling]
-    minmax(auto, 90px)
+    minmax(auto, max-content)
     [separator]
     max-content
     [touch-simulation]
@@ -130,7 +137,7 @@ input:-moz-focusring {
 #toolbar.user-agent #toolbar-center-controls {
   grid-template-columns:
     [device-selector]
-    minmax(auto, 90px)
+    minmax(auto, 120px)
     [separator]
     max-content
     [size-selector]
@@ -144,7 +151,7 @@ input:-moz-focusring {
     [separator]
     max-content
     [throttling]
-    minmax(auto, 90px)
+    minmax(auto, max-content)
     [separator]
     max-content
     [ua]
@@ -231,7 +238,7 @@ input:-moz-focusring {
 }
 
 #rotate-button::before {
-  background-image: url("./images/rotate-viewport.svg");
+  background-image: url("chrome://devtools/content/responsive/images/rotate-viewport.svg");
 }
 
 #rotate-button.viewport-orientation-landscape::before {
@@ -239,7 +246,7 @@ input:-moz-focusring {
 }
 
 #touch-simulation-button::before {
-  background-image: url("./images/touch-events.svg");
+  background-image: url("chrome://devtools/content/responsive/images/touch-events.svg");
 }
 
 #screenshot-button::before {
@@ -264,107 +271,28 @@ input:-moz-focusring {
 }
 
 #device-selector {
+  justify-self: end;
+  max-width: 100%;
   margin-inline-start: 4px;
 }
 
-#viewports-container {
-  display: flex;
-  overflow: auto;
-  height: 100%;
-  width: 100%;
+#device-selector .title {
+  display: grid;
+  grid-template-columns: var(--device-list-grid-template-columns);
 }
 
-.theme-light #viewports-container {
-  background-color: #F5F5F6;
+#device-selector .title .device-name,
+#device-selector .title .device-os {
+  margin-inline-start: 6px;
 }
 
-#viewports {
-  /* Individual viewports are inline elements, make sure they stay on a single
-     line */
-  white-space: nowrap;
-  margin-top: 16px;
+#device-selector::before {
+  fill: var(--theme-icon-dimmed-color);
 }
 
-#viewports.left-aligned {
-  margin-left: 16px;
-}
-
-/**
- * Viewport Container
- */
-
-.viewport {
-  display: inline-block;
-  /* Align all viewports to the top */
-  vertical-align: top;
-}
-
-.resizable-viewport {
-  border: 1px solid var(--theme-splitter-color);
-  box-shadow: var(--rdm-box-shadow);
-  position: relative;
-}
-
-/**
- * Viewport Content
- */
-
-.viewport-content.resizing {
-  pointer-events: none;
-}
-
-/**
- * Viewport Browser
- */
-
-.browser {
-  display: block;
-  border: 0;
-  user-select: none;
-}
-
-.browser:-moz-focusring {
-  outline: none;
-}
-
-/**
- * Viewport Resize Handles
- */
-
-.viewport-resize-handle {
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  bottom: 0;
-  right: 0;
-  background-image: url("./images/grippers.svg");
-  background-position: bottom right;
-  padding: 0 1px 1px 0;
-  background-repeat: no-repeat;
-  background-origin: content-box;
-  cursor: se-resize;
-}
-
-.viewport-resize-handle.hidden {
-  display: none;
-}
-
-.viewport-horizontal-resize-handle {
-  position: absolute;
-  width: 5px;
-  height: calc(100% - 16px);
-  right: -4px;
-  top: 0;
-  cursor: e-resize;
-}
-
-.viewport-vertical-resize-handle {
-  position: absolute;
-  width: calc(100% - 16px);
-  height: 5px;
-  left: 0;
-  bottom: -4px;
-  cursor: s-resize;
+/* Override the style defined in tooltips.css */
+.tooltip-container[type="doorhanger"] .menuitem > .command.iconic.device-selector-item > .label::before {
+  fill: var(--theme-icon-dimmed-color);
 }
 
 /**
@@ -380,7 +308,7 @@ input:-moz-focusring {
 .viewport-dimension-input {
   text-align: center;
   width: 3em;
-  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 .viewport-dimension-separator {
@@ -477,9 +405,14 @@ input:-moz-focusring {
   }
 
   .device-modal-content {
-    grid-template-columns: 1fr 1fr 1fr;
-    grid-template-areas: "phone phone custom"
-                         "tablet laptop tv";
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas: "phone phone"
+                         "tablet laptop"
+                         "tv custom";
+  }
+
+  .device-type-phones .device-list {
+    grid-template-columns: repeat(2, var(--device-list-grid-template-columns));
   }
 }
 
@@ -499,13 +432,6 @@ input:-moz-focusring {
   #device-form-name input,
   #device-form-user-agent input {
     width: 100%;
-  }
-
-  .device-modal-content {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas: "phone phone"
-                         "tablet laptop"
-                         "tv custom";
   }
 }
 
@@ -528,7 +454,9 @@ input:-moz-focusring {
   #device-form-size {
     justify-self: unset;
   }
+}
 
+@media (max-width: 749px) {
   .device-modal-content {
     grid-template-areas: "phone"
                          "phone"
@@ -536,10 +464,6 @@ input:-moz-focusring {
                          "laptop"
                          "tv"
                          "custom";
-  }
-
-  .device-type.device-type-phones .device-list {
-    grid-template-columns: 1fr;
   }
 
   .device-modal-header {
@@ -573,12 +497,18 @@ input:-moz-focusring {
   color: var(--theme-body-color);
   padding-bottom: 5px;
   padding-top: 5px;
-  display: flex;
   align-items: center;
+  display: grid;
+  grid-column: span 4;
+  grid-template-columns: subgrid;
 }
 
 .device-label > button {
   visibility: hidden;
+}
+
+.device-label > span {
+  margin-right: 6px;
 }
 
 .device-label:focus-within > button,
@@ -603,10 +533,11 @@ input:-moz-focusring {
 .device-list {
   display: grid;
   font-size: 13px;
+  grid-template-columns: var(--device-list-grid-template-columns);
 }
 
 .device-input-checkbox {
-  margin-right: 5px;
+  margin-right: 8px;
 }
 
 .device-modal-title {
@@ -614,8 +545,36 @@ input:-moz-focusring {
   margin: 30px 0 0px 30px;
 }
 
-.device-name {
-  flex: 1;
+.device-browser {
+  width: 16px;
+  height: 16px;
+  background-size: cover;
+  -moz-context-properties: fill;
+  fill: var(--theme-icon-dimmed-color);
+}
+
+.device-browser.chrome {
+  background-image: url("chrome://devtools/skin/images/browsers/chrome.svg");
+}
+
+.device-browser.edge {
+  background-image: url("chrome://devtools/skin/images/browsers/edge.svg");
+}
+
+.device-browser.firefox {
+  background-image: url("chrome://devtools/skin/images/browsers/firefox.svg");
+}
+
+.device-browser.ie {
+  background-image: url("chrome://devtools/skin/images/browsers/ie.svg");
+}
+
+.device-browser.opera {
+  background-image: url("chrome://devtools/skin/images/browsers/opera.svg");
+}
+
+.device-browser.safari {
+  background-image: url("chrome://devtools/skin/images/browsers/safari.svg");
 }
 
 .device-remove-button:empty::before {
@@ -706,7 +665,7 @@ input:-moz-focusring {
 }
 
 #device-form-pixel-ratio input {
-  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 #device-form-user-agent {
@@ -771,13 +730,17 @@ input:-moz-focusring {
   grid-area: phone;
 }
 
-.device-type-phones .device-list {
-  grid-template-columns: repeat(2, auto);
-}
-
 .device-type-custom {
   grid-area: custom;
   align-self: start;
+}
+
+.device-type-custom .device-list {
+  grid-template-columns: var(--device-list-grid-template-columns) auto auto;
+}
+
+.device-type-custom .device-label {
+  grid-column: span 6;
 }
 
 .device-type-tablets {

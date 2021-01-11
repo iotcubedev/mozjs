@@ -9,22 +9,24 @@
 #include "MP4Interval.h"
 
 #include "mozilla/CheckedInt.h"
+#include "mozilla/HelperMacros.h"
 #include "mozilla/Logging.h"
 
 #if defined(MOZ_FMP4)
 extern mozilla::LogModule* GetDemuxerLog();
 
-#  define STRINGIFY(x) #  x
-#  define TOSTRING(x) STRINGIFY(x)
-#  define LOG_ERROR(name, arg, ...)                    \
-    MOZ_LOG(GetDemuxerLog(), mozilla::LogLevel::Error, \
-            (TOSTRING(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
-#  define LOG_WARN(name, arg, ...)                       \
-    MOZ_LOG(GetDemuxerLog(), mozilla::LogLevel::Warning, \
-            (TOSTRING(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
-#  define LOG_DEBUG(name, arg, ...)                    \
-    MOZ_LOG(GetDemuxerLog(), mozilla::LogLevel::Debug, \
-            (TOSTRING(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+#  define LOG_ERROR(name, arg, ...)                \
+    MOZ_LOG(                                       \
+        GetDemuxerLog(), mozilla::LogLevel::Error, \
+        (MOZ_STRINGIFY(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+#  define LOG_WARN(name, arg, ...)                   \
+    MOZ_LOG(                                         \
+        GetDemuxerLog(), mozilla::LogLevel::Warning, \
+        (MOZ_STRINGIFY(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
+#  define LOG_DEBUG(name, arg, ...)                \
+    MOZ_LOG(                                       \
+        GetDemuxerLog(), mozilla::LogLevel::Debug, \
+        (MOZ_STRINGIFY(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
 #else
 #  define LOG_ERROR(...)
@@ -91,8 +93,8 @@ bool MoofParser::RebuildFragmentedIndex(BoxContext& aContext) {
         mMoofs.LastElement().FixRounding(moof);
       }
 
-      mMoofs.AppendElement(moof);
       mMediaRanges.AppendElement(moof.mRange);
+      mMoofs.AppendElement(std::move(moof));
       foundValidMoof = true;
     } else if (box.IsType("mdat") && !Moofs().IsEmpty()) {
       // Check if we have all our data from last moof.
@@ -1176,7 +1178,6 @@ Result<Ok, nsresult> Sgpd::Parse(Box& aBox) {
   uint32_t flags;
   MOZ_TRY_VAR(flags, reader->ReadU32());
   const uint8_t version = flags >> 24;
-  flags = flags & 0xffffff;
 
   uint32_t type;
   MOZ_TRY_VAR(type, reader->ReadU32());

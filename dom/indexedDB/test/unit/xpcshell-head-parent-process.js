@@ -252,6 +252,13 @@ function setTimeout(fun, timeout) {
   return timer;
 }
 
+function initStorageAndChromeOrigin(persistence) {
+  let principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
+    Ci.nsIPrincipal
+  );
+  return Services.qms.initStorageAndOrigin(principal, persistence, "idb");
+}
+
 function resetOrClearAllDatabases(callback, clear) {
   if (!SpecialPowers.isMainProcess()) {
     throw new Error("clearAllDatabases not implemented for child processes!");
@@ -284,14 +291,16 @@ function resetOrClearAllDatabases(callback, clear) {
   }
 
   request.callback = callback;
+
+  return request;
 }
 
 function resetAllDatabases(callback) {
-  resetOrClearAllDatabases(callback, false);
+  return resetOrClearAllDatabases(callback, false);
 }
 
 function clearAllDatabases(callback) {
-  resetOrClearAllDatabases(callback, true);
+  return resetOrClearAllDatabases(callback, true);
 }
 
 function installPackagedProfile(packageName) {
@@ -395,19 +404,6 @@ function getFile(name, type, str) {
 function isWasmSupported() {
   let testingFunctions = Cu.getJSTestingFunctions();
   return testingFunctions.wasmIsSupported();
-}
-
-function getWasmBinarySync(text) {
-  let testingFunctions = Cu.getJSTestingFunctions();
-  let binary = testingFunctions.wasmTextToBinary(text);
-  return binary;
-}
-
-function getWasmBinary(text) {
-  let binary = getWasmBinarySync(text);
-  executeSoon(function() {
-    testGenerator.next(binary);
-  });
 }
 
 function getWasmModule(binary) {
@@ -546,6 +542,30 @@ function getPrincipal(url) {
   return Services.scriptSecurityManager.createContentPrincipal(uri, {});
 }
 
+class RequestError extends Error {
+  constructor(resultCode, resultName) {
+    super(`Request failed (code: ${resultCode}, name: ${resultName})`);
+    this.name = "RequestError";
+    this.resultCode = resultCode;
+    this.resultName = resultName;
+  }
+}
+
+async function requestFinished(request) {
+  await new Promise(function(resolve) {
+    request.callback = function() {
+      resolve();
+    };
+  });
+
+  if (request.resultCode !== Cr.NS_OK) {
+    throw new RequestError(request.resultCode, request.resultName);
+  }
+
+  return request.result;
+}
+
+// TODO: Rename to openDBRequestSucceeded ?
 function expectingSuccess(request) {
   return new Promise(function(resolve, reject) {
     request.onerror = function(event) {
@@ -562,6 +582,7 @@ function expectingSuccess(request) {
   });
 }
 
+// TODO: Rename to openDBRequestUpgradeNeeded ?
 function expectingUpgrade(request) {
   return new Promise(function(resolve, reject) {
     request.onerror = function(event) {
@@ -578,14 +599,14 @@ function expectingUpgrade(request) {
   });
 }
 
-function initChromeOrigin(persistence) {
-  let principal = Cc["@mozilla.org/systemprincipal;1"].createInstance(
-    Ci.nsIPrincipal
-  );
-  return new Promise(function(resolve) {
-    let request = Services.qms.initStoragesForPrincipal(principal, persistence);
-    request.callback = function() {
-      return resolve(request);
+function requestSucceeded(request) {
+  return new Promise(function(resolve, reject) {
+    request.onerror = function(event) {
+      ok(false, "indexedDB error, '" + event.target.error.name + "'");
+      reject(event);
+    };
+    request.onsuccess = function(event) {
+      resolve(event);
     };
   });
 }

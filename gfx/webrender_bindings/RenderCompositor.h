@@ -9,6 +9,7 @@
 
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "Units.h"
 
 namespace mozilla {
@@ -18,7 +19,6 @@ class GLContext;
 }
 
 namespace layers {
-class NativeLayer;
 class SyncObjectHost;
 }  // namespace layers
 
@@ -36,15 +36,37 @@ class RenderCompositor {
   RenderCompositor(RefPtr<widget::CompositorWidget>&& aWidget);
   virtual ~RenderCompositor();
 
-  virtual bool BeginFrame(layers::NativeLayer* aNativeLayer) = 0;
-  virtual void EndFrame() = 0;
+  virtual bool BeginFrame() = 0;
+
+  // Optional handler in case the frame was aborted allowing the compositor
+  // to clean up relevant resources if required.
+  virtual void CancelFrame() {}
+
+  // Called to notify the RenderCompositor that all of the commands for a frame
+  // have been pushed to the queue.
+  // @return a RenderedFrameId for the frame
+  virtual RenderedFrameId EndFrame(
+      const nsTArray<DeviceIntRect>& aDirtyRects) = 0;
   // Returns false when waiting gpu tasks is failed.
   // It might happen when rendering context is lost.
   virtual bool WaitForGPU() { return true; }
+
+  // Check for and return the last completed frame.
+  // @return the last (highest) completed RenderedFrameId
+  virtual RenderedFrameId GetLastCompletedFrameId() {
+    return mLatestRenderFrameId.Prev();
+  }
+
+  // Update FrameId when WR rendering does not happen.
+  virtual RenderedFrameId UpdateFrameId() { return GetNextRenderFrameId(); }
+
   virtual void Pause() = 0;
   virtual bool Resume() = 0;
+  // Called when WR rendering is skipped
+  virtual void Update() {}
 
   virtual gl::GLContext* gl() const { return nullptr; }
+  virtual void* swgl() const { return nullptr; }
 
   virtual bool MakeCurrent();
 
@@ -62,7 +84,61 @@ class RenderCompositor {
 
   virtual bool IsContextLost();
 
+  virtual bool SupportAsyncScreenshot() { return true; }
+
+  virtual bool ShouldUseNativeCompositor() { return false; }
+  virtual uint32_t GetMaxUpdateRects() { return 0; }
+
+  // Interface for wr::Compositor
+  virtual void CompositorBeginFrame() {}
+  virtual void CompositorEndFrame() {}
+  virtual void Bind(wr::NativeTileId aId, wr::DeviceIntPoint* aOffset,
+                    uint32_t* aFboId, wr::DeviceIntRect aDirtyRect,
+                    wr::DeviceIntRect aValidRect) {}
+  virtual void Unbind() {}
+  virtual bool MapTile(wr::NativeTileId aId, wr::DeviceIntRect aDirtyRect,
+                       wr::DeviceIntRect aValidRect, void** aData,
+                       int32_t* aStride) {
+    return false;
+  }
+  virtual void UnmapTile() {}
+  virtual void CreateSurface(wr::NativeSurfaceId aId,
+                             wr::DeviceIntPoint aVirtualOffset,
+                             wr::DeviceIntSize aTileSize, bool aIsOpaque) {}
+  virtual void DestroySurface(NativeSurfaceId aId) {}
+  virtual void CreateTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
+  virtual void DestroyTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
+  virtual void AddSurface(wr::NativeSurfaceId aId, wr::DeviceIntPoint aPosition,
+                          wr::DeviceIntRect aClipRect) {}
+  virtual void EnableNativeCompositor(bool aEnable) {}
+  virtual void DeInit() {}
+  virtual CompositorCapabilities GetCompositorCapabilities() = 0;
+
+  // Interface for partial present
+  virtual bool UsePartialPresent() { return false; }
+  virtual bool RequestFullRender() { return false; }
+  virtual uint32_t GetMaxPartialPresentRects() { return 0; }
+  virtual bool ShouldDrawPreviousPartialPresentRegions() { return false; }
+
+  // Whether the surface origin is top-left.
+  virtual bool SurfaceOriginIsTopLeft() { return false; }
+
+  // Does readback if wr_renderer_readback() could not get correct WR rendered
+  // result. It could happen when WebRender renders to multiple overlay layers.
+  virtual bool MaybeReadback(const gfx::IntSize& aReadbackSize,
+                             const wr::ImageFormat& aReadbackFormat,
+                             const Range<uint8_t>& aReadbackBuffer) {
+    return false;
+  }
+
  protected:
+  // We default this to 2, so that mLatestRenderFrameId.Prev() is always valid.
+  RenderedFrameId mLatestRenderFrameId = RenderedFrameId{2};
+  RenderedFrameId GetNextRenderFrameId() {
+    mLatestRenderFrameId = mLatestRenderFrameId.Next();
+    return mLatestRenderFrameId;
+  }
+
   RefPtr<widget::CompositorWidget> mWidget;
   RefPtr<layers::SyncObjectHost> mSyncObject;
 };

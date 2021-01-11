@@ -110,12 +110,12 @@ class GeckoViewProgressChild extends GeckoViewChildModule {
 }
 
 const ProgressTracker = {
-  onInit: function(aModule) {
+  onInit(aModule) {
     this._module = aModule;
     this.clear();
   },
 
-  start: function(aUri) {
+  start(aUri) {
     debug`ProgressTracker start ${aUri}`;
 
     if (this._tracking) {
@@ -138,7 +138,7 @@ const ProgressTracker = {
 
     this._tracking = true;
     this.clear();
-    let data = this._data;
+    const data = this._data;
 
     if (aUri === "about:blank") {
       data.uri = null;
@@ -152,18 +152,18 @@ const ProgressTracker = {
     this.updateProgress();
   },
 
-  changeLocation: function(aUri) {
+  changeLocation(aUri) {
     debug`ProgressTracker changeLocation ${aUri}`;
 
-    let data = this._data;
+    const data = this._data;
     data.locationChange = true;
     data.uri = aUri;
   },
 
-  stop: function() {
+  stop() {
     debug`ProgressTracker stop`;
 
-    let data = this._data;
+    const data = this._data;
     data.pageStop = true;
     this.updateProgress();
     this._tracking = false;
@@ -196,8 +196,8 @@ const ProgressTracker = {
     return this._module.eventDispatcher;
   },
 
-  handleEvent: function(aEvent) {
-    let data = this._data;
+  handleEvent(aEvent) {
+    const data = this._data;
 
     const target = aEvent.originalTarget;
     const uri = target && target.location.href;
@@ -242,7 +242,7 @@ const ProgressTracker = {
     }
   },
 
-  clear: function() {
+  clear() {
     this._data = {
       prev: 0,
       uri: null,
@@ -255,7 +255,7 @@ const ProgressTracker = {
     };
   },
 
-  _debugData: function() {
+  _debugData() {
     return {
       prev: this._data.prev,
       uri: this._data.uri,
@@ -268,10 +268,10 @@ const ProgressTracker = {
     };
   },
 
-  updateProgress: function() {
+  updateProgress() {
     debug`ProgressTracker updateProgress`;
 
-    let data = this._data;
+    const data = this._data;
 
     if (!this._tracking || !data.uri) {
       return;

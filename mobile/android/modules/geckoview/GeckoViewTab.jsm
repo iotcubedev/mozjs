@@ -16,65 +16,24 @@ const { XPCOMUtils } = ChromeUtils.import(
 XPCOMUtils.defineLazyModuleGetters(this, {
   EventDispatcher: "resource://gre/modules/Messaging.jsm",
   Services: "resource://gre/modules/Services.jsm",
+  mobileWindowTracker: "resource://gre/modules/GeckoViewWebExtension.jsm",
 });
 
-// Based on the "Tab" prototype from mobile/android/chrome/content/browser.js
 class Tab {
-  constructor(id, browser) {
-    this.id = id;
-    this.browser = browser;
+  constructor(window) {
+    this.id = GeckoViewTabBridge.windowIdToTabId(
+      window.windowUtils.outerWindowID
+    );
+    this.browser = window.browser;
+    this.active = false;
+  }
+
+  get linkedBrowser() {
+    return this.browser;
   }
 
   getActive() {
-    return this.browser.docShellIsActive;
-  }
-}
-
-// Stub BrowserApp implementation for WebExtensions support.
-class BrowserAppShim {
-  constructor(window) {
-    const tabId = GeckoViewTabBridge.windowIdToTabId(
-      window.windowUtils.outerWindowID
-    );
-    this.selectedBrowser = window.browser;
-    this.selectedTab = new Tab(tabId, this.selectedBrowser);
-    this.tabs = [this.selectedTab];
-  }
-
-  getTabForId(aId) {
-    return this.selectedTab;
-  }
-
-  getTabForBrowser(aBrowser) {
-    return this.selectedTab;
-  }
-
-  getTabForWindow(aWindow) {
-    return this.selectedTab;
-  }
-
-  getTabForDocument(aDocument) {
-    return this.selectedTab;
-  }
-
-  getBrowserForOuterWindowID(aID) {
-    return this.selectedBrowser;
-  }
-
-  getBrowserForDocument(aDocument) {
-    return this.selectedBrowser;
-  }
-
-  static getBrowserApp(window) {
-    let { BrowserApp } = window;
-
-    if (!BrowserApp) {
-      BrowserApp = window.gBrowser = window.BrowserApp = new BrowserAppShim(
-        window
-      );
-    }
-
-    return BrowserApp;
+    return this.active;
   }
 }
 
@@ -86,7 +45,7 @@ const GeckoViewTabBridge = {
   /**
    * Converts windowId to tabId as in GeckoView every browser window has exactly one tab.
    *
-   * @param {windowId} number outerWindowId
+   * @param {number} windowId outerWindowId
    *
    * @returns {number} tabId
    */
@@ -97,7 +56,7 @@ const GeckoViewTabBridge = {
   /**
    * Converts tabId to windowId.
    *
-   * @param {windowId} number
+   * @param {number} tabId
    *
    * @returns {number}
    *          outerWindowId of browser window to which the tab belongs.
@@ -107,42 +66,51 @@ const GeckoViewTabBridge = {
   },
 
   /**
+   * Delegates openOptionsPage handling to the app.
+   *
+   * @param {number} extensionId
+   *        The ID of the extension requesting the options menu.
+   *
+   * @returns {Promise<Void>}
+   *          A promise resolved after successful handling.
+   */
+  async openOptionsPage(extensionId) {
+    debug`openOptionsPage for extensionId ${extensionId}`;
+
+    return EventDispatcher.instance.sendRequestForResult({
+      type: "GeckoView:WebExtension:OpenOptionsPage",
+      extensionId,
+    });
+  },
+
+  /**
    * Request the GeckoView App to create a new tab (GeckoSession).
    *
    * @param {object} options
-   * @param {string} options.url The url to load in the newly created tab
-   * @param {nsIPrincipal} options.triggeringPrincipal
-   * @param {boolean} [options.disallowInheritPrincipal]
    * @param {string} options.extensionId
+   *        The ID of the extension that requested a new tab.
+   * @param {object} options.createProperties
+   *        The properties for the new tab, see tabs.create reference for details.
    *
    * @returns {Promise<Tab>}
    *          A promise resolved to the newly created tab.
    * @throws {Error}
    *         Throws an error if the GeckoView app doesn't support tabs.create or fails to handle the request.
    */
-  async createNewTab(options = {}) {
-    const url = options.url || "about:blank";
+  async createNewTab({ extensionId, createProperties } = {}) {
+    debug`createNewTab`;
 
-    if (!options.extensionId) {
-      throw new Error("options.extensionId missing");
-    }
-
-    const message = {
+    const sessionId = await EventDispatcher.instance.sendRequestForResult({
       type: "GeckoView:WebExtension:NewTab",
-      uri: url,
-      extensionId: options.extensionId,
-    };
-
-    const sessionId = await EventDispatcher.instance.sendRequestForResult(
-      message
-    );
+      extensionId,
+      createProperties,
+    });
 
     if (!sessionId) {
       throw new Error("Cannot create new tab");
     }
 
-    let window;
-    const browser = await new Promise(resolve => {
+    const window = await new Promise(resolve => {
       const handler = {
         observe(aSubject, aTopic, aData) {
           if (
@@ -150,26 +118,17 @@ const GeckoViewTabBridge = {
             aSubject.name === sessionId
           ) {
             Services.obs.removeObserver(handler, "geckoview-window-created");
-            window = aSubject;
-            resolve(window.browser);
+            resolve(aSubject);
           }
         },
       };
       Services.obs.addObserver(handler, "geckoview-window-created");
     });
 
-    let flags = Ci.nsIWebNavigation.LOAD_FLAGS_NONE;
-
-    if (options.disallowInheritPrincipal) {
-      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL;
+    if (!window.tab) {
+      window.tab = new Tab(window);
     }
-
-    browser.loadURI(url, {
-      flags,
-      triggeringPrincipal: options.triggeringPrincipal,
-    });
-
-    return BrowserAppShim.getBrowserApp(window).selectedTab;
+    return window.tab;
   },
 
   /**
@@ -180,30 +139,47 @@ const GeckoViewTabBridge = {
    * @param {Window} options.window The window owning the tab to close
    * @param {string} options.extensionId
    *
-   * @returns {Promise<Tab>}
+   * @returns {Promise<Void>}
    *          A promise resolved after GeckoSession is closed.
    * @throws {Error}
    *         Throws an error if the GeckoView app doesn't allow extension to close tab.
    */
   async closeTab({ window, extensionId } = {}) {
-    if (!extensionId) {
-      throw new Error("extensionId is required");
-    }
-
-    if (!window) {
-      throw new Error("window is required");
-    }
-
     await window.WindowEventDispatcher.sendRequestForResult({
       type: "GeckoView:WebExtension:CloseTab",
-      extensionId: extensionId,
+      extensionId,
+    });
+  },
+
+  async updateTab({ window, extensionId, updateProperties } = {}) {
+    await window.WindowEventDispatcher.sendRequestForResult({
+      type: "GeckoView:WebExtension:UpdateTab",
+      extensionId,
+      updateProperties,
     });
   },
 };
 
 class GeckoViewTab extends GeckoViewModule {
   onInit() {
-    BrowserAppShim.getBrowserApp(this.window);
+    const { window } = this;
+    if (!window.tab) {
+      window.tab = new Tab(window);
+    }
+
+    this.registerListener(["GeckoView:WebExtension:SetTabActive"]);
+  }
+
+  onEvent(aEvent, aData, aCallback) {
+    debug`onEvent: event=${aEvent}, data=${aData}`;
+
+    switch (aEvent) {
+      case "GeckoView:WebExtension:SetTabActive": {
+        const { active } = aData;
+        mobileWindowTracker.setTabActive(this.window, active);
+        break;
+      }
+    }
   }
 }
 

@@ -49,9 +49,9 @@ function Converter() {}
 
 Converter.prototype = {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIStreamConverter,
-    Ci.nsIStreamListener,
-    Ci.nsIRequestObserver,
+    "nsIStreamConverter",
+    "nsIStreamListener",
+    "nsIRequestObserver",
   ]),
 
   get wrappedJSObject() {
@@ -74,6 +74,9 @@ Converter.prototype = {
 
   asyncConvertData: function(fromType, toType, listener, ctx) {
     this.listener = listener;
+  },
+  getConvertedType: function(fromType, channel) {
+    return "text/html";
   },
 
   onDataAvailable: function(request, inputStream, offset, count) {
@@ -299,7 +302,7 @@ function initialHTML(doc) {
           element("link", {
             rel: "stylesheet",
             type: "text/css",
-            href: baseURI + "css/main.css",
+            href: "chrome://devtools-jsonview-styles/content/main.css",
           }),
         ]),
         element("body", {}, [

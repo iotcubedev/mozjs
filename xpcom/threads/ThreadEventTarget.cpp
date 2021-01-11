@@ -25,76 +25,15 @@ using namespace mozilla::tasktracer;
 
 using namespace mozilla;
 
-namespace {
-
-class DelayedRunnable : public Runnable, public nsITimerCallback {
- public:
-  DelayedRunnable(already_AddRefed<nsIEventTarget> aTarget,
-                  already_AddRefed<nsIRunnable> aRunnable, uint32_t aDelay)
-      : mozilla::Runnable("DelayedRunnable"),
-        mTarget(aTarget),
-        mWrappedRunnable(aRunnable),
-        mDelayedFrom(TimeStamp::NowLoRes()),
-        mDelay(aDelay) {}
-
-  NS_DECL_ISUPPORTS_INHERITED
-
-  nsresult Init() {
-    return NS_NewTimerWithCallback(getter_AddRefs(mTimer), this, mDelay,
-                                   nsITimer::TYPE_ONE_SHOT, mTarget);
-  }
-
-  nsresult DoRun() {
-    nsCOMPtr<nsIRunnable> r = mWrappedRunnable.forget();
-    return r->Run();
-  }
-
-  NS_IMETHOD Run() override {
-    // Already ran?
-    if (!mWrappedRunnable) {
-      return NS_OK;
-    }
-
-    // Are we too early?
-    if ((TimeStamp::NowLoRes() - mDelayedFrom).ToMilliseconds() < mDelay) {
-      return NS_OK;  // Let the nsITimer run us.
-    }
-
-    mTimer->Cancel();
-    return DoRun();
-  }
-
-  NS_IMETHOD Notify(nsITimer* aTimer) override {
-    // If we already ran, the timer should have been canceled.
-    MOZ_ASSERT(mWrappedRunnable);
-    MOZ_ASSERT(aTimer == mTimer);
-
-    return DoRun();
-  }
-
- private:
-  ~DelayedRunnable() {}
-
-  nsCOMPtr<nsIEventTarget> mTarget;
-  nsCOMPtr<nsIRunnable> mWrappedRunnable;
-  nsCOMPtr<nsITimer> mTimer;
-  TimeStamp mDelayedFrom;
-  uint32_t mDelay;
-};
-
-NS_IMPL_ISUPPORTS_INHERITED(DelayedRunnable, Runnable, nsITimerCallback)
-
-}  // anonymous namespace
-
 ThreadEventTarget::ThreadEventTarget(ThreadTargetSink* aSink,
                                      bool aIsMainThread)
     : mSink(aSink), mIsMainThread(aIsMainThread) {
-  mVirtualThread = GetCurrentVirtualThread();
+  mThread = PR_GetCurrentThread();
 }
 
-void ThreadEventTarget::SetCurrentThread() {
-  mVirtualThread = GetCurrentVirtualThread();
-}
+void ThreadEventTarget::SetCurrentThread() { mThread = PR_GetCurrentThread(); }
+
+void ThreadEventTarget::ClearCurrentThread() { mThread = nullptr; }
 
 NS_IMPL_ISUPPORTS(ThreadEventTarget, nsIEventTarget, nsISerialEventTarget)
 
@@ -125,8 +64,10 @@ ThreadEventTarget::Dispatch(already_AddRefed<nsIRunnable> aEvent,
   event = tracedRunnable.forget();
 #endif
 
+  LogRunnable::LogDispatch(event.get());
+
   if (aFlags & DISPATCH_SYNC) {
-    nsCOMPtr<nsIEventTarget> current = GetCurrentThreadEventTarget();
+    nsCOMPtr<nsIEventTarget> current = GetCurrentEventTarget();
     if (NS_WARN_IF(!current)) {
       return NS_ERROR_NOT_AVAILABLE;
     }
@@ -167,10 +108,11 @@ ThreadEventTarget::Dispatch(already_AddRefed<nsIRunnable> aEvent,
 NS_IMETHODIMP
 ThreadEventTarget::DelayedDispatch(already_AddRefed<nsIRunnable> aEvent,
                                    uint32_t aDelayMs) {
+  nsCOMPtr<nsIRunnable> event = aEvent;
   NS_ENSURE_TRUE(!!aDelayMs, NS_ERROR_UNEXPECTED);
 
   RefPtr<DelayedRunnable> r =
-      new DelayedRunnable(do_AddRef(this), std::move(aEvent), aDelayMs);
+      new DelayedRunnable(do_AddRef(this), event.forget(), aDelayMs);
   nsresult rv = r->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -185,6 +127,8 @@ ThreadEventTarget::IsOnCurrentThread(bool* aIsOnCurrentThread) {
 
 NS_IMETHODIMP_(bool)
 ThreadEventTarget::IsOnCurrentThreadInfallible() {
-  // Rely on mVirtualThread being correct.
-  MOZ_CRASH("IsOnCurrentThreadInfallible should never be called on nsIThread");
+  // This method is only going to be called if `mThread` is null, which
+  // only happens when the thread has exited the event loop.  Therefore, when
+  // we are called, we can never be on this thread.
+  return false;
 }

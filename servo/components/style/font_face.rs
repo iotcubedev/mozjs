@@ -122,7 +122,7 @@ macro_rules! impl_range {
             ) -> Result<Self, ParseError<'i>> {
                 let first = $component::parse(context, input)?;
                 let second = input
-                    .try(|input| $component::parse(context, input))
+                    .try_parse(|input| $component::parse(context, input))
                     .unwrap_or_else(|_| first.clone());
                 Ok($range(first, second))
             }
@@ -236,7 +236,7 @@ impl Parse for FontStyle {
             GenericFontStyle::Italic => FontStyle::Italic,
             GenericFontStyle::Oblique(angle) => {
                 let second_angle = input
-                    .try(|input| SpecifiedFontStyle::parse_angle(context, input))
+                    .try_parse(|input| SpecifiedFontStyle::parse_angle(context, input))
                     .unwrap_or_else(|_| angle.clone());
 
                 FontStyle::Oblique(angle, second_angle)
@@ -383,7 +383,7 @@ impl Parse for Source {
         input: &mut Parser<'i, 't>,
     ) -> Result<Source, ParseError<'i>> {
         if input
-            .try(|input| input.expect_function_matching("local"))
+            .try_parse(|input| input.expect_function_matching("local"))
             .is_ok()
         {
             return input
@@ -395,7 +395,7 @@ impl Parse for Source {
 
         // Parsing optional format()
         let format_hints = if input
-            .try(|input| input.expect_function_matching("format"))
+            .try_parse(|input| input.expect_function_matching("format"))
             .is_ok()
         {
             input.parse_nested_block(|input| {
@@ -480,9 +480,9 @@ macro_rules! font_face_descriptors_common {
                             // rather than returning it.
                             let value = input.parse_entirely(|i| Parse::parse(self.context, i))?;
                             self.rule.$ident = Some(value)
-                        }
+                        },
                     )*
-                    _ => return Err(input.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
+                    _ => return Err(input.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone()))),
                 }
                 Ok(())
             }

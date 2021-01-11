@@ -3,33 +3,41 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 // Reps
 const { isGrip, wrapRender } = require("./rep-utils");
 
 const String = require("./string").rep;
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
  * Renders a grip object with textual data.
  */
+
 ObjectWithText.propTypes = {
   object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function ObjectWithText(props) {
   const grip = props.object;
-  return span(
-    {
-      "data-link-actor-id": grip.actor,
-      className: `objectTitle objectBox objectBox-${getType(grip)}`,
-    },
-    `${getType(grip)} `,
-    getDescription(grip)
-  );
+  const config = getElementConfig(props);
+
+  return span(config, `${getType(grip)} `, getDescription(grip));
+}
+
+function getElementConfig(opts) {
+  const shouldRenderTooltip = opts.shouldRenderTooltip;
+  const grip = opts.object;
+
+  return {
+    "data-link-actor-id": grip.actor,
+    className: `objectTitle objectBox objectBox-${getType(grip)}`,
+    title: shouldRenderTooltip
+      ? `${getType(grip)} "${grip.preview.text}"`
+      : null,
+  };
 }
 
 function getType(grip) {

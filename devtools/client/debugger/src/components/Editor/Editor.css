@@ -7,12 +7,14 @@
   --debug-expression-background: rgba(202, 227, 255, 0.5);
   --debug-line-error-border: rgb(255, 0, 0);
   --debug-expression-error-background: rgba(231, 116, 113, 0.3);
-  --highlight-line-duration: 1500ms;
+  --line-exception-background: hsl(344, 73%, 97%);
+  --highlight-line-duration: 5000ms;
 }
 
 .theme-dark .editor-wrapper {
   --debug-expression-background: rgba(202, 227, 255, 0.3);
   --debug-line-border: #7786a2;
+  --line-exception-background: hsl(345, 23%, 24%);
 }
 
 .editor-wrapper .CodeMirror-linewidget {
@@ -27,6 +29,12 @@
 .CodeMirror-scroll,
 .CodeMirror-sizer {
   overflow-anchor: none;
+}
+
+/* Prevents inline preview from shifting source height (#1576163) */
+.CodeMirror-linewidget {
+  padding: 0;
+  display: flow-root;
 }
 
 /**
@@ -80,11 +88,6 @@ html[dir="rtl"] .editor-mount {
   background-color: var(--theme-body-background);
   font-size: var(--theme-code-font-size);
   line-height: var(--theme-code-line-height);
-}
-
-.folding-enabled .CodeMirror-linenumber {
-  text-align: left;
-  padding: 0 0 0 2px;
 }
 
 /* set the linenumber white when there is a breakpoint */
@@ -163,39 +166,63 @@ html[dir="rtl"] .editor-mount {
   display: none;
 }
 .highlight-line .CodeMirror-line {
-  animation: fade-highlight-out var(--highlight-line-duration) normal forwards;
+  animation-name: fade-highlight-out;
+  animation-duration: var(--highlight-line-duration);
+  animation-timing-function: ease-out;
+  animation-direction: forwards;
 }
 
 @keyframes fade-highlight-out {
   0% {
-    background-color: var(--theme-highlight-gray);
+    background-color: var(--theme-contrast-background);
+  }
+  30% {
+    background-color: var(--theme-contrast-background);
   }
   100% {
     background-color: transparent;
   }
-}
-
-.theme-dark .highlight-line .CodeMirror-line {
-  animation: fade-highlight-out-dark 1s normal forwards;
-}
-
-@keyframes fade-highlight-out-dark {
-  0% {
-    background-color: var(--theme-comment);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-.CodeMirror-guttermarker-subtle {
-  visibility: hidden;
 }
 
 .visible {
   visibility: visible;
 }
 
-.download-anchor {
-  display: none;
+/* Code folding */
+.editor-wrapper .CodeMirror-foldgutter-open {
+  color: var(--grey-40);
+}
+
+.editor-wrapper .CodeMirror-foldgutter-open,
+.editor-wrapper .CodeMirror-foldgutter-folded {
+  fill: var(--grey-40);
+}
+
+.editor-wrapper .CodeMirror-foldgutter-open::before,
+.editor-wrapper .CodeMirror-foldgutter-open::after {
+  border-top: none;
+}
+
+.editor-wrapper .CodeMirror-foldgutter-folded::before,
+.editor-wrapper .CodeMirror-foldgutter-folded::after {
+  border-left: none;
+}
+
+.editor-wrapper .CodeMirror-foldgutter .CodeMirror-guttermarker-subtle {
+  visibility: visible;
+}
+
+.editor-wrapper .CodeMirror-foldgutter .CodeMirror-linenumber {
+  text-align: left;
+  padding: 0 0 0 2px;
+}
+
+/* Exception line */
+.line-exception {
+  background-color: var(--line-exception-background);
+}
+
+.mark-text-exception {
+  text-decoration: var(--red-50) wavy underline;
+  text-decoration-skip-ink: none;
 }

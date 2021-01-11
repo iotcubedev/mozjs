@@ -76,23 +76,27 @@ function recreateTree(element) {
  * *labels* are being shown correctly as items in the popup.
  */
 function checkAutoCompleteResults(actualValues, expectedValues, hostname, msg) {
-  if (hostname !== null) {
-    isnot(
-      actualValues.length,
-      0,
-      "There should be items in the autocomplete popup: " +
-        JSON.stringify(actualValues)
-    );
-
-    // Check the footer first.
-    let footerResult = actualValues[actualValues.length - 1];
-    is(footerResult, "View Saved Logins", "the footer text is shown correctly");
-  }
-
   if (hostname === null) {
     checkArrayValues(actualValues, expectedValues, msg);
     return;
   }
+
+  is(
+    typeof hostname,
+    "string",
+    "checkAutoCompleteResults: hostname must be a string"
+  );
+
+  isnot(
+    actualValues.length,
+    0,
+    "There should be items in the autocomplete popup: " +
+      JSON.stringify(actualValues)
+  );
+
+  // Check the footer first.
+  let footerResult = actualValues[actualValues.length - 1];
+  is(footerResult, "View Saved Logins", "the footer text is shown correctly");
 
   if (actualValues.length == 1) {
     is(
@@ -106,6 +110,82 @@ function checkAutoCompleteResults(actualValues, expectedValues, hostname, msg) {
 
   // Check the rest of the autocomplete item values.
   checkArrayValues(actualValues.slice(0, -1), expectedValues, msg);
+}
+
+function getIframeBrowsingContext(window, iframeNumber = 0) {
+  let bc = SpecialPowers.wrap(window).windowGlobalChild.browsingContext;
+  return SpecialPowers.unwrap(bc.children[iframeNumber]);
+}
+
+/**
+ * Set input values via setUserInput to emulate user input
+ * and distinguish them from declarative or script-assigned values
+ */
+function setUserInputValues(parentNode, selectorValues) {
+  for (let [selector, newValue] of Object.entries(selectorValues)) {
+    info(`setUserInputValues, selector: ${selector}`);
+    try {
+      let field = SpecialPowers.wrap(parentNode.querySelector(selector));
+      if (field.value == newValue) {
+        // we don't get an input event if the new value == the old
+        field.value += "#";
+      }
+      field.setUserInput(newValue);
+    } catch (ex) {
+      info(ex.message);
+      info(ex.stack);
+      ok(
+        false,
+        `setUserInputValues: Couldn't set value of field: ${ex.message}`
+      );
+    }
+  }
+}
+
+/**
+ * @param {Function} [aFilterFn = undefined] Function to filter out irrelevant submissions.
+ * @return {Promise} resolving when a relevant form submission was processed.
+ */
+function getSubmitMessage(aFilterFn = undefined) {
+  info("getSubmitMessage");
+  return new Promise((resolve, reject) => {
+    PWMGR_COMMON_PARENT.addMessageListener(
+      "formSubmissionProcessed",
+      function processed(...args) {
+        if (aFilterFn && !aFilterFn(...args)) {
+          // This submission isn't the one we're waiting for.
+          return;
+        }
+
+        info("got formSubmissionProcessed");
+        PWMGR_COMMON_PARENT.removeMessageListener(
+          "formSubmissionProcessed",
+          processed
+        );
+        resolve(args[0]);
+      }
+    );
+  });
+}
+
+/**
+ * @return {Promise} resolves when a onPasswordEditedOrGenerated message is received at the parent
+ */
+function getPasswordEditedMessage() {
+  info("getPasswordEditedMessage");
+  return new Promise((resolve, reject) => {
+    PWMGR_COMMON_PARENT.addMessageListener(
+      "passwordEditedOrGenerated",
+      function listener(...args) {
+        info("got passwordEditedOrGenerated");
+        PWMGR_COMMON_PARENT.removeMessageListener(
+          "passwordEditedOrGenerated",
+          listener
+        );
+        resolve(args[0]);
+      }
+    );
+  });
 }
 
 /**
@@ -128,6 +208,44 @@ function checkLoginForm(
     passwordField.value,
     expectedPassword,
     "Checking " + formID + " password is: " + expectedPassword
+  );
+}
+
+function checkLoginFormInChildFrame(
+  iframeBC,
+  usernameFieldId,
+  expectedUsername,
+  passwordFieldId,
+  expectedPassword
+) {
+  return SpecialPowers.spawn(
+    iframeBC,
+    [usernameFieldId, expectedUsername, passwordFieldId, expectedPassword],
+    (
+      usernameFieldIdF,
+      expectedUsernameF,
+      passwordFieldIdF,
+      expectedPasswordF
+    ) => {
+      let usernameField = this.content.document.getElementById(
+        usernameFieldIdF
+      );
+      let passwordField = this.content.document.getElementById(
+        passwordFieldIdF
+      );
+
+      let formID = usernameField.parentNode.id;
+      Assert.equal(
+        usernameField.value,
+        expectedUsernameF,
+        "Checking " + formID + " username is: " + expectedUsernameF
+      );
+      Assert.equal(
+        passwordField.value,
+        expectedPasswordF,
+        "Checking " + formID + " password is: " + expectedPasswordF
+      );
+    }
   );
 }
 
@@ -228,12 +346,12 @@ function registerRunTests() {
       form.appendChild(password);
 
       var observer = SpecialPowers.wrapCallback(function(subject, topic, data) {
-        var formLikeRoot = subject;
-        if (formLikeRoot.id !== "observerforcer") {
+        if (data !== "observerforcer") {
           return;
         }
+
         SpecialPowers.removeObserver(observer, "passwordmgr-processed-form");
-        formLikeRoot.remove();
+        form.remove();
         SimpleTest.executeSoon(() => {
           var runTestEvent = new Event("runTests");
           window.dispatchEvent(runTestEvent);
@@ -250,7 +368,6 @@ function registerRunTests() {
     // with the rest of the tests.
     if (
       document.readyState == "complete" ||
-      document.readyState == "loaded" ||
       document.readyState == "interactive"
     ) {
       onDOMContentLoaded();
@@ -445,7 +562,7 @@ const PWMGR_COMMON_PARENT = runInParent(
 );
 
 SimpleTest.registerCleanupFunction(() => {
-  SpecialPowers.popPrefEnv();
+  SpecialPowers.flushPrefEnv();
 
   PWMGR_COMMON_PARENT.sendAsyncMessage("cleanup");
 
@@ -472,7 +589,9 @@ SimpleTest.registerCleanupFunction(() => {
     );
     authMgr.clearAll();
 
-    if (LoginManagerParent._recipeManager) {
+    // Check that it's not null, instead of truthy to catch it becoming undefined
+    // in a refactoring.
+    if (LoginManagerParent._recipeManager !== null) {
       LoginManagerParent._recipeManager.reset();
     }
 
@@ -480,13 +599,16 @@ SimpleTest.registerCleanupFunction(() => {
     let chromeWin = Services.wm.getMostRecentWindow("navigator:browser");
     if (chromeWin && chromeWin.PopupNotifications) {
       let notes = chromeWin.PopupNotifications._currentNotifications;
-      if (notes.length > 0) {
+      if (notes.length) {
         dump("Removing " + notes.length + " popup notifications.\n");
       }
       for (let note of notes) {
         note.remove();
       }
     }
+
+    // Clear events last in case the above cleanup records events.
+    Services.telemetry.clearEvents();
   });
 });
 

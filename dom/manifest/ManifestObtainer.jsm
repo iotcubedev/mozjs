@@ -25,9 +25,8 @@
  */
 "use strict";
 
-const { PromiseMessage } = ChromeUtils.import(
-  "resource://gre/modules/PromiseMessage.jsm"
-);
+const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
 const { ManifestProcessor } = ChromeUtils.import(
   "resource://gre/modules/ManifestProcessor.jsm"
 );
@@ -50,15 +49,20 @@ var ManifestObtainer = {
     if (!isXULBrowser(aBrowser)) {
       throw new TypeError("Invalid input. Expected XUL browser.");
     }
-    const mm = aBrowser.messageManager;
-    const {
-      data: { success, result },
-    } = await PromiseMessage.send(mm, "DOM:ManifestObtainer:Obtain", aOptions);
-    if (!success) {
-      const error = toError(result);
+
+    const actor = aBrowser.browsingContext.currentWindowGlobal.getActor(
+      "ManifestMessages"
+    );
+
+    const reply = await actor.sendQuery(
+      "DOM:ManifestObtainer:Obtain",
+      aOptions
+    );
+    if (!reply.success) {
+      const error = toError(reply.result);
       throw error;
     }
-    return result;
+    return reply.result;
   },
   /**
    * Public interface for obtaining a web manifest from a XUL browser.
@@ -72,6 +76,11 @@ var ManifestObtainer = {
     aContent,
     aOptions = { checkConformance: false }
   ) {
+    if (!Services.prefs.getBoolPref("dom.manifest.enabled")) {
+      throw new Error(
+        "Obtaining manifest is disabled by pref: dom.manifest.enabled"
+      );
+    }
     if (!aContent || isXULBrowser(aContent)) {
       const err = new TypeError("Invalid input. Expected a DOM Window.");
       return Promise.reject(err);
@@ -102,8 +111,9 @@ function isXULBrowser(aBrowser) {
   if (!aBrowser || !aBrowser.namespaceURI || !aBrowser.localName) {
     return false;
   }
-  const XUL = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-  return aBrowser.namespaceURI === XUL && aBrowser.localName === "browser";
+  const XUL_NS =
+    "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+  return aBrowser.namespaceURI === XUL_NS && aBrowser.localName === "browser";
 }
 
 /**
@@ -116,9 +126,7 @@ function isXULBrowser(aBrowser) {
 async function processResponse(aResp, aContentWindow, aOptions) {
   const badStatus = aResp.status < 200 || aResp.status >= 300;
   if (aResp.type === "error" || badStatus) {
-    const msg = `Fetch error: ${aResp.status} - ${aResp.statusText} at ${
-      aResp.url
-    }`;
+    const msg = `Fetch error: ${aResp.status} - ${aResp.statusText} at ${aResp.url}`;
     throw new Error(msg);
   }
   const text = await aResp.text();

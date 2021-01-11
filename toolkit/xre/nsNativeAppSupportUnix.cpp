@@ -17,14 +17,8 @@
 
 #include "nsIFile.h"
 #include "nsDirectoryServiceDefs.h"
-#include "nsICommandLineRunner.h"
-#include "nsIWindowMediator.h"
 #include "nsPIDOMWindow.h"
-#include "nsIDocShell.h"
-#include "nsIBaseWindow.h"
 #include "nsIWidget.h"
-#include "nsIWritablePropertyBag2.h"
-#include "nsIPrefService.h"
 #include "mozilla/Services.h"
 
 #include <stdlib.h>
@@ -271,7 +265,8 @@ void nsNativeAppSupportUnix::DoInteract() {
         do_GetService("@mozilla.org/toolkit/app-startup;1");
 
     if (appService) {
-      appService->Quit(nsIAppStartup::eForceQuit);
+      bool userAllowedQuit = true;
+      appService->Quit(nsIAppStartup::eForceQuit, &userAllowedQuit);
     }
   } else {
     if (mClientState != STATE_SHUTDOWN_CANCELLED) {
@@ -326,21 +321,19 @@ void nsNativeAppSupportUnix::SaveYourselfCB(SmcConn smc_conn,
   }
 
   bool status = false;
-  if (save_style != SmSaveGlobal) {
-    nsCOMPtr<nsISupportsPRBool> didSaveSession =
-        do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
+  nsCOMPtr<nsISupportsPRBool> didSaveSession =
+      do_CreateInstance(NS_SUPPORTS_PRBOOL_CONTRACTID);
 
-    if (!didSaveSession) {
-      SmcSaveYourselfDone(smc_conn, True);
-      return;
-    }
-
-    // Notify observers to save the session state
-    didSaveSession->SetData(false);
-    obsServ->NotifyObservers(didSaveSession, "session-save", nullptr);
-
-    didSaveSession->GetData(&status);
+  if (!didSaveSession) {
+    SmcSaveYourselfDone(smc_conn, True);
+    return;
   }
+
+  // Notify observers to save the session state
+  didSaveSession->SetData(false);
+  obsServ->NotifyObservers(didSaveSession, "session-save", nullptr);
+
+  didSaveSession->GetData(&status);
 
   // If the interact style permits us to, we are shutting down and we didn't
   // manage to (or weren't asked to) save the local state, then notify the user
@@ -361,7 +354,8 @@ void nsNativeAppSupportUnix::DieCB(SmcConn smc_conn, SmPointer client_data) {
       do_GetService("@mozilla.org/toolkit/app-startup;1");
 
   if (appService) {
-    appService->Quit(nsIAppStartup::eForceQuit);
+    bool userAllowedQuit = false;
+    appService->Quit(nsIAppStartup::eForceQuit, &userAllowedQuit);
   }
   // Quit causes the shutdown to begin but the shutdown process is asynchronous
   // so we can't DisconnectFromSM() yet
@@ -583,8 +577,7 @@ nsNativeAppSupportUnix::Start(bool* aRetVal) {
       // is what Breakpad does
       nsAutoCString leafName;
       rv = executablePath->GetNativeLeafName(leafName);
-      if (NS_SUCCEEDED(rv) &&
-          StringEndsWith(leafName, NS_LITERAL_CSTRING("-bin"))) {
+      if (NS_SUCCEEDED(rv) && StringEndsWith(leafName, "-bin"_ns)) {
         leafName.SetLength(leafName.Length() - strlen("-bin"));
         executablePath->SetNativeLeafName(leafName);
       }
@@ -608,7 +601,7 @@ nsNativeAppSupportUnix::Start(bool* aRetVal) {
   SmPropValue valsRestart[3], valsClone[1], valsProgram[1], valsUser[1];
   int n = 0;
 
-  NS_NAMED_LITERAL_CSTRING(kClientIDParam, "--sm-client-id");
+  constexpr auto kClientIDParam = "--sm-client-id"_ns;
 
   SetSMValue(valsRestart[0], path);
   SetSMValue(valsRestart[1], kClientIDParam);
@@ -632,7 +625,7 @@ nsNativeAppSupportUnix::Start(bool* aRetVal) {
   if (pw && pw->pw_name) {
     userName = pw->pw_name;
   } else {
-    userName = NS_LITERAL_CSTRING("nobody");
+    userName = "nobody"_ns;
     MOZ_LOG(
         sMozSMLog, LogLevel::Warning,
         ("Could not determine user-name. Falling back to %s.", userName.get()));

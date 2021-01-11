@@ -27,6 +27,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/BindingCallContext.h"
 #include "nsWrapperCache.h"
 #include "nsJSEnvironment.h"
 #include "xpcpublic.h"
@@ -64,7 +65,7 @@ class CallbackObject : public nsISupports {
   explicit CallbackObject(JSContext* aCx, JS::Handle<JSObject*> aCallback,
                           JS::Handle<JSObject*> aCallbackGlobal,
                           nsIGlobalObject* aIncumbentGlobal) {
-    if (aCx && JS::ContextOptionsRef(aCx).asyncStack()) {
+    if (aCx && JS::IsAsyncStackCaptureEnabledForRealm(aCx)) {
       JS::RootedObject stack(aCx);
       if (!JS::CaptureCurrentStack(aCx, &stack)) {
         JS_ClearPendingException(aCx);
@@ -93,7 +94,7 @@ class CallbackObject : public nsISupports {
   // This means that any native callee which receives a CallbackObject as an
   // argument can safely rely on the callback being non-null so long as it
   // doesn't trigger any scripts before it accesses it.
-  JS::Handle<JSObject*> CallbackOrNull() const {
+  JSObject* CallbackOrNull() const {
     mCallback.exposeToActiveJS();
     return CallbackPreserveColor();
   }
@@ -118,23 +119,10 @@ class CallbackObject : public nsISupports {
   /*
    * This getter does not change the color of the JSObject meaning that the
    * object returned is not guaranteed to be kept alive past the next CC.
-   *
-   * This should only be called if you are certain that the return value won't
-   * be passed into a JS API function and that it won't be stored without being
-   * rooted (or otherwise signaling the stored value to the CC).
-   *
-   * Note that calling Reset() will also affect the value of any handle
-   * previously returned here. Don't call Reset() if a handle is still in use.
    */
-  JS::Handle<JSObject*> CallbackPreserveColor() const {
-    // Calling fromMarkedLocation() is safe because we trace our mCallback, and
-    // because the value of mCallback cannot change after if has been set
-    // (except for calling Reset() as described above).
-    return JS::Handle<JSObject*>::fromMarkedLocation(mCallback.address());
-  }
-  JS::Handle<JSObject*> CallbackGlobalPreserveColor() const {
-    // The comment in CallbackPreserveColor applies here as well.
-    return JS::Handle<JSObject*>::fromMarkedLocation(mCallbackGlobal.address());
+  JSObject* CallbackPreserveColor() const { return mCallback.unbarrieredGet(); }
+  JSObject* CallbackGlobalPreserveColor() const {
+    return mCallbackGlobal.unbarrieredGet();
   }
 
   /*
@@ -142,7 +130,7 @@ class CallbackObject : public nsISupports {
    * used instead of CallbackOrNull() to avoid the overhead of
    * ExposeObjectToActiveJS().
    */
-  JS::Handle<JSObject*> CallbackKnownNotGray() const {
+  JSObject* CallbackKnownNotGray() const {
     JS::AssertObjectIsNotGray(mCallback);
     return CallbackPreserveColor();
   }
@@ -152,14 +140,12 @@ class CallbackObject : public nsISupports {
   enum ExceptionHandling {
     // Report any exception and don't throw it to the caller code.
     eReportExceptions,
+    // Throw any exception to the caller code and don't report it.
+    eRethrowExceptions,
     // Throw an exception to the caller code if the thrown exception is a
     // binding object for a DOMException from the caller's scope, otherwise
     // report it.
-    eRethrowContentExceptions,
-    // Throw exceptions to the caller code, unless the caller realm is
-    // provided, the exception is not a DOMException from the caller
-    // realm, and the caller realm does not subsume our unwrapped callback.
-    eRethrowExceptions
+    eRethrowContentExceptions
   };
 
   // Append a UTF-8 string to aOutString that describes the callback function,
@@ -349,6 +335,10 @@ class CallbackObject : public nsISupports {
 
     JSContext* GetContext() const { return mCx; }
 
+    // Safe to call this after the constructor has run without throwing on the
+    // ErrorResult it was handed.
+    BindingCallContext& GetCallContext() { return *mCallContext; }
+
    private:
     // We better not get copy-constructed
     CallSetup(const CallSetup&) = delete;
@@ -359,7 +349,7 @@ class CallbackObject : public nsISupports {
     JSContext* mCx;
 
     // Caller's realm. This will only have a sensible value if
-    // mExceptionHandling == eRethrowContentExceptions or eRethrowExceptions.
+    // mExceptionHandling == eRethrowContentExceptions.
     JS::Realm* mRealm;
 
     // And now members whose construction/destruction order we need to control.
@@ -379,6 +369,10 @@ class CallbackObject : public nsISupports {
     // pop the script settings stack. Though in practice we'll often manually
     // order those two things.
     Maybe<JSAutoRealm> mAr;
+
+    // Our BindingCallContext.  This is a Maybe so we can avoid constructing it
+    // until after we have a JSContext to construct it with.
+    Maybe<BindingCallContext> mCallContext;
 
     // An ErrorResult to possibly re-throw exceptions on and whether
     // we should re-throw them.
@@ -609,9 +603,7 @@ class MOZ_RAII MOZ_IS_SMARTPTR_TO_REFCOUNTED RootedCallback
   void operator=(decltype(nullptr) arg) { this->get().operator=(arg); }
 
   // Codegen relies on being able to do CallbackOrNull() and Callback() on us.
-  JS::Handle<JSObject*> CallbackOrNull() const {
-    return this->get()->CallbackOrNull();
-  }
+  JSObject* CallbackOrNull() const { return this->get()->CallbackOrNull(); }
 
   JSObject* Callback(JSContext* aCx) const {
     return this->get()->Callback(aCx);

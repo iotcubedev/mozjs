@@ -9,8 +9,6 @@
 
 #include "vm/Shape.h"
 
-#include "mozilla/TypeTraits.h"
-
 #include "gc/Allocator.h"
 #include "vm/Interpreter.h"
 #include "vm/JSObject.h"
@@ -127,9 +125,9 @@ inline Shape* Shape::new_(JSContext* cx, Handle<StackShape> other,
 }
 
 inline void Shape::updateBaseShapeAfterMovingGC() {
-  BaseShape* base = base_;
+  BaseShape* base = this->base();
   if (IsForwarded(base)) {
-    base_.unsafeSet(Forwarded(base));
+    unsafeSetHeaderPtr(Forwarded(base));
   }
 }
 
@@ -178,7 +176,7 @@ inline AccessorShape::AccessorShape(const StackShape& other, uint32_t nfixed)
 }
 
 inline void Shape::initDictionaryShape(const StackShape& child, uint32_t nfixed,
-                                       GCPtrShape* dictp) {
+                                       DictionaryShapeLink next) {
   if (child.isAccessorShape()) {
     new (this) AccessorShape(child, nfixed);
   } else {
@@ -186,16 +184,51 @@ inline void Shape::initDictionaryShape(const StackShape& child, uint32_t nfixed,
   }
   this->immutableFlags |= IN_DICTIONARY;
 
-  this->listp = nullptr;
-  if (dictp) {
-    insertIntoDictionary(dictp);
+  MOZ_ASSERT(dictNext.isNone());
+  if (!next.isNone()) {
+    insertIntoDictionaryBefore(next);
   }
+}
+
+inline void Shape::setNextDictionaryShape(Shape* shape) {
+  setDictionaryNextPtr(DictionaryShapeLink(shape));
+}
+
+inline void Shape::setDictionaryObject(JSObject* obj) {
+  setDictionaryNextPtr(DictionaryShapeLink(obj));
+}
+
+inline void Shape::clearDictionaryNextPtr() {
+  setDictionaryNextPtr(DictionaryShapeLink());
+}
+
+inline void Shape::setDictionaryNextPtr(DictionaryShapeLink next) {
+  MOZ_ASSERT(inDictionary());
+  dictNextPreWriteBarrier();
+  dictNext = next;
+}
+
+inline void Shape::dictNextPreWriteBarrier() {
+  // Only object pointers are traced, so we only need to barrier those.
+  if (dictNext.isObject()) {
+    JSObject::writeBarrierPre(dictNext.toObject());
+  }
+}
+
+inline GCPtrShape* DictionaryShapeLink::prevPtr() {
+  MOZ_ASSERT(!isNone());
+
+  if (isShape()) {
+    return &toShape()->parent;
+  }
+
+  return toObject()->as<NativeObject>().shapePtr();
 }
 
 template <class ObjectSubclass>
 /* static */ inline bool EmptyShape::ensureInitialCustomShape(
     JSContext* cx, Handle<ObjectSubclass*> obj) {
-  static_assert(mozilla::IsBaseOf<JSObject, ObjectSubclass>::value,
+  static_assert(std::is_base_of_v<JSObject, ObjectSubclass>,
                 "ObjectSubclass must be a subclass of JSObject");
 
   // If the provided object has a non-empty shape, it was given the cached
@@ -291,7 +324,7 @@ MOZ_ALWAYS_INLINE ShapeTable::Entry& ShapeTable::searchUnchecked(jsid id) {
   /* Collision: double hash. */
   uint32_t sizeLog2 = HASH_BITS - hashShift_;
   HashNumber hash2 = Hash2(hash0, sizeLog2, hashShift_);
-  uint32_t sizeMask = JS_BITMASK(sizeLog2);
+  uint32_t sizeMask = BitMask(sizeLog2);
 
   /* Save the first removed entry pointer so we can recycle it if adding. */
   Entry* firstRemoved;
@@ -386,7 +419,8 @@ MOZ_ALWAYS_INLINE Shape* Shape::searchNoHashify(Shape* start, jsid id) {
     JSContext* cx, HandleNativeObject obj, HandleId id, uint32_t slot,
     unsigned attrs) {
   MOZ_ASSERT(!JSID_IS_VOID(id));
-  MOZ_ASSERT(obj->uninlinedNonProxyIsExtensible());
+  MOZ_ASSERT_IF(!(JSID_IS_SYMBOL(id) && JSID_TO_SYMBOL(id)->isPrivateName()),
+                obj->uninlinedNonProxyIsExtensible());
   MOZ_ASSERT(!obj->containsPure(id));
 
   AutoKeepShapeCaches keep(cx);

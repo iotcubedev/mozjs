@@ -56,6 +56,9 @@ FOR_EACH_NONOBJECT_ALLOCKIND(EXPAND_MAPTYPETOFINALIZEKIND)
 
 extern void TraceRuntime(JSTracer* trc);
 
+// Trace roots but don't evict the nursery first; used from DumpHeap.
+extern void TraceRuntimeWithoutEviction(JSTracer* trc);
+
 extern void ReleaseAllJITCode(JSFreeOp* op);
 
 extern void PrepareForDebugGC(JSRuntime* rt);
@@ -68,14 +71,15 @@ extern unsigned NotifyGCPreSwap(JSObject* a, JSObject* b);
 
 extern void NotifyGCPostSwap(JSObject* a, JSObject* b, unsigned preResult);
 
-typedef void (*IterateChunkCallback)(JSRuntime* rt, void* data,
-                                     gc::Chunk* chunk);
-typedef void (*IterateZoneCallback)(JSRuntime* rt, void* data, JS::Zone* zone);
-typedef void (*IterateArenaCallback)(JSRuntime* rt, void* data,
-                                     gc::Arena* arena, JS::TraceKind traceKind,
-                                     size_t thingSize);
-typedef void (*IterateCellCallback)(JSRuntime* rt, void* data, void* thing,
-                                    JS::TraceKind traceKind, size_t thingSize);
+using IterateChunkCallback = void (*)(JSRuntime*, void*, gc::Chunk*,
+                                      const JS::AutoRequireNoGC&);
+using IterateZoneCallback = void (*)(JSRuntime*, void*, JS::Zone*,
+                                     const JS::AutoRequireNoGC&);
+using IterateArenaCallback = void (*)(JSRuntime*, void*, gc::Arena*,
+                                      JS::TraceKind, size_t,
+                                      const JS::AutoRequireNoGC&);
+using IterateCellCallback = void (*)(JSRuntime*, void*, JS::GCCellPtr, size_t,
+                                     const JS::AutoRequireNoGC&);
 
 /*
  * This function calls |zoneCallback| on every zone, |realmCallback| on
@@ -105,12 +109,8 @@ extern void IterateHeapUnbarrieredForZone(
 extern void IterateChunks(JSContext* cx, void* data,
                           IterateChunkCallback chunkCallback);
 
-typedef void (*IterateScriptCallback)(JSRuntime* rt, void* data,
-                                      JSScript* script,
-                                      const JS::AutoRequireNoGC& nogc);
-typedef void (*IterateLazyScriptCallback)(JSRuntime* rt, void* data,
-                                          LazyScript* lazyScript,
-                                          const JS::AutoRequireNoGC& nogc);
+using IterateScriptCallback = void (*)(JSRuntime*, void*, BaseScript*,
+                                       const JS::AutoRequireNoGC&);
 
 /*
  * Invoke scriptCallback on every in-use script for the given realm or for all
@@ -119,7 +119,7 @@ typedef void (*IterateLazyScriptCallback)(JSRuntime* rt, void* data,
 extern void IterateScripts(JSContext* cx, JS::Realm* realm, void* data,
                            IterateScriptCallback scriptCallback);
 extern void IterateLazyScripts(JSContext* cx, JS::Realm* realm, void* data,
-                               IterateLazyScriptCallback lazyScriptCallback);
+                               IterateScriptCallback lazyScriptCallback);
 
 JS::Realm* NewRealm(JSContext* cx, JSPrincipals* principals,
                     const JS::RealmOptions& options);
@@ -133,6 +133,8 @@ void FinishGC(JSContext* cx, JS::GCReason = JS::GCReason::FINISH_GC);
  * the only realm in its zone.
  */
 void MergeRealms(JS::Realm* source, JS::Realm* target);
+
+void CollectSelfHostingZone(JSContext* cx);
 
 enum VerifierType { PreBarrierVerifier };
 
@@ -193,9 +195,6 @@ struct MOZ_RAII AutoDisableCompactingGC {
  private:
   JSContext* cx;
 };
-
-// This is the same as IsInsideNursery, but not inlined.
-bool UninlinedIsInsideNursery(const gc::Cell* cell);
 
 } /* namespace js */
 

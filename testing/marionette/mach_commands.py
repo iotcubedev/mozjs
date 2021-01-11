@@ -5,8 +5,12 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import argparse
+import functools
+import logging
 import os
 import sys
+
+from six import iteritems
 
 from mach.decorators import (
     CommandProvider,
@@ -16,6 +20,7 @@ from mach.decorators import (
 from mozbuild.base import (
     MachCommandBase,
     MachCommandConditions as conditions,
+    BinaryNotFoundException,
 )
 
 SUPPORTED_APPS = ['firefox', 'android', 'thunderbird']
@@ -44,7 +49,7 @@ def run_marionette(tests, binary=None, topsrcdir=None, **kwargs):
     args.binary = binary
     args.logger = kwargs.pop('log', None)
 
-    for k, v in kwargs.iteritems():
+    for k, v in iteritems(kwargs):
         setattr(args, k, v)
 
     parser.verify_usage(args)
@@ -60,25 +65,12 @@ def run_marionette(tests, binary=None, topsrcdir=None, **kwargs):
         return 0
 
 
-def is_buildapp_in(*apps):
-    def is_buildapp_supported(cls):
-        for a in apps:
-            c = getattr(conditions, 'is_{}'.format(a), None)
-            if c and c(cls):
-                return True
-        return False
-
-    is_buildapp_supported.__doc__ = 'Must have a {} build.'.format(
-        ' or '.join(apps))
-    return is_buildapp_supported
-
-
 @CommandProvider
 class MarionetteTest(MachCommandBase):
     @Command("marionette-test",
              category="testing",
              description="Remote control protocol to Gecko, used for browser automation.",
-             conditions=[is_buildapp_in(*SUPPORTED_APPS)],
+             conditions=[functools.partial(conditions.is_buildapp_in, apps=SUPPORTED_APPS)],
              parser=create_parser_tests,
              )
     def marionette_test(self, tests, **kwargs):
@@ -96,12 +88,17 @@ class MarionetteTest(MachCommandBase):
                 tests = [os.path.join(self.topsrcdir,
                          "testing/marionette/harness/marionette_harness/tests/unit-tests.ini")]
 
-        # Force disable e10s because it is not supported in Fennec
-        if kwargs.get("app") == "fennec":
-            kwargs["e10s"] = False
-
         if not kwargs.get("binary") and \
                 (conditions.is_firefox(self) or conditions.is_thunderbird(self)):
-            kwargs["binary"] = self.get_binary_path("app")
+            try:
+                kwargs["binary"] = self.get_binary_path("app")
+            except BinaryNotFoundException as e:
+                self.log(logging.ERROR, 'marionette-test',
+                         {'error': str(e)},
+                         'ERROR: {error}')
+                self.log(logging.INFO, 'marionette-test',
+                         {'help': e.help()},
+                         '{help}')
+                return 1
 
         return run_marionette(tests, topsrcdir=self.topsrcdir, **kwargs)

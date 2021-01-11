@@ -5,20 +5,23 @@
 from __future__ import absolute_import
 
 import glob
+import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import time
-import socket
+from subprocess import PIPE
 
 import mozinfo
 from mozprocess import ProcessHandler
-
 from mozproxy.backends.base import Playback
 from mozproxy.utils import (
     transform_platform,
     tooltool_download,
     download_file_from_url,
+    get_available_port,
     LOG,
 )
 
@@ -41,6 +44,14 @@ except Exception:
 if os.name == "nt" and "/" in DEFAULT_CERT_PATH:
     DEFAULT_CERT_PATH = DEFAULT_CERT_PATH.replace("/", "\\")
 
+
+def normalize_path(path):
+    path = os.path.normpath(path)
+    if mozinfo.os == "win":
+        return path.replace("\\", "\\\\\\")
+    return path
+
+
 # maximal allowed runtime of a mitmproxy command
 MITMDUMP_COMMAND_TIMEOUT = 30
 
@@ -52,8 +63,8 @@ POLICIES_CONTENT_ON = """{
     },
     "Proxy": {
       "Mode": "manual",
-      "HTTPProxy": "%(host)s:8080",
-      "SSLProxy": "%(host)s:8080",
+      "HTTPProxy": "%(host)s:%(port)d",
+      "SSLProxy": "%(host)s:%(port)d",
       "Passthrough": "%(host)s",
       "Locked": true
     }
@@ -73,21 +84,39 @@ POLICIES_CONTENT_OFF = """{
 class Mitmproxy(Playback):
     def __init__(self, config):
         self.config = config
+        self.host = (
+            "127.0.0.1" if "localhost" in self.config["host"] else self.config["host"]
+        )
+        self.port = None
         self.mitmproxy_proc = None
         self.mitmdump_path = None
-        self.browser_path = config.get("binary")
+
+        self.browser_path = ""
+        if config.get("binary", None):
+            self.browser_path = os.path.normpath(config.get("binary"))
+
         self.policies_dir = None
         self.ignore_mitmdump_exit_failure = config.get(
             "ignore_mitmdump_exit_failure", False
         )
+        self.recording_paths = None
 
         if self.config.get("playback_version") is None:
-            LOG.info("mitmproxy was not provided with a 'playback_version' "
-                     "getting 'playback_version' from 'playback_binary_manifest'")
-            if "4.0.4" in self.config["playback_binary_manifest"]:
-                self.config["playback_version"] = "4.0.4"
-            else:
-                self.config["playback_version"] = "2.0.2"
+            LOG.info(
+                "mitmproxy was not provided with a 'playback_version' "
+                "Using default playback version: 4.0.4"
+            )
+            self.config["playback_version"] = "4.0.4"
+
+        if self.config.get("playback_binary_manifest") is None:
+            LOG.info(
+                "mitmproxy was not provided with a 'playback_binary_manifest' "
+                "Using default playback_binary_manifest"
+            )
+            self.config["playback_binary_manifest"] = (
+                "mitmproxy-rel-bin-%s-{platform}.manifest"
+                % self.config["playback_version"]
+            )
 
         # mozproxy_dir is where we will download all mitmproxy required files
         # when running locally it comes from obj_path via mozharness/mach
@@ -112,6 +141,9 @@ class Mitmproxy(Playback):
         # where to get the data
         os.environ["MOZPROXY_DIR"] = self.mozproxy_dir
 
+        LOG.info("Playback tool: %s" % self.config["playback_tool"])
+        LOG.info("Playback tool version: %s" % self.config["playback_version"])
+
     def start(self):
         # go ahead and download and setup mitmproxy
         self.download()
@@ -135,8 +167,13 @@ class Mitmproxy(Playback):
         transformed_manifest = transform_platform(_manifest, self.config["platform"])
 
         # generate the mitmdump_path
-        self.mitmdump_path = os.path.join(self.mozproxy_dir, "mitmdump-%s" %
-                                          self.config["playback_version"], "mitmdump")
+        self.mitmdump_path = os.path.normpath(
+            os.path.join(
+                self.mozproxy_dir,
+                "mitmdump-%s" % self.config["playback_version"],
+                "mitmdump",
+            )
+        )
 
         # Check if mitmproxy bin exists
         if os.path.exists(self.mitmdump_path):
@@ -150,8 +187,8 @@ class Mitmproxy(Playback):
 
             LOG.info("downloading mitmproxy binary")
             tooltool_download(
-                transformed_manifest, self.config["run_local"],
-                download_path)
+                transformed_manifest, self.config["run_local"], download_path
+            )
 
         if "playback_pageset_manifest" in self.config:
             # we use one pageset for all platforms
@@ -186,6 +223,7 @@ class Mitmproxy(Playback):
         """Startup mitmproxy and replay the specified flow file"""
         if self.mitmproxy_proc is not None:
             raise Exception("Proxy already started.")
+        self.port = get_available_port()
         LOG.info("mitmdump path: %s" % mitmdump_path)
         LOG.info("browser path: %s" % browser_path)
 
@@ -194,69 +232,64 @@ class Mitmproxy(Playback):
         env["PATH"] = os.path.dirname(browser_path) + os.pathsep + env["PATH"]
         command = [mitmdump_path]
 
+        # add proxy host and port options
+        command.extend(["--listen-host", self.host, "--listen-port", str(self.port)])
+
         if "playback_tool_args" in self.config:
             LOG.info("Staring Proxy using provided command line!")
             command.extend(self.config["playback_tool_args"])
         elif "playback_files" in self.config:
             script = os.path.join(
-                                os.path.dirname(os.path.realpath(__file__)), "scripts",
-                                "alternate-server-replay-{}.py".format(
-                                    self.config["playback_version"]))
-            recording_paths = self.config["playback_files"]
-            # this part is platform-specific
-            if mozinfo.os == "win":
-                script = script.replace("\\", "\\\\\\")
-                recording_paths = [recording_path.replace("\\", "\\\\\\")
-                                   for recording_path in recording_paths]
+                os.path.dirname(os.path.realpath(__file__)),
+                "scripts",
+                "alternate-server-replay.py",
+            )
+            self.recording_paths = [normalize_path(recording_path)
+                                    for recording_path in self.config["playback_files"]]
 
-            if self.config["playback_version"] == "2.0.2":
-                args = [
-                    "--replay-kill-extra",
-                    "-v",
-                    "--script",
-                    '""{} {}""'.format(script, " ".join(recording_paths)),
-                ]
-
-                if not self.config["playback_upstream_cert"]:
-                    LOG.info("No upstream certificate sniffing")
-                    args.insert(0, "--no-upstream-cert")
-                self.playback.config["playback_tool_args"] = args
-            elif self.config["playback_version"] == "4.0.4":
+            if self.config["playback_version"] in ["4.0.4", "5.1.1"]:
                 args = [
                     "-v",
+                    "--set",
+                    "upstream_cert=false",
+                    "--set",
+                    "upload_dir=" + normalize_path(self.upload_dir),
                     "--set",
                     "websocket=false",
                     "--set",
-                    "server_replay_files={}".format(",".join(recording_paths)),
+                    "server_replay_files={}".format(",".join(self.recording_paths)),
                     "--scripts",
-                    script,
+                    normalize_path(script),
                 ]
-                if not self.config["playback_upstream_cert"]:
-                    LOG.info("No upstream certificate sniffing")
-                    args = ["--set", "upstream_cert=false"] + args
                 command.extend(args)
             else:
                 raise Exception("Mitmproxy version is unknown!")
 
         else:
-            raise Exception("Mitmproxy can't start playback! Playback settings missing.")
+            raise Exception(
+                "Mitmproxy can't start playback! Playback settings missing."
+            )
 
         LOG.info("Starting mitmproxy playback using env path: %s" % env["PATH"])
         LOG.info("Starting mitmproxy playback using command: %s" % " ".join(command))
         # to turn off mitmproxy log output, use these params for Popen:
         # Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         self.mitmproxy_proc = ProcessHandler(
-            command, logfile=os.path.join(self.upload_dir, "mitmproxy.log"), env=env
+            command,
+            logfile=os.path.join(self.upload_dir, "mitmproxy.log"),
+            env=env,
+            processStderrLine=LOG.error,
+            storeOutput=False,
         )
         self.mitmproxy_proc.run()
         end_time = time.time() + MITMDUMP_COMMAND_TIMEOUT
         ready = False
         while time.time() < end_time:
-            ready = self.check_proxy()
+            ready = self.check_proxy(host=self.host, port=self.port)
             if ready:
                 LOG.info(
-                    "Mitmproxy playback successfully started as pid %d"
-                    % self.mitmproxy_proc.pid
+                    "Mitmproxy playback successfully started on %s:%d as pid %d"
+                    % (self.host, self.port, self.mitmproxy_proc.pid)
                 )
                 return
             time.sleep(0.25)
@@ -272,25 +305,40 @@ class Mitmproxy(Playback):
         LOG.info(
             "Stopping mitmproxy playback, killing process %d" % self.mitmproxy_proc.pid
         )
+        # On Windows, mozprocess brutally kills mitmproxy with TerminateJobObject
+        # The process has no chance to gracefully shutdown.
+        # Here, we send the process a break event to give it a chance to wrapup.
+        # See the signal handler in the alternate-server-replay-4.0.4.py script
+        if mozinfo.os == "win":
+            LOG.info("Sending CTRL_BREAK_EVENT to mitmproxy")
+            os.kill(self.mitmproxy_proc.pid, signal.CTRL_BREAK_EVENT)
+            time.sleep(2)
 
         exit_code = self.mitmproxy_proc.kill()
+        self.mitmproxy_proc = None
+
         if exit_code != 0:
-            # I *think* we can still continue, as process will be automatically
-            # killed anyway when mozharness is done (?) if not, we won't be able
-            # to startup mitmxproy next time if it is already running
             if exit_code is None:
                 LOG.error("Failed to kill the mitmproxy playback process")
-            else:
-                log_func = LOG.error
-                if self.ignore_mitmdump_exit_failure:
-                    log_func = LOG.info
-                log_func("Mitmproxy exited with error code %d" % exit_code)
+                return
+
+            if mozinfo.os == "win":
+                from mozprocess.winprocess import ERROR_CONTROL_C_EXIT  # noqa
+
+                if exit_code == ERROR_CONTROL_C_EXIT:
+                    LOG.info(
+                        "Successfully killed the mitmproxy playback process"
+                        " with exit code %d" % exit_code
+                    )
+                    return
+            log_func = LOG.error
+            if self.ignore_mitmdump_exit_failure:
+                log_func = LOG.info
+            log_func("Mitmproxy exited with error code %d" % exit_code)
         else:
             LOG.info("Successfully killed the mitmproxy playback process")
 
-        self.mitmproxy_proc = None
-
-    def check_proxy(self, host="localhost", port=8080):
+    def check_proxy(self, host, port):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.connect((host, port))
@@ -300,11 +348,50 @@ class Mitmproxy(Playback):
         except socket.error:
             return False
 
+    def confidence(self):
+        file_name = "mitm_netlocs_%s.json" % os.path.splitext(
+            os.path.basename(
+                self.recording_paths[0]
+            )
+        )[0]
+        path = os.path.normpath(os.path.join(self.upload_dir,
+                                             file_name))
+        if os.path.exists(path):
+            try:
+                LOG.info("Reading confidence values from: %s" % path)
+                with open(path, "r") as f:
+                    data = json.load(f)
+                    return {
+                        "confidence": {
+                            "values": data["confidence"],
+                            "subtest-prefix-type": False,
+                            "unit": "%",
+                            "shouldAlert": True,
+                            "lowerIsBetter": False
+                        },
+                        "not-replayed": {
+                            "values": data["not-replayed"],
+                            "subtest-prefix-type": False,
+                            "shouldAlert": False,
+                            "unit": "a.u."
+                        },
+                        "replayed": {
+                            "values": data["replayed"],
+                            "subtest-prefix-type": False,
+                            "unit": "a.u.",
+                            "shouldAlert": False,
+                            "lowerIsBetter": False
+                        }
+                    }
+            except Exception:
+                LOG.info("Can't read netlocs file!", exc_info=True)
+                return None
+        else:
+            LOG.info("Netlocs file is not available! Cant find %s" % path)
+            return None
+
 
 class MitmproxyDesktop(Mitmproxy):
-    def __init__(self, config):
-        Mitmproxy.__init__(self, config)
-
     def setup(self):
         """
         Installs certificates.
@@ -348,8 +435,8 @@ class MitmproxyDesktop(Mitmproxy):
 
         self.write_policies_json(
             self.policies_dir,
-            policies_content=POLICIES_CONTENT_ON % {"cert": self.cert_path,
-                                                    "host": self.config["host"]},
+            policies_content=POLICIES_CONTENT_ON
+            % {"cert": self.cert_path, "host": self.host, "port": self.port},
         )
 
         # cannot continue if failed to add CA cert to Firefox, need to check
@@ -382,8 +469,8 @@ class MitmproxyDesktop(Mitmproxy):
             LOG.info("Firefox policies file contents:")
             LOG.info(contents)
             if (
-                    POLICIES_CONTENT_ON
-                    % {"cert": self.cert_path, "host": self.config["host"]}
+                POLICIES_CONTENT_ON
+                % {"cert": self.cert_path, "host": self.host, "port": self.port}
             ) in contents:
                 LOG.info("Verified mitmproxy CA certificate is installed in Firefox")
             else:
@@ -411,15 +498,6 @@ class MitmproxyDesktop(Mitmproxy):
 
 
 class MitmproxyAndroid(Mitmproxy):
-    def __init__(self, config, android_device):
-        Mitmproxy.__init__(self, config)
-        self.android_device = android_device
-
-    @property
-    def certutil_sleep_seconds(self):
-        """Time to sleep, in seconds, after issuing a `certutil` command."""
-        return 10 if not self.config["run_local"] else 1
-
     def setup(self):
         self.download_and_install_host_utils()
         self.install_mitmproxy_cert(self.browser_path)
@@ -435,13 +513,16 @@ class MitmproxyAndroid(Mitmproxy):
         """
         if self.config["run_local"]:
             # when running locally, it is found in the Firefox desktop build (..obj../dist/bin)
-            self.certutil = os.path.join(os.environ["MOZ_HOST_BIN"], "certutil")
+            self.certutil_path = os.path.join(os.environ["MOZ_HOST_BIN"], "certutil")
             if not (
-                    os.path.isfile(self.certutil) and os.access(self.certutil, os.X_OK)
+                os.path.isfile(self.certutil_path)
+                and os.access(self.certutil_path, os.X_OK)
             ):
-                raise Exception("Abort: unable to execute certutil: {}".format(self.certutil))
-            self.certutil = os.environ["MOZ_HOST_BIN"]
-            os.environ["LD_LIBRARY_PATH"] = self.certutil
+                raise Exception(
+                    "Abort: unable to execute certutil: {}".format(self.certutil_path)
+                )
+            self.certutil_path = os.environ["MOZ_HOST_BIN"]
+            os.environ["LD_LIBRARY_PATH"] = self.certutil_path
         else:
             # must download certutil inside hostutils via tooltool; use this manifest:
             # mozilla-central/testing/config/tooltool-manifests/linux64/hostutils.manifest
@@ -479,19 +560,19 @@ class MitmproxyAndroid(Mitmproxy):
             tooltool_download(_dest, self.config["run_local"], self.mozproxy_dir)
 
             # the production bitbar container host is always linux
-            self.certutil = glob.glob(
+            self.certutil_path = glob.glob(
                 os.path.join(self.mozproxy_dir, "host-utils*[!z|checksum]")
             )[0]
 
             # must add hostutils/certutil to the path
-            os.environ["LD_LIBRARY_PATH"] = self.certutil
+            os.environ["LD_LIBRARY_PATH"] = self.certutil_path
 
         bin_suffix = mozinfo.info.get("bin_suffix", "")
-        self.certutil = os.path.join(self.certutil, "certutil" + bin_suffix)
-        if os.path.isfile(self.certutil):
-            LOG.info("certutil is found at: %s" % self.certutil)
+        self.certutil_path = os.path.join(self.certutil_path, "certutil" + bin_suffix)
+        if os.path.isfile(self.certutil_path):
+            LOG.info("certutil is found at: %s" % self.certutil_path)
         else:
-            raise Exception("unable to find certutil at %s" % self.certutil)
+            raise Exception("unable to find certutil at %s" % self.certutil_path)
 
     def install_mitmproxy_cert(self, browser_path):
         """Install the CA certificate generated by mitmproxy, into geckoview android
@@ -520,8 +601,7 @@ class MitmproxyAndroid(Mitmproxy):
 
     def import_certificate_in_cert_db(self, cert_db_location, local_cert_path):
         # import mitmproxy cert into the db
-        command = [
-            self.certutil,
+        args = [
             "-A",
             "-d",
             cert_db_location,
@@ -533,31 +613,18 @@ class MitmproxyAndroid(Mitmproxy):
             "-i",
             local_cert_path,
         ]
-
-        LOG.info(
-            "importing mitmproxy cert into db using command: %s" % " ".join(command)
-        )
-
-        cmd_proc = subprocess.Popen(command, env=os.environ.copy())
-        time.sleep(self.certutil_sleep_seconds)
-
-        cmd_terminated = cmd_proc.poll()
-        if cmd_terminated is None:  # None value indicates process hasn't terminated
-            LOG.critical(
-                "command to import mitmproxy cert into cert db failed to complete"
-            )
+        LOG.info("importing mitmproxy cert into db using command")
+        self.certutil(args)
 
     def create_cert_db(self, cert_db_location):
         # create cert db if it doesn't already exist; it may exist already
         # if a previous pageload test ran in the same test suite
-        command = [self.certutil, "-d", cert_db_location, "-N", "--empty-password"]
+        args = ["-d", cert_db_location, "-N", "--empty-password"]
 
-        LOG.info("creating nss cert database using command: %s" % " ".join(command))
-        cmd_proc = subprocess.Popen(command, env=os.environ.copy())
-        time.sleep(self.certutil_sleep_seconds)
-        cmd_terminated = cmd_proc.poll()
-        if cmd_terminated is None:  # None value indicates process hasn't terminated
-            raise Exception("nss cert db creation command failed to complete")
+        LOG.info("creating nss cert database")
+
+        self.certutil(args)
+
         if not self.cert_db_exists(cert_db_location):
             raise Exception("nss cert db creation command failed. Cert db not created.")
 
@@ -566,21 +633,16 @@ class MitmproxyAndroid(Mitmproxy):
         LOG.info(
             "checking if the nss cert db already exists in the android browser profile"
         )
-        command = [self.certutil, "-d", cert_db_location, "-L"]
 
-        try:
-            subprocess.check_call(command, env=os.environ.copy())
+        args = ["-d", cert_db_location, "-L"]
+        cert_db_exists = self.certutil(args, raise_exception=False)
+
+        if cert_db_exists:
             LOG.info("the nss cert db exists")
-            cert_db_exists = True
-        except subprocess.CalledProcessError:
-            # this means the nss cert db doesn't exist yet
-            LOG.info("nss cert db doesn't exist yet. Note: certutil error is expected!!!")
-            cert_db_exists = False
-
-        # try a forced pause between certutil cmds; possibly reduce later
-        time.sleep(self.certutil_sleep_seconds)
-
-        return cert_db_exists
+            return True
+        else:
+            LOG.info("nss cert db doesn't exist yet.")
+            return False
 
     def is_mitmproxy_cert_installed(self, cert_db_location):
         """Verify mitmxproy CA cert was added to Firefox on android"""
@@ -590,21 +652,41 @@ class MitmproxyAndroid(Mitmproxy):
         LOG.info(
             "getting the list of certs in the nss cert db in the android browser profile"
         )
-        command = [self.certutil, "-d", cert_db_location, "-L"]
+        args = ["-d", cert_db_location, "-L"]
 
-        try:
-            cmd_output = subprocess.check_output(command, env=os.environ.copy())
-        except subprocess.CalledProcessError:
-            # cmd itself failed
-            LOG.error(cmd_output)
-            raise Exception("certutil command failed")
+        cmd_output = self.certutil(args)
 
-        # check output from the certutil command, see if 'mitmproxy-cert' is listed
-        time.sleep(self.certutil_sleep_seconds)
-        LOG.info(cmd_output)
         if "mitmproxy-cert" in cmd_output:
             LOG.info(
                 "verfied the mitmproxy-cert is installed in the nss cert db on android"
             )
             return True
         return False
+
+    def certutil(self, args, raise_exception=True):
+        cmd = [self.certutil_path] + list(args)
+        LOG.info("Certutil: Running command: %s" % " ".join(cmd))
+        try:
+            cmd_proc = subprocess.Popen(
+                cmd, stdout=PIPE, stderr=PIPE, env=os.environ.copy()
+            )
+
+            cmd_output, errs = cmd_proc.communicate()
+        except subprocess.SubprocessError:
+            LOG.critical("could not run the certutil command")
+            raise
+
+        if cmd_proc.returncode == 0:
+            # Debug purpose only remove if stable
+            LOG.info("Certutil returncode: %s" % cmd_proc.returncode)
+            LOG.info("Certutil output: %s" % cmd_output)
+            return cmd_output
+        else:
+            if raise_exception:
+                LOG.critical("Certutil command failed!!")
+                LOG.info("Certutil returncode: %s" % cmd_proc.returncode)
+                LOG.info("Certutil output: %s" % cmd_output)
+                LOG.info("Certutil error: %s" % errs)
+                raise Exception("Certutil command failed!!")
+            else:
+                return False

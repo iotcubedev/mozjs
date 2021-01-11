@@ -10,12 +10,9 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
 #include "nsISystemProxySettings.h"
-#include "nsIServiceManager.h"
 #include "mozilla/Components.h"
 #include "nsPrintfCString.h"
 #include "nsNetCID.h"
-#include "nsISupportsPrimitives.h"
-#include "nsIURI.h"
 #include "nsThreadUtils.h"
 #include "GeckoProfiler.h"
 #include "prnetdb.h"
@@ -190,7 +187,7 @@ nsresult nsWindowsSystemProxySettings::GetProxyForURI(const nsACString& aSpec,
 
   NS_ConvertUTF16toUTF8 cbuf(buf);
 
-  NS_NAMED_LITERAL_CSTRING(kSocksPrefix, "socks=");
+  constexpr auto kSocksPrefix = "socks="_ns;
   nsAutoCString prefix;
   ToLowerCase(aScheme, prefix);
 

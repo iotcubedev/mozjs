@@ -37,6 +37,7 @@ class Tabbar extends Component {
       menuDocument: PropTypes.object,
       onSelect: PropTypes.func,
       showAllTabsMenu: PropTypes.bool,
+      allTabsMenuButtonTooltip: PropTypes.string,
       activeTabId: PropTypes.string,
       renderOnlySelected: PropTypes.bool,
       sidebarToggleButton: PropTypes.shape({
@@ -48,6 +49,10 @@ class Tabbar extends Component {
         expandPaneTitle: PropTypes.string.isRequired,
         // Click callback
         onClick: PropTypes.func.isRequired,
+        // align toggle button to right
+        alignRight: PropTypes.bool,
+        // if set to true toggle-button rotate 90
+        canVerticalSplit: PropTypes.bool,
       }),
     };
   }
@@ -341,6 +346,7 @@ class Tabbar extends Component {
           onAllTabsMenuClick: this.onAllTabsMenuClick,
           renderOnlySelected: this.props.renderOnlySelected,
           showAllTabsMenu: this.props.showAllTabsMenu,
+          allTabsMenuButtonTooltip: this.props.allTabsMenuButtonTooltip,
           sidebarToggleButton: this.props.sidebarToggleButton,
           activeTab: this.state.activeTab,
           onAfterChange: this.onTabChanged,

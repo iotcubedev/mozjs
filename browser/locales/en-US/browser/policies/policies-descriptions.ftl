@@ -11,6 +11,8 @@
 
 policy-3rdparty = Set policies that WebExtensions can access via chrome.storage.managed.
 
+policy-AppAutoUpdate = Enable or disable automatic application update.
+
 policy-AppUpdateURL = Set custom app update URL.
 
 policy-Authentication = Configure integrated authentication for websites that support it.
@@ -31,11 +33,15 @@ policy-CertificatesDescription = Add certificates or use built-in certificates.
 
 policy-Cookies = Allow or deny websites to set cookies.
 
+policy-DisabledCiphers = Disable ciphers.
+
 policy-DefaultDownloadDirectory = Set the default download directory.
 
 policy-DisableAppUpdate = Prevent the browser from updating.
 
 policy-DisableBuiltinPDFViewer = Disable PDF.js, the built-in PDF viewer in { -brand-short-name }.
+
+policy-DisableDefaultBrowserAgent = Prevent the default browser agent from taking any actions. Only applicable to Windows; other platforms don’t have the agent.
 
 policy-DisableDeveloperTools = Block access to the developer tools.
 
@@ -52,7 +58,9 @@ policy-DisableForgetButton = Prevent access to the Forget button.
 
 policy-DisableFormHistory = Don’t remember search and form history.
 
-policy-DisableMasterPasswordCreation = If true, a master password can’t be created.
+policy-DisablePrimaryPasswordCreation = If true, a Primary Password can’t be created.
+
+policy-DisablePasswordReveal = Do not allow passwords to be revealed in saved logins.
 
 policy-DisablePocket = Disable the feature to save webpages to Pocket.
 
@@ -85,6 +93,9 @@ policy-DownloadDirectory = Set and lock the download directory.
 # “lock” means that the user won’t be able to change this setting
 policy-EnableTrackingProtection = Enable or disable Content Blocking and optionally lock it.
 
+# “lock” means that the user won’t be able to change this setting
+policy-EncryptedMediaExtensions = Enable or disable Encrypted Media Extensions and optionally lock it.
+
 # A “locked” extension can’t be disabled or removed by the user. This policy
 # takes 3 keys (“Install”, ”Uninstall”, ”Locked”), you can either keep them in
 # English or translate them as verbs.
@@ -98,6 +109,8 @@ policy-FirefoxHome = Configure Firefox Home.
 
 policy-FlashPlugin = Allow or deny usage of the Flash plugin.
 
+policy-Handlers = Configure default application handlers.
+
 policy-HardwareAcceleration = If false, turn off hardware acceleration.
 
 # “lock” means that the user won’t be able to change this setting
@@ -105,9 +118,19 @@ policy-Homepage = Set and optionally lock the homepage.
 
 policy-InstallAddonsPermission = Allow certain websites to install add-ons.
 
-policy-LegacyProfiles = Disable the feature enforcing a separate profile for each installation
+policy-LegacyProfiles = Disable the feature enforcing a separate profile for each installation.
+
+## Do not translate "SameSite", it's the name of a cookie attribute.
+
+policy-LegacySameSiteCookieBehaviorEnabled = Enable default legacy SameSite cookie behavior setting.
+
+policy-LegacySameSiteCookieBehaviorEnabledForDomainList = Revert to legacy SameSite behavior for cookies on specified sites.
+
+##
 
 policy-LocalFileLinks = Allow specific websites to link to local files.
+
+policy-PrimaryPassword = Require or prevent using a Primary Password.
 
 policy-NetworkPrediction = Enable or disable network prediction (DNS prefetching).
 
@@ -125,7 +148,12 @@ policy-OverridePostUpdatePage = Override the post-update “What’s New” page
 
 policy-PasswordManagerEnabled = Enable saving passwords to the password manager.
 
-policy-Permissions = Configure permissions for camera, microphone, location and notifications.
+# PDF.js and PDF should not be translated
+policy-PDFjs = Disable or configure PDF.js, the built-in PDF viewer in { -brand-short-name }.
+
+policy-Permissions2 = Configure permissions for camera, microphone, location, notifications, and autoplay.
+
+policy-PictureInPicture = Enable or disable Picture-in-Picture.
 
 policy-PopupBlocking = Allow certain websites to display popups by default.
 
@@ -153,6 +181,8 @@ policy-SSLVersionMax = Set the maximum SSL version.
 policy-SSLVersionMin = Set the minimum SSL version.
 
 policy-SupportMenu = Add a custom support menu item to the help menu.
+
+policy-UserMessaging = Don’t show certain messages to the user.
 
 # “format” refers to the format used for the value of this policy.
 policy-WebsiteFilter = Block websites from being visited. See documentation for more details on the format.

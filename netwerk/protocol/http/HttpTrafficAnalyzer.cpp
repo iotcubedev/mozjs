@@ -9,13 +9,14 @@
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
+#include "nsSocketTransportService2.h"
 
 namespace mozilla {
 namespace net {
 
-NS_NAMED_LITERAL_CSTRING(kInvalidCategory, "INVALID_CATEGORY");
+constexpr auto kInvalidCategory = "INVALID_CATEGORY"_ns;
 
-#define DEFINE_CATEGORY(_name, _idx) NS_LITERAL_CSTRING("Y" #_idx "_" #_name),
+#define DEFINE_CATEGORY(_name, _idx) nsLiteralCString("Y" #_idx "_" #_name),
 static const nsCString gKeyName[] = {
 #include "HttpTrafficAnalyzer.inc"
     kInvalidCategory,
@@ -176,7 +177,7 @@ HttpTrafficCategory HttpTrafficAnalyzer::CreateTrafficCategory(
   return HttpTrafficCategory::eInvalid;
 }
 
-nsresult HttpTrafficAnalyzer::IncrementHttpTransaction(
+void HttpTrafficAnalyzer::IncrementHttpTransaction(
     HttpTrafficCategory aCategory) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(StaticPrefs::network_traffic_analyzer_enabled());
@@ -185,12 +186,11 @@ nsresult HttpTrafficAnalyzer::IncrementHttpTransaction(
   LOG(("HttpTrafficAnalyzer::IncrementHttpTransaction [%s] [this=%p]\n",
        gKeyName[aCategory].get(), this));
 
-  Telemetry::AccumulateCategoricalKeyed(NS_LITERAL_CSTRING("Transaction"),
+  Telemetry::AccumulateCategoricalKeyed("Transaction"_ns,
                                         gTelemetryLabel[aCategory]);
-  return NS_OK;
 }
 
-nsresult HttpTrafficAnalyzer::IncrementHttpConnection(
+void HttpTrafficAnalyzer::IncrementHttpConnection(
     HttpTrafficCategory aCategory) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(StaticPrefs::network_traffic_analyzer_enabled());
@@ -199,12 +199,11 @@ nsresult HttpTrafficAnalyzer::IncrementHttpConnection(
   LOG(("HttpTrafficAnalyzer::IncrementHttpConnection [%s] [this=%p]\n",
        gKeyName[aCategory].get(), this));
 
-  Telemetry::AccumulateCategoricalKeyed(NS_LITERAL_CSTRING("Connection"),
+  Telemetry::AccumulateCategoricalKeyed("Connection"_ns,
                                         gTelemetryLabel[aCategory]);
-  return NS_OK;
 }
 
-nsresult HttpTrafficAnalyzer::IncrementHttpConnection(
+void HttpTrafficAnalyzer::IncrementHttpConnection(
     nsTArray<HttpTrafficCategory>&& aCategories) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(StaticPrefs::network_traffic_analyzer_enabled());
@@ -242,14 +241,13 @@ nsresult HttpTrafficAnalyzer::IncrementHttpConnection(
     break;
   }
 
-  Unused << IncrementHttpConnection(best);
-  return NS_OK;
+  IncrementHttpConnection(best);
 }
 
 #define CLAMP_U32(num) \
   Clamp<uint32_t>(num, 0, std::numeric_limits<uint32_t>::max())
 
-nsresult HttpTrafficAnalyzer::AccumulateHttpTransferredSize(
+void HttpTrafficAnalyzer::AccumulateHttpTransferredSize(
     HttpTrafficCategory aCategory, uint64_t aBytesRead, uint64_t aBytesSent) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   MOZ_ASSERT(StaticPrefs::network_traffic_analyzer_enabled());
@@ -265,7 +263,6 @@ nsresult HttpTrafficAnalyzer::AccumulateHttpTransferredSize(
     Telemetry::ScalarAdd(Telemetry::ScalarID::NETWORKING_DATA_TRANSFERRED_V3_KB,
                          NS_ConvertUTF8toUTF16(gKeyName[aCategory]), total);
   }
-  return NS_OK;
 }
 
 }  // namespace net

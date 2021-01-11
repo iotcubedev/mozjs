@@ -36,48 +36,53 @@ add_task(async function test_context_menu_iframe_fill() {
       url: TEST_ORIGIN + IFRAME_PAGE_PATH,
     },
     async function(browser) {
-      await openPasswordContextMenu(browser, [
-        "#test-iframe",
+      await openPasswordContextMenu(
+        browser,
         "#form-basic-password",
-      ]);
+        () => true,
+        browser.browsingContext.children[0]
+      );
 
       let popupMenu = document.getElementById("fill-login-popup");
 
       // Stores the original value of username
       function promiseFrameInputValue(name) {
-        return ContentTask.spawn(browser, name, function(inputname) {
-          let iframe = content.document.getElementById("test-iframe");
-          let input = iframe.contentDocument.getElementById(inputname);
-          return input.value;
-        });
+        return SpecialPowers.spawn(
+          browser.browsingContext.children[0],
+          [name],
+          function(inputname) {
+            return content.document.getElementById(inputname).value;
+          }
+        );
       }
       let usernameOriginalValue = await promiseFrameInputValue(
         "form-basic-username"
       );
 
       // Execute the command of the first login menuitem found at the context menu.
-      let passwordChangedPromise = ContentTask.spawn(
-        browser,
-        null,
-        async function() {
-          let frame = content.document.getElementById("test-iframe");
-          let passwordInput = frame.contentDocument.getElementById(
-            "form-basic-password"
-          );
-          await ContentTaskUtils.waitForEvent(passwordInput, "input");
-        }
-      );
-
       let firstLoginItem = popupMenu.getElementsByClassName(
         "context-login-item"
       )[0];
-      firstLoginItem.doCommand();
+      ok(firstLoginItem, "Found the first login item");
 
-      await passwordChangedPromise;
+      await TestUtils.waitForTick();
+
+      ok(
+        BrowserTestUtils.is_visible(firstLoginItem),
+        "First login menuitem is visible"
+      );
+
+      info("Clicking on the firstLoginItem");
+      // click on the login item to fill the password field, triggering an "input" event
+      await EventUtils.synthesizeMouseAtCenter(firstLoginItem, {});
+
+      let passwordValue = await TestUtils.waitForCondition(async () => {
+        let value = await promiseFrameInputValue("form-basic-password");
+        return value;
+      });
 
       // Find the used login by it's username.
       let login = getLoginFromUsername(firstLoginItem.label);
-      let passwordValue = await promiseFrameInputValue("form-basic-password");
       is(login.password, passwordValue, "Password filled and correct.");
 
       let usernameNewValue = await promiseFrameInputValue(
@@ -91,6 +96,9 @@ add_task(async function test_context_menu_iframe_fill() {
 
       let contextMenu = document.getElementById("contentAreaContextMenu");
       contextMenu.hidePopup();
+
+      await cleanupDoorhanger();
+      await cleanupPasswordNotifications();
     }
   );
 });
@@ -105,17 +113,20 @@ add_task(async function test_context_menu_iframe_sandbox() {
       url: TEST_ORIGIN + IFRAME_PAGE_PATH,
     },
     async function(browser) {
+      info("Opening context menu for test_context_menu_iframe_sandbox");
       await openPasswordContextMenu(
         browser,
-        ["#test-iframe-sandbox", "#form-basic-password"],
+        "#form-basic-password",
         function checkDisabled() {
+          info("checkDisabled for test_context_menu_iframe_sandbox");
           let popupHeader = document.getElementById("fill-login");
           ok(
-            popupHeader.disabled,
-            "Check that the Fill Login menu item is disabled"
+            popupHeader.hidden,
+            "Check that the Fill Login menu item is hidden"
           );
           return false;
-        }
+        },
+        browser.browsingContext.children[1]
       );
       let contextMenu = document.getElementById("contentAreaContextMenu");
       contextMenu.hidePopup();
@@ -135,15 +146,20 @@ add_task(async function test_context_menu_iframe_sandbox_same_origin() {
     async function(browser) {
       await openPasswordContextMenu(
         browser,
-        ["#test-iframe-sandbox", "#form-basic-password"],
+        "#form-basic-password",
         function checkDisabled() {
           let popupHeader = document.getElementById("fill-login");
           ok(
-            popupHeader.disabled,
+            !popupHeader.hidden,
+            "Check that the Fill Login menu item is visible"
+          );
+          ok(
+            !popupHeader.disabled,
             "Check that the Fill Login menu item is disabled"
           );
           return false;
-        }
+        },
+        browser.browsingContext.children[2]
       );
 
       let contextMenu = document.getElementById("contentAreaContextMenu");

@@ -58,6 +58,7 @@ class RTCPReceiver {
                bool receiver_only,
                RtcpPacketTypeCounterObserver* packet_type_counter_observer,
                RtcpBandwidthObserver* rtcp_bandwidth_observer,
+               RtcpEventObserver* rtcp_event_observer,
                RtcpIntraFrameObserver* rtcp_intra_frame_observer,
                TransportFeedbackObserver* transport_feedback_observer,
                VideoBitrateAllocationObserver* bitrate_allocation_observer,
@@ -84,7 +85,8 @@ class RTCPReceiver {
 
   // Get received sender packet and octet counts
   void RemoteRTCPSenderInfo(uint32_t* packet_count,
-                            uint32_t* octet_count) const;
+                            uint32_t* octet_count,
+                            NtpTime* ntp_timestamp) const;
 
   bool LastReceivedXrReferenceTimeInfo(rtcp::ReceiveTimeInfo* info) const;
 
@@ -220,6 +222,7 @@ class RTCPReceiver {
 
   rtc::CriticalSection feedbacks_lock_;
   RtcpBandwidthObserver* const rtcp_bandwidth_observer_;
+  RtcpEventObserver* const rtcp_event_observer_;
   RtcpIntraFrameObserver* const rtcp_intra_frame_observer_;
   TransportFeedbackObserver* const transport_feedback_observer_;
   VideoBitrateAllocationObserver* const bitrate_allocation_observer_;

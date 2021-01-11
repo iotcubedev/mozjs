@@ -117,6 +117,14 @@ struct FontFamilyName final {
     return FontFamilyName(genericType);
   }
 
+  bool IsNamedFamily(const nsAString& aFamilyName) const {
+    if (!IsNamed()) {
+      return false;
+    }
+    nsDependentAtomString name{mName};
+    return name.Equals(aFamilyName, nsCaseInsensitiveStringComparator);
+  }
+
   RefPtr<nsAtom> mName;  // null if mGeneric != Default
   StyleFontFamilyNameSyntax mSyntax = StyleFontFamilyNameSyntax::Quoted;
   StyleGenericFontFamily mGeneric = StyleGenericFontFamily::None;
@@ -169,7 +177,7 @@ class SharedFontList {
     return n;
   }
 
-  const nsTArray<FontFamilyName> mNames;
+  const nsTArray<FontFamilyName> mNames{};
 
   static void Initialize();
   static void Shutdown();
@@ -190,7 +198,7 @@ class FontFamilyList {
   using Syntax = StyleFontFamilyNameSyntax;
 
  public:
-  FontFamilyList() : mFontlist(WrapNotNull(SharedFontList::sEmpty.get())) {}
+  FontFamilyList() = default;
 
   explicit FontFamilyList(StyleGenericFontFamily aGenericType)
       : mFontlist(MakeNotNull<SharedFontList*>(aGenericType)) {}
@@ -204,9 +212,7 @@ class FontFamilyList {
   explicit FontFamilyList(nsTArray<FontFamilyName>&& aNames)
       : mFontlist(MakeNotNull<SharedFontList*>(std::move(aNames))) {}
 
-  FontFamilyList(const FontFamilyList& aOther)
-      : mFontlist(aOther.mFontlist),
-        mDefaultFontType(aOther.mDefaultFontType) {}
+  FontFamilyList(const FontFamilyList& aOther) = default;
 
   explicit FontFamilyList(NotNull<SharedFontList*> aFontList)
       : mFontlist(aFontList) {}
@@ -300,14 +306,9 @@ class FontFamilyList {
   }
 
   // searches for a specific non-generic name, case-insensitive comparison
-  bool Contains(const nsACString& aFamilyName) const {
-    NS_ConvertUTF8toUTF16 fam(aFamilyName);
+  bool Contains(const nsAString& aFamilyName) const {
     for (const FontFamilyName& name : mFontlist->mNames) {
-      if (!name.IsNamed()) {
-        continue;
-      }
-      nsDependentAtomString listname(name.mName);
-      if (listname.Equals(fam, nsCaseInsensitiveStringComparator())) {
+      if (name.IsNamedFamily(aFamilyName)) {
         return true;
       }
     }
@@ -335,7 +336,8 @@ class FontFamilyList {
   }
 
  protected:
-  NotNull<RefPtr<SharedFontList>> mFontlist;
+  NotNull<RefPtr<SharedFontList>> mFontlist{
+      WrapNotNull(SharedFontList::sEmpty.get())};
   StyleGenericFontFamily mDefaultFontType =
       StyleGenericFontFamily::None;  // or serif, or sans-serif
 };

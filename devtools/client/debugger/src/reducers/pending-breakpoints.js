@@ -9,13 +9,12 @@
  * @module reducers/pending-breakpoints
  */
 
-import { getSourcesByURL } from "./sources";
-
 import {
   createPendingBreakpoint,
   makePendingLocationId,
 } from "../utils/breakpoint";
-import { isGenerated } from "../utils/source";
+
+import { isPrettyURL } from "../utils/source";
 
 import type { SourcesState } from "./sources";
 import type { PendingBreakpoint, Source } from "../types";
@@ -36,6 +35,10 @@ function update(state: PendingBreakpointsState = {}, action: Action) {
 
     case "REMOVE_PENDING_BREAKPOINT":
       return removeBreakpoint(state, action);
+
+    case "REMOVE_BREAKPOINTS": {
+      return {};
+    }
   }
 
   return state;
@@ -45,8 +48,11 @@ function setBreakpoint(state, { breakpoint }) {
   if (breakpoint.options.hidden) {
     return state;
   }
-
-  const locationId = makePendingLocationId(breakpoint.location);
+  const location =
+    !breakpoint.location.sourceUrl || isPrettyURL(breakpoint.location.sourceUrl)
+      ? breakpoint.generatedLocation
+      : breakpoint.location;
+  const locationId = makePendingLocationId(location);
   const pendingBreakpoint = createPendingBreakpoint(breakpoint);
 
   return { ...state, [locationId]: pendingBreakpoint };
@@ -54,8 +60,8 @@ function setBreakpoint(state, { breakpoint }) {
 
 function removeBreakpoint(state, { location }) {
   const locationId = makePendingLocationId(location);
-
   state = { ...state };
+
   delete state[locationId];
   return state;
 }
@@ -82,12 +88,6 @@ export function getPendingBreakpointsForSource(
   state: OuterState,
   source: Source
 ): PendingBreakpoint[] {
-  const sources = getSourcesByURL(state, source.url);
-  if (sources.length > 1 && isGenerated(source)) {
-    // Don't return pending breakpoints for duplicated generated sources
-    return [];
-  }
-
   return getPendingBreakpointList(state).filter(pendingBreakpoint => {
     return (
       pendingBreakpoint.location.sourceUrl === source.url ||

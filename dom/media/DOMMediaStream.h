@@ -8,11 +8,8 @@
 
 #include "ImageContainer.h"
 
-#include "nsAutoPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
-#include "StreamTracks.h"
-#include "nsIDOMWindow.h"
 #include "nsIPrincipal.h"
 #include "MediaTrackConstraints.h"
 #include "mozilla/DOMEventTargetHelper.h"
@@ -22,9 +19,6 @@ namespace mozilla {
 
 class AbstractThread;
 class DOMMediaStream;
-class MediaStream;
-class MediaInputPort;
-class ProcessedMediaStream;
 
 enum class BlockingMode;
 
@@ -55,7 +49,7 @@ class OverlayImage;
  */
 class DOMMediaStream : public DOMEventTargetHelper,
                        public RelativeTimeline,
-                       public SupportsWeakPtr<DOMMediaStream> {
+                       public SupportsWeakPtr {
   typedef dom::MediaStreamTrack MediaStreamTrack;
   typedef dom::AudioStreamTrack AudioStreamTrack;
   typedef dom::VideoStreamTrack VideoStreamTrack;
@@ -64,11 +58,9 @@ class DOMMediaStream : public DOMEventTargetHelper,
  public:
   typedef dom::MediaTrackConstraints MediaTrackConstraints;
 
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(DOMMediaStream)
-
   class TrackListener {
    public:
-    virtual ~TrackListener() {}
+    virtual ~TrackListener() = default;
 
     /**
      * Called when the DOMMediaStream has a live track added, either by
@@ -91,6 +83,16 @@ class DOMMediaStream : public DOMEventTargetHelper,
      * Called when the DOMMediaStream has become inactive.
      */
     virtual void NotifyInactive(){};
+
+    /**
+     * Called when the DOMMediaStream has become audible.
+     */
+    virtual void NotifyAudible(){};
+
+    /**
+     * Called when the DOMMediaStream has become inaudible.
+     */
+    virtual void NotifyInaudible(){};
   };
 
   explicit DOMMediaStream(nsPIDOMWindowInner* aWindow);
@@ -139,6 +141,9 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
   // NON-WebIDL
 
+  // Returns true if this stream contains a live audio track.
+  bool Audible() const;
+
   /**
    * Returns true if this DOMMediaStream has aTrack in mTracks.
    */
@@ -164,6 +169,16 @@ class DOMMediaStream : public DOMEventTargetHelper,
   void AddTrackInternal(MediaStreamTrack* aTrack);
 
   /**
+   * Removes a MediaStreamTrack from mTracks and fires "removetrack" if it
+   * was removed.
+   *
+   * Note that "removetrack" is raised synchronously and only has an effect if
+   * this MediaStream is already exposed to script. For spec compliance this is
+   * to be called from an async task.
+   */
+  void RemoveTrackInternal(MediaStreamTrack* aTrack);
+
+  /**
    * Add an nsISupports object that this stream will keep alive as long as
    * the stream itself is alive.
    */
@@ -181,10 +196,6 @@ class DOMMediaStream : public DOMEventTargetHelper,
   // a dead pointer. Main thread only.
   void UnregisterTrackListener(TrackListener* aListener);
 
-  // Tells this MediaStream whether it can go inactive as soon as no tracks
-  // are live anymore.
-  void SetFinishedOnInactive(bool aFinishedOnInactive);
-
  protected:
   virtual ~DOMMediaStream();
 
@@ -195,6 +206,12 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
   // Dispatches NotifyInactive() to all registered track listeners.
   void NotifyInactive();
+
+  // Dispatches NotifyAudible() to all registered track listeners.
+  void NotifyAudible();
+
+  // Dispatches NotifyInaudible() to all registered track listeners.
+  void NotifyInaudible();
 
   // Dispatches NotifyTrackAdded() to all registered track listeners.
   void NotifyTrackAdded(const RefPtr<MediaStreamTrack>& aTrack);
@@ -225,11 +242,10 @@ class DOMMediaStream : public DOMEventTargetHelper,
   nsTArray<TrackListener*> mTrackListeners;
 
   // True if this stream has live tracks.
-  bool mActive;
+  bool mActive = false;
 
-  // For compatibility with mozCaptureStream, we in some cases do not go
-  // inactive until the MediaDecoder lets us. (Remove this in Bug 1302379)
-  bool mFinishedOnInactive;
+  // True if this stream has live audio tracks.
+  bool mAudible = false;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(DOMMediaStream, NS_DOMMEDIASTREAM_IID)

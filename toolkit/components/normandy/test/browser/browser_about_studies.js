@@ -4,6 +4,12 @@ ChromeUtils.import("resource://normandy/lib/AddonStudies.jsm", this);
 ChromeUtils.import("resource://normandy/lib/PreferenceExperiments.jsm", this);
 ChromeUtils.import("resource://normandy/lib/RecipeRunner.jsm", this);
 ChromeUtils.import("resource://normandy-content/AboutPages.jsm", this);
+const { ExperimentFakes } = ChromeUtils.import(
+  "resource://testing-common/MSTestUtils.jsm"
+);
+const { ExperimentManager } = ChromeUtils.import(
+  "resource://messaging-system/experiments/ExperimentManager.jsm"
+);
 
 const { NormandyTestUtils } = ChromeUtils.import(
   "resource://testing-common/NormandyTestUtils.jsm"
@@ -22,8 +28,10 @@ function withAboutStudies(testFunc) {
 
 // Test that the code renders at all
 decorate_task(withAboutStudies, async function testAboutStudiesWorks(browser) {
-  const appFound = await ContentTask.spawn(browser, null, () =>
-    content.document.getElementById("app")
+  const appFound = await SpecialPowers.spawn(
+    browser,
+    [],
+    () => !!content.document.getElementById("app")
   );
   ok(appFound, "App element was found");
 });
@@ -35,7 +43,7 @@ decorate_task(
   }),
   withAboutStudies,
   async function testLearnMore(browser) {
-    ContentTask.spawn(browser, null, async () => {
+    SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(() =>
         doc.getElementById("shield-studies-learn-more")
@@ -61,7 +69,7 @@ decorate_task(withAboutStudies, async function testUpdatePreferences(browser) {
   // We have to use gBrowser instead of browser in most spots since we're
   // dealing with a new tab outside of the about:studies tab.
   const tab = await BrowserTestUtils.switchTab(gBrowser, () => {
-    ContentTask.spawn(browser, null, async () => {
+    SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(() =>
         doc.getElementById("shield-studies-update-preferences")
@@ -112,7 +120,8 @@ decorate_task(
   PreferenceExperiments.withMockExperiments([
     preferenceStudyFactory({
       slug: "fake-study-d",
-      userFacingName: "D Fake Preference Study",
+      userFacingName: null,
+      userFacingDescription: null,
       lastSeen: new Date(2018, 0, 3),
       expired: false,
     }),
@@ -131,9 +140,9 @@ decorate_task(
   ]),
   withAboutStudies,
   async function testStudyListing(addonStudies, prefStudies, browser) {
-    await ContentTask.spawn(
+    await SpecialPowers.spawn(
       browser,
-      { addonStudies, prefStudies },
+      [{ addonStudies, prefStudies }],
       async ({ addonStudies, prefStudies }) => {
         const doc = content.document;
 
@@ -272,7 +281,7 @@ decorate_task(
   AddonStudies.withStudies([]),
   withAboutStudies,
   async function testStudyListingNoStudies(studies, browser) {
-    await ContentTask.spawn(browser, null, async () => {
+    await SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(
         () => doc.querySelectorAll(".study-list-info").length
@@ -316,7 +325,7 @@ decorate_task(
     try {
       RecipeRunner.disable();
 
-      await ContentTask.spawn(browser, null, async () => {
+      await SpecialPowers.spawn(browser, [], async () => {
         const doc = content.document;
         await ContentTaskUtils.waitForCondition(() =>
           doc.querySelector(".info-box-content > span")
@@ -354,7 +363,7 @@ decorate_task(
       "RecipeRunner should be enabled as a Precondition"
     );
 
-    await ContentTask.spawn(browser, null, async () => {
+    await SpecialPowers.spawn(browser, [], async () => {
       const doc = content.document;
       await ContentTaskUtils.waitForCondition(() => {
         const span = doc.querySelector(".info-box-content > span");
@@ -400,9 +409,9 @@ decorate_task(
       reason: "disabled-automatically-test",
     });
 
-    await ContentTask.spawn(
+    await SpecialPowers.spawn(
       browser,
-      { addonStudy, prefStudy },
+      [{ addonStudy, prefStudy }],
       async ({ addonStudy, prefStudy }) => {
         const doc = content.document;
 
@@ -465,3 +474,201 @@ decorate_task(
     );
   }
 );
+
+// Test that clicking remove on a study updates even about:studies pages
+// that are not currently in focus.
+decorate_task(
+  AddonStudies.withStudies([
+    addonStudyFactory({
+      slug: "fake-addon-study",
+      userFacingName: "Fake Add-on Study",
+      active: true,
+      userFacingDescription: "A fake description",
+      studyStartDate: new Date(2018, 0, 4),
+    }),
+  ]),
+  PreferenceExperiments.withMockExperiments([
+    preferenceStudyFactory({
+      slug: "fake-pref-study",
+      userFacingName: "Fake Preference Study",
+      lastSeen: new Date(2018, 0, 3),
+      expired: false,
+    }),
+  ]),
+  withAboutStudies,
+  async function testOtherTabsUpdated([addonStudy], [prefStudy], browser) {
+    // Ensure that both our studies are active in the current tab.
+    await SpecialPowers.spawn(
+      browser,
+      [{ addonStudy, prefStudy }],
+      async ({ addonStudy, prefStudy }) => {
+        const doc = content.document;
+        await ContentTaskUtils.waitForCondition(
+          () => doc.querySelectorAll(".remove-button").length == 2,
+          "waiting for page to load"
+        );
+        let activeNames = Array.from(
+          doc.querySelectorAll(".active-study-list .study")
+        ).map(row => row.dataset.studySlug);
+        let inactiveNames = Array.from(
+          doc.querySelectorAll(".inactive-study-list .study")
+        ).map(row => row.dataset.studySlug);
+
+        Assert.deepEqual(
+          activeNames,
+          [addonStudy.slug, prefStudy.slug],
+          "Both studies should be listed as active"
+        );
+        Assert.deepEqual(
+          inactiveNames,
+          [],
+          "No studies should be listed as inactive"
+        );
+      }
+    );
+
+    // Open a new about:studies tab.
+    await BrowserTestUtils.withNewTab("about:studies", async browser => {
+      // Delete both studies in this tab; this should pass if previous tests have passed.
+      await SpecialPowers.spawn(
+        browser,
+        [{ addonStudy, prefStudy }],
+        async ({ addonStudy, prefStudy }) => {
+          const doc = content.document;
+
+          function getStudyRow(docElem, slug) {
+            return docElem.querySelector(`.study[data-study-slug="${slug}"]`);
+          }
+
+          await ContentTaskUtils.waitForCondition(
+            () => doc.querySelectorAll(".remove-button").length == 2,
+            "waiting for page to load"
+          );
+          let activeNames = Array.from(
+            doc.querySelectorAll(".active-study-list .study")
+          ).map(row => row.dataset.studySlug);
+          let inactiveNames = Array.from(
+            doc.querySelectorAll(".inactive-study-list .study")
+          ).map(row => row.dataset.studySlug);
+
+          Assert.deepEqual(
+            activeNames,
+            [addonStudy.slug, prefStudy.slug],
+            "Both studies should be listed as active in the new tab"
+          );
+          Assert.deepEqual(
+            inactiveNames,
+            [],
+            "No studies should be listed as inactive in the new tab"
+          );
+
+          const activeAddonStudy = getStudyRow(doc, addonStudy.slug);
+          const activePrefStudy = getStudyRow(doc, prefStudy.slug);
+
+          activeAddonStudy.querySelector(".remove-button").click();
+          await ContentTaskUtils.waitForCondition(() =>
+            getStudyRow(doc, addonStudy.slug).matches(".study.disabled")
+          );
+          ok(
+            getStudyRow(doc, addonStudy.slug).matches(".study.disabled"),
+            "Clicking the remove button updates the UI in the new tab"
+          );
+
+          activePrefStudy.querySelector(".remove-button").click();
+          await ContentTaskUtils.waitForCondition(() =>
+            getStudyRow(doc, prefStudy.slug).matches(".study.disabled")
+          );
+          ok(
+            getStudyRow(doc, prefStudy.slug).matches(".study.disabled"),
+            "Clicking the remove button updates the UI in the new tab"
+          );
+
+          activeNames = Array.from(
+            doc.querySelectorAll(".active-study-list .study")
+          ).map(row => row.dataset.studySlug);
+
+          Assert.deepEqual(
+            activeNames,
+            [],
+            "No studies should be listed as active"
+          );
+        }
+      );
+    });
+
+    // Ensure that the original tab has updated correctly.
+    await SpecialPowers.spawn(
+      browser,
+      [{ addonStudy, prefStudy }],
+      async ({ addonStudy, prefStudy }) => {
+        const doc = content.document;
+        await ContentTaskUtils.waitForCondition(
+          () => doc.querySelectorAll(".inactive-study-list .study").length == 2,
+          "Two studies should load into the inactive list, since they were disabled in a different tab"
+        );
+        let activeNames = Array.from(
+          doc.querySelectorAll(".active-study-list .study")
+        ).map(row => row.dataset.studySlug);
+        let inactiveNames = Array.from(
+          doc.querySelectorAll(".inactive-study-list .study")
+        ).map(row => row.dataset.studySlug);
+        Assert.deepEqual(
+          activeNames,
+          [],
+          "No studies should be listed as active, since they were disabled in a different tab"
+        );
+        Assert.deepEqual(
+          inactiveNames,
+          [addonStudy.slug, prefStudy.slug],
+          "Both studies should be listed as inactive, since they were disabled in a different tab"
+        );
+      }
+    );
+  }
+);
+
+add_task(async function test_messaging_system_about_studies() {
+  const recipe = ExperimentFakes.recipe("about-studies-foo");
+  await ExperimentManager.enroll(recipe);
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies" },
+    async browser => {
+      const name = await SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForCondition(
+          () =>
+            content.document.querySelector(".messaging-system .remove-button"),
+          "waiting for page/experiment to load"
+        );
+        return content.document.querySelector(".study-name").innerText;
+      });
+      // Make sure strings are properly shown
+      Assert.equal(
+        name,
+        recipe.userFacingName,
+        "Correct active experiment name"
+      );
+    }
+  );
+  ExperimentManager.unenroll(recipe.slug);
+  await BrowserTestUtils.withNewTab(
+    { gBrowser, url: "about:studies" },
+    async browser => {
+      const name = await SpecialPowers.spawn(browser, [], async () => {
+        await ContentTaskUtils.waitForCondition(
+          () => content.document.querySelector(".messaging-system.disabled"),
+          "waiting for experiment to become disabled"
+        );
+        return content.document.querySelector(".study-name").innerText;
+      });
+      // Make sure strings are properly shown
+      Assert.equal(
+        name,
+        recipe.userFacingName,
+        "Correct disabled experiment name"
+      );
+    }
+  );
+  // Cleanup for multiple test runs
+  ExperimentManager.store._deleteForTests(recipe.slug);
+  Assert.equal(ExperimentManager.store.getAll().length, 0, "Cleanup done");
+});

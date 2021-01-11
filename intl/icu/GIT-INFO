@@ -1,13 +1,10 @@
-commit e2d85306162d3a0691b070b4f0a73e4012433444
-Author: Steven R. Loomis <srloomis@us.ibm.com>
-Date:   Wed Apr 17 08:58:08 2019 -0700
+commit 40252f6fe1dabbe6b043773b639acfae2294add3
+Author: Jeff Genovy <29107334+jefgen@users.noreply.github.com>
+Date:   Wed Jun 10 10:34:28 2020 -0700
 
-    ICU-20563 fix macosx rpath breakage in the data build
+    ICU-21150 Backport fix for broken Windows build with prebuilt datafile to ICU 67
     
-    - in the rpath case, we do NOT want a trailing space in LD_SONAME
+    This is cherry-picked from:
+    ICU-21102 Fix broken builds on Windows when using a pre-built data file (from the tgz).
     
-    regression was introduced in ICU-20526 with
-     83a0542b5b52a30b7af736f5ef6b0405f6582867 (master)
-     b76cb6517efa113739a3ffadda7ff024db0d5689 (in maint-64)
-    
-    (cherry picked from commit 1c553b9cf28d25c0aaf961c5f587f4ad3cee2679)
+    (cherry picked from commit 82a5959b863ac647fce3bcc5804ed906fb3b4bc0)

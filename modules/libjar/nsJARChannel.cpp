@@ -10,20 +10,15 @@
 #include "nsMimeTypes.h"
 #include "nsNetUtil.h"
 #include "nsEscape.h"
-#include "nsIPrefService.h"
-#include "nsIPrefBranch.h"
-#include "nsIViewSourceChannel.h"
 #include "nsContentUtils.h"
 #include "nsProxyRelease.h"
 #include "nsContentSecurityManager.h"
 
-#include "nsIScriptSecurityManager.h"
-#include "nsIPrincipal.h"
 #include "nsIFileURL.h"
 
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
-#include "nsIBrowserChild.h"
 #include "private/pprio.h"
 #include "nsInputStreamPump.h"
 #include "nsThreadUtils.h"
@@ -63,9 +58,7 @@ static LazyLogModule gJarProtocolLog("nsJarProtocol");
 
 class nsJARInputThunk : public nsIInputStream {
  public:
-  // Preserve refcount changes when record/replaying, as otherwise the thread
-  // which destroys the thunk may vary between recording and replaying.
-  NS_DECL_THREADSAFE_ISUPPORTS_WITH_RECORDING(recordreplay::Behavior::Preserve)
+  NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIINPUTSTREAM
 
   nsJARInputThunk(nsIZipReader* zipReader, nsIURI* fullJarURI,
@@ -172,6 +165,7 @@ nsJARInputThunk::IsNonBlocking(bool* nonBlocking) {
 
 nsJARChannel::nsJARChannel()
     : mOpened(false),
+      mCanceled(false),
       mContentLength(-1),
       mLoadFlags(LOAD_NORMAL),
       mStatus(NS_OK),
@@ -190,16 +184,11 @@ nsJARChannel::~nsJARChannel() {
   }
 
   // Proxy release the following members to main thread.
-  NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mLoadInfo",
-                                    mLoadInfo.forget());
-  NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mCallbacks",
-                                    mCallbacks.forget());
-  NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mProgressSink",
-                                    mProgressSink.forget());
-  NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mLoadGroup",
-                                    mLoadGroup.forget());
-  NS_ReleaseOnMainThreadSystemGroup("nsJARChannel::mListener",
-                                    mListener.forget());
+  NS_ReleaseOnMainThread("nsJARChannel::mLoadInfo", mLoadInfo.forget());
+  NS_ReleaseOnMainThread("nsJARChannel::mCallbacks", mCallbacks.forget());
+  NS_ReleaseOnMainThread("nsJARChannel::mProgressSink", mProgressSink.forget());
+  NS_ReleaseOnMainThread("nsJARChannel::mLoadGroup", mLoadGroup.forget());
+  NS_ReleaseOnMainThread("nsJARChannel::mListener", mListener.forget());
 }
 
 NS_IMPL_ISUPPORTS_INHERITED(nsJARChannel, nsHashPropertyBag, nsIRequest,
@@ -538,7 +527,7 @@ void nsJARChannel::FireOnProgress(uint64_t aProgress) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mProgressSink);
 
-  mProgressSink->OnProgress(this, nullptr, aProgress, mContentLength);
+  mProgressSink->OnProgress(this, aProgress, mContentLength);
 }
 
 //-----------------------------------------------------------------------------
@@ -565,6 +554,7 @@ nsJARChannel::GetStatus(nsresult* status) {
 
 NS_IMETHODIMP
 nsJARChannel::Cancel(nsresult status) {
+  mCanceled = true;
   mStatus = status;
   if (mPump) {
     return mPump->Cancel(status);
@@ -574,6 +564,12 @@ nsJARChannel::Cancel(nsresult status) {
     mPendingEvent.isCanceled = true;
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJARChannel::GetCanceled(bool* aCanceled) {
+  *aCanceled = mCanceled;
   return NS_OK;
 }
 
@@ -612,6 +608,16 @@ NS_IMETHODIMP
 nsJARChannel::SetLoadFlags(nsLoadFlags aLoadFlags) {
   mLoadFlags = aLoadFlags;
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsJARChannel::GetTRRMode(nsIRequest::TRRMode* aTRRMode) {
+  return GetTRRModeImpl(aTRRMode);
+}
+
+NS_IMETHODIMP
+nsJARChannel::SetTRRMode(nsIRequest::TRRMode aTRRMode) {
+  return SetTRRModeImpl(aTRRMode);
 }
 
 NS_IMETHODIMP
@@ -859,11 +865,12 @@ nsJARChannel::AsyncOpen(nsIStreamListener* aListener) {
 
   LOG(("nsJARChannel::AsyncOpen [this=%p]\n", this));
   MOZ_ASSERT(
-      !mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
+      mLoadInfo->GetSecurityMode() == 0 ||
           mLoadInfo->GetInitialSecurityCheckDone() ||
           (mLoadInfo->GetSecurityMode() ==
-               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
-           nsContentUtils::IsSystemPrincipal(mLoadInfo->LoadingPrincipal())),
+               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL &&
+           mLoadInfo->GetLoadingPrincipal() &&
+           mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
       "security flags in loadInfo but doContentSecurityCheck() not called");
 
   NS_ENSURE_ARG_POINTER(listener);
@@ -990,7 +997,6 @@ nsJARChannel::OnStartRequest(nsIRequest* req) {
 
   mRequest = req;
   nsresult rv = mListener->OnStartRequest(this);
-  mRequest = nullptr;
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -1031,6 +1037,7 @@ nsJARChannel::OnStopRequest(nsIRequest* req, nsresult status) {
 
   if (mLoadGroup) mLoadGroup->RemoveRequest(this, nullptr, status);
 
+  mRequest = nullptr;
   mPump = nullptr;
   mIsPending = false;
 

@@ -19,8 +19,49 @@ export default class LoginIntro extends HTMLElement {
     helpLink.focus();
   }
 
-  set supportURL(val) {
-    this.shadowRoot.querySelector(".intro-help-link").setAttribute("href", val);
+  handleEvent(event) {
+    if (
+      event.currentTarget.classList.contains("intro-import-text") &&
+      event.target.localName == "a"
+    ) {
+      let eventName =
+        event.target.dataset.l10nName == "import-file-link"
+          ? "AboutLoginsImportFromFile"
+          : "AboutLoginsImportFromBrowser";
+      document.dispatchEvent(
+        new CustomEvent(eventName, {
+          bubbles: true,
+        })
+      );
+    }
+    event.preventDefault();
+  }
+
+  updateState(syncState) {
+    let l10nId = syncState.loggedIn
+      ? "about-logins-login-intro-heading-logged-in"
+      : "about-logins-login-intro-heading-logged-out";
+    document.l10n.setAttributes(
+      this.shadowRoot.querySelector(".heading"),
+      l10nId
+    );
+
+    this.shadowRoot
+      .querySelector(".illustration")
+      .classList.toggle("logged-in", syncState.loggedIn);
+
+    let supportURL =
+      window.AboutLoginsUtils.supportBaseURL + "firefox-lockwise";
+    this.shadowRoot
+      .querySelector(".intro-help-link")
+      .setAttribute("href", supportURL);
+
+    let importClass = window.AboutLoginsUtils.fileImportEnabled
+      ? ".intro-import-text.file-import"
+      : ".intro-import-text.no-file-import";
+    let importText = this.shadowRoot.querySelector(importClass);
+    importText.addEventListener("click", this);
+    importText.hidden = !window.AboutLoginsUtils.importVisible;
   }
 }
 customElements.define("login-intro", LoginIntro);

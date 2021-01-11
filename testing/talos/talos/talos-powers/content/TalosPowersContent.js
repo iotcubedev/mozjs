@@ -89,10 +89,24 @@ var TalosPowersParent;
       });
     },
 
+    dumpConsole() {
+      var event = new CustomEvent("TalosPowersContentDumpConsole", {
+        bubbles: true,
+      });
+      document.dispatchEvent(event);
+    },
+
     goQuitApplication(waitForSafeBrowsing) {
       var event = new CustomEvent("TalosPowersGoQuitApplication", {
         bubbles: true,
         detail: waitForSafeBrowsing,
+      });
+      document.dispatchEvent(event);
+    },
+
+    wrCapture() {
+      var event = new CustomEvent("TalosPowersWebRenderCapture", {
+        bubbles: true,
       });
       document.dispatchEvent(event);
     },

@@ -20,13 +20,10 @@
 #include "nsHTMLStyleSheet.h"
 #include "nsIContentSink.h"
 #include "mozilla/dom/Document.h"
-#include "nsIDOMEventListener.h"
 #include "nsIFormControl.h"
 #include "mozilla/dom/NodeInfo.h"
 #include "nsIScriptContext.h"
 #include "nsIScriptGlobalObject.h"
-#include "nsIServiceManager.h"
-#include "nsIURL.h"
 #include "nsNameSpaceManager.h"
 #include "nsParserBase.h"
 #include "nsViewManager.h"
@@ -47,7 +44,6 @@
 #include "nsContentUtils.h"
 #include "nsAttrName.h"
 #include "nsXMLContentSink.h"
-#include "nsIConsoleService.h"
 #include "nsIScriptError.h"
 #include "nsContentTypeParser.h"
 
@@ -528,9 +524,9 @@ XULContentSinkImpl::HandleProcessingInstruction(const char16_t* aTarget,
     return rv;
   }
 
-  if (!children->AppendElement(pi)) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  children->AppendElement(pi);
 
   return NS_OK;
 }
@@ -573,8 +569,8 @@ XULContentSinkImpl::ReportError(const char16_t* aErrorText,
 
   const char16_t* noAtts[] = {0, 0};
 
-  NS_NAMED_LITERAL_STRING(
-      errorNs, "http://www.mozilla.org/newlayout/xml/parsererror.xml");
+  constexpr auto errorNs =
+      u"http://www.mozilla.org/newlayout/xml/parsererror.xml"_ns;
 
   nsAutoString parsererror(errorNs);
   parsererror.Append((char16_t)0xFFFF);
@@ -712,11 +708,10 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
 
         if (NS_SUCCEEDED(rv)) {
           nsContentUtils::ReportToConsoleNonLocalized(
-              NS_LITERAL_STRING(
-                  "Versioned JavaScripts are no longer supported. "
-                  "Please remove the version parameter."),
-              nsIScriptError::errorFlag, NS_LITERAL_CSTRING("XUL Document"),
-              nullptr, mDocumentURL, EmptyString(), aLineNumber);
+              u"Versioned JavaScripts are no longer supported. "
+              "Please remove the version parameter."_ns,
+              nsIScriptError::errorFlag, "XUL Document"_ns, nullptr,
+              mDocumentURL, EmptyString(), aLineNumber);
           isJavaScript = false;
         } else if (rv != NS_ERROR_INVALID_ARG) {
           return rv;
@@ -763,7 +758,7 @@ nsresult XULContentSinkImpl::OpenScript(const char16_t** aAttributes,
         if (NS_SUCCEEDED(rv)) {
           rv = mSecMan->CheckLoadURIWithPrincipal(
               doc->NodePrincipal(), script->mSrcURI,
-              nsIScriptSecurityManager::ALLOW_CHROME);
+              nsIScriptSecurityManager::ALLOW_CHROME, doc->InnerWindowID());
         }
       }
     }

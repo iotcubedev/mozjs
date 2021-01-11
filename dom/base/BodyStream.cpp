@@ -5,10 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BodyStream.h"
+#include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/dom/DOMException.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Unused.h"
 #include "nsProxyRelease.h"
 #include "nsStreamUtils.h"
 
@@ -121,7 +125,7 @@ void BodyStream::Create(JSContext* aCx, BodyStreamHolder* aStreamHolder,
     // Note, this will create a ref-cycle between the holder and the stream.
     // The cycle is broken when the stream is closed or the worker begins
     // shutting down.
-    stream->mWorkerRef = workerRef.forget();
+    stream->mWorkerRef = std::move(workerRef);
   }
 
   aRv.MightThrowJSException();
@@ -317,7 +321,7 @@ BodyStream::BodyStream(nsIGlobalObject* aGlobal,
   MOZ_DIAGNOSTIC_ASSERT(aStreamHolder);
 }
 
-BodyStream::~BodyStream() {}
+BodyStream::~BodyStream() = default;
 
 void BodyStream::ErrorPropagation(JSContext* aCx,
                                   const MutexAutoLock& aProofOfLock,
@@ -336,10 +340,16 @@ void BodyStream::ErrorPropagation(JSContext* aCx,
   }
 
   // Let's use a generic error.
-  RefPtr<DOMException> error = DOMException::Create(NS_ERROR_DOM_TYPE_ERR);
+  ErrorResult rv;
+  // XXXbz can we come up with a better error message here to tell the
+  // consumer what went wrong?
+  rv.ThrowTypeError("Error in body stream");
 
   JS::Rooted<JS::Value> errorValue(aCx);
-  if (ToJSValue(aCx, error, &errorValue)) {
+  bool ok = ToJSValue(aCx, std::move(rv), &errorValue);
+  MOZ_RELEASE_ASSERT(ok, "ToJSValue never fails for ErrorResult");
+
+  {
     MutexAutoUnlock unlock(mMutex);
     JS::ReadableStreamError(aCx, aStream, errorValue);
   }
@@ -352,29 +362,32 @@ BodyStream::OnInputStreamReady(nsIAsyncInputStream* aStream) {
   AssertIsOnOwningThread();
   MOZ_DIAGNOSTIC_ASSERT(aStream);
 
-  MutexAutoLock lock(mMutex);
+  // Acquire |mMutex| in order to safely inspect |mState| and use |mGlobal|.
+  Maybe<MutexAutoLock> lock;
+  lock.emplace(mMutex);
 
   // Already closed. We have nothing else to do here.
   if (mState == eClosed) {
     return NS_OK;
   }
 
+  // Perform a microtask checkpoint after all actions are completed.  Note that
+  // |mMutex| *must not* be held when the checkpoint occurs -- hence, far down,
+  // the |lock.reset()|.  (|MutexAutoUnlock| as RAII wouldn't work for this task
+  // because its destructor would reacquire |mMutex| before these objects'
+  // destructors run.)
+  nsAutoMicroTask mt;
+  AutoEntryScript aes(mGlobal, "fetch body data available");
+
   MOZ_DIAGNOSTIC_ASSERT(mInputStream);
   MOZ_DIAGNOSTIC_ASSERT(mState == eReading || mState == eChecking);
-
-  AutoJSAPI jsapi;
-  if (NS_WARN_IF(!jsapi.Init(mGlobal))) {
-    // Without JSContext we are not able to close the stream or to propagate the
-    // error.
-    return NS_ERROR_FAILURE;
-  }
 
   JSObject* streamObj = mStreamHolder->GetReadableStreamBody();
   if (!streamObj) {
     return NS_ERROR_FAILURE;
   }
 
-  JSContext* cx = jsapi.cx();
+  JSContext* cx = aes.cx();
   JS::Rooted<JSObject*> stream(cx, streamObj);
 
   uint64_t size = 0;
@@ -387,7 +400,7 @@ BodyStream::OnInputStreamReady(nsIAsyncInputStream* aStream) {
 
   // No warning for stream closed.
   if (rv == NS_BASE_STREAM_CLOSED || NS_WARN_IF(NS_FAILED(rv))) {
-    ErrorPropagation(cx, lock, stream, rv);
+    ErrorPropagation(cx, *lock, stream, rv);
     return NS_OK;
   }
 
@@ -399,14 +412,15 @@ BodyStream::OnInputStreamReady(nsIAsyncInputStream* aStream) {
 
   mState = eWriting;
 
-  {
-    MutexAutoUnlock unlock(mMutex);
-    DebugOnly<bool> ok =
-        JS::ReadableStreamUpdateDataAvailableFromSource(cx, stream, size);
+  // Release the mutex before the call below (which could execute JS), as well
+  // as before the microtask checkpoint queued up above occurs.
+  lock.reset();
 
-    // The WriteInto callback changes mState to eChecking.
-    MOZ_ASSERT_IF(ok, mState == eChecking);
-  }
+  Unused << JS::ReadableStreamUpdateDataAvailableFromSource(cx, stream, size);
+
+  // The previous call can execute JS (even up to running a nested event loop),
+  // so |mState| can't be asserted to have any particular value, even if the
+  // previous call succeeds.
 
   return NS_OK;
 }

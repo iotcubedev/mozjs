@@ -9,7 +9,10 @@
  */
 
 add_task(async function() {
-  await promiseAutocompleteResultPopup("This is a generic sentence");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "This is a generic sentence",
+  });
   await UrlbarTestUtils.promisePopupClose(window);
 
   const INITIAL_SELECTION_START = 3;
@@ -76,7 +79,7 @@ async function checkPopupOpens(key) {
     checkIfKeyStartsQuery(key, true);
   });
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     0,
     `${key}: Heuristic result should be selected`
   );

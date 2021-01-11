@@ -169,14 +169,12 @@ async function userAgentStylesNotVisible(inspector, view) {
 async function compareAppliedStylesWithUI(inspector, view, filter) {
   info("Making sure that UI is consistent with pageStyle.getApplied");
 
-  let entries = await inspector.pageStyle.getApplied(
-    inspector.selection.nodeFront,
-    {
-      inherited: true,
-      matchedSelectors: true,
-      filter: filter,
-    }
-  );
+  const pageStyle = inspector.selection.nodeFront.inspectorFront.pageStyle;
+  let entries = await pageStyle.getApplied(inspector.selection.nodeFront, {
+    inherited: true,
+    matchedSelectors: true,
+    filter: filter,
+  });
 
   // We may see multiple entries that map to a given rule; filter the
   // duplicates here to match what the UI does.
@@ -200,8 +198,8 @@ async function compareAppliedStylesWithUI(inspector, view, filter) {
   entries.forEach((entry, i) => {
     const elementStyleRule = elementStyle.rules[i];
     is(
-      elementStyleRule.inherited,
-      entry.inherited,
+      !!elementStyleRule.inherited,
+      !!entry.inherited,
       "Same inherited (" + entry.inherited + ")"
     );
     is(

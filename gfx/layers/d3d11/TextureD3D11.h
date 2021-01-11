@@ -54,6 +54,8 @@ class D3D11TextureData final : public TextureData {
                                   TextureAllocationFlags aAllocFlags,
                                   ID3D11Device* aDevice = nullptr);
 
+  virtual ~D3D11TextureData();
+
   bool UpdateFromSurface(gfx::SourceSurface* aSurface) override;
 
   bool Lock(OpenMode aMode) override;
@@ -81,7 +83,7 @@ class D3D11TextureData final : public TextureData {
   void FillInfo(TextureData::Info& aInfo) const override;
 
   bool Serialize(SurfaceDescriptor& aOutDescrptor) override;
-  void GetSubDescriptor(GPUVideoSubDescriptor* aOutDesc) override;
+  void GetSubDescriptor(RemoteDecoderVideoSubDescriptor* aOutDesc) override;
 
   gfx::YUVColorSpace GetYUVColorSpace() const { return mYUVColorSpace; }
   void SetYUVColorSpace(gfx::YUVColorSpace aColorSpace) {
@@ -98,7 +100,6 @@ class D3D11TextureData final : public TextureData {
  private:
   D3D11TextureData(ID3D11Texture2D* aTexture, gfx::IntSize aSize,
                    gfx::SurfaceFormat aFormat, TextureAllocationFlags aFlags);
-  virtual ~D3D11TextureData();
 
   void GetDXGIResource(IDXGIResource** aOutResource);
 
@@ -155,7 +156,7 @@ class DXGIYCbCrTextureData : public TextureData {
 
   void SerializeSpecific(SurfaceDescriptorDXGIYCbCr* aOutDesc);
   bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
-  void GetSubDescriptor(GPUVideoSubDescriptor* aOutDesc) override;
+  void GetSubDescriptor(RemoteDecoderVideoSubDescriptor* aOutDesc) override;
 
   already_AddRefed<gfx::DrawTarget> BorrowDrawTarget() override {
     return nullptr;
@@ -358,7 +359,8 @@ class DXGITextureHostD3D11 : public TextureHost {
   void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-                        const Range<wr::ImageKey>& aImageKeys) override;
+                        const Range<wr::ImageKey>& aImageKeys,
+                        const bool aPreferCompositorSurface) override;
 
  protected:
   bool LockInternal();
@@ -426,7 +428,8 @@ class DXGIYCbCrTextureHostD3D11 : public TextureHost {
   void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-                        const Range<wr::ImageKey>& aImageKeys) override;
+                        const Range<wr::ImageKey>& aImageKeys,
+                        const bool aPreferCompositorSurface) override;
 
  private:
   bool EnsureTextureSource();

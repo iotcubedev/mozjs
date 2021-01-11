@@ -17,7 +17,7 @@ const ActorRegistry = {
   },
 
   /**
-   * Register a CommonJS module with the debugger server.
+   * Register a CommonJS module with the devtools server.
    * @param id string
    *        The ID of a CommonJS module.
    *        The actor is going to be registered immediately, but loaded only
@@ -27,8 +27,7 @@ const ActorRegistry = {
    *        An object with 3 mandatory attributes:
    *        - prefix (string):
    *          The prefix of an actor is used to compute:
-   *          - the `actorID` of each new actor instance (ex: prefix1).
-   *            (See ActorPool.addActor)
+   *          - the `actorID` of each new actor instance (ex: prefix1). (See Pool.manage)
    *          - the actor name in the listTabs request. Sending a listTabs
    *            request to the root actor returns actor IDs. IDs are in
    *            dictionaries, with actor names as keys and actor IDs as values.
@@ -94,7 +93,7 @@ const ActorRegistry = {
   },
 
   /**
-   * Unregister a previously-loaded CommonJS module from the debugger server.
+   * Unregister a previously-loaded CommonJS module from the devtools server.
    */
   unregisterModule(id) {
     const mod = gRegisteredModules[id];
@@ -127,11 +126,6 @@ const ActorRegistry = {
       constructor: "PreferenceActor",
       type: { global: true },
     });
-    this.registerModule("devtools/server/actors/actor-registry", {
-      prefix: "actorRegistry",
-      constructor: "ActorRegistryActor",
-      type: { global: true },
-    });
     this.registerModule("devtools/server/actors/addon/addons", {
       prefix: "addons",
       constructor: "AddonsActor",
@@ -156,6 +150,19 @@ const ActorRegistry = {
       constructor: "PerfActor",
       type: { global: true },
     });
+    /**
+     * Always register parent accessibility actor as a global module. This
+     * actor is responsible for all top level accessibility actor functionality
+     * that relies on the parent process.
+     */
+    this.registerModule(
+      "devtools/server/actors/accessibility/parent-accessibility",
+      {
+        prefix: "parentAccessibility",
+        constructor: "ParentAccessibilityActor",
+        type: { global: true },
+      }
+    );
   },
 
   /**
@@ -214,14 +221,14 @@ const ActorRegistry = {
       constructor: "AnimationsActor",
       type: { target: true },
     });
-    this.registerModule("devtools/server/actors/promises", {
-      prefix: "promises",
-      constructor: "PromisesActor",
+    this.registerModule("devtools/server/actors/emulation/responsive", {
+      prefix: "responsive",
+      constructor: "ResponsiveActor",
       type: { target: true },
     });
-    this.registerModule("devtools/server/actors/emulation", {
-      prefix: "emulation",
-      constructor: "EmulationActor",
+    this.registerModule("devtools/server/actors/emulation/content-viewer", {
+      prefix: "contentViewer",
+      constructor: "ContentViewerActor",
       type: { target: true },
     });
     this.registerModule(
@@ -255,6 +262,14 @@ const ActorRegistry = {
         type: { target: true },
       }
     );
+    this.registerModule(
+      "devtools/server/actors/network-monitor/eventsource-actor",
+      {
+        prefix: "eventSource",
+        constructor: "EventSourceActor",
+        type: { target: true },
+      }
+    );
     this.registerModule("devtools/server/actors/manifest", {
       prefix: "manifest",
       constructor: "ManifestActor",
@@ -265,9 +280,8 @@ const ActorRegistry = {
   /**
    * Registers handlers for new target-scoped request types defined dynamically.
    *
-   * Note that the name or actorPrefix of the request type is not allowed to clash with
-   * existing protocol packet properties, like 'title', 'url' or 'actor', since that would
-   * break the protocol.
+   * Note that the name of the request type is not allowed to clash with existing protocol
+   * packet properties, like 'title', 'url' or 'actor', since that would break the protocol.
    *
    * @param options object
    *        - constructorName: (required)
@@ -327,7 +341,7 @@ const ActorRegistry = {
     }
     delete this.targetScopedActorFactories[name];
     for (const connID of Object.getOwnPropertyNames(this._connections)) {
-      // DebuggerServerConnection in child process don't have rootActor
+      // DevToolsServerConnection in child process don't have rootActor
       if (this._connections[connID].rootActor) {
         this._connections[connID].rootActor.removeActorByName(name);
       }
@@ -337,9 +351,8 @@ const ActorRegistry = {
   /**
    * Registers handlers for new browser-scoped request types defined dynamically.
    *
-   * Note that the name or actorPrefix of the request type is not allowed to clash with
-   * existing protocol packet properties, like 'from', 'tabs' or 'selected', since that
-   * would break the protocol.
+   * Note that the name of the request type is not allowed to clash with existing protocol
+   * packet properties, like 'from', 'tabs' or 'selected', since that would break the protocol.
    *
    * @param options object
    *        - constructorName: (required)
@@ -399,7 +412,7 @@ const ActorRegistry = {
     }
     delete this.globalActorFactories[name];
     for (const connID of Object.getOwnPropertyNames(this._connections)) {
-      // DebuggerServerConnection in child process don't have rootActor
+      // DevToolsServerConnection in child process don't have rootActor
       if (this._connections[connID].rootActor) {
         this._connections[connID].rootActor.removeActorByName(name);
       }

@@ -114,7 +114,7 @@ class GeckoViewContent extends GeckoViewModule {
         break;
       }
       case "GeckoView:ZoomToInput":
-        this.messageManager.sendAsyncMessage(aEvent);
+        this.messageManager.sendAsyncMessage(aEvent, aData);
         break;
       case "GeckoView:ScrollBy":
         this.messageManager.sendAsyncMessage(aEvent, aData);
@@ -123,16 +123,7 @@ class GeckoViewContent extends GeckoViewModule {
         this.messageManager.sendAsyncMessage(aEvent, aData);
         break;
       case "GeckoView:SetActive":
-        if (aData.active) {
-          this.browser.docShellIsActive = true;
-        } else {
-          this.browser.docShellIsActive = false;
-        }
-        var msgData = {
-          active: aData.active,
-          suspendMedia: this.settings.suspendMediaWhenInactive,
-        };
-        this.messageManager.sendAsyncMessage("GeckoView:SetActive", msgData);
+        this.browser.docShellIsActive = !!aData.active;
         break;
       case "GeckoView:SetFocused":
         if (aData.focused) {
@@ -332,6 +323,7 @@ class GeckoViewContent extends GeckoViewModule {
 
     finder.caseSensitive = !!aData.matchCase;
     finder.entireWord = !!aData.wholeWord;
+    finder.matchDiacritics = !!aData.matchDiacritics;
     finder.addResultListener(this._finderListener);
 
     const drawOutline =
@@ -340,7 +332,12 @@ class GeckoViewContent extends GeckoViewModule {
     if (!aData.searchString || aData.searchString === finder.searchString) {
       // Search again.
       aData.searchString = finder.searchString;
-      finder.findAgain(!!aData.backwards, !!aData.linksOnly, drawOutline);
+      finder.findAgain(
+        aData.searchString,
+        !!aData.backwards,
+        !!aData.linksOnly,
+        drawOutline
+      );
     } else {
       finder.fastFind(aData.searchString, !!aData.linksOnly, drawOutline);
     }

@@ -188,6 +188,16 @@ const pageStyleSpec = generateActorSpec({
       },
       response: RetVal("appliedStylesReturn"),
     },
+    getAttributesInOwnerDocument: {
+      request: {
+        search: Arg(0, "string"),
+        attributeType: Arg(1, "string"),
+        node: Arg(2, "nullable:domnode"),
+      },
+      response: {
+        attributes: RetVal("array:string"),
+      },
+    },
   },
 });
 
@@ -202,9 +212,9 @@ const styleRuleSpec = generateActorSpec({
       line: Arg(0, "number"),
       column: Arg(1, "number"),
     },
-    "declarations-updated": {
-      type: "declarationsUpdated",
-      declarations: Arg(0, "array:json"),
+    "rule-updated": {
+      type: "ruleUpdated",
+      rule: Arg(0, "domstylerule"),
     },
   },
 

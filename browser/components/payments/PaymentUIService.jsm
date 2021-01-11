@@ -51,7 +51,7 @@ function PaymentUIService() {
 
 PaymentUIService.prototype = {
   classID: Components.ID("{01f8bd55-9017-438b-85ec-7c15d2b35cdc}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPaymentUIService]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPaymentUIService"]),
 
   // nsIPaymentUIService implementation:
 
@@ -245,7 +245,7 @@ PaymentUIService.prototype = {
 
       if (
         !browser.tabModalPromptBox ||
-        browser.tabModalPromptBox.listPrompts().length == 0
+        !browser.tabModalPromptBox.listPrompts().length
       ) {
         browser.removeAttribute("tabmodalPromptShowing");
       }

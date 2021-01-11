@@ -8,6 +8,7 @@ use crate::nth_index_cache::NthIndexCacheInner;
 use crate::parser::{AncestorHashes, Combinator, Component, LocalName};
 use crate::parser::{NonTSPseudoClass, Selector, SelectorImpl, SelectorIter, SelectorList};
 use crate::tree::Element;
+use smallvec::SmallVec;
 use std::borrow::Borrow;
 use std::iter;
 
@@ -321,13 +322,7 @@ where
             },
         }
 
-        // The only other parser-allowed Component in this sequence is a state
-        // class. We just don't match in that case.
-        if let Some(s) = iter.next() {
-            debug_assert!(
-                matches!(*s, Component::NonTSPseudoClass(..)),
-                "Someone messed up pseudo-element parsing"
-            );
+        if !iter.matches_for_stateless_pseudo_element() {
             return false;
         }
 
@@ -667,7 +662,44 @@ where
 
     match *selector {
         Component::Combinator(_) => unreachable!(),
-        Component::Part(ref part) => element.is_part(part),
+        Component::Part(ref parts) => {
+            let mut hosts = SmallVec::<[E; 4]>::new();
+
+            let mut host = match element.containing_shadow_host() {
+                Some(h) => h,
+                None => return false,
+            };
+
+            let current_host = context.shared.current_host;
+            if current_host != Some(host.opaque()) {
+                loop {
+                    let outer_host = host.containing_shadow_host();
+                    if outer_host.as_ref().map(|h| h.opaque()) == current_host {
+                        break;
+                    }
+                    let outer_host = match outer_host {
+                        Some(h) => h,
+                        None => return false,
+                    };
+                    // TODO(emilio): if worth it, we could early return if
+                    // host doesn't have the exportparts attribute.
+                    hosts.push(host);
+                    host = outer_host;
+                }
+            }
+
+            // Translate the part into the right scope.
+            parts.iter().all(|part| {
+                let mut part = part.clone();
+                for host in hosts.iter().rev() {
+                    part = match host.imported_part(&part) {
+                        Some(p) => p,
+                        None => return false,
+                    };
+                }
+                element.is_part(&part)
+            })
+        },
         Component::Slotted(ref selector) => {
             // <slots> are never flattened tree slottables.
             !element.is_html_slot_element() &&
@@ -813,6 +845,14 @@ where
             matches_generic_nth_child(element, context, 0, 1, true, false, flags_setter) &&
                 matches_generic_nth_child(element, context, 0, 1, true, true, flags_setter)
         },
+        Component::Is(ref list) | Component::Where(ref list) => context.shared.nest(|context| {
+            for selector in &**list {
+                if matches_complex_selector(selector.iter(), element, context, flags_setter) {
+                    return true;
+                }
+            }
+            false
+        }),
         Component::Negation(ref negated) => context.shared.nest_for_negation(|context| {
             let mut local_context = LocalMatchingContext {
                 matches_hover_and_active_quirk: MatchesHoverAndActiveQuirk::No,

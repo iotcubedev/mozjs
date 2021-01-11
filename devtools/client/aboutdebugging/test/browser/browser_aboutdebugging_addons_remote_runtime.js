@@ -66,7 +66,12 @@ async function testAddonsOnMockedRemoteClient(
 
   info("Add an extension to the remote client");
   const addon = { name: "Test extension name", debuggable: true };
-  remoteClient.listAddons = () => [addon];
+  const temporaryAddon = {
+    name: "Test temporary extension",
+    debuggable: true,
+    temporarilyInstalled: true,
+  };
+  remoteClient.listAddons = () => [addon, temporaryAddon];
   remoteClient._eventEmitter.emit("addonListChanged");
 
   info("Wait until the extension appears");
@@ -79,6 +84,24 @@ async function testAddonsOnMockedRemoteClient(
     document
   );
   ok(extensionTarget, "Extension target appeared for the remote runtime");
+
+  const temporaryExtensionTarget = findDebugTargetByText(
+    "Test temporary extension",
+    document
+  );
+  ok(
+    temporaryExtensionTarget,
+    "Temporary Extension target appeared for the remote runtime"
+  );
+
+  const removeButton = temporaryExtensionTarget.querySelector(
+    ".qa-temporary-extension-remove-button"
+  );
+  const reloadButton = temporaryExtensionTarget.querySelector(
+    ".qa-temporary-extension-reload-button"
+  );
+  ok(!removeButton, "No remove button expected for the temporary extension");
+  ok(!reloadButton, "No reload button expected for the temporary extension");
 
   // The goal here is to check that runtimes addons are only updated when the remote
   // runtime is sending addonListChanged events. The reason for this test is because the
@@ -94,7 +117,15 @@ async function testAddonsOnMockedRemoteClient(
   // tab. We assume that if the addon update mechanism had started, it would also be done
   // when the new tab was processed.
   info("Wait until the tab target for 'http://some.random/url.com' appears");
-  const testTab = { outerWindowID: 0, url: "http://some.random/url.com" };
+  const testTab = {
+    retrieveAsyncFormData: () => {},
+    outerWindowID: 0,
+    traits: {
+      getFavicon: true,
+      hasTabInfo: true,
+    },
+    url: "http://some.random/url.com",
+  };
   remoteClient.listTabs = () => [testTab];
   remoteClient._eventEmitter.emit("tabListChanged");
   await waitUntil(() =>

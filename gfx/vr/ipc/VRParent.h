@@ -25,10 +25,10 @@ class VRParent final : public PVRParent {
   explicit VRParent();
 
   bool Init(base::ProcessId aParentPid, const char* aParentBuildID,
-            MessageLoop* aIOLoop, IPC::Channel* aChannel);
+            MessageLoop* aIOLoop, UniquePtr<IPC::Channel> aChannel);
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
   bool GetOpenVRControllerActionPath(nsCString* aPath);
-  bool GetOpenVRControllerManifestPath(OpenVRControllerType aType,
+  bool GetOpenVRControllerManifestPath(VRControllerType aType,
                                        nsCString* aPath);
 
  protected:
@@ -44,7 +44,7 @@ class VRParent final : public PVRParent {
   mozilla::ipc::IPCResult RecvOpenVRControllerActionPathToVR(
       const nsCString& aPath);
   mozilla::ipc::IPCResult RecvOpenVRControllerManifestPathToVR(
-      const OpenVRControllerType& aType, const nsCString& aPath);
+      const VRControllerType& aType, const nsCString& aPath);
   mozilla::ipc::IPCResult RecvRequestMemoryReport(
       const uint32_t& generation, const bool& anonymize,
       const bool& minimizeMemoryUsage,

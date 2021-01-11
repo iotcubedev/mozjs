@@ -21,13 +21,13 @@ use style_traits::{StyleParseErrorKind, ToCss};
 pub type SVGPaint = generic::GenericSVGPaint<Color, SpecifiedUrl>;
 
 /// <length> | <percentage> | <number> | context-value
-pub type SVGLength = generic::SVGLength<LengthPercentage>;
+pub type SVGLength = generic::GenericSVGLength<LengthPercentage>;
 
 /// A non-negative version of SVGLength.
-pub type SVGWidth = generic::SVGLength<NonNegativeLengthPercentage>;
+pub type SVGWidth = generic::GenericSVGLength<NonNegativeLengthPercentage>;
 
 /// [ <length> | <percentage> | <number> ]# | context-value
-pub type SVGStrokeDashArray = generic::SVGStrokeDashArray<NonNegativeLengthPercentage>;
+pub type SVGStrokeDashArray = generic::GenericSVGStrokeDashArray<NonNegativeLengthPercentage>;
 
 /// Whether the `context-value` value is enabled.
 #[cfg(feature = "gecko")]
@@ -48,7 +48,8 @@ macro_rules! parse_svg_length {
                 context: &ParserContext,
                 input: &mut Parser<'i, 't>,
             ) -> Result<Self, ParseError<'i>> {
-                if let Ok(lp) = input.try(|i| <$lp>::parse_quirky(context, i, AllowQuirks::Always))
+                if let Ok(lp) =
+                    input.try_parse(|i| <$lp>::parse_quirky(context, i, AllowQuirks::Always))
                 {
                     return Ok(generic::SVGLength::LengthPercentage(lp));
                 }
@@ -71,7 +72,7 @@ impl Parse for SVGStrokeDashArray {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(values) = input.try(|i| {
+        if let Ok(values) = input.try_parse(|i| {
             CommaWithSpace::parse(i, |i| {
                 NonNegativeLengthPercentage::parse_quirky(context, i, AllowQuirks::Always)
             })
@@ -146,8 +147,13 @@ impl SVGPaintOrder {
 
     /// Get variant of `paint-order`
     pub fn order_at(&self, pos: u8) -> PaintOrder {
-        // Safe because PaintOrder covers all possible patterns.
-        unsafe { std::mem::transmute((self.0 >> pos * PAINT_ORDER_SHIFT) & PAINT_ORDER_MASK) }
+        match (self.0 >> pos * PAINT_ORDER_SHIFT) & PAINT_ORDER_MASK {
+            0 => PaintOrder::Normal,
+            1 => PaintOrder::Fill,
+            2 => PaintOrder::Stroke,
+            3 => PaintOrder::Markers,
+            _ => unreachable!("this cannot happen"),
+        }
     }
 }
 
@@ -156,7 +162,7 @@ impl Parse for SVGPaintOrder {
         _context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<SVGPaintOrder, ParseError<'i>> {
-        if let Ok(()) = input.try(|i| i.expect_ident_matching("normal")) {
+        if let Ok(()) = input.try_parse(|i| i.expect_ident_matching("normal")) {
             return Ok(SVGPaintOrder::normal());
         }
 
@@ -167,7 +173,7 @@ impl Parse for SVGPaintOrder {
         let mut pos = 0;
 
         loop {
-            let result: Result<_, ParseError> = input.try(|input| {
+            let result: Result<_, ParseError> = input.try_parse(|input| {
                 try_match_ident_ignore_ascii_case! { input,
                     "fill" => Ok(PaintOrder::Fill),
                     "stroke" => Ok(PaintOrder::Stroke),

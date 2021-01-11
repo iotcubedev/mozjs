@@ -27,11 +27,22 @@ interface nsIReferrerInfo;
 %{C++
 #include "nsRect.h"
 class nsDocShellEditorData;
+
+namespace mozilla {
+namespace dom {
+
+class SHEntrySharedParentState;
+
+}
+}
 class nsSHEntryShared;
+class nsDocShellLoadState;
+struct EntriesAndBrowsingContextData;
 %}
 [ref] native nsIntRect(nsIntRect);
 [ptr] native nsDocShellEditorDataPtr(nsDocShellEditorData);
-[ptr] native nsSHEntryShared(nsSHEntryShared);
+[ptr] native nsDocShellLoadStatePtr(nsDocShellLoadState);
+webidl BrowsingContext;
 
 [builtinclass, scriptable, uuid(0dad26b8-a259-42c7-93f1-2fa7fc076e45)]
 interface nsISHEntry : nsISupports
@@ -71,6 +82,14 @@ interface nsISHEntry : nsISupports
      *   subframe navigation.
      */
     [infallible] attribute boolean isSubFrame;
+
+    /**
+     * Whether the user interacted with the page while this entry was active.
+     * This includes interactions with subframe documents associated with
+     * child entries that are rooted at this entry.
+     * This field will only be set on top-level entries.
+     */
+    [infallible] attribute boolean hasUserInteraction;
 
     /** Referrer Info*/
     [infallible] attribute nsIReferrerInfo referrerInfo;
@@ -114,9 +133,6 @@ interface nsISHEntry : nsISupports
     /** Should the layoutHistoryState be saved? */
     [infallible] attribute boolean saveLayoutStateFlag;
 
-    /** Has the page already expired in cache? */
-    [infallible] attribute boolean expirationStatus;
-
     /**
      * attribute to indicate the content-type of the document that this
      * is a session history entry for
@@ -153,7 +169,7 @@ interface nsISHEntry : nsISupports
      * Get the storage principal, if any, that is used when the inherit flag is
      * set.
      */
-    [infallible] attribute nsIPrincipal storagePrincipalToInherit;
+    [infallible] attribute nsIPrincipal partitionedPrincipalToInherit;
 
     /**
      * Get the csp, if any, that was used for this document load. That
@@ -172,9 +188,7 @@ interface nsISHEntry : nsISupports
      * The history ID of the docshell.
      */
     // Would be [infallible], but we don't support that property for nsIDPtr.
-    attribute nsIDPtr docshellID;
-
-    [infallible] readonly attribute nsIBFCacheEntry BFCacheEntry;
+    attribute nsIDRef docshellID;
 
     /**
      * True if this SHEntry corresponds to a document created by a srcdoc
@@ -211,11 +225,9 @@ interface nsISHEntry : nsISupports
     [infallible] readonly attribute boolean loadedInThisProcess;
 
     /**
-     * The session history it belongs to. It's usually only set on root entries.
-     * SHEntry is strictly bound to the SHistory it belongs to; it should not be
-     * changed once set to a non-null value.
+     * The session history it belongs to.
      */
-    [noscript, infallible] attribute nsISHistory SHistory;
+    [noscript, infallible] attribute nsISHistory shistory;
 
     /**
      * A number that is assigned by the sHistory when the entry is activated
@@ -287,14 +299,23 @@ interface nsISHEntry : nsISupports
     /** Additional ways to create an entry */
     [noscript] void create(in nsIURI URI, in AString title,
                            in nsIInputStream inputStream,
-                           in nsILayoutHistoryState layoutHistoryState,
-                           in unsigned long cacheKey, in ACString contentType,
+                           in unsigned long cacheKey,
+                           in ACString contentType,
                            in nsIPrincipal triggeringPrincipal,
                            in nsIPrincipal principalToInherit,
-                           in nsIPrincipal storagePrincipalToInherit,
+                           in nsIPrincipal partitionedPrincipalToInherit,
                            in nsIContentSecurityPolicy aCsp,
                            in nsIDRef docshellID,
-                           in boolean dynamicCreation);
+                           in boolean dynamicCreation,
+                           in nsIURI originalURI,
+                           in nsIURI resultPrincipalURI,
+                           in bool loadReplace,
+                           in nsIReferrerInfo referrerInfo,
+                           in AString srcdoc,
+                           in bool srcdocEntry,
+                           in nsIURI baseURI,
+                           in bool saveLayoutState,
+                           in bool expired);
 
     nsISHEntry clone();
 
@@ -326,11 +347,6 @@ interface nsISHEntry : nsISupports
      * when isDynamicallyAdded is called on it.
      */
     boolean hasDynamicallyAddedChild();
-
-    /**
-     * Helper method for accessing `docshellID` from C++
-     */
-    [noscript, notxpcom] nsID DocshellID();
 
     /**
      * Does this SHEntry point to the given BFCache entry? If so, evicting
@@ -371,19 +387,10 @@ interface nsISHEntry : nsISupports
     void setLoadTypeAsHistory();
 
     /**
-     * Some state, particularly that related to the back/forward cache, is
-     * shared between SHEntries which correspond to the same document.  This
-     * method gets a pointer to that shared state.
-     *
-     * This shared state is the SHEntry's BFCacheEntry.  So
-     * hasBFCacheEntry(getSharedState()) is guaranteed to return true.
-     */
-    [noscript, notxpcom] nsSHEntryShared getSharedState();
-
-    /**
      * Add a new child SHEntry. If offset is -1 adds to the end of the list.
      */
-    void AddChild(in nsISHEntry aChild, in long aOffset);
+    void AddChild(in nsISHEntry aChild, in long aOffset,
+                  [optional,default(false)] in bool aUseRemoteSubframes);
 
     /**
      * Remove a child SHEntry.
@@ -396,10 +403,43 @@ interface nsISHEntry : nsISupports
     nsISHEntry GetChildAt(in long aIndex);
 
     /**
+     * If this entry has no dynamically added child, get the child SHEntry 
+     * at the given offset. The loadtype of the returned entry is set 
+     * to its parent's loadtype.
+     */
+    [notxpcom] void GetChildSHEntryIfHasNoDynamicallyAddedChild(in long aChildOffset,
+                                                                out nsISHEntry aChild);
+
+    /**
      * Replaces a child which is for the same docshell as aNewChild
      * with aNewChild.
      * @throw if nothing was replaced.
      */
     [noscript] void ReplaceChild(in nsISHEntry aNewChild);
+
+    /**
+    * Remove all children of this entry and call abandonBFCacheEntry.
+    */
+    [notxpcom] void ClearEntry();
+    
+    /**
+     * Create nsDocShellLoadState and fill it with information. 
+     * Don't set nsSHEntry here to avoid serializing it.
+     */
+    [noscript] nsDocShellLoadStatePtr CreateLoadInfo();
+
+    [infallible] readonly attribute unsigned long long bfcacheID;
+
+    /**
+     * Sync up the docshell and session history trees for subframe navigation.
+     *
+     * @param aEntry                    new entry
+     * @param aTopBC                    top BC corresponding to the root ancestor
+                                        of the docshell that called this method
+     * @param aIgnoreBC                 current BC
+     */
+    [notxpcom] void SyncTreesForSubframeNavigation(in nsISHEntry aEntry,
+                                                   in BrowsingContext aTopBC,
+                                                   in BrowsingContext aIgnoreBC);
 };
 

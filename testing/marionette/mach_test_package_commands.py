@@ -27,7 +27,6 @@ def run_marionette(context, **kwargs):
 
     args = argparse.Namespace(**kwargs)
     args.binary = args.binary or context.firefox_bin
-    args.e10s = context.mozharness_config.get('e10s', args.e10s)
 
     test_root = os.path.join(context.package_root, 'marionette', 'tests')
     if not args.tests:
@@ -35,7 +34,7 @@ def run_marionette(context, **kwargs):
                                    'marionette_harness', 'tests', 'unit-tests.ini')]
 
     normalize = partial(context.normalize_test_path, test_root)
-    args.tests = map(normalize, args.tests)
+    args.tests = list(map(normalize, args.tests))
 
     commandline.add_logging_group(parser)
     parser.verify_usage(args)

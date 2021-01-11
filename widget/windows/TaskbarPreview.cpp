@@ -12,8 +12,6 @@
 #include <nsError.h>
 #include <nsCOMPtr.h>
 #include <nsIWidget.h>
-#include <nsIBaseWindow.h>
-#include <nsIObserverService.h>
 #include <nsServiceManagerUtils.h>
 
 #include "nsUXThemeData.h"
@@ -136,7 +134,7 @@ TaskbarPreview::Invalidate() {
   if (!mVisible) return NS_OK;
 
   // DWM Composition is required for previews
-  if (!nsUXThemeData::CheckForCompositor()) return NS_OK;
+  if (!gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) return NS_OK;
 
   HWND previewWindow = PreviewWindow();
   return FAILED(DwmInvalidateIconicBitmaps(previewWindow)) ? NS_ERROR_FAILURE

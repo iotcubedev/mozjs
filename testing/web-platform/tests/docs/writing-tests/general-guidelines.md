@@ -31,10 +31,15 @@ css/ directory, regardless of where they are in the directory structure.
 ### HTTPS
 
 By default, tests are served over plain HTTP. If a test requires HTTPS
-it must be given a filename containing `.https` before the extension,
-e.g., `test-secure.https.html`, or be the generated service worker test
-of a `.https`-less `.any` test. For more details see the documentation
-on [file names][file-name-flags].
+it must be given a filename containing `.https.` e.g.,
+`test-secure.https.html`, or be the generated service worker test of a
+`.https`-less `.any` test. For more details see the documentation on
+[file names][file-name-flags].
+
+### HTTP2
+
+If a test must be served from an HTTP/2 server, it must be given a
+filename containing `.h2`.
 
 #### Support Files
 
@@ -121,10 +126,10 @@ assumptions that can be relied on are documented [here][assumptions];
 tests that rely on anything else should be manual tests that document
 their assumptions.
 
-Aside from the [Ahem font][ahem], fonts cannot be relied on to be
-either installed or to have specific metrics. As such, in most cases
-when a known font is needed Ahem should be used. In other cases,
-`@font-face` should be used.
+Fonts cannot be relied on to be either installed or to have specific
+metrics. As such, in most cases when a known font is needed, [Ahem][ahem]
+should be used and loaded as a web font. In other cases, `@font-face`
+should be used.
 
 
 ### Be Self-Contained
@@ -170,7 +175,7 @@ see the [lint-tool documentation][lint-tool].
 
 But in the unusual case of error reports for things essential to a certain
 test or that for other exceptional reasons shouldn't prevent a merge of a
-test, update and commit the `lint.whitelist` file in the web-platform-tests
+test, update and commit the `lint.ignore` file in the web-platform-tests
 root directory to suppress the error reports. For details on doing that,
 see the [lint-tool documentation][lint-tool].
 

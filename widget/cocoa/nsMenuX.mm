@@ -30,20 +30,15 @@
 #include "nsIDocumentObserver.h"
 #include "nsIComponentManager.h"
 #include "nsIRollupListener.h"
-#include "nsBindingManager.h"
 #include "nsIServiceManager.h"
 #include "nsXULPopupManager.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/EventDispatcher.h"
 
-#include "jsapi.h"
-#include "nsIScriptGlobalObject.h"
-#include "nsIScriptContext.h"
-#include "nsIXPConnect.h"
-
 #include "mozilla/MouseEvents.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 static bool gConstructingMenu = false;
 static bool gMenuMethodsSwizzled = false;
@@ -96,8 +91,7 @@ nsMenuX::nsMenuX()
       mDestroyHandlerCalled(false),
       mNeedsRebuild(true),
       mConstructed(false),
-      mVisible(true),
-      mXBLAttached(false) {
+      mVisible(true) {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
   if (!gMenuMethodsSwizzled) {
@@ -322,8 +316,7 @@ nsresult nsMenuX::RemoveAll() {
 nsEventStatus nsMenuX::MenuOpened() {
   // Open the node.
   if (mContent->IsElement()) {
-    mContent->AsElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::open, NS_LITERAL_STRING("true"),
-                                   true);
+    mContent->AsElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::open, u"true"_ns, true);
   }
 
   // Fire a handler. If we're told to stop, don't build the menu at all
@@ -389,20 +382,6 @@ void nsMenuX::MenuConstruct() {
   if (!menuPopup) {
     gConstructingMenu = false;
     return;
-  }
-
-  // bug 365405: Manually wrap the menupopup node to make sure it's bounded
-  if (!mXBLAttached) {
-    nsCOMPtr<nsIXPConnect> xpconnect = nsIXPConnect::XPConnect();
-    dom::Document* ownerDoc = menuPopup->OwnerDoc();
-    dom::AutoJSAPI jsapi;
-    if (ownerDoc && jsapi.Init(ownerDoc->GetInnerWindow())) {
-      JSContext* cx = jsapi.cx();
-      JS::RootedObject ignoredObj(cx);
-      xpconnect->WrapNative(cx, JS::CurrentGlobalOrNull(cx), menuPopup, NS_GET_IID(nsISupports),
-                            ignoredObj.address());
-      mXBLAttached = true;
-    }
   }
 
   // Iterate over the kids
@@ -611,7 +590,7 @@ bool nsMenuX::IsXULHelpMenu(nsIContent* aMenuContent) {
   if (aMenuContent && aMenuContent->IsElement()) {
     nsAutoString id;
     aMenuContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::id, id);
-    if (id.Equals(NS_LITERAL_STRING("helpMenu"))) retval = true;
+    if (id.Equals(u"helpMenu"_ns)) retval = true;
   }
   return retval;
 }
@@ -737,8 +716,7 @@ nsresult nsMenuX::SetupIcon() {
   if (target && (target->MenuObjectType() == eMenuItemObjectType)) {
     nsMenuItemX* targetMenuItem = static_cast<nsMenuItemX*>(target);
     bool handlerCalledPreventDefault;  // but we don't actually care
-    targetMenuItem->DispatchDOMEvent(NS_LITERAL_STRING("DOMMenuItemActive"),
-                                     &handlerCalledPreventDefault);
+    targetMenuItem->DispatchDOMEvent(u"DOMMenuItemActive"_ns, &handlerCalledPreventDefault);
   }
 }
 

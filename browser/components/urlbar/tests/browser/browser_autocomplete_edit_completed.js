@@ -22,9 +22,12 @@ add_task(async function() {
     await PlacesUtils.history.clear();
   });
 
-  await promiseAutocompleteResultPopup("http://example.com");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "http://example.com",
+  });
 
-  const initialIndex = UrlbarTestUtils.getSelectedIndex(window);
+  const initialIndex = UrlbarTestUtils.getSelectedRowIndex(window);
 
   info("Key Down to select the next item.");
   EventUtils.synthesizeKey("KEY_ArrowDown");
@@ -35,7 +38,7 @@ add_task(async function() {
     nextIndex
   );
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     nextIndex,
     "Should have selected the next item"
   );
@@ -47,11 +50,11 @@ add_task(async function() {
 
   info("Press backspace");
   EventUtils.synthesizeKey("KEY_Backspace");
-  await promiseSearchComplete();
+  await UrlbarTestUtils.promiseSearchComplete(window);
 
   let editedValue = gURLBar.value;
   Assert.equal(
-    UrlbarTestUtils.getSelectedIndex(window),
+    UrlbarTestUtils.getSelectedRowIndex(window),
     initialIndex,
     "Should have selected the initialIndex again"
   );

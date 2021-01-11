@@ -11,8 +11,11 @@ callback WebExtensionLocalizeCallback = DOMString (DOMString unlocalizedText);
  * Defines the platform-level policies for a WebExtension, including its
  * permissions and the characteristics of its moz-extension: URLs.
  */
-[Constructor(WebExtensionInit options), ChromeOnly, Exposed=Window]
+[ChromeOnly, Exposed=Window]
 interface WebExtensionPolicy {
+  [Throws]
+  constructor(WebExtensionInit options);
+  
   /**
    * The add-on's internal ID, as specified in its manifest.json file or its
    * XPI signature.
@@ -41,12 +44,31 @@ interface WebExtensionPolicy {
   readonly attribute DOMString name;
 
   /**
-   * The content security policy string to apply to all pages loaded from the
-   * extension's moz-extension: protocol.
+   * Whether the extension has access to privileged features
    */
   [Constant]
-  readonly attribute DOMString contentSecurityPolicy;
+  readonly attribute boolean isPrivileged;
 
+  /**
+   * The content security policy string to apply to all pages loaded from the
+   * extension's moz-extension: protocol.  If one is not provided by the
+   * extension the default value from preferences is used.
+   * See extensions.webextensions.default-content-security-policy.
+   */
+  [Constant]
+  readonly attribute DOMString extensionPageCSP;
+
+  /**
+   * The content security policy string to apply to all the content scripts
+   * belonging to the extension.  If one is not provided by the
+   * extension the default value from preferences is used.
+   * See extensions.webextensions.default-content-security-policy.
+   *
+   * This is currently disabled, see bug 1578284.  Developers may enable it
+   * for testing using extensions.content_script_csp.enabled.
+   */
+  [Constant]
+  readonly attribute DOMString contentScriptCSP;
 
   /**
    * The list of currently-active permissions for the extension, as specified
@@ -93,6 +115,19 @@ interface WebExtensionPolicy {
    * True if the calling process is an extension process.
    */
   static readonly attribute boolean isExtensionProcess;
+
+  /**
+   * Whether the background.service_worker in the extension manifest.json file
+   * is enabled.
+   *
+   * NOTE: **do not use Services.prefs to retrieve the value of the undelying pref**
+   *
+   * It is defined in StaticPrefs.yaml as `mirror: once` and so checking
+   * its current value using Services.prefs doesn't guarantee that it does
+   * match the value as accessible from the C++ layers, and unexpected issue
+   * may be possible if different code has a different idea of its value.
+   */
+  static readonly attribute boolean backgroundServiceWorkerEnabled;
 
   /**
    * Set based on the manifest.incognito value:
@@ -195,11 +230,19 @@ interface WebExtensionPolicy {
    * This may be used to delay operations, such as loading extension pages,
    * which depend on extensions being fully initialized.
    *
-   * Note: This will always be either a Promise<WebExtensionPolicy> or null,
+   * Note: This will always be either a Promise<WebExtensionPolicy?> or null,
    * but the WebIDL grammar does not allow us to specify a nullable Promise
    * type.
+   *
+   * Note: This could resolve to null when the startup was interrupted.
    */
   readonly attribute object? readyPromise;
+
+  /**
+   * Returns true if the given worker script URL matches the background
+   * service worker url declared in the extension manifest.json file.
+   */
+  boolean isManifestBackgroundWorker(DOMString workerURL);
 };
 
 dictionary WebExtensionInit {
@@ -211,6 +254,8 @@ dictionary WebExtensionInit {
 
   DOMString name = "";
 
+  boolean isPrivileged = false;
+
   required WebExtensionLocalizeCallback localizeCallback;
 
   required MatchPatternSetOrStringSequence allowedOrigins;
@@ -221,9 +266,11 @@ dictionary WebExtensionInit {
 
   sequence<WebExtensionContentScriptInit> contentScripts = [];
 
-  DOMString? contentSecurityPolicy = null;
+  DOMString? extensionPageCSP = null;
+  DOMString? contentScriptCSP = null;
 
   sequence<DOMString>? backgroundScripts = null;
+  DOMString? backgroundWorkerScript = null;
 
-  Promise<WebExtensionPolicy> readyPromise;
+  Promise<WebExtensionPolicy?> readyPromise;
 };

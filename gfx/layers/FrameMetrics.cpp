@@ -6,9 +6,11 @@
 
 #include "FrameMetrics.h"
 
+#include "gfxUtils.h"
 #include "nsStyleConsts.h"
 #include "nsStyleStruct.h"
 #include "mozilla/WritingModes.h"
+#include "mozilla/gfx/Types.h"
 
 namespace mozilla {
 namespace layers {
@@ -86,6 +88,22 @@ void FrameMetrics::KeepLayoutViewportEnclosingVisualViewport(
   aLayoutViewport = aLayoutViewport.MoveInsideAndClamp(aScrollableRect);
 }
 
+ScrollSnapInfo::ScrollSnapInfo()
+    : mScrollSnapStrictnessX(StyleScrollSnapStrictness::None),
+      mScrollSnapStrictnessY(StyleScrollSnapStrictness::None) {}
+
+bool ScrollSnapInfo::HasScrollSnapping() const {
+  return mScrollSnapStrictnessY != StyleScrollSnapStrictness::None ||
+         mScrollSnapStrictnessX != StyleScrollSnapStrictness::None;
+}
+
+bool ScrollSnapInfo::HasSnapPositions() const {
+  return (!mSnapPositionX.IsEmpty() &&
+          mScrollSnapStrictnessX != StyleScrollSnapStrictness::None) ||
+         (!mSnapPositionY.IsEmpty() &&
+          mScrollSnapStrictnessY != StyleScrollSnapStrictness::None);
+}
+
 void ScrollSnapInfo::InitializeScrollSnapStrictness(
     WritingMode aWritingMode, const nsStyleDisplay* aDisplay) {
   if (aDisplay->mScrollSnapType.strictness == StyleScrollSnapStrictness::None) {
@@ -143,6 +161,11 @@ OverscrollBehaviorInfo OverscrollBehaviorInfo::FromStyleConstants(
   result.mBehaviorX = ToOverscrollBehavior(aBehaviorX);
   result.mBehaviorY = ToOverscrollBehavior(aBehaviorY);
   return result;
+}
+
+void ScrollMetadata::SetBackgroundColor(
+    const gfx::sRGBColor& aBackgroundColor) {
+  mBackgroundColor = gfx::ToDeviceColor(aBackgroundColor);
 }
 
 StaticAutoPtr<const ScrollMetadata> ScrollMetadata::sNullMetadata;

@@ -66,7 +66,7 @@ const gMockPKCS11ModuleDB = {
     throw new Error("not expecting get isFIPSEnabled() to be called");
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPKCS11ModuleDB]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPKCS11ModuleDB"]),
 };
 
 const gMockPromptService = {
@@ -89,7 +89,7 @@ const gMockPromptService = {
     );
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPromptService]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
 };
 
 var gMockPKCS11CID = MockRegistrar.register(
@@ -127,7 +127,7 @@ function resetCallCounts() {
  */
 function openLoadModuleDialog() {
   let win = window.openDialog(
-    "chrome://pippki/content/load_device.xul",
+    "chrome://pippki/content/load_device.xhtml",
     "",
     ""
   );

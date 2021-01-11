@@ -38,12 +38,12 @@ add_task(async function() {
   await logTextToConsole(hud, "Smoke message");
   is(
     findMessage(hud, CACHED_MESSAGE),
-    null,
+    undefined,
     "The cached message is not visible anymore"
   );
   is(
     findMessage(hud, EXPECTED_REPORT),
-    null,
+    undefined,
     "The cached error message is not visible anymore as well"
   );
 
@@ -53,7 +53,7 @@ add_task(async function() {
 
   info("Send a console.clear() from the content page");
   const onConsoleCleared = waitForMessage(hud, "Console was cleared");
-  ContentTask.spawn(gBrowser.selectedBrowser, {}, () => {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.console.clear();
   });
   await onConsoleCleared;
@@ -66,14 +66,14 @@ add_task(async function() {
   await logTextToConsole(hud, "Second smoke message");
   is(
     findMessage(hud, NEW_CACHED_MESSAGE),
-    null,
+    undefined,
     "The new cached message is not visible anymore"
   );
 });
 
 function logTextToConsole(hud, text) {
   const onMessage = waitForMessage(hud, text);
-  ContentTask.spawn(gBrowser.selectedBrowser, text, function(str) {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [text], function(str) {
     content.wrappedJSObject.console.log(str);
   });
   return onMessage;

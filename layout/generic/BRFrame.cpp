@@ -12,7 +12,8 @@
 #include "nsCOMPtr.h"
 #include "nsContainerFrame.h"
 #include "nsFontMetrics.h"
-#include "nsFrame.h"
+#include "nsHTMLParts.h"
+#include "nsIFrame.h"
 #include "nsPresContext.h"
 #include "nsLineLayout.h"
 #include "nsStyleConsts.h"
@@ -27,7 +28,7 @@ using namespace mozilla;
 
 namespace mozilla {
 
-class BRFrame final : public nsFrame {
+class BRFrame final : public nsIFrame {
  public:
   NS_DECL_FRAMEARENA_HELPERS(BRFrame)
 
@@ -60,7 +61,7 @@ class BRFrame final : public nsFrame {
       mozilla::WritingMode aWritingMode) const override;
 
   virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsFrame::IsFrameOfType(
+    return nsIFrame::IsFrameOfType(
         aFlags & ~(nsIFrame::eReplaced | nsIFrame::eLineParticipant));
   }
 
@@ -70,7 +71,7 @@ class BRFrame final : public nsFrame {
 
  protected:
   explicit BRFrame(ComputedStyle* aStyle, nsPresContext* aPresContext)
-      : nsFrame(aStyle, aPresContext, kClassID),
+      : nsIFrame(aStyle, aPresContext, kClassID),
         mAscent(NS_INTRINSIC_ISIZE_UNKNOWN) {}
 
   virtual ~BRFrame();
@@ -86,7 +87,7 @@ nsIFrame* NS_NewBRFrame(mozilla::PresShell* aPresShell, ComputedStyle* aStyle) {
 
 NS_IMPL_FRAMEARENA_HELPERS(BRFrame)
 
-BRFrame::~BRFrame() {}
+BRFrame::~BRFrame() = default;
 
 void BRFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
                      const ReflowInput& aReflowInput, nsReflowStatus& aStatus) {
@@ -249,16 +250,10 @@ nsIFrame::FrameSearchResult BRFrame::PeekOffsetWord(
 #ifdef ACCESSIBILITY
 a11y::AccType BRFrame::AccessibleType() {
   dom::HTMLBRElement* brElement = dom::HTMLBRElement::FromNode(mContent);
-  if (brElement->IsPaddingForEmptyEditor()) {
-    // This <br> is a "padding <br> element" used when there is no text in the
-    // editor.
-    return a11y::eNoType;
-  }
-
-  // Trailing HTML br element don't play any difference. We don't need to expose
-  // it to AT (see bug https://bugzilla.mozilla.org/show_bug.cgi?id=899433#c16
-  // for details).
-  if (!mContent->GetNextSibling() && !GetNextSibling()) {
+  if (brElement->IsPaddingForEmptyEditor() ||
+      brElement->IsPaddingForEmptyLastLine()) {
+    // This <br> is a "padding <br> element" used when there is no text or an
+    // empty last line in an editor.
     return a11y::eNoType;
   }
 

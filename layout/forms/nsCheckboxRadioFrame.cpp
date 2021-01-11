@@ -17,6 +17,7 @@
 #include "nsStyleConsts.h"
 
 using namespace mozilla;
+using mozilla::dom::Element;
 using mozilla::dom::HTMLInputElement;
 
 //#define FCF_NOISY
@@ -31,7 +32,7 @@ nsCheckboxRadioFrame::nsCheckboxRadioFrame(ComputedStyle* aStyle,
                                            nsPresContext* aPresContext)
     : nsAtomicContainerFrame(aStyle, aPresContext, kClassID) {}
 
-nsCheckboxRadioFrame::~nsCheckboxRadioFrame() {}
+nsCheckboxRadioFrame::~nsCheckboxRadioFrame() = default;
 
 void nsCheckboxRadioFrame::DestroyFrom(nsIFrame* aDestructRoot,
                                        PostDestroyData& aPostDestroyData) {
@@ -82,7 +83,7 @@ LogicalSize nsCheckboxRadioFrame::ComputeAutoSize(
 
 nscoord nsCheckboxRadioFrame::GetLogicalBaseline(
     WritingMode aWritingMode) const {
-  NS_ASSERTION(!NS_SUBTREE_DIRTY(this), "frame must not be dirty");
+  NS_ASSERTION(!IsSubtreeDirty(), "frame must not be dirty");
 
   // For appearance:none we use a standard CSS baseline, i.e. synthesized from
   // our margin-box.
@@ -169,7 +170,7 @@ nsresult nsCheckboxRadioFrame::HandleEvent(nsPresContext* aPresContext,
                                            nsEventStatus* aEventStatus) {
   // Check for disabled content so that selection works properly (?).
   if (IsContentDisabled()) {
-    return nsFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+    return nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
   }
   return NS_OK;
 }
@@ -192,7 +193,7 @@ nsRect nsCheckboxRadioFrame::GetUsableScreenRect(nsPresContext* aPresContext) {
 
   nsDeviceContext* context = aPresContext->DeviceContext();
   int32_t dropdownCanOverlapOSBar =
-      LookAndFeel::GetInt(LookAndFeel::eIntID_MenusCanOverlapOSBar, 0);
+      LookAndFeel::GetInt(LookAndFeel::IntID::MenusCanOverlapOSBar, 0);
   if (dropdownCanOverlapOSBar)
     context->GetRect(screen);
   else

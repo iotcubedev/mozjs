@@ -88,6 +88,62 @@
             "name": "value"
           }
         ]
+      },
+      {
+        "name": "removeCertOverride",
+        "type": "function",
+        "async": true,
+        "description": "Revokes SSL certificate overrides for the given host+port.",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "host"
+          },
+          {
+            "type": "number",
+            "name": "port"
+          }
+        ]
+      },
+      {
+        "name": "setScalar",
+        "type": "function",
+        "async": true,
+        "description": "Set the given value to the scalar with the given id.",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "id"
+          },
+          {
+            "type": "any",
+            "name": "value"
+          }
+        ]
+      },
+      {
+        "name": "setResolutionAndScaleTo",
+        "type": "function",
+        "async": true,
+        "description": "Invokes nsIDOMWindowUtils.setResolutionAndScaleTo.",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "resolution"
+          }
+        ]
+      },
+      {
+        "name": "getPidForTab",
+        "type": "function",
+        "async": true,
+        "description": "Gets the top-level pid belonging to tabId.",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "tabId"
+          }
+        ]
       }
     ]
   }

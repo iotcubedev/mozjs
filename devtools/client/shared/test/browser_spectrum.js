@@ -31,7 +31,7 @@ const SINGLE_BG_COLOR = {
 const ZERO_ALPHA_COLOR = [0, 255, 255, 0];
 
 add_task(async function() {
-  const [host, , doc] = await createHost("bottom", TEST_URI);
+  const { host, doc } = await createHost("bottom", TEST_URI);
 
   const container = doc.getElementById("spectrum-container");
 
@@ -305,7 +305,7 @@ function testSettingColorShoudUpdateTheUI(container) {
   hueSliderOriginalVal = s.hueSlider.value;
 
   setSpectrumProps(s, { rgb: ZERO_ALPHA_COLOR });
-  is(s.alphaSlider.value, 0, "Alpha range UI has been updated again");
+  is(s.alphaSlider.value, "0", "Alpha range UI has been updated again");
   ok(
     hueSliderOriginalVal !== s.hueSlider.value,
     "Hue slider should have move again"

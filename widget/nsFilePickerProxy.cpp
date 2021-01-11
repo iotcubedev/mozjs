@@ -20,7 +20,7 @@ NS_IMPL_ISUPPORTS(nsFilePickerProxy, nsIFilePicker)
 nsFilePickerProxy::nsFilePickerProxy()
     : mSelectedType(0), mCapture(captureNone), mIPCActive(false) {}
 
-nsFilePickerProxy::~nsFilePickerProxy() {}
+nsFilePickerProxy::~nsFilePickerProxy() = default;
 
 NS_IMETHODIMP
 nsFilePickerProxy::Init(mozIDOMWindowProxy* aParent, const nsAString& aTitle,
@@ -146,6 +146,13 @@ nsFilePickerProxy::Open(nsIFilePickerShownCallback* aCallback) {
 
 mozilla::ipc::IPCResult nsFilePickerProxy::Recv__delete__(
     const MaybeInputData& aData, const int16_t& aResult) {
+  nsPIDOMWindowInner* inner =
+      mParent ? mParent->GetCurrentInnerWindow() : nullptr;
+
+  if (NS_WARN_IF(!inner)) {
+    return IPC_OK();
+  }
+
   if (aData.type() == MaybeInputData::TInputBlobs) {
     const nsTArray<IPCBlob>& blobs = aData.get_InputBlobs().blobs();
     for (uint32_t i = 0; i < blobs.Length(); ++i) {
@@ -156,10 +163,10 @@ mozilla::ipc::IPCResult nsFilePickerProxy::Recv__delete__(
         return IPC_OK();
       }
 
-      nsPIDOMWindowInner* inner =
-          mParent ? mParent->GetCurrentInnerWindow() : nullptr;
-      RefPtr<File> file = File::Create(inner, blobImpl);
-      MOZ_ASSERT(file);
+      RefPtr<File> file = File::Create(inner->AsGlobal(), blobImpl);
+      if (NS_WARN_IF(!file)) {
+        return IPC_OK();
+      }
 
       OwningFileOrDirectory* element = mFilesOrDirectories.AppendElement();
       element->SetAsFile() = file;
@@ -172,8 +179,7 @@ mozilla::ipc::IPCResult nsFilePickerProxy::Recv__delete__(
       return IPC_OK();
     }
 
-    RefPtr<Directory> directory =
-        Directory::Create(mParent->GetCurrentInnerWindow(), file);
+    RefPtr<Directory> directory = Directory::Create(inner->AsGlobal(), file);
     MOZ_ASSERT(directory);
 
     OwningFileOrDirectory* element = mFilesOrDirectories.AppendElement();
@@ -215,7 +221,7 @@ class SimpleEnumerator final : public nsSimpleEnumerator {
  public:
   explicit SimpleEnumerator(
       const nsTArray<OwningFileOrDirectory>& aFilesOrDirectories)
-      : mFilesOrDirectories(aFilesOrDirectories), mIndex(0) {}
+      : mFilesOrDirectories(aFilesOrDirectories.Clone()), mIndex(0) {}
 
   NS_IMETHOD
   HasMoreElements(bool* aRetvalue) override {

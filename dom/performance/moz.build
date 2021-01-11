@@ -10,6 +10,7 @@ with Files("**"):
 EXPORTS.mozilla.dom += [
     'Performance.h',
     'PerformanceEntry.h',
+    'PerformanceMainThread.h',
     'PerformanceMark.h',
     'PerformanceMeasure.h',
     'PerformanceNavigation.h',
@@ -45,5 +46,7 @@ UNIFIED_SOURCES += [
 include('/ipc/chromium/chromium-config.mozbuild')
 
 MOCHITEST_MANIFESTS += [ 'tests/mochitest.ini' ]
+
+include('/ipc/chromium/chromium-config.mozbuild')
 
 FINAL_LIBRARY = 'xul'

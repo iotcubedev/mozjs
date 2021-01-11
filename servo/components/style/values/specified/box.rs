@@ -34,6 +34,18 @@ fn moz_box_display_values_enabled(context: &ParserContext) -> bool {
         static_prefs::pref!("layout.css.xul-box-display-values.content.enabled")
 }
 
+fn flexbox_enabled() -> bool {
+    #[cfg(feature = "servo-layout-2020")]
+    {
+        return servo_config::prefs::pref_map()
+            .get("layout.flexbox.enabled")
+            .as_bool()
+            .unwrap_or(false)
+    }
+
+    true
+}
+
 /// Defines an element’s display type, which consists of
 /// the two basic qualities of how an element generates boxes
 /// <https://drafts.csswg.org/css-display/#propdef-display>
@@ -44,7 +56,9 @@ pub enum DisplayOutside {
     None = 0,
     Inline,
     Block,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableCaption,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     InternalTable,
     #[cfg(feature = "gecko")]
     InternalRuby,
@@ -57,21 +71,28 @@ pub enum DisplayOutside {
 #[repr(u8)]
 pub enum DisplayInside {
     None = 0,
-    #[cfg(feature = "gecko")]
+    #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
     Contents,
-    Block,
+    Flow,
     FlowRoot,
-    Inline,
     Flex,
     #[cfg(feature = "gecko")]
     Grid,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     Table,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableRowGroup,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableColumn,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableColumnGroup,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableHeaderGroup,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableFooterGroup,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableRow,
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     TableCell,
     #[cfg(feature = "gecko")]
     Ruby,
@@ -88,8 +109,6 @@ pub enum DisplayInside {
     #[cfg(feature = "gecko")]
     MozBox,
     #[cfg(feature = "gecko")]
-    MozInlineBox,
-    #[cfg(feature = "gecko")]
     MozGrid,
     #[cfg(feature = "gecko")]
     MozGridGroup,
@@ -100,10 +119,7 @@ pub enum DisplayInside {
     #[cfg(feature = "gecko")]
     MozDeck,
     #[cfg(feature = "gecko")]
-    MozGroupbox,
-    #[cfg(feature = "gecko")]
     MozPopup,
-    Flow, // only used for parsing, not computed value
 }
 
 #[allow(missing_docs)]
@@ -134,11 +150,11 @@ impl Display {
 
     /// https://drafts.csswg.org/css-display/#the-display-properties
     pub const None: Self = Self::new(DisplayOutside::None, DisplayInside::None);
-    #[cfg(feature = "gecko")]
+    #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
     pub const Contents: Self = Self::new(DisplayOutside::None, DisplayInside::Contents);
-    pub const Inline: Self = Self::new(DisplayOutside::Inline, DisplayInside::Inline);
+    pub const Inline: Self = Self::new(DisplayOutside::Inline, DisplayInside::Flow);
     pub const InlineBlock: Self = Self::new(DisplayOutside::Inline, DisplayInside::FlowRoot);
-    pub const Block: Self = Self::new(DisplayOutside::Block, DisplayInside::Block);
+    pub const Block: Self = Self::new(DisplayOutside::Block, DisplayInside::Flow);
     #[cfg(feature = "gecko")]
     pub const FlowRoot: Self = Self::new(DisplayOutside::Block, DisplayInside::FlowRoot);
     pub const Flex: Self = Self::new(DisplayOutside::Block, DisplayInside::Flex);
@@ -147,34 +163,51 @@ impl Display {
     pub const Grid: Self = Self::new(DisplayOutside::Block, DisplayInside::Grid);
     #[cfg(feature = "gecko")]
     pub const InlineGrid: Self = Self::new(DisplayOutside::Inline, DisplayInside::Grid);
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const Table: Self = Self::new(DisplayOutside::Block, DisplayInside::Table);
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const InlineTable: Self = Self::new(DisplayOutside::Inline, DisplayInside::Table);
-    pub const TableCaption: Self = Self::new(DisplayOutside::TableCaption, DisplayInside::Block);
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
+    pub const TableCaption: Self = Self::new(DisplayOutside::TableCaption, DisplayInside::Flow);
     #[cfg(feature = "gecko")]
     pub const Ruby: Self = Self::new(DisplayOutside::Inline, DisplayInside::Ruby);
     #[cfg(feature = "gecko")]
     pub const WebkitBox: Self = Self::new(DisplayOutside::Block, DisplayInside::WebkitBox);
     #[cfg(feature = "gecko")]
     pub const WebkitInlineBox: Self = Self::new(DisplayOutside::Inline, DisplayInside::WebkitBox);
-    /// Internal table boxes.
+
+    // Internal table boxes.
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableRowGroup: Self =
         Self::new(DisplayOutside::InternalTable, DisplayInside::TableRowGroup);
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableHeaderGroup: Self = Self::new(
         DisplayOutside::InternalTable,
         DisplayInside::TableHeaderGroup,
     );
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableFooterGroup: Self = Self::new(
         DisplayOutside::InternalTable,
         DisplayInside::TableFooterGroup,
     );
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableColumn: Self =
         Self::new(DisplayOutside::InternalTable, DisplayInside::TableColumn);
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableColumnGroup: Self = Self::new(
         DisplayOutside::InternalTable,
         DisplayInside::TableColumnGroup,
     );
+
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableRow: Self = Self::new(DisplayOutside::InternalTable, DisplayInside::TableRow);
 
+    #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
     pub const TableCell: Self = Self::new(DisplayOutside::InternalTable, DisplayInside::TableCell);
 
     /// Internal ruby boxes.
@@ -195,9 +228,9 @@ impl Display {
 
     /// XUL boxes.
     #[cfg(feature = "gecko")]
-    pub const MozBox: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozBox);
+    pub const MozBox: Self = Self::new(DisplayOutside::Block, DisplayInside::MozBox);
     #[cfg(feature = "gecko")]
-    pub const MozInlineBox: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozInlineBox);
+    pub const MozInlineBox: Self = Self::new(DisplayOutside::Inline, DisplayInside::MozBox);
     #[cfg(feature = "gecko")]
     pub const MozGrid: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozGrid);
     #[cfg(feature = "gecko")]
@@ -208,8 +241,6 @@ impl Display {
     pub const MozStack: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozStack);
     #[cfg(feature = "gecko")]
     pub const MozDeck: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozDeck);
-    #[cfg(feature = "gecko")]
-    pub const MozGroupbox: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozGroupbox);
     #[cfg(feature = "gecko")]
     pub const MozPopup: Self = Self::new(DisplayOutside::XUL, DisplayInside::MozPopup);
 
@@ -222,17 +253,8 @@ impl Display {
     }
 
     /// Make a display enum value from <display-outside> and <display-inside> values.
-    /// We store `flow` as a synthetic `block` or `inline` inside-value to simplify
-    /// our layout code.
     #[inline]
     fn from3(outside: DisplayOutside, inside: DisplayInside, list_item: bool) -> Self {
-        let inside = match inside {
-            DisplayInside::Flow => match outside {
-                DisplayOutside::Inline => DisplayInside::Inline,
-                _ => DisplayInside::Block,
-            },
-            _ => inside,
-        };
         let v = Self::new(outside, inside);
         if !list_item {
             return v;
@@ -253,6 +275,12 @@ impl Display {
             (self.0 >> Self::DISPLAY_INSIDE_BITS) & ((1 << Self::DISPLAY_OUTSIDE_BITS) - 1),
         )
         .unwrap()
+    }
+
+    /// Whether this is `display: inline` (or `inline list-item`).
+    #[inline]
+    pub fn is_inline_flow(&self) -> bool {
+        self.outside() == DisplayOutside::Inline && self.inside() == DisplayInside::Flow
     }
 
     /// Returns whether this `display` value is some kind of list-item.
@@ -298,8 +326,9 @@ impl Display {
     #[inline]
     pub fn is_atomic_inline_level(&self) -> bool {
         match *self {
-            Display::InlineBlock => true,
-            Display::InlineFlex | Display::InlineTable => true,
+            Display::InlineBlock | Display::InlineFlex => true,
+            #[cfg(any(feature = "servo-layout-2013"))]
+            Display::InlineTable => true,
             _ => false,
         }
     }
@@ -333,7 +362,7 @@ impl Display {
     ///
     /// Also used for :root style adjustments.
     pub fn equivalent_block_display(&self, _is_root_element: bool) -> Self {
-        #[cfg(feature = "gecko")]
+        #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
         {
             // Special handling for `contents` and `list-item`s on the root element.
             if _is_root_element && (self.is_contents() || self.is_list_item()) {
@@ -344,12 +373,15 @@ impl Display {
         match self.outside() {
             DisplayOutside::Inline => {
                 let inside = match self.inside() {
-                    DisplayInside::Inline | DisplayInside::FlowRoot => DisplayInside::Block,
+                    // `inline-block` blockifies to `block` rather than
+                    // `flow-root`, for legacy reasons.
+                    DisplayInside::FlowRoot => DisplayInside::Flow,
                     inside => inside,
                 };
                 Display::from3(DisplayOutside::Block, inside, self.is_list_item())
             },
             DisplayOutside::Block | DisplayOutside::None => *self,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             _ => Display::Block,
         }
     }
@@ -361,15 +393,12 @@ impl Display {
         match self.outside() {
             DisplayOutside::Block => {
                 let inside = match self.inside() {
-                    DisplayInside::Block => DisplayInside::FlowRoot,
+                    // `display: block` inlinifies to `display: inline-block`,
+                    // rather than `inline`, for legacy reasons.
+                    DisplayInside::Flow => DisplayInside::FlowRoot,
                     inside => inside,
                 };
                 Display::from3(DisplayOutside::Inline, inside, self.is_list_item())
-            },
-            #[cfg(feature = "gecko")]
-            DisplayOutside::XUL => match self.inside() {
-                DisplayInside::MozBox => Display::MozInlineBox,
-                _ => *self,
             },
             _ => *self,
         }
@@ -379,7 +408,7 @@ impl Display {
     #[inline]
     pub fn is_contents(&self) -> bool {
         match *self {
-            #[cfg(feature = "gecko")]
+            #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
             Display::Contents => true,
             _ => false,
         }
@@ -397,16 +426,8 @@ impl ToCss for Display {
     where
         W: fmt::Write,
     {
-        debug_assert_ne!(
-            self.inside(),
-            DisplayInside::Flow,
-            "`flow` never appears in `display` computed value"
-        );
         let outside = self.outside();
-        let inside = match self.inside() {
-            DisplayInside::Block | DisplayInside::Inline => DisplayInside::Flow,
-            inside => inside,
-        };
+        let inside = self.inside();
         match *self {
             Display::Block | Display::Inline => outside.to_css(dest),
             Display::InlineBlock => dest.write_str("inline-block"),
@@ -414,15 +435,14 @@ impl ToCss for Display {
             Display::WebkitInlineBox => dest.write_str("-webkit-inline-box"),
             #[cfg(feature = "gecko")]
             Display::MozInlineBox => dest.write_str("-moz-inline-box"),
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             Display::TableCaption => dest.write_str("table-caption"),
             _ => match (outside, inside) {
                 #[cfg(feature = "gecko")]
                 (DisplayOutside::Inline, DisplayInside::Grid) => dest.write_str("inline-grid"),
-                (DisplayOutside::Inline, DisplayInside::Flex) |
-                (DisplayOutside::Inline, DisplayInside::Table) => {
-                    dest.write_str("inline-")?;
-                    inside.to_css(dest)
-                },
+                (DisplayOutside::Inline, DisplayInside::Flex) => dest.write_str("inline-flex"),
+                #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
+                (DisplayOutside::Inline, DisplayInside::Table) => dest.write_str("inline-table"),
                 #[cfg(feature = "gecko")]
                 (DisplayOutside::Block, DisplayInside::Ruby) => dest.write_str("block ruby"),
                 (_, inside) => {
@@ -452,10 +472,11 @@ fn parse_display_inside<'i, 't>(
 ) -> Result<DisplayInside, ParseError<'i>> {
     Ok(try_match_ident_ignore_ascii_case! { input,
         "flow" => DisplayInside::Flow,
-        #[cfg(feature = "gecko")]
+        "flex" if flexbox_enabled() => DisplayInside::Flex,
+        #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
         "flow-root" => DisplayInside::FlowRoot,
+        #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
         "table" => DisplayInside::Table,
-        "flex" => DisplayInside::Flex,
         #[cfg(feature = "gecko")]
         "grid" => DisplayInside::Grid,
         #[cfg(feature = "gecko")]
@@ -510,30 +531,30 @@ impl Parse for Display {
         input: &mut Parser<'i, 't>,
     ) -> Result<Display, ParseError<'i>> {
         // Parse all combinations of <display-inside/outside>? and `list-item`? first.
-        let mut got_list_item = input.try(parse_list_item).is_ok();
+        let mut got_list_item = input.try_parse(parse_list_item).is_ok();
         let mut inside = if got_list_item {
-            input.try(parse_display_inside_for_list_item)
+            input.try_parse(parse_display_inside_for_list_item)
         } else {
-            input.try(parse_display_inside)
+            input.try_parse(parse_display_inside)
         };
         // <display-listitem> = <display-outside>? && [ flow | flow-root ]? && list-item
         // https://drafts.csswg.org/css-display/#typedef-display-listitem
         if !got_list_item && is_valid_inside_for_list_item(&inside) {
-            got_list_item = input.try(parse_list_item).is_ok();
+            got_list_item = input.try_parse(parse_list_item).is_ok();
         }
-        let outside = input.try(parse_display_outside);
+        let outside = input.try_parse(parse_display_outside);
         if outside.is_ok() {
             if !got_list_item && (inside.is_err() || is_valid_inside_for_list_item(&inside)) {
-                got_list_item = input.try(parse_list_item).is_ok();
+                got_list_item = input.try_parse(parse_list_item).is_ok();
             }
             if inside.is_err() {
                 inside = if got_list_item {
-                    input.try(parse_display_inside_for_list_item)
+                    input.try_parse(parse_display_inside_for_list_item)
                 } else {
-                    input.try(parse_display_inside)
+                    input.try_parse(parse_display_inside)
                 };
                 if !got_list_item && is_valid_inside_for_list_item(&inside) {
-                    got_list_item = input.try(parse_list_item).is_ok();
+                    got_list_item = input.try_parse(parse_list_item).is_ok();
                 }
             }
         }
@@ -553,21 +574,30 @@ impl Parse for Display {
         // Now parse the single-keyword `display` values.
         Ok(try_match_ident_ignore_ascii_case! { input,
             "none" => Display::None,
-            #[cfg(feature = "gecko")]
+            #[cfg(any(feature = "servo-layout-2020", feature = "gecko"))]
             "contents" => Display::Contents,
             "inline-block" => Display::InlineBlock,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "inline-table" => Display::InlineTable,
-            "-webkit-flex" => Display::Flex,
-            "inline-flex" | "-webkit-inline-flex" => Display::InlineFlex,
+            "-webkit-flex" if flexbox_enabled() => Display::Flex,
+            "inline-flex" | "-webkit-inline-flex" if flexbox_enabled() => Display::InlineFlex,
             #[cfg(feature = "gecko")]
             "inline-grid" => Display::InlineGrid,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-caption" => Display::TableCaption,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-row-group" => Display::TableRowGroup,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-header-group" => Display::TableHeaderGroup,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-footer-group" => Display::TableFooterGroup,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-column" => Display::TableColumn,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-column-group" => Display::TableColumnGroup,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-row" => Display::TableRow,
+            #[cfg(any(feature = "servo-layout-2013", feature = "gecko"))]
             "table-cell" => Display::TableCell,
             #[cfg(feature = "gecko")]
             "ruby-base" => Display::RubyBase,
@@ -595,8 +625,6 @@ impl Parse for Display {
             "-moz-stack" if moz_display_values_enabled(context) => Display::MozStack,
             #[cfg(feature = "gecko")]
             "-moz-deck" if moz_display_values_enabled(context) => Display::MozDeck,
-            #[cfg(feature = "gecko")]
-            "-moz-groupbox" if moz_display_values_enabled(context) => Display::MozGroupbox,
             #[cfg(feature = "gecko")]
             "-moz-popup" if moz_display_values_enabled(context) => Display::MozPopup,
         })
@@ -650,7 +678,8 @@ impl Parse for VerticalAlign {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(lp) = input.try(|i| LengthPercentage::parse_quirky(context, i, AllowQuirks::Yes))
+        if let Ok(lp) =
+            input.try_parse(|i| LengthPercentage::parse_quirky(context, i, AllowQuirks::Yes))
         {
             return Ok(GenericVerticalAlign::Length(lp));
         }
@@ -670,7 +699,7 @@ impl Parse for AnimationIterationCount {
         input: &mut ::cssparser::Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("infinite"))
+            .try_parse(|input| input.expect_ident_matching("infinite"))
             .is_ok()
         {
             return Ok(GenericAnimationIterationCount::Infinite);
@@ -734,7 +763,7 @@ impl Parse for AnimationName {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(name) = input.try(|input| KeyframesName::parse(context, input)) {
+        if let Ok(name) = input.try_parse(|input| KeyframesName::parse(context, input)) {
             return Ok(AnimationName(Some(name)));
         }
 
@@ -833,7 +862,7 @@ impl Parse for ScrollSnapType {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("none"))
+            .try_parse(|input| input.expect_ident_matching("none"))
             .is_ok()
         {
             return Ok(ScrollSnapType::none());
@@ -841,7 +870,7 @@ impl Parse for ScrollSnapType {
 
         let axis = ScrollSnapAxis::parse(input)?;
         let strictness = input
-            .try(ScrollSnapStrictness::parse)
+            .try_parse(ScrollSnapStrictness::parse)
             .unwrap_or(ScrollSnapStrictness::Proximity);
         Ok(Self { axis, strictness })
     }
@@ -928,7 +957,9 @@ impl Parse for ScrollSnapAlign {
         input: &mut Parser<'i, 't>,
     ) -> Result<ScrollSnapAlign, ParseError<'i>> {
         let block = ScrollSnapAlignKeyword::parse(input)?;
-        let inline = input.try(ScrollSnapAlignKeyword::parse).unwrap_or(block);
+        let inline = input
+            .try_parse(ScrollSnapAlignKeyword::parse)
+            .unwrap_or(block);
         Ok(ScrollSnapAlign { block, inline })
     }
 }
@@ -1079,6 +1110,10 @@ fn change_bits_for_longhand(longhand: LonghandId) -> WillChangeBits {
     let mut flags = match longhand {
         LonghandId::Opacity => WillChangeBits::OPACITY,
         LonghandId::Transform => WillChangeBits::TRANSFORM,
+        #[cfg(feature = "gecko")]
+        LonghandId::Translate | LonghandId::Rotate | LonghandId::Scale | LonghandId::OffsetPath => {
+            WillChangeBits::TRANSFORM
+        },
         _ => WillChangeBits::empty(),
     };
 
@@ -1119,7 +1154,7 @@ impl Parse for WillChange {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         if input
-            .try(|input| input.expect_ident_matching("auto"))
+            .try_parse(|input| input.expect_ident_matching("auto"))
             .is_ok()
         {
             return Ok(Self::default());
@@ -1207,14 +1242,14 @@ impl Parse for TouchAction {
             "none" => Ok(TouchAction::NONE),
             "manipulation" => Ok(TouchAction::MANIPULATION),
             "pan-x" => {
-                if input.try(|i| i.expect_ident_matching("pan-y")).is_ok() {
+                if input.try_parse(|i| i.expect_ident_matching("pan-y")).is_ok() {
                     Ok(TouchAction::PAN_X | TouchAction::PAN_Y)
                 } else {
                     Ok(TouchAction::PAN_X)
                 }
             },
             "pan-y" => {
-                if input.try(|i| i.expect_ident_matching("pan-x")).is_ok() {
+                if input.try_parse(|i| i.expect_ident_matching("pan-x")).is_ok() {
                     Ok(TouchAction::PAN_X | TouchAction::PAN_Y)
                 } else {
                     Ok(TouchAction::PAN_Y)
@@ -1292,7 +1327,7 @@ impl Parse for Contain {
         input: &mut Parser<'i, 't>,
     ) -> Result<Contain, ParseError<'i>> {
         let mut result = Contain::empty();
-        while let Ok(name) = input.try(|i| i.expect_ident_cloned()) {
+        while let Ok(name) = input.try_parse(|i| i.expect_ident_cloned()) {
             let flag = match_ignore_ascii_case! { &name,
                 "size" => Some(Contain::SIZE),
                 "layout" => Some(Contain::LAYOUT),
@@ -1491,8 +1526,36 @@ pub enum Resize {
 pub enum Appearance {
     /// No appearance at all.
     None,
+    /// Default appearance for the element.
+    ///
+    /// This value doesn't make sense for -moz-default-appearance, but we don't bother to guard
+    /// against parsing it.
+    Auto,
+    /// A searchfield.
+    Searchfield,
+    /// A multi-line text field, e.g. HTML <textarea>.
+    #[parse(aliases = "textfield-multiline")]
+    Textarea,
+    /// A checkbox element.
+    Checkbox,
+    /// A radio element within a radio group.
+    Radio,
+    /// A dropdown list.
+    Menulist,
+    /// List boxes.
+    Listbox,
+    /// A horizontal meter bar.
+    #[parse(aliases = "meterbar")]
+    Meter,
+    /// A horizontal progress bar.
+    #[parse(aliases = "progressbar")]
+    ProgressBar,
     /// A typical dialog button.
     Button,
+    /// A single-line text field, e.g. HTML <input type=text>.
+    Textfield,
+    /// The dropdown button(s) that open up a dropdown list.
+    MenulistButton,
     /// Various arrows that go in buttons
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ButtonArrowDown,
@@ -1502,29 +1565,15 @@ pub enum Appearance {
     ButtonArrowPrevious,
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ButtonArrowUp,
-    /// A rectangular button that contains complex content
-    /// like images (e.g. HTML <button> elements)
-    #[css(skip)]
-    ButtonBevel,
     /// The focus outline box inside of a button.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ButtonFocus,
-    /// The caret of a text area
-    #[css(skip)]
-    Caret,
     /// A dual toolbar button (e.g., a Back button with a dropdown)
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Dualbutton,
     /// A groupbox.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Groupbox,
-    /// A inner-spin button.
-    InnerSpinButton,
-    /// List boxes.
-    Listbox,
-    /// A listbox item.
-    #[css(skip)]
-    Listitem,
     /// Menu Bar background
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Menubar,
@@ -1538,16 +1587,9 @@ pub enum Appearance {
     /// For text on non-iconic menuitems only
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Menuitemtext,
-    /// A dropdown list.
-    Menulist,
-    /// The dropdown button(s) that open up a dropdown list.
-    MenulistButton,
     /// The text part of a dropdown list, to left of button.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     MenulistText,
-    /// An editable textfield with a dropdown list (a combobox).
-    #[css(skip)]
-    MenulistTextfield,
     /// Menu Popup background.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Menupopup,
@@ -1563,29 +1605,18 @@ pub enum Appearance {
     /// An image in the menu gutter, like in bookmarks or history.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Menuimage,
-    /// A horizontal meter bar.
-    #[parse(aliases = "meterbar")]
-    Meter,
     /// The meter bar's meter indicator.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Meterchunk,
     /// The "arrowed" part of the dropdown button that open up a dropdown list.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
-    MozMenulistButton,
+    MozMenulistArrowButton,
     /// For HTML's <input type=number>
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     NumberInput,
-    /// A horizontal progress bar.
-    #[parse(aliases = "progressbar")]
-    ProgressBar,
     /// The progress bar's progress indicator
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Progresschunk,
-    /// A vertical progress bar.
-    ProgressbarVertical,
-    /// A checkbox element.
-    Checkbox,
-    /// A radio element within a radio group.
-    Radio,
     /// A generic container that always repaints on state changes. This is a
     /// hack to make XUL checkboxes and radio buttons work.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
@@ -1599,7 +1630,9 @@ pub enum Appearance {
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     RadioLabel,
     /// nsRangeFrame and its subparts
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Range,
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     RangeThumb,
     /// The resizer background area in a status bar for the resizer widget in
     /// the corner of a window.
@@ -1608,17 +1641,6 @@ pub enum Appearance {
     /// The resizer itself.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Resizer,
-    /// A slider.
-    ScaleHorizontal,
-    ScaleVertical,
-    /// A slider's thumb.
-    ScalethumbHorizontal,
-    ScalethumbVertical,
-    /// If the platform supports it, the left/right chunks of the slider thumb.
-    Scalethumbstart,
-    Scalethumbend,
-    /// The ticks for a slider.
-    Scalethumbtick,
     /// A scrollbar.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Scrollbar,
@@ -1642,16 +1664,18 @@ pub enum Appearance {
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ScrollbarbuttonRight,
     /// The scrollbar thumb.
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ScrollbarthumbHorizontal,
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ScrollbarthumbVertical,
     /// The scrollbar track.
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ScrollbartrackHorizontal,
+    #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     ScrollbartrackVertical,
     /// The scroll corner
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Scrollcorner,
-    /// A searchfield.
-    Searchfield,
     /// A separator.  Can be horizontal or vertical.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Separator,
@@ -1690,11 +1714,6 @@ pub enum Appearance {
     TabScrollArrowBack,
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     TabScrollArrowForward,
-    /// A multi-line text field, e.g. HTML <textarea>.
-    #[parse(aliases = "textfield-multiline")]
-    Textarea,
-    /// A single-line text field, e.g. HTML <input type=text>.
-    Textfield,
     /// A toolbar in an application window.
     #[parse(condition = "ParserContext::in_ua_or_chrome_sheet")]
     Toolbar,
@@ -1824,6 +1843,31 @@ pub enum Appearance {
     /// A dummy variant that should be last to let the GTK widget do hackery.
     #[css(skip)]
     Count,
+}
+
+/// The effect of `appearance: button` on an element.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToCss,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+)]
+#[repr(u8)]
+pub enum ButtonAppearance {
+    /// `appearance: button` means the element is rendered with button
+    /// appearance.
+    Allow,
+    /// `appearance: button` is treated like `appearance: auto`.
+    Disallow,
 }
 
 /// A kind of break between two boxes.

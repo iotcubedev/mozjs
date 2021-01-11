@@ -72,6 +72,7 @@ struct CallStatistics {
 
   uint32_t rtcp_sender_packets_sent;
   uint32_t rtcp_sender_octets_sent;
+  NtpTime rtcp_sender_ntp_timestamp;
 };
 
 // See section 6.4.2 in http://www.ietf.org/rfc/rfc3550.txt for details.
@@ -359,6 +360,8 @@ class Channel
     }
     return 0;
   }
+
+  void SetRtcpEventObserver(RtcpEventObserver* observer);
 
  private:
   class ProcessAndEncodeAudioTask;

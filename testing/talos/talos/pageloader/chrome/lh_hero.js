@@ -9,7 +9,7 @@ function _contentHeroHandler(isload) {
     function callback(entries, observer) {
       entries.forEach(entry => {
         sendAsyncMessage("PageLoader:LoadEvent", {
-          time: Date.now(), // eslint-disable-line
+          time: content.window.performance.now(),
           name: "tphero",
         });
         obs.disconnect();
@@ -25,7 +25,7 @@ function _contentHeroHandler(isload) {
     }
   } else if (isload) {
     // If the hero element is added from a settimeout handler, it might not run before 'load'
-    setTimeout(function() {
+    content.setTimeout(function() {
       _contentHeroHandler(false);
     }, 5000);
   } else {

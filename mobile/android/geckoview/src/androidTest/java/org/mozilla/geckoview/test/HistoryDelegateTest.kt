@@ -9,8 +9,8 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
 
 
-import android.support.test.filters.MediumTest
-import android.support.test.runner.AndroidJUnit4
+import androidx.test.filters.MediumTest
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.hamcrest.Matchers.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -180,4 +180,38 @@ class HistoryDelegateTest : BaseSessionTest() {
             }
         })
     }
+
+    @Test fun onHistoryStateChangeSavingState() {
+        // This is a smaller version of the above test, in the hopes to minimize race conditions
+        sessionRule.session.loadTestPath(HELLO_HTML_PATH)
+
+        sessionRule.waitUntilCalled(object : Callbacks.HistoryDelegate {
+            @AssertCalled(count = 1)
+            override fun onHistoryStateChange(session: GeckoSession, state: GeckoSession.HistoryDelegate.HistoryList) {
+                assertThat("History should have one entry", state.size,
+                        equalTo(1))
+                assertThat("URLs should match", state[state.currentIndex].uri,
+                        endsWith(HELLO_HTML_PATH))
+                assertThat("History index should be 0", state.currentIndex,
+                        equalTo(0))
+            }
+        })
+
+        sessionRule.session.loadTestPath(HELLO2_HTML_PATH)
+
+        sessionRule.waitUntilCalled(object : Callbacks.HistoryDelegate {
+            @AssertCalled(count = 1)
+            override fun onHistoryStateChange(session: GeckoSession, state: GeckoSession.HistoryDelegate.HistoryList) {
+                assertThat("History should have two entries", state.size,
+                        equalTo(2))
+                assertThat("URLs should match", state[state.currentIndex].uri,
+                        endsWith(HELLO2_HTML_PATH))
+                assertThat("History index should be 1", state.currentIndex,
+                        equalTo(1))
+            }
+        })
+    }
+
+
+
 }

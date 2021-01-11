@@ -34,7 +34,6 @@
 #include "mozilla/ServoStyleSetInlines.h"
 #include "mozilla/dom/Element.h"
 #include "nsDisplayList.h"
-#include "nsNodeUtils.h"
 #include "mozAutoDocUpdate.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/ChildIterator.h"
@@ -134,7 +133,7 @@ class nsHTMLFramesetBlankFrame final : public nsLeafFrame {
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("FramesetBlank"), aResult);
+    return MakeFrameName(u"FramesetBlank"_ns, aResult);
   }
 #endif
 
@@ -183,7 +182,7 @@ nsHTMLFramesetFrame::nsHTMLFramesetFrame(ComputedStyle* aStyle,
   mEdgeColors.Set(NO_COLOR);
 }
 
-nsHTMLFramesetFrame::~nsHTMLFramesetFrame() {}
+nsHTMLFramesetFrame::~nsHTMLFramesetFrame() = default;
 
 NS_QUERYFRAME_HEAD(nsHTMLFramesetFrame)
   NS_QUERYFRAME_ENTRY(nsHTMLFramesetFrame)
@@ -618,7 +617,7 @@ nsresult nsHTMLFramesetFrame::HandleEvent(nsPresContext* aPresContext,
         MouseDrag(aPresContext, aEvent);
         break;
       case eMouseUp:
-        if (aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+        if (aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
           EndMouseDrag(aPresContext);
         }
         break;
@@ -934,11 +933,10 @@ void nsHTMLFramesetFrame::Reflow(nsPresContext* aPresContext,
     if (firstTime) {
       int32_t childVis;
       nsHTMLFramesetFrame* framesetFrame = do_QueryFrame(child);
-      nsSubDocumentFrame* subdocFrame;
       if (framesetFrame) {
         childVis = framesetFrame->mEdgeVisibility;
         mChildBorderColors[childX] = framesetFrame->mEdgeColors;
-      } else if ((subdocFrame = do_QueryFrame(child))) {
+      } else if (child->IsSubDocumentFrame()) {
         if (eFrameborder_Yes == mChildFrameborder[childX]) {
           childVis = ALL_VIS;
         } else if (eFrameborder_No == mChildFrameborder[childX]) {
@@ -1059,7 +1057,7 @@ void nsHTMLFramesetFrame::Reflow(nsPresContext* aPresContext,
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsHTMLFramesetFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Frameset"), aResult);
+  return MakeFrameName(u"Frameset"_ns, aResult);
 }
 #endif
 
@@ -1335,11 +1333,7 @@ class nsDisplayFramesetBorder : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayFramesetBorder);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayFramesetBorder() {
-    MOZ_COUNT_DTOR(nsDisplayFramesetBorder);
-  }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayFramesetBorder)
 
   // REVIEW: see old GetFrameForPoint
   // Receives events in its bounds
@@ -1454,7 +1448,7 @@ nsresult nsHTMLFramesetBorderFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
   if (aEvent->mMessage == eMouseDown &&
-      aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+      aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary) {
     nsHTMLFramesetFrame* parentFrame = do_QueryFrame(GetParent());
     if (parentFrame) {
       parentFrame->StartMouseDrag(aPresContext, this, aEvent);
@@ -1474,7 +1468,7 @@ Maybe<nsIFrame::Cursor> nsHTMLFramesetBorderFrame::GetCursor(const nsPoint&) {
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsHTMLFramesetBorderFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("FramesetBorder"), aResult);
+  return MakeFrameName(u"FramesetBorder"_ns, aResult);
 }
 #endif
 
@@ -1522,9 +1516,7 @@ class nsDisplayFramesetBlank : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayFramesetBlank);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayFramesetBlank() { MOZ_COUNT_DTOR(nsDisplayFramesetBlank); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayFramesetBlank)
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   NS_DISPLAY_DECL_NAME("FramesetBlank", TYPE_FRAMESET_BLANK)
@@ -1536,7 +1528,7 @@ void nsDisplayFramesetBlank::Paint(nsDisplayListBuilder* aBuilder,
   int32_t appUnitsPerDevPixel = mFrame->PresContext()->AppUnitsPerDevPixel();
   Rect rect =
       NSRectToSnappedRect(GetPaintRect(), appUnitsPerDevPixel, *drawTarget);
-  ColorPattern white(ToDeviceColor(Color(1.f, 1.f, 1.f, 1.f)));
+  ColorPattern white(ToDeviceColor(sRGBColor::OpaqueWhite()));
   drawTarget->FillRect(rect, white);
 }
 

@@ -91,10 +91,6 @@ lazy_static! {
         // Disable intalling any distribution extensions or add-ons
         ("extensions.installDistroAddons", Pref::new(false)),
 
-        // Make sure Shield doesn't hit the network.
-        // TODO: Remove once minimum supported Firefox release is 60.
-        ("extensions.shield-recipe-client.api_url", Pref::new("")),
-
         // Disable extensions compatibility dialogue.
         // TODO: Remove once minimum supported Firefox release is 61.
         ("extensions.showMismatchUI", Pref::new(false)),
@@ -119,6 +115,10 @@ lazy_static! {
 
         // No hang monitor
         ("hangmonitor.timeout", Pref::new(0)),
+
+        // Disable idle-daily notifications to avoid expensive operations
+        // that may cause unexpected test timeouts.
+        ("idle.lastDailyNotification", Pref::new(-1)),
 
         // Show chrome errors and warnings in the error console
         ("javascript.options.showInConsole", Pref::new(true)),

@@ -13,6 +13,10 @@
   --breakpoint-expression-right-clear-space: 36px;
 }
 
+.secondary-panes .controlled > div {
+  max-width: 100%;
+}
+
 /*
   We apply overflow to the container with the commandbar.
   This allows the commandbar to remain fixed when scrolling
@@ -61,6 +65,7 @@
 .secondary-panes input[type="checkbox"] {
   margin: 0;
   margin-inline-end: 4px;
+  vertical-align: middle;
 }
 
 .secondary-panes-wrapper .command-bar.bottom {

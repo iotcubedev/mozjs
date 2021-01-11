@@ -20,7 +20,7 @@ async function pause(tab, options) {
       "DOMAudioPlaybackStopped",
       "DOMAudioPlaybackStopped event should get fired after pause"
     );
-    await ContentTask.spawn(browser, {}, async function() {
+    await SpecialPowers.spawn(browser, [], async function() {
       let audio = content.document.querySelector("audio");
       audio.pause();
     });
@@ -649,12 +649,6 @@ async function test_delayed_tabattr_removal() {
     taskFn
   );
 }
-
-add_task(async function() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.tabs.showAudioPlayingIcon", true]],
-  });
-});
 
 requestLongerTimeout(2);
 add_task(async function test_page() {

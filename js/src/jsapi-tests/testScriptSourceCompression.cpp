@@ -14,9 +14,10 @@
 #include <stddef.h>   // size_t
 #include <stdint.h>   // uint32_t
 
-#include "jsapi.h"  // JS_FlattenString, JS_GC, JS_Get{Latin1,TwoByte}FlatStringChars, JS_GetStringLength, JS_ValueToFunction
+#include "jsapi.h"  // JS_EnsureLinearString, JS_GC, JS_Get{Latin1,TwoByte}LinearStringChars, JS_GetStringLength, JS_ValueToFunction
+#include "jstypes.h"  // JS_PUBLIC_API
 
-#include "js/CompilationAndEvaluation.h"  // JS::Evaluate{,DontInflate}
+#include "js/CompilationAndEvaluation.h"  // JS::Evaluate
 #include "js/CompileOptions.h"            // JS::CompileOptions
 #include "js/Conversions.h"               // JS::ToString
 #include "js/MemoryFunctions.h"           // JS_malloc
@@ -33,8 +34,8 @@
 using mozilla::ArrayLength;
 using mozilla::Utf8Unit;
 
-struct JSContext;
-class JSString;
+struct JS_PUBLIC_API JSContext;
+class JS_PUBLIC_API JSString;
 
 template <typename Unit>
 using Source = js::UniquePtr<Unit[], JS::FreePolicy>;
@@ -59,18 +60,6 @@ static Source<Unit> MakeSourceAllWhitespace(JSContext* cx, size_t len) {
   return source;
 }
 
-static bool Evaluate(JSContext* cx, const JS::CompileOptions& options,
-                     JS::SourceText<char16_t>& sourceText) {
-  JS::Rooted<JS::Value> dummy(cx);
-  return JS::Evaluate(cx, options, sourceText, &dummy);
-}
-
-static bool Evaluate(JSContext* cx, const JS::CompileOptions& options,
-                     JS::SourceText<Utf8Unit>& sourceText) {
-  JS::Rooted<JS::Value> dummy(cx);
-  return JS::EvaluateDontInflate(cx, options, sourceText, &dummy);
-}
-
 template <typename Unit>
 static JSFunction* EvaluateChars(JSContext* cx, Source<Unit> chars, size_t len,
                                  char functionName, const char* func) {
@@ -84,8 +73,11 @@ static JSFunction* EvaluateChars(JSContext* cx, Source<Unit> chars, size_t len,
     return nullptr;
   }
 
-  if (!Evaluate(cx, options, sourceText)) {
-    return nullptr;
+  {
+    JS::Rooted<JS::Value> dummy(cx);
+    if (!JS::Evaluate(cx, options, sourceText, &dummy)) {
+      return nullptr;
+    }
   }
 
   // Evaluate the name of that function.
@@ -162,8 +154,8 @@ static JSString* DecompressSource(JSContext* cx, JS::Handle<JSFunction*> fun) {
 
 static bool IsExpectedFunctionString(JS::Handle<JSString*> str,
                                      char functionName, JSContext* cx) {
-  JSFlatString* fstr = JS_FlattenString(cx, str);
-  MOZ_RELEASE_ASSERT(fstr);
+  JSLinearString* lstr = JS_EnsureLinearString(cx, str);
+  MOZ_RELEASE_ASSERT(lstr);
 
   size_t len = JS_GetStringLength(str);
   if (len < FunctionStartLength || len < FunctionEndLength) {
@@ -194,10 +186,10 @@ static bool IsExpectedFunctionString(JS::Handle<JSString*> str,
 
   bool hasExpectedContents;
   if (JS_StringHasLatin1Chars(str)) {
-    const JS::Latin1Char* chars = JS_GetLatin1FlatStringChars(nogc, fstr);
+    const JS::Latin1Char* chars = JS_GetLatin1LinearStringChars(nogc, lstr);
     hasExpectedContents = CheckContents(chars);
   } else {
-    const char16_t* chars = JS_GetTwoByteFlatStringChars(nogc, fstr);
+    const char16_t* chars = JS_GetTwoByteLinearStringChars(nogc, lstr);
     hasExpectedContents = CheckContents(chars);
   }
 

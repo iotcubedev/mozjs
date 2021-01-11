@@ -4,10 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/ShmemPool.h"
+
+#include <utility>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/Logging.h"
-#include "mozilla/ShmemPool.h"
-#include "mozilla/Move.h"
 
 mozilla::LazyLogModule sShmemPoolLog("ShmemPool");
 
@@ -16,8 +18,9 @@ mozilla::LazyLogModule sShmemPoolLog("ShmemPool");
 
 namespace mozilla {
 
-ShmemPool::ShmemPool(size_t aPoolSize)
-    : mMutex("mozilla::ShmemPool"),
+ShmemPool::ShmemPool(size_t aPoolSize, PoolType aPoolType)
+    : mPoolType(aPoolType),
+      mMutex("mozilla::ShmemPool"),
       mPoolFree(aPoolSize),
       mErrorLogged(false)
 #ifdef DEBUG

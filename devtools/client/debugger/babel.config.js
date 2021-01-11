@@ -16,6 +16,7 @@ module.exports = {
         "./packages/*/src",
         /[/\\]node_modules[/\\]devtools-/,
         /[/\\]node_modules[/\\]react-aria-components[/\\]/,
+        "../../shared",
       ],
       presets: [
         "@babel/preset-react",
@@ -32,12 +33,19 @@ module.exports = {
       plugins: [
         "@babel/plugin-transform-flow-strip-types",
         "@babel/plugin-proposal-class-properties",
+        "@babel/plugin-proposal-optional-chaining",
+        "@babel/plugin-proposal-nullish-coalescing-operator",
         [
           "module-resolver",
           {
             alias: {
               "devtools/client/shared/vendor/react": "react",
               "devtools/client/shared/vendor/react-dom": "react-dom",
+              "devtools/client/shared/vendor/react-dom-factories":
+                "react-dom-factories",
+              "devtools/client/shared/vendor/react-prop-types": "prop-types",
+              // Map all require("devtools/...") to the real devtools root.
+              "^devtools\\/(.*)": `${__dirname}/../../\\1`,
             },
           },
         ],

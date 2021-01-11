@@ -9,26 +9,23 @@
 #include "mozilla/dom/WebGL2RenderingContextBinding.h"
 #include "mozilla/IntegerRange.h"
 #include "WebGL2Context.h"
+#include "WebGLBuffer.h"
 #include "WebGLProgram.h"
 
 namespace mozilla {
 
 WebGLTransformFeedback::WebGLTransformFeedback(WebGLContext* webgl, GLuint tf)
-    : WebGLRefCountedObject(webgl),
+    : WebGLContextBoundObject(webgl),
       mGLName(tf),
-      mIndexedBindings(webgl->mGLMaxTransformFeedbackSeparateAttribs),
+      mIndexedBindings(webgl->Limits().maxTransformFeedbackSeparateAttribs),
       mIsPaused(false),
-      mIsActive(false) {
-  mContext->mTransformFeedbacks.insertBack(this);
-}
+      mIsActive(false) {}
 
-WebGLTransformFeedback::~WebGLTransformFeedback() { DeleteOnce(); }
-
-void WebGLTransformFeedback::Delete() {
+WebGLTransformFeedback::~WebGLTransformFeedback() {
+  if (!mContext) return;
   if (mGLName) {
     mContext->gl->fDeleteTransformFeedbacks(1, &mGLName);
   }
-  removeFrom(mContext->mTransformFeedbacks);
 }
 
 ////////////////////////////////////////
@@ -172,17 +169,5 @@ void WebGLTransformFeedback::ResumeTransformFeedback() {
   MOZ_ASSERT(mIsActive);
   mIsPaused = false;
 }
-
-////////////////////////////////////////
-
-JSObject* WebGLTransformFeedback::WrapObject(JSContext* cx,
-                                             JS::Handle<JSObject*> givenProto) {
-  return dom::WebGLTransformFeedback_Binding::Wrap(cx, this, givenProto);
-}
-
-NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(WebGLTransformFeedback, AddRef)
-NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(WebGLTransformFeedback, Release)
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(WebGLTransformFeedback, mIndexedBindings,
-                                      mActive_Program)
 
 }  // namespace mozilla

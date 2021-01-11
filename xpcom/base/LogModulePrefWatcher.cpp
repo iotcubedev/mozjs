@@ -8,6 +8,8 @@
 
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
+#include "nsIObserverService.h"
 #include "nsMemory.h"
 #include "nsString.h"
 #include "nsXULAppAPI.h"
@@ -69,8 +71,8 @@ static void LoadPrefValue(const char* aName) {
       }
 
       // If the pref value doesn't have a PID placeholder, append it to the end.
-      if (!strstr(prefValue.get(), "%PID")) {
-        prefValue.AppendLiteral("%PID");
+      if (!strstr(prefValue.get(), MOZ_LOG_PID_TOKEN)) {
+        prefValue.AppendLiteral(MOZ_LOG_PID_TOKEN);
       }
 
       LogModule::SetLogFile(prefValue.BeginReading());
@@ -119,7 +121,7 @@ static void LoadExistingPrefs() {
   }
 }
 
-LogModulePrefWatcher::LogModulePrefWatcher() {}
+LogModulePrefWatcher::LogModulePrefWatcher() = default;
 
 void LogModulePrefWatcher::RegisterPrefWatcher() {
   RefPtr<LogModulePrefWatcher> prefWatcher = new LogModulePrefWatcher();

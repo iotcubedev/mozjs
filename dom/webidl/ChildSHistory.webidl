@@ -10,7 +10,8 @@ interface nsISHistory;
  * The ChildSHistory interface represents the child side of a browsing
  * context's session history.
  */
-[ChromeOnly]
+[ChromeOnly,
+ Exposed=Window]
 interface ChildSHistory {
   [Pure]
   readonly attribute long count;
@@ -18,8 +19,7 @@ interface ChildSHistory {
   readonly attribute long index;
 
   boolean canGo(long aOffset);
-  [Throws]
-  void go(long aOffset);
+  [Throws] void go(long aOffset, optional boolean aRequireUserInteraction = false);
 
   /**
    * Reload the current entry. The flags which should be passed to this
@@ -36,4 +36,12 @@ interface ChildSHistory {
    * process on ChildSHistory.
    */
   readonly attribute nsISHistory legacySHistory;
+
+  /**
+   * asyncHistoryLength can be enabled to test Fission-like asynchronous
+   * history.length handling with non-Fission session history implementation.
+   * Throws if session history is running in the parent process.
+   */
+  [SetterThrows]
+  attribute boolean asyncHistoryLength;
 };

@@ -87,8 +87,6 @@ function createClientMock() {
     getMainProcess: () => {},
     // no-op
     getFront: () => {},
-    // no-op
-    onFront: () => {},
     // stores the preference locally (doesn't update about:config)
     setPreference: function(prefName, value) {
       this._preferences[prefName] = value;
@@ -116,7 +114,12 @@ function createThisFirefoxClientMock() {
   // Create a fake about:debugging tab because our test helper openAboutDebugging
   // waits until about:debugging is displayed in the list of tabs.
   const mockAboutDebuggingTab = {
+    retrieveAsyncFormData: () => {},
     outerWindowID: 0,
+    traits: {
+      getFavicon: true,
+      hasTabInfo: true,
+    },
     url: "about:debugging",
   };
 

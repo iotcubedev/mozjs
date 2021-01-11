@@ -13,10 +13,8 @@
 #include "mozilla/dom/DocumentInlines.h"
 #include "nsIDocShell.h"
 #include "nsIWebNavigation.h"
-#include "nsIURI.h"
 #include "nsReadableUtils.h"
 #include "nsContentUtils.h"
-#include "nsISHistory.h"
 #include "mozilla/dom/Location.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPrefs_dom.h"
@@ -38,7 +36,7 @@ NS_INTERFACE_MAP_END
 nsHistory::nsHistory(nsPIDOMWindowInner* aInnerWindow)
     : mInnerWindow(do_GetWeakReference(aInnerWindow)) {}
 
-nsHistory::~nsHistory() {}
+nsHistory::~nsHistory() = default;
 
 nsPIDOMWindowInner* nsHistory::GetParentObject() const {
   nsCOMPtr<nsPIDOMWindowInner> win(do_QueryReferent(mInnerWindow));
@@ -61,13 +59,10 @@ uint32_t nsHistory::GetLength(ErrorResult& aRv) const {
   // Get session History from docshell
   RefPtr<ChildSHistory> sHistory = GetSessionHistory();
   if (!sHistory) {
-    aRv.Throw(NS_ERROR_FAILURE);
-
-    return 0;
+    return 1;
   }
 
   int32_t len = sHistory->Count();
-  ;
   return len >= 0 ? len : 0;
 }
 
@@ -160,9 +155,10 @@ void nsHistory::Go(int32_t aDelta, ErrorResult& aRv) {
   // Ignore the return value from Go(), since returning errors from Go() can
   // lead to exceptions and a possible leak of history length
   if (StaticPrefs::dom_window_history_async()) {
-    session_history->AsyncGo(aDelta);
+    session_history->AsyncGo(aDelta, /* aRequireUserInteraction = */ false);
   } else {
-    session_history->Go(aDelta, IgnoreErrors());
+    session_history->Go(aDelta, /* aRequireUserInteraction = */ false,
+                        IgnoreErrors());
   }
 }
 
@@ -182,9 +178,9 @@ void nsHistory::Back(ErrorResult& aRv) {
   }
 
   if (StaticPrefs::dom_window_history_async()) {
-    sHistory->AsyncGo(-1);
+    sHistory->AsyncGo(-1, /* aRequireUserInteraction = */ false);
   } else {
-    sHistory->Go(-1, IgnoreErrors());
+    sHistory->Go(-1, /* aRequireUserInteraction = */ false, IgnoreErrors());
   }
 }
 
@@ -204,9 +200,9 @@ void nsHistory::Forward(ErrorResult& aRv) {
   }
 
   if (StaticPrefs::dom_window_history_async()) {
-    sHistory->AsyncGo(1);
+    sHistory->AsyncGo(1, /* aRequireUserInteraction = */ false);
   } else {
-    sHistory->Go(1, IgnoreErrors());
+    sHistory->Go(1, /* aRequireUserInteraction = */ false, IgnoreErrors());
   }
 }
 

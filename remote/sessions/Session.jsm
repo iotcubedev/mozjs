@@ -9,8 +9,12 @@ var EXPORTED_SYMBOLS = ["Session"];
 const { ParentProcessDomains } = ChromeUtils.import(
   "chrome://remote/content/domains/ParentProcessDomains.jsm"
 );
-const { Domains } = ChromeUtils.import(
-  "chrome://remote/content/domains/Domains.jsm"
+const { DomainCache } = ChromeUtils.import(
+  "chrome://remote/content/domains/DomainCache.jsm"
+);
+
+const { NetworkObserver } = ChromeUtils.import(
+  "chrome://remote/content/observers/NetworkObserver.jsm"
 );
 
 /**
@@ -43,15 +47,28 @@ class Session {
     this.target = target;
     this.id = id;
 
-    this.domains = new Domains(this, ParentProcessDomains);
+    this.domains = new DomainCache(this, ParentProcessDomains);
   }
 
   destructor() {
+    if (
+      this.networkObserver &&
+      this.networkObserver.isActive(this.target.browser)
+    ) {
+      this.networkObserver.dispose();
+    }
     this.domains.clear();
   }
 
   execute(id, domain, command, params) {
     return this.domains.execute(domain, command, params);
+  }
+
+  get networkObserver() {
+    if (!this._networkObserver) {
+      this._networkObserver = new NetworkObserver();
+    }
+    return this._networkObserver;
   }
 
   /**

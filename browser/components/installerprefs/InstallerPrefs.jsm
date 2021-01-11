@@ -64,7 +64,7 @@ InstallerPrefs.prototype = {
   classID: Components.ID("{cd8a6995-1f19-4cdd-9ed1-d6263302f594}"),
   contractID: "@mozilla.org/installerprefs;1",
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
   observe(subject, topic, data) {
     switch (topic) {
@@ -100,7 +100,10 @@ InstallerPrefs.prototype = {
 
   _cleanRegistryKey(regKey) {
     for (let i = regKey.valueCount - 1; i >= 0; --i) {
-      regKey.removeValue(regKey.getValueName(i));
+      const name = regKey.getValueName(i);
+      if (name.startsWith(INSTALLER_PREFS_BRANCH)) {
+        regKey.removeValue(name);
+      }
     }
   },
 

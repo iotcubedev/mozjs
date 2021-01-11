@@ -4,6 +4,9 @@
 
 "use strict";
 
+const { E10SUtils } = ChromeUtils.import(
+  "resource://gre/modules/E10SUtils.jsm"
+);
 const { Preferences } = ChromeUtils.import(
   "resource://gre/modules/Preferences.jsm"
 );
@@ -35,6 +38,15 @@ function linkColorFrameScript() {
   });
 }
 
+function setResolutionAndScaleToFrameScript(resolution) {
+  addMessageListener("PanZoomControllerTest:SetResolutionAndScaleTo", () => {
+    content.window.visualViewport.addEventListener("resize", () => {
+      sendAsyncMessage("PanZoomControllerTest:SetResolutionAndScaleTo");
+    });
+    content.windowUtils.setResolutionAndScaleTo(resolution);
+  });
+}
+
 this.test = class extends ExtensionAPI {
   getAPI(context) {
     return {
@@ -56,7 +68,7 @@ this.test = class extends ExtensionAPI {
 
         /* Restore prefs to old value. */
         async restorePrefs(oldPrefs) {
-          for (let [name, value] of Object.entries(oldPrefs)) {
+          for (const [name, value] of Object.entries(oldPrefs)) {
             if (value === null) {
               Preferences.reset(name);
             } else {
@@ -105,8 +117,50 @@ this.test = class extends ExtensionAPI {
           return Services.locale.requestedLocales;
         },
 
+        async getPidForTab(tabId) {
+          const tab = context.extension.tabManager.get(tabId);
+          const pids = E10SUtils.getBrowserPids(tab.browser);
+          return pids[0];
+        },
+
         async addHistogram(id, value) {
           return Services.telemetry.getHistogramById(id).add(value);
+        },
+
+        removeCertOverride(host, port) {
+          const overrideService = Cc[
+            "@mozilla.org/security/certoverride;1"
+          ].getService(Ci.nsICertOverrideService);
+          overrideService.clearValidityOverride(host, port);
+        },
+
+        async setScalar(id, value) {
+          return Services.telemetry.scalarSet(id, value);
+        },
+
+        async setResolutionAndScaleTo(resolution) {
+          const frameScript = `data:text/javascript,(${encodeURI(
+            setResolutionAndScaleToFrameScript
+          )}).call(this, ${resolution})`;
+          Services.mm.loadFrameScript(frameScript, true);
+
+          return new Promise(resolve => {
+            const onMessage = () => {
+              Services.mm.removeMessageListener(
+                "PanZoomControllerTest:SetResolutionAndScaleTo",
+                onMessage
+              );
+              resolve();
+            };
+
+            Services.mm.addMessageListener(
+              "PanZoomControllerTest:SetResolutionAndScaleTo",
+              onMessage
+            );
+            Services.mm.broadcastAsyncMessage(
+              "PanZoomControllerTest:SetResolutionAndScaleTo"
+            );
+          });
         },
       },
     };

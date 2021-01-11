@@ -1,7 +1,15 @@
 import { CFRMessageProvider } from "lib/CFRMessageProvider.jsm";
-import schema from "content-src/asrouter/templates/CFR/templates/ExtensionDoorhanger.schema.json";
+import CFRDoorhangerSchema from "content-src/asrouter/templates/CFR/templates/ExtensionDoorhanger.schema.json";
+import CFRChicletSchema from "content-src/asrouter/templates/CFR/templates/CFRUrlbarChiclet.schema.json";
+
+const SCHEMAS = {
+  cfr_urlbar_chiclet: CFRChicletSchema,
+  cfr_doorhanger: CFRDoorhangerSchema,
+  milestone_message: CFRDoorhangerSchema,
+};
 
 const DEFAULT_CONTENT = {
+  layout: "addon_recommendation",
   category: "dummyCategory",
   bucket_id: "some_bucket_id",
   notification_text: "Recommendation",
@@ -26,7 +34,7 @@ const DEFAULT_CONTENT = {
       },
       action: {
         type: "INSTALL_ADDON_FROM_URL",
-        data: { url: null },
+        data: { url: "https://example.com" },
       },
     },
     secondary: {
@@ -40,6 +48,7 @@ const DEFAULT_CONTENT = {
 };
 
 const L10N_CONTENT = {
+  layout: "addon_recommendation",
   category: "dummyL10NCategory",
   bucket_id: "some_bucket_id",
   notification_text: { string_id: "notification_text_id" },
@@ -61,7 +70,7 @@ const L10N_CONTENT = {
       label: { string_id: "btn_ok_id" },
       action: {
         type: "INSTALL_ADDON_FROM_URL",
-        data: { url: null },
+        data: { url: "https://example.com" },
       },
     },
     secondary: {
@@ -73,13 +82,15 @@ const L10N_CONTENT = {
 
 describe("ExtensionDoorhanger", () => {
   it("should validate DEFAULT_CONTENT", () => {
-    assert.jsonSchema(DEFAULT_CONTENT, schema);
+    assert.jsonSchema(DEFAULT_CONTENT, CFRDoorhangerSchema);
   });
   it("should validate L10N_CONTENT", () => {
-    assert.jsonSchema(L10N_CONTENT, schema);
+    assert.jsonSchema(L10N_CONTENT, CFRDoorhangerSchema);
   });
   it("should validate all messages from CFRMessageProvider", () => {
     const messages = CFRMessageProvider.getMessages();
-    messages.forEach(msg => assert.jsonSchema(msg.content, schema));
+    messages.forEach(msg =>
+      assert.jsonSchema(msg.content, SCHEMAS[msg.template])
+    );
   });
 });

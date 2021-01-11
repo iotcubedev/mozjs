@@ -4,90 +4,116 @@
 "use strict";
 
 const {
+  createResourceWatcherForTab,
   STUBS_UPDATE_ENV,
-  formatPacket,
-  formatNetworkEventStub,
-  formatFile,
-  getStubFilePath,
-} = require("devtools/client/webconsole/test/browser/stub-generator-helpers");
+  getStubFile,
+  getCleanedPacket,
+  writeStubsToFile,
+} = require(`${CHROME_URL_ROOT}stub-generator-helpers`);
 
 const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/test/browser/stub-generators/test-network-event.html";
+const STUB_FILE = "networkEvent.js";
 
 add_task(async function() {
   const isStubsUpdate = env.get(STUBS_UPDATE_ENV) == "true";
-  const filePath = getStubFilePath("networkEvent.js", env);
-  info(`${isStubsUpdate ? "Update" : "Check"} stubs at ${filePath}`);
+  info(`${isStubsUpdate ? "Update" : "Check"} ${STUB_FILE}`);
 
   const generatedStubs = await generateNetworkEventStubs();
 
   if (isStubsUpdate) {
-    await OS.File.writeAtomic(filePath, generatedStubs);
-    ok(true, `${filePath} was successfully updated`);
+    await writeStubsToFile(env, STUB_FILE, generatedStubs, true);
+    ok(true, `${STUB_FILE} was updated`);
     return;
   }
 
-  const repoStubFileContent = await OS.File.read(filePath, {
-    encoding: "utf-8",
-  });
-  is(generatedStubs, repoStubFileContent, "stubs file is up to date");
+  const existingStubs = getStubFile(STUB_FILE);
+  const FAILURE_MSG =
+    "The network event stubs file needs to be updated by running `" +
+    `mach test ${getCurrentTestFilePath()} --headless --setenv WEBCONSOLE_STUBS_UPDATE=true` +
+    "`";
 
-  if (generatedStubs != repoStubFileContent) {
-    ok(
-      false,
-      "The network event stubs file needs to be updated by running " +
-        "`mach test devtools/client/webconsole/test/browser/" +
-        "browser_webconsole_stubs_network_event.js --headless " +
-        "--setenv WEBCONSOLE_STUBS_UPDATE=true`"
-    );
+  if (generatedStubs.size !== existingStubs.stubPackets.size) {
+    ok(false, FAILURE_MSG);
+    return;
+  }
+
+  let failed = false;
+  for (const [key, packet] of generatedStubs) {
+    // packet.updates are handle by the webconsole front, and can be updated after
+    // we cleaned the packet, so the order isn't guaranteed. Let's sort the array
+    // here so the test doesn't fail.
+    const existingPacket = existingStubs.stubPackets.get(key);
+    if (packet.updates && existingPacket.updates) {
+      packet.updates.sort();
+      existingPacket.updates.sort();
+    }
+
+    const packetStr = JSON.stringify(packet, null, 2);
+    const existingPacketStr = JSON.stringify(existingPacket, null, 2);
+    is(packetStr, existingPacketStr, `"${key}" packet has expected value`);
+    failed = failed || packetStr !== existingPacketStr;
+  }
+
+  if (failed) {
+    ok(false, FAILURE_MSG);
+  } else {
+    ok(true, "Stubs are up to date");
   }
 });
 
 async function generateNetworkEventStubs() {
-  const stubs = {
-    preparedMessages: [],
-    packets: [],
+  const stubs = new Map();
+  const tab = await addTab(TEST_URI);
+  const resourceWatcher = await createResourceWatcherForTab(tab);
+
+  let addNetworkStub = function() {};
+  let addNetworkUpdateStub = function() {};
+
+  const onAvailable = resource => {
+    addNetworkStub(resource);
+  };
+  const onUpdated = resource => {
+    addNetworkUpdateStub(resource);
   };
 
-  const toolbox = await openNewTabAndToolbox(TEST_URI, "webconsole");
-  const { ui } = toolbox.getCurrentPanel().hud;
+  await resourceWatcher.watchResources([resourceWatcher.TYPES.NETWORK_EVENT], {
+    onAvailable,
+    onUpdated,
+  });
 
   for (const [key, code] of getCommands()) {
-    const onNetwork = new Promise(resolve => {
-      toolbox.target.activeConsole.once("networkEvent", function onNetworkEvent(
-        res
-      ) {
-        stubs.packets.push(formatPacket(key, res));
-        stubs.preparedMessages.push(formatNetworkEventStub(key, res));
-        toolbox.target.activeConsole.off("networkEvent", onNetworkEvent);
+    const noExpectedUpdates = 7;
+    const networkEventDone = new Promise(resolve => {
+      addNetworkStub = ({ resourceType, targetFront, resource }) => {
+        stubs.set(key, getCleanedPacket(key, getOrderedResource(resource)));
         resolve();
-      });
+      };
     });
-
-    const onNetworkUpdate = new Promise(resolve => {
-      ui.once("network-message-updated", function onNetworkUpdated(res) {
+    const networkEventUpdateDone = new Promise(resolve => {
+      let updateCount = 0;
+      addNetworkUpdateStub = ({ resourceType, targetFront, resource }) => {
         const updateKey = `${key} update`;
-        // We cannot ensure the form of the network update packet, some properties
-        // might be in another order than in the original packet.
-        // Hand-picking only what we need should prevent this.
-        const packet = {
-          networkInfo: {
-            _type: res.networkInfo._type,
-            actor: res.networkInfo.actor,
-            request: res.networkInfo.request,
-            response: res.networkInfo.response,
-            totalTime: res.networkInfo.totalTime,
-          },
-        };
+        // make sure all the updates have been happened
+        if (updateCount >= noExpectedUpdates) {
+          stubs.set(
+            updateKey,
+            // We cannot ensure the form of the resource, some properties
+            // might be in another order than in the original resource.
+            // Hand-picking only what we need should prevent this.
+            getCleanedPacket(updateKey, getOrderedResource(resource))
+          );
 
-        stubs.packets.push(formatPacket(updateKey, packet));
-        stubs.preparedMessages.push(formatNetworkEventStub(updateKey, res));
-        resolve();
-      });
+          resolve();
+        } else {
+          updateCount++;
+        }
+      };
     });
 
-    await ContentTask.spawn(gBrowser.selectedBrowser, code, function(subCode) {
-      console.log("subCode", subCode);
+    await SpecialPowers.spawn(gBrowser.selectedBrowser, [code], function(
+      subCode
+    ) {
       const script = content.document.createElement("script");
       script.append(
         content.document.createTextNode(`function triggerPacket() {${subCode}}`)
@@ -96,12 +122,42 @@ async function generateNetworkEventStubs() {
       content.wrappedJSObject.triggerPacket();
       script.remove();
     });
-
-    await Promise.all([onNetwork, onNetworkUpdate]);
+    await Promise.all([networkEventDone, networkEventUpdateDone]);
   }
-
-  await closeTabAndToolbox();
-  return formatFile(stubs, "NetworkEventMessage");
+  resourceWatcher.unwatchResources([resourceWatcher.TYPES.NETWORK_EVENT], {
+    onAvailable,
+    onUpdated,
+  });
+  return stubs;
+}
+// Ensures the order of the resource properties
+function getOrderedResource(resource) {
+  return {
+    resourceType: resource.resourceType,
+    _type: resource._type,
+    timeStamp: resource.timeStamp,
+    node: resource.node,
+    actor: resource.actor,
+    discardRequestBody: resource.discardRequestBody,
+    discardResponseBody: resource.discardResponseBody,
+    startedDateTime: resource.startedDateTime,
+    request: resource.request,
+    isXHR: resource.isXHR,
+    cause: resource.cause,
+    response: resource.response,
+    timings: resource.timings,
+    private: resource.private,
+    fromCache: resource.fromCache,
+    fromServiceWorker: resource.fromServiceWorker,
+    isThirdPartyTrackingResource: resource.isThirdPartyTrackingResource,
+    referrerPolicy: resource.referrerPolicy,
+    blockedReason: resource.blockedReason,
+    channelId: resource.channelId,
+    updates: resource.updates,
+    updateType: resource.updateType,
+    totalTime: resource.totalTime,
+    securityState: resource.securityState,
+  };
 }
 
 function getCommands() {

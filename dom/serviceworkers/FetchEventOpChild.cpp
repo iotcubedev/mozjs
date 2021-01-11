@@ -33,7 +33,9 @@
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Services.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/Unused.h"
+#include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/dom/InternalHeaders.h"
 #include "mozilla/dom/InternalResponse.h"
 #include "mozilla/dom/PRemoteWorkerControllerChild.h"
@@ -41,6 +43,11 @@
 #include "mozilla/net/NeckoChannelParams.h"
 
 namespace mozilla {
+
+using ipc::AutoIPCStream;
+using ipc::BackgroundChild;
+using ipc::PBackgroundChild;
+
 namespace dom {
 
 namespace {
@@ -87,8 +94,7 @@ void AsyncLog(nsIInterceptedChannel* aChannel, const nsACString& aScriptSpec,
     const nsTArray<nsString> params = std::move(aParams);
 
     reporter->AddConsoleReport(
-        nsIScriptError::errorFlag,
-        NS_LITERAL_CSTRING("Service Worker Interception"),
+        nsIScriptError::errorFlag, "Service Worker Interception"_ns,
         nsContentUtils::eDOM_PROPERTIES, aScriptSpec, aLineNumber,
         aColumnNumber, aMessageName, params);
   }
@@ -122,7 +128,7 @@ class SynthesizeResponseWatcher final : public nsIInterceptedBodyCallback {
       AsyncLog(mInterceptedChannel, mClosure.respondWithScriptSpec(),
                mClosure.respondWithLineNumber(),
                mClosure.respondWithColumnNumber(),
-               NS_LITERAL_CSTRING("InterceptionFailedWithURL"), {mRequestURL});
+               "InterceptionFailedWithURL"_ns, {mRequestURL});
 
       CancelInterception(NS_ERROR_INTERCEPTION_FAILED);
 
@@ -176,7 +182,7 @@ NS_IMPL_ISUPPORTS(SynthesizeResponseWatcher, nsIInterceptedBodyCallback)
 
 }  // anonymous namespace
 
-/* static */ RefPtr<GenericPromise> FetchEventOpChild::Create(
+/* static */ RefPtr<GenericPromise> FetchEventOpChild::SendFetchEvent(
     PRemoteWorkerControllerChild* aManager,
     ServiceWorkerFetchEventOpArgs&& aArgs,
     nsCOMPtr<nsIInterceptedChannel> aInterceptedChannel,
@@ -190,7 +196,9 @@ NS_IMPL_ISUPPORTS(SynthesizeResponseWatcher, nsIInterceptedBodyCallback)
   FetchEventOpChild* actor = new FetchEventOpChild(
       std::move(aArgs), std::move(aInterceptedChannel),
       std::move(aRegistration), std::move(aKeepAliveToken));
+
   Unused << aManager->SendPFetchEventOpConstructor(actor, actor->mArgs);
+
   return actor->mPromiseHolder.Ensure(__func__);
 }
 

@@ -26,7 +26,6 @@
 #include "nsAttrName.h"
 #include "nsDOMTokenList.h"
 #include "nsEventShell.h"
-#include "nsIURI.h"
 #include "nsTextFormatter.h"
 #include "OuterDocAccessible.h"
 #include "Role.h"
@@ -38,7 +37,6 @@
 #include "TextLeafAccessibleWrap.h"
 #include "TreeWalker.h"
 #include "xpcAccessibleApplication.h"
-#include "xpcAccessibleDocument.h"
 
 #ifdef MOZ_ACCESSIBILITY_ATK
 #  include "AtkSocketAccessible.h"
@@ -59,14 +57,12 @@
 #include "nsImageFrame.h"
 #include "nsINamed.h"
 #include "nsIObserverService.h"
+#include "nsMenuPopupFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsPluginFrame.h"
-#include "SVGGeometryFrame.h"
 #include "nsTreeBodyFrame.h"
 #include "nsTreeColumns.h"
 #include "nsTreeUtils.h"
-#include "nsXBLPrototypeBinding.h"
-#include "nsXBLBinding.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/dom/DOMStringList.h"
 #include "mozilla/dom/EventTarget.h"
@@ -74,6 +70,7 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/Services.h"
+#include "mozilla/SVGGeometryFrame.h"
 #include "nsDeckFrame.h"
 
 #ifdef MOZ_XUL
@@ -127,8 +124,7 @@ static bool MustBeAccessible(nsIContent* aContent, DocAccessible* aDocument) {
         }
 
         nsDependentAtomString attrStr(attrAtom);
-        if (!StringBeginsWith(attrStr, NS_LITERAL_STRING("aria-")))
-          continue;  // not ARIA
+        if (!StringBeginsWith(attrStr, u"aria-"_ns)) continue;  // not ARIA
 
         // A global state or a property and in case of token defined.
         uint8_t attrFlags = aria::AttrCharacteristicsFor(attrAtom);
@@ -148,6 +144,20 @@ static bool MustBeAccessible(nsIContent* aContent, DocAccessible* aDocument) {
     }
   }
 
+  return false;
+}
+
+/**
+ * Return true if the SVG element should be accessible
+ */
+static bool MustSVGElementBeAccessible(nsIContent* aContent) {
+  // https://w3c.github.io/svg-aam/#include_elements
+  for (nsIContent* childElm = aContent->GetFirstChild(); childElm;
+       childElm = childElm->GetNextSibling()) {
+    if (childElm->IsAnyOfSVGElements(nsGkAtoms::title, nsGkAtoms::desc)) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -289,16 +299,23 @@ nsAccessibilityService::ListenersChanged(nsIArray* aEventChanges) {
     change->GetCountOfEventListenerChangesAffectingAccessibility(&changeCount);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    for (uint32_t i = 0; i < changeCount; i++) {
+    if (changeCount) {
       Document* ownerDoc = node->OwnerDoc();
       DocAccessible* document = GetExistingDocAccessible(ownerDoc);
 
-      // Create an accessible for a inaccessible element having click event
-      // handler.
-      if (document && !document->HasAccessible(node) &&
-          nsCoreUtils::HasClickListener(node)) {
-        document->ContentInserted(node, node->GetNextSibling());
-        break;
+      if (document) {
+        Accessible* acc = document->GetAccessible(node);
+        if (!acc && nsCoreUtils::HasClickListener(node)) {
+          // Create an accessible for a inaccessible element having click event
+          // handler.
+          document->ContentInserted(node, node->GetNextSibling());
+        } else if (acc && acc->IsHTMLLink() && !acc->AsHTMLLink()->IsLinked()) {
+          // Notify of a LINKED state change if an HTML link gets a click
+          // listener but does not have an href attribute.
+          RefPtr<AccEvent> linkedChangeEvent =
+              new AccStateChangeEvent(acc, states::LINKED);
+          document->FireDelayedEvent(linkedChangeEvent);
+        }
       }
     }
   }
@@ -336,6 +353,25 @@ void nsAccessibilityService::NotifyOfAnchorJumpTo(nsIContent* aTargetNode) {
 void nsAccessibilityService::FireAccessibleEvent(uint32_t aEvent,
                                                  Accessible* aTarget) {
   nsEventShell::FireEvent(aEvent, aTarget);
+}
+
+void nsAccessibilityService::NotifyOfImageSizeAvailable(
+    mozilla::PresShell* aPresShell, nsIContent* aContent) {
+  // If the size of an image is initially unknown, it will have the invisible
+  // state (and a 0 width and height), causing it to be ignored by some screen
+  // readers. Fire a state change event to update any client caches.
+  DocAccessible* document = GetDocAccessible(aPresShell);
+  if (document) {
+    Accessible* accessible = document->GetAccessible(aContent);
+    // The accessible may not be an ImageAccessible if this was previously a
+    // broken image with an alt attribute. In that case, do nothing; the
+    // accessible will be recreated if this becomes a valid image.
+    if (accessible && accessible->IsImage()) {
+      RefPtr<AccEvent> event =
+          new AccStateChangeEvent(accessible, states::INVISIBLE, false);
+      document->FireDelayedEvent(event);
+    }
+  }
 }
 
 Accessible* nsAccessibilityService::GetRootDocumentAccessible(
@@ -642,10 +678,10 @@ void nsAccessibilityService::RecreateAccessible(PresShell* aPresShell,
 }
 
 void nsAccessibilityService::GetStringRole(uint32_t aRole, nsAString& aString) {
-#define ROLE(geckoRole, stringRole, atkRole, macRole, msaaRole, ia2Role, \
-             androidClass, nameRule)                                     \
-  case roles::geckoRole:                                                 \
-    aString.AssignLiteral(stringRole);                                   \
+#define ROLE(geckoRole, stringRole, atkRole, macRole, macSubrole, msaaRole, \
+             ia2Role, androidClass, nameRule)                               \
+  case roles::geckoRole:                                                    \
+    aString.AssignLiteral(stringRole);                                      \
     return;
 
   switch (aRole) {
@@ -666,7 +702,7 @@ void nsAccessibilityService::GetStringStates(uint32_t aState,
 
   // unknown state
   if (!stringStates->Length()) {
-    stringStates->Add(NS_LITERAL_STRING("unknown"));
+    stringStates->Add(u"unknown"_ns);
   }
 
   stringStates.forget(aStringStates);
@@ -677,145 +713,148 @@ already_AddRefed<DOMStringList> nsAccessibilityService::GetStringStates(
   RefPtr<DOMStringList> stringStates = new DOMStringList();
 
   if (aStates & states::UNAVAILABLE) {
-    stringStates->Add(NS_LITERAL_STRING("unavailable"));
+    stringStates->Add(u"unavailable"_ns);
   }
   if (aStates & states::SELECTED) {
-    stringStates->Add(NS_LITERAL_STRING("selected"));
+    stringStates->Add(u"selected"_ns);
   }
   if (aStates & states::FOCUSED) {
-    stringStates->Add(NS_LITERAL_STRING("focused"));
+    stringStates->Add(u"focused"_ns);
   }
   if (aStates & states::PRESSED) {
-    stringStates->Add(NS_LITERAL_STRING("pressed"));
+    stringStates->Add(u"pressed"_ns);
   }
   if (aStates & states::CHECKED) {
-    stringStates->Add(NS_LITERAL_STRING("checked"));
+    stringStates->Add(u"checked"_ns);
   }
   if (aStates & states::MIXED) {
-    stringStates->Add(NS_LITERAL_STRING("mixed"));
+    stringStates->Add(u"mixed"_ns);
   }
   if (aStates & states::READONLY) {
-    stringStates->Add(NS_LITERAL_STRING("readonly"));
+    stringStates->Add(u"readonly"_ns);
   }
   if (aStates & states::HOTTRACKED) {
-    stringStates->Add(NS_LITERAL_STRING("hottracked"));
+    stringStates->Add(u"hottracked"_ns);
   }
   if (aStates & states::DEFAULT) {
-    stringStates->Add(NS_LITERAL_STRING("default"));
+    stringStates->Add(u"default"_ns);
   }
   if (aStates & states::EXPANDED) {
-    stringStates->Add(NS_LITERAL_STRING("expanded"));
+    stringStates->Add(u"expanded"_ns);
   }
   if (aStates & states::COLLAPSED) {
-    stringStates->Add(NS_LITERAL_STRING("collapsed"));
+    stringStates->Add(u"collapsed"_ns);
   }
   if (aStates & states::BUSY) {
-    stringStates->Add(NS_LITERAL_STRING("busy"));
+    stringStates->Add(u"busy"_ns);
   }
   if (aStates & states::FLOATING) {
-    stringStates->Add(NS_LITERAL_STRING("floating"));
+    stringStates->Add(u"floating"_ns);
   }
   if (aStates & states::ANIMATED) {
-    stringStates->Add(NS_LITERAL_STRING("animated"));
+    stringStates->Add(u"animated"_ns);
   }
   if (aStates & states::INVISIBLE) {
-    stringStates->Add(NS_LITERAL_STRING("invisible"));
+    stringStates->Add(u"invisible"_ns);
   }
   if (aStates & states::OFFSCREEN) {
-    stringStates->Add(NS_LITERAL_STRING("offscreen"));
+    stringStates->Add(u"offscreen"_ns);
   }
   if (aStates & states::SIZEABLE) {
-    stringStates->Add(NS_LITERAL_STRING("sizeable"));
+    stringStates->Add(u"sizeable"_ns);
   }
   if (aStates & states::MOVEABLE) {
-    stringStates->Add(NS_LITERAL_STRING("moveable"));
+    stringStates->Add(u"moveable"_ns);
   }
   if (aStates & states::SELFVOICING) {
-    stringStates->Add(NS_LITERAL_STRING("selfvoicing"));
+    stringStates->Add(u"selfvoicing"_ns);
   }
   if (aStates & states::FOCUSABLE) {
-    stringStates->Add(NS_LITERAL_STRING("focusable"));
+    stringStates->Add(u"focusable"_ns);
   }
   if (aStates & states::SELECTABLE) {
-    stringStates->Add(NS_LITERAL_STRING("selectable"));
+    stringStates->Add(u"selectable"_ns);
   }
   if (aStates & states::LINKED) {
-    stringStates->Add(NS_LITERAL_STRING("linked"));
+    stringStates->Add(u"linked"_ns);
   }
   if (aStates & states::TRAVERSED) {
-    stringStates->Add(NS_LITERAL_STRING("traversed"));
+    stringStates->Add(u"traversed"_ns);
   }
   if (aStates & states::MULTISELECTABLE) {
-    stringStates->Add(NS_LITERAL_STRING("multiselectable"));
+    stringStates->Add(u"multiselectable"_ns);
   }
   if (aStates & states::EXTSELECTABLE) {
-    stringStates->Add(NS_LITERAL_STRING("extselectable"));
+    stringStates->Add(u"extselectable"_ns);
   }
   if (aStates & states::PROTECTED) {
-    stringStates->Add(NS_LITERAL_STRING("protected"));
+    stringStates->Add(u"protected"_ns);
   }
   if (aStates & states::HASPOPUP) {
-    stringStates->Add(NS_LITERAL_STRING("haspopup"));
+    stringStates->Add(u"haspopup"_ns);
   }
   if (aStates & states::REQUIRED) {
-    stringStates->Add(NS_LITERAL_STRING("required"));
+    stringStates->Add(u"required"_ns);
   }
   if (aStates & states::ALERT) {
-    stringStates->Add(NS_LITERAL_STRING("alert"));
+    stringStates->Add(u"alert"_ns);
   }
   if (aStates & states::INVALID) {
-    stringStates->Add(NS_LITERAL_STRING("invalid"));
+    stringStates->Add(u"invalid"_ns);
   }
   if (aStates & states::CHECKABLE) {
-    stringStates->Add(NS_LITERAL_STRING("checkable"));
+    stringStates->Add(u"checkable"_ns);
   }
   if (aStates & states::SUPPORTS_AUTOCOMPLETION) {
-    stringStates->Add(NS_LITERAL_STRING("autocompletion"));
+    stringStates->Add(u"autocompletion"_ns);
   }
   if (aStates & states::DEFUNCT) {
-    stringStates->Add(NS_LITERAL_STRING("defunct"));
+    stringStates->Add(u"defunct"_ns);
   }
   if (aStates & states::SELECTABLE_TEXT) {
-    stringStates->Add(NS_LITERAL_STRING("selectable text"));
+    stringStates->Add(u"selectable text"_ns);
   }
   if (aStates & states::EDITABLE) {
-    stringStates->Add(NS_LITERAL_STRING("editable"));
+    stringStates->Add(u"editable"_ns);
   }
   if (aStates & states::ACTIVE) {
-    stringStates->Add(NS_LITERAL_STRING("active"));
+    stringStates->Add(u"active"_ns);
   }
   if (aStates & states::MODAL) {
-    stringStates->Add(NS_LITERAL_STRING("modal"));
+    stringStates->Add(u"modal"_ns);
   }
   if (aStates & states::MULTI_LINE) {
-    stringStates->Add(NS_LITERAL_STRING("multi line"));
+    stringStates->Add(u"multi line"_ns);
   }
   if (aStates & states::HORIZONTAL) {
-    stringStates->Add(NS_LITERAL_STRING("horizontal"));
+    stringStates->Add(u"horizontal"_ns);
   }
   if (aStates & states::OPAQUE1) {
-    stringStates->Add(NS_LITERAL_STRING("opaque"));
+    stringStates->Add(u"opaque"_ns);
   }
   if (aStates & states::SINGLE_LINE) {
-    stringStates->Add(NS_LITERAL_STRING("single line"));
+    stringStates->Add(u"single line"_ns);
   }
   if (aStates & states::TRANSIENT) {
-    stringStates->Add(NS_LITERAL_STRING("transient"));
+    stringStates->Add(u"transient"_ns);
   }
   if (aStates & states::VERTICAL) {
-    stringStates->Add(NS_LITERAL_STRING("vertical"));
+    stringStates->Add(u"vertical"_ns);
   }
   if (aStates & states::STALE) {
-    stringStates->Add(NS_LITERAL_STRING("stale"));
+    stringStates->Add(u"stale"_ns);
   }
   if (aStates & states::ENABLED) {
-    stringStates->Add(NS_LITERAL_STRING("enabled"));
+    stringStates->Add(u"enabled"_ns);
   }
   if (aStates & states::SENSITIVE) {
-    stringStates->Add(NS_LITERAL_STRING("sensitive"));
+    stringStates->Add(u"sensitive"_ns);
   }
-  if (aStates & states::EXPANDABLE) {
-    stringStates->Add(NS_LITERAL_STRING("expandable"));
+  if (aStates & states::PINNED) {
+    stringStates->Add(u"pinned"_ns);
+  }
+  if (aStates & states::CURRENT) {
+    stringStates->Add(u"current"_ns);
   }
 
   return stringStates.forget();
@@ -1024,7 +1063,10 @@ Accessible* nsAccessibilityService::CreateAccessible(nsINode* aNode,
 
     if (!isARIATablePart || frame->AccessibleType() == eHTMLTableCellType ||
         frame->AccessibleType() == eHTMLTableRowType ||
-        frame->AccessibleType() == eHTMLTableType) {
+        frame->AccessibleType() == eHTMLTableType ||
+        // We should always use OuterDocAccessible for OuterDocs, even for
+        // ARIA table roles.
+        frame->AccessibleType() == eOuterDocType) {
       // Prefer to use markup to decide if and what kind of accessible to
       // create,
       const HTMLMarkupMapInfo* markupMap =
@@ -1076,7 +1118,7 @@ Accessible* nsAccessibilityService::CreateAccessible(nsINode* aNode,
     }
   }
 
-  // Accessible XBL types and deck stuff are used in XUL only currently.
+  // XUL accessibles.
   if (!newAcc && content->IsXULElement()) {
     // No accessible for not selected deck panel and its children.
     if (!aContext->IsXULTabpanels()) {
@@ -1112,13 +1154,18 @@ Accessible* nsAccessibilityService::CreateAccessible(nsINode* aNode,
   if (!newAcc) {
     if (content->IsSVGElement()) {
       SVGGeometryFrame* geometryFrame = do_QueryFrame(frame);
-      if (geometryFrame) {
+      if (geometryFrame && MustSVGElementBeAccessible(content)) {
         // A graphic elements: rect, circle, ellipse, line, path, polygon,
         // polyline and image. A 'use' and 'text' graphic elements require
         // special support.
         newAcc = new EnumRoleAccessible<roles::GRAPHIC>(content, document);
+      } else if (content->IsSVGElement(nsGkAtoms::text)) {
+        newAcc = new HyperTextAccessibleWrap(content->AsElement(), document);
       } else if (content->IsSVGElement(nsGkAtoms::svg)) {
         newAcc = new EnumRoleAccessible<roles::DIAGRAM>(content, document);
+      } else if (content->IsSVGElement(nsGkAtoms::g) &&
+                 MustSVGElementBeAccessible(content)) {
+        newAcc = new EnumRoleAccessible<roles::GROUPING>(content, document);
       }
 
     } else if (content->IsMathMLElement()) {
@@ -1233,7 +1280,7 @@ bool nsAccessibilityService::Init() {
   gApplicationAccessible->Init();
 
   CrashReporter::AnnotateCrashReport(CrashReporter::Annotation::Accessibility,
-                                     NS_LITERAL_CSTRING("Active"));
+                                     "Active"_ns);
 
 #ifdef XP_WIN
   sPendingPlugins = new nsTArray<nsCOMPtr<nsIContent> >;

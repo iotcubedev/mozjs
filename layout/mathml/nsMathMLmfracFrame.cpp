@@ -15,9 +15,10 @@
 #include "nsPresContext.h"
 #include "nsDisplayList.h"
 #include "gfxContext.h"
-#include "nsMathMLElement.h"
+#include "mozilla/dom/MathMLElement.h"
 #include <algorithm>
 #include "gfxMathTable.h"
+#include "gfxTextRun.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -42,7 +43,7 @@ nsIFrame* NS_NewMathMLmfracFrame(PresShell* aPresShell, ComputedStyle* aStyle) {
 
 NS_IMPL_FRAMEARENA_HELPERS(nsMathMLmfracFrame)
 
-nsMathMLmfracFrame::~nsMathMLmfracFrame() {}
+nsMathMLmfracFrame::~nsMathMLmfracFrame() = default;
 
 eMathMLFrameType nsMathMLmfracFrame::GetMathMLFrameType() {
   // frac is "inner" in TeXBook, Appendix G, rule 15e. See also page 170.
@@ -108,7 +109,7 @@ nscoord nsMathMLmfracFrame::CalcLineThickness(nsPresContext* aPresContext,
       // length value
       lineThickness = defaultThickness;
       ParseNumericValue(aThicknessAttribute, &lineThickness,
-                        nsMathMLElement::PARSE_ALLOW_UNITLESS, aPresContext,
+                        dom::MathMLElement::PARSE_ALLOW_UNITLESS, aPresContext,
                         aComputedStyle, aFontSizeInflation);
     } else {
       bool isDeprecatedLineThicknessValue = true;
@@ -135,8 +136,8 @@ nscoord nsMathMLmfracFrame::CalcLineThickness(nsPresContext* aPresContext,
         isDeprecatedLineThicknessValue = false;
         lineThickness = defaultThickness;
         ParseNumericValue(aThicknessAttribute, &lineThickness,
-                          nsMathMLElement::PARSE_ALLOW_UNITLESS, aPresContext,
-                          aComputedStyle, aFontSizeInflation);
+                          dom::MathMLElement::PARSE_ALLOW_UNITLESS,
+                          aPresContext, aComputedStyle, aFontSizeInflation);
       }
       if (isDeprecatedLineThicknessValue) {
         mContent->OwnerDoc()->WarnOnceAbout(
@@ -161,7 +162,7 @@ void nsMathMLmfracFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
   /////////////
   // paint the fraction line
   if (mIsBevelled) {
-    DisplaySlash(aBuilder, this, mLineRect, mLineThickness, aLists);
+    DisplaySlash(aBuilder, mLineRect, mLineThickness, aLists);
   } else {
     DisplayBar(aBuilder, this, mLineRect, aLists);
   }
@@ -253,9 +254,15 @@ nsresult nsMathMLmfracFrame::PlaceInternal(DrawTarget* aDrawTarget,
                         defaultRuleThickness, fontSizeInflation);
 
   // bevelled attribute
-  mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::bevelled_,
-                                 value);
-  mIsBevelled = value.EqualsLiteral("true");
+  mIsBevelled = false;
+  if (!StaticPrefs::mathml_mfrac_bevelled_attribute_disabled()) {
+    if (mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::bevelled_,
+                                       value)) {
+      mContent->OwnerDoc()->WarnOnceAbout(
+          dom::Document::eMathML_DeprecatedBevelledAttribute);
+      mIsBevelled = value.EqualsLiteral("true");
+    }
+  }
 
   bool displayStyle = StyleFont()->mMathDisplay == NS_MATHML_DISPLAYSTYLE_BLOCK;
 
@@ -270,12 +277,11 @@ nsresult nsMathMLmfracFrame::PlaceInternal(DrawTarget* aDrawTarget,
     nscoord leftSpace = onePixel;
     nscoord rightSpace = onePixel;
     if (outermostEmbellished) {
+      const bool isRTL = StyleVisibility()->mDirection == StyleDirection::Rtl;
       nsEmbellishData coreData;
       GetEmbellishDataFrom(mEmbellishData.coreFrame, coreData);
-      leftSpace += StyleVisibility()->mDirection ? coreData.trailingSpace
-                                                 : coreData.leadingSpace;
-      rightSpace += StyleVisibility()->mDirection ? coreData.leadingSpace
-                                                  : coreData.trailingSpace;
+      leftSpace += isRTL ? coreData.trailingSpace : coreData.leadingSpace;
+      rightSpace += isRTL ? coreData.leadingSpace : coreData.trailingSpace;
     }
 
     nscoord actualRuleThickness = mLineThickness;
@@ -394,21 +400,31 @@ nsresult nsMathMLmfracFrame::PlaceInternal(DrawTarget* aDrawTarget,
     nscoord dxDen = leftSpace + (width - sizeDen.Width()) / 2;
     width += leftSpace + rightSpace;
 
-    // see if the numalign attribute is there
-    mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::numalign_,
-                                   value);
-    if (value.EqualsLiteral("left"))
-      dxNum = leftSpace;
-    else if (value.EqualsLiteral("right"))
-      dxNum = width - rightSpace - sizeNum.Width();
+    if (!StaticPrefs::mathml_deprecated_alignment_attributes_disabled()) {
+      // see if the numalign attribute is there
+      if (mContent->AsElement()->GetAttr(kNameSpaceID_None,
+                                         nsGkAtoms::numalign_, value)) {
+        mContent->OwnerDoc()->WarnOnceAbout(
+            dom::Document::eMathML_DeprecatedAlignmentAttributes);
+        if (value.EqualsLiteral("left")) {
+          dxNum = leftSpace;
+        } else if (value.EqualsLiteral("right")) {
+          dxNum = width - rightSpace - sizeNum.Width();
+        }
+      }
 
-    // see if the denomalign attribute is there
-    mContent->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::denomalign_,
-                                   value);
-    if (value.EqualsLiteral("left"))
-      dxDen = leftSpace;
-    else if (value.EqualsLiteral("right"))
-      dxDen = width - rightSpace - sizeDen.Width();
+      // see if the denomalign attribute is there
+      if (mContent->AsElement()->GetAttr(kNameSpaceID_None,
+                                         nsGkAtoms::denomalign_, value)) {
+        mContent->OwnerDoc()->WarnOnceAbout(
+            dom::Document::eMathML_DeprecatedAlignmentAttributes);
+        if (value.EqualsLiteral("left")) {
+          dxDen = leftSpace;
+        } else if (value.EqualsLiteral("right")) {
+          dxDen = width - rightSpace - sizeDen.Width();
+        }
+      }
+    }
 
     mBoundingMetrics.rightBearing =
         std::max(dxNum + bmNum.rightBearing, dxDen + bmDen.rightBearing);
@@ -534,7 +550,7 @@ nsresult nsMathMLmfracFrame::PlaceInternal(DrawTarget* aDrawTarget,
     }
 
     // Set horizontal bounding metrics
-    if (StyleVisibility()->mDirection) {
+    if (StyleVisibility()->mDirection == StyleDirection::Rtl) {
       mBoundingMetrics.leftBearing = trailingSpace + bmDen.leftBearing;
       mBoundingMetrics.rightBearing =
           trailingSpace + bmDen.width + mLineRect.width + bmNum.rightBearing;
@@ -589,16 +605,13 @@ nsresult nsMathMLmfracFrame::PlaceInternal(DrawTarget* aDrawTarget,
 class nsDisplayMathMLSlash : public nsPaintedDisplayItem {
  public:
   nsDisplayMathMLSlash(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                       const nsRect& aRect, nscoord aThickness, bool aRTL)
+                       const nsRect& aRect, nscoord aThickness)
       : nsPaintedDisplayItem(aBuilder, aFrame),
         mRect(aRect),
-        mThickness(aThickness),
-        mRTL(aRTL) {
+        mThickness(aThickness) {
     MOZ_COUNT_CTOR(nsDisplayMathMLSlash);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayMathMLSlash() { MOZ_COUNT_DTOR(nsDisplayMathMLSlash); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayMathMLSlash)
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   NS_DISPLAY_DECL_NAME("MathMLSlash", TYPE_MATHML_SLASH)
@@ -606,7 +619,6 @@ class nsDisplayMathMLSlash : public nsPaintedDisplayItem {
  private:
   nsRect mRect;
   nscoord mThickness;
-  bool mRTL;
 };
 
 void nsDisplayMathMLSlash::Paint(nsDisplayListBuilder* aBuilder,
@@ -624,7 +636,7 @@ void nsDisplayMathMLSlash::Paint(nsDisplayListBuilder* aBuilder,
   // draw the slash as a parallelogram
   Point delta = Point(presContext->AppUnitsToGfxUnits(mThickness), 0);
   RefPtr<PathBuilder> builder = aDrawTarget.CreatePathBuilder();
-  if (mRTL) {
+  if (mFrame->StyleVisibility()->mDirection == StyleDirection::Rtl) {
     builder->MoveTo(rect.TopLeft());
     builder->LineTo(rect.TopLeft() + delta);
     builder->LineTo(rect.BottomRight());
@@ -640,11 +652,12 @@ void nsDisplayMathMLSlash::Paint(nsDisplayListBuilder* aBuilder,
 }
 
 void nsMathMLmfracFrame::DisplaySlash(nsDisplayListBuilder* aBuilder,
-                                      nsIFrame* aFrame, const nsRect& aRect,
-                                      nscoord aThickness,
+                                      const nsRect& aRect, nscoord aThickness,
                                       const nsDisplayListSet& aLists) {
-  if (!aFrame->StyleVisibility()->IsVisible() || aRect.IsEmpty()) return;
+  if (!StyleVisibility()->IsVisible() || aRect.IsEmpty()) {
+    return;
+  }
 
-  aLists.Content()->AppendNewToTop<nsDisplayMathMLSlash>(
-      aBuilder, aFrame, aRect, aThickness, StyleVisibility()->mDirection);
+  aLists.Content()->AppendNewToTop<nsDisplayMathMLSlash>(aBuilder, this, aRect,
+                                                         aThickness);
 }

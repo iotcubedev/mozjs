@@ -46,7 +46,7 @@ void PresentationConnectionList::GetConnections(
     return;
   }
 
-  aConnections = mConnections;
+  aConnections = mConnections.Clone();
 }
 
 nsresult PresentationConnectionList::DispatchConnectionAvailableEvent(
@@ -60,7 +60,7 @@ nsresult PresentationConnectionList::DispatchConnectionAvailableEvent(
 
   RefPtr<PresentationConnectionAvailableEvent> event =
       PresentationConnectionAvailableEvent::Constructor(
-          this, NS_LITERAL_STRING("connectionavailable"), init);
+          this, u"connectionavailable"_ns, init);
 
   if (NS_WARN_IF(!event)) {
     return NS_ERROR_FAILURE;
@@ -77,7 +77,7 @@ PresentationConnectionList::FindConnectionById(const nsAString& aId) {
   for (ConnectionArrayIndex i = 0; i < mConnections.Length(); i++) {
     nsAutoString id;
     mConnections[i]->GetId(id);
-    if (id == nsAutoString(aId)) {
+    if (id == aId) {
       return i;
     }
   }
@@ -93,7 +93,7 @@ void PresentationConnectionList::NotifyStateChange(
   }
 
   bool connectionFound =
-      FindConnectionById(aSessionId) != ConnectionArray::NoIndex ? true : false;
+      FindConnectionById(aSessionId) != ConnectionArray::NoIndex;
 
   PresentationConnectionList_Binding::ClearCachedConnectionsValue(this);
   switch (aConnection->State()) {

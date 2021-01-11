@@ -27,7 +27,15 @@ InlineSpellChecker.prototype = {
 
   initFromRemote(aSpellInfo, aWindowGlobalParent) {
     if (this.mRemote) {
-      throw new Error("Unexpected state");
+      // We shouldn't get here, but let's just recover instead of bricking the
+      // menu by throwing exceptions:
+      Cu.reportError(new Error("Unexpected remote spellchecker present!"));
+      try {
+        this.mRemote.uninit();
+      } catch (ex) {
+        Cu.reportError(ex);
+      }
+      this.mRemote = null;
     }
     this.uninit();
 
@@ -338,7 +346,7 @@ InlineSpellChecker.prototype = {
   },
   // callback for removing the last added word to the dictionary LIFO fashion
   undoAddToDictionary() {
-    if (this.mAddedWordStack.length > 0) {
+    if (this.mAddedWordStack.length) {
       var word = this.mAddedWordStack.pop();
       if (this.mRemote) {
         this.mRemote.undoAddToDictionary(word);
@@ -349,7 +357,7 @@ InlineSpellChecker.prototype = {
   },
   canUndo() {
     // Return true if we have words on the stack
-    return this.mAddedWordStack.length > 0;
+    return !!this.mAddedWordStack.length;
   },
   ignoreWord() {
     if (this.mRemote) {
@@ -490,6 +498,7 @@ function RemoteSpellChecker(aSpellInfo, aWindowGlobalParent) {
   this._spellInfo = aSpellInfo;
   this._suggestionGenerator = null;
   this._actor = aWindowGlobalParent.getActor("InlineSpellChecker");
+  this._actor.registerDestructionObserver(this);
 }
 
 RemoteSpellChecker.prototype = {
@@ -571,6 +580,15 @@ RemoteSpellChecker.prototype = {
     this._actor.recheckSpelling();
   },
   uninit() {
-    this._actor.uninit();
+    if (this._actor) {
+      this._actor.uninit();
+      this._actor.unregisterDestructionObserver(this);
+    }
+  },
+
+  actorDestroyed() {
+    // The actor lets us know if it gets destroyed, so we don't
+    // later try to call `.uninit()` on it.
+    this._actor = null;
   },
 };

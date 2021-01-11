@@ -4,8 +4,10 @@ ChromeUtils.import("resource://gre/modules/Services.jsm", this);
 ChromeUtils.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
 ChromeUtils.import("resource://normandy/actions/AddonRollbackAction.jsm", this);
 ChromeUtils.import("resource://normandy/actions/AddonRolloutAction.jsm", this);
+ChromeUtils.import("resource://normandy/actions/BaseAction.jsm", this);
 ChromeUtils.import("resource://normandy/lib/AddonRollouts.jsm", this);
 ChromeUtils.import("resource://normandy/lib/TelemetryEvents.jsm", this);
+ChromeUtils.import("resource://testing-common/NormandyTestUtils.jsm", this);
 
 // Test that a simple recipe unenrolls as expected
 decorate_task(
@@ -37,7 +39,10 @@ decorate_task(
     );
 
     const rolloutAction = new AddonRolloutAction();
-    await rolloutAction.runRecipe(rolloutRecipe);
+    await rolloutAction.processRecipe(
+      rolloutRecipe,
+      BaseAction.suitability.FILTER_MATCH
+    );
     is(rolloutAction.lastError, null, "lastError should be null");
 
     await webExtStartupPromise;
@@ -50,13 +55,21 @@ decorate_task(
     };
 
     const rollbackAction = new AddonRollbackAction();
-    await rollbackAction.runRecipe(rollbackRecipe);
+    ok(
+      await AddonRollouts.has(rolloutRecipe.arguments.slug),
+      "Rollout should have been added"
+    );
+    await rollbackAction.processRecipe(
+      rollbackRecipe,
+      BaseAction.suitability.FILTER_MATCH
+    );
 
     const addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
     is(addon, undefined, "add-on is uninstalled");
 
+    const rollouts = await AddonRollouts.getAll();
     Assert.deepEqual(
-      await AddonRollouts.getAll(),
+      rollouts,
       [
         {
           recipeId: rolloutRecipe.id,
@@ -68,9 +81,14 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
+          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollback should be stored in db"
+    );
+    ok(
+      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
+      "enrollmentId should be a UUID"
     );
 
     sendEventStub.assertEvents([
@@ -111,7 +129,10 @@ decorate_task(
     );
 
     const rolloutAction = new AddonRolloutAction();
-    await rolloutAction.runRecipe(rolloutRecipe);
+    await rolloutAction.processRecipe(
+      rolloutRecipe,
+      BaseAction.suitability.FILTER_MATCH
+    );
     is(rolloutAction.lastError, null, "lastError should be null");
 
     await webExtStartupPromise;
@@ -127,13 +148,17 @@ decorate_task(
     await addon.uninstall();
 
     const rollbackAction = new AddonRollbackAction();
-    await rollbackAction.runRecipe(rollbackRecipe);
+    await rollbackAction.processRecipe(
+      rollbackRecipe,
+      BaseAction.suitability.FILTER_MATCH
+    );
 
     addon = await AddonManager.getAddonByID(FIXTURE_ADDON_ID);
     is(addon, undefined, "add-on is uninstalled");
 
+    const rollouts = await AddonRollouts.getAll();
     Assert.deepEqual(
-      await AddonRollouts.getAll(),
+      rollouts,
       [
         {
           recipeId: rolloutRecipe.id,
@@ -145,9 +170,14 @@ decorate_task(
           xpiUrl: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].url,
           xpiHash: FIXTURE_ADDON_DETAILS["normandydriver-a-1.0"].hash,
           xpiHashAlgorithm: "sha256",
+          enrollmentId: rollouts[0].enrollmentId,
         },
       ],
       "Rollback should be stored in db"
+    );
+    ok(
+      NormandyTestUtils.isUuid(rollouts[0].enrollmentId),
+      "enrollment ID should be a UUID"
     );
 
     sendEventStub.assertEvents([
@@ -178,12 +208,15 @@ decorate_task(
     AddonRollouts.add(rollout);
 
     const action = new AddonRollbackAction();
-    await action.runRecipe({
-      id: 2,
-      arguments: {
-        rolloutSlug: "test-rollout",
+    await action.processRecipe(
+      {
+        id: 2,
+        arguments: {
+          rolloutSlug: "test-rollout",
+        },
       },
-    });
+      BaseAction.suitability.FILTER_MATCH
+    );
 
     Assert.deepEqual(
       await AddonRollouts.getAll(),

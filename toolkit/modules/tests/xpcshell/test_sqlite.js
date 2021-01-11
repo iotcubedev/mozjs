@@ -845,7 +845,10 @@ add_task(
       "programmatic_binding_transaction_partial_rollback"
     );
 
-    let bindings = [{ id: 2, path: "foobar" }, { id: 3, path: "toofoo" }];
+    let bindings = [
+      { id: 2, path: "foobar" },
+      { id: 3, path: "toofoo" },
+    ];
 
     let sql = "INSERT INTO dirs VALUES (:id, :path)";
 
@@ -865,6 +868,7 @@ add_task(
       });
     } catch (ex) {
       print("Caught expected exception: " + ex);
+      Assert.ok(ex.result, "The ex.result value should be forwarded.");
     }
 
     // We did not get to the end of our in-transaction block.
@@ -884,7 +888,10 @@ add_task(
 add_task(async function test_programmatic_binding_implicit_transaction() {
   let c = await getDummyDatabase("programmatic_binding_implicit_transaction");
 
-  let bindings = [{ id: 2, path: "foobar" }, { id: 1, path: "toofoo" }];
+  let bindings = [
+    { id: 2, path: "foobar" },
+    { id: 1, path: "toofoo" },
+  ];
 
   let sql = "INSERT INTO dirs VALUES (:id, :path)";
   let secondSucceeded = false;
@@ -894,6 +901,7 @@ add_task(async function test_programmatic_binding_implicit_transaction() {
     secondSucceeded = true;
   } catch (ex) {
     print("Caught expected exception: " + ex);
+    Assert.ok(ex.result, "The ex.result value should be forwarded.");
   }
 
   Assert.ok(!secondSucceeded);

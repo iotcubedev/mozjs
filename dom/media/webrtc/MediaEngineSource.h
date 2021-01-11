@@ -14,7 +14,6 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/ThreadSafeWeakPtr.h"
 #include "nsStringFwd.h"
-#include "TrackID.h"
 
 namespace mozilla {
 
@@ -29,7 +28,7 @@ class PrincipalInfo;
 
 class MediaEnginePhotoCallback;
 class MediaEnginePrefs;
-class SourceMediaStream;
+class SourceMediaTrack;
 
 /**
  * Callback interface for TakePhoto(). Either PhotoComplete() or PhotoError()
@@ -110,18 +109,16 @@ class MediaEngineSourceInterface {
    * Called by MediaEngine to allocate an instance of this source.
    */
   virtual nsresult Allocate(const dom::MediaTrackConstraints& aConstraints,
-                            const MediaEnginePrefs& aPrefs,
-                            const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
+                            const MediaEnginePrefs& aPrefs, uint64_t aWindowID,
                             const char** aOutBadConstraint) = 0;
 
   /**
-   * Called by MediaEngine when a SourceMediaStream and TrackID have been
-   * provided for the source to feed data to.
+   * Called by MediaEngine when a SourceMediaTrack has been provided for the
+   * source to feed data to.
    *
    * This must be called before Start.
    */
-  virtual void SetTrack(const RefPtr<SourceMediaStream>& aStream,
-                        TrackID aTrackID,
+  virtual void SetTrack(const RefPtr<SourceMediaTrack>& aTrack,
                         const PrincipalHandle& aPrincipal) = 0;
 
   /**
@@ -238,7 +235,7 @@ class MediaEngineSource : public MediaEngineSourceInterface {
   static bool IsVideo(dom::MediaSourceEnum aSource);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MediaEngineSource)
-  NS_DECL_OWNINGTHREAD
+  NS_DECL_OWNINGEVENTTARGET
 
   void AssertIsOnOwningThread() const {
     NS_ASSERT_OWNINGTHREAD(MediaEngineSource);

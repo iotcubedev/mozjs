@@ -40,8 +40,8 @@ void HexEncode(const SECItem* it, nsACString& result) {
   }
 }
 
-#define DSA_KEY_TYPE_STRING (NS_LITERAL_CSTRING("DS160"))
-#define RSA_KEY_TYPE_STRING (NS_LITERAL_CSTRING("RS256"))
+#define DSA_KEY_TYPE_STRING ("DS160"_ns)
+#define RSA_KEY_TYPE_STRING ("RS256"_ns)
 
 class KeyPair : public nsIIdentityKeyPair {
  public:
@@ -109,7 +109,6 @@ class SignRunnable : public Runnable {
   nsresult mRv;                                              // out
   nsCString mSignature;                                      // out
 
- private:
   SignRunnable(const SignRunnable&) = delete;
   void operator=(const SignRunnable&) = delete;
 };
@@ -130,7 +129,7 @@ class IdentityCryptoService final : public nsIIdentityCryptoService {
     rv = NS_NewNamedThread("IdentityCrypto", getter_AddRefs(thread));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    mThread = thread.forget();
+    mThread = std::move(thread);
 
     return NS_OK;
   }

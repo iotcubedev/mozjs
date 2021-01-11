@@ -340,7 +340,7 @@ bool D3D11TextureData::PrepareDrawTargetInLock(OpenMode aMode) {
   }
   if (mNeedsClearWhite) {
     mDrawTarget->FillRect(Rect(0, 0, mSize.width, mSize.height),
-                          ColorPattern(Color(1.0, 1.0, 1.0, 1.0)));
+                          ColorPattern(DeviceColor(1.0, 1.0, 1.0, 1.0)));
     mNeedsClearWhite = false;
   }
 
@@ -396,7 +396,8 @@ bool D3D11TextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
   return true;
 }
 
-void D3D11TextureData::GetSubDescriptor(GPUVideoSubDescriptor* const aOutDesc) {
+void D3D11TextureData::GetSubDescriptor(
+    RemoteDecoderVideoSubDescriptor* const aOutDesc) {
   SurfaceDescriptorD3D10 ret;
   if (!SerializeSpecific(&ret)) return;
 
@@ -682,7 +683,7 @@ bool DXGIYCbCrTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
 }
 
 void DXGIYCbCrTextureData::GetSubDescriptor(
-    GPUVideoSubDescriptor* const aOutDesc) {
+    RemoteDecoderVideoSubDescriptor* const aOutDesc) {
   SurfaceDescriptorDXGIYCbCr desc;
   SerializeSpecific(&desc);
 
@@ -733,7 +734,7 @@ already_AddRefed<TextureHost> CreateTextureHostD3D11(
 
 already_AddRefed<DrawTarget> D3D11TextureData::BorrowDrawTarget() {
   MOZ_ASSERT(NS_IsMainThread() || PaintThread::IsOnPaintThread() ||
-             NS_IsInCanvasThread());
+             NS_IsInCanvasThreadOrWorker());
 
   if (!mDrawTarget && mTexture) {
     // This may return a null DrawTarget
@@ -1061,7 +1062,8 @@ void DXGITextureHostD3D11::PushResourceUpdates(
 void DXGITextureHostD3D11::PushDisplayItems(
     wr::DisplayListBuilder& aBuilder, const wr::LayoutRect& aBounds,
     const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-    const Range<wr::ImageKey>& aImageKeys) {
+    const Range<wr::ImageKey>& aImageKeys,
+    const bool aPreferCompositorSurface) {
   switch (GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:
     case gfx::SurfaceFormat::R8G8B8A8:
@@ -1069,19 +1071,21 @@ void DXGITextureHostD3D11::PushDisplayItems(
     case gfx::SurfaceFormat::B8G8R8X8: {
       MOZ_ASSERT(aImageKeys.length() == 1);
       aBuilder.PushImage(aBounds, aClip, true, aFilter, aImageKeys[0],
-                         !(mFlags & TextureFlags::NON_PREMULTIPLIED));
+                         !(mFlags & TextureFlags::NON_PREMULTIPLIED),
+                         wr::ColorF{1.0f, 1.0f, 1.0f, 1.0f},
+                         aPreferCompositorSurface);
       break;
     }
     case gfx::SurfaceFormat::P010:
     case gfx::SurfaceFormat::P016:
     case gfx::SurfaceFormat::NV12: {
       MOZ_ASSERT(aImageKeys.length() == 2);
-      aBuilder.PushNV12Image(aBounds, aClip, true, aImageKeys[0], aImageKeys[1],
-                             GetFormat() == gfx::SurfaceFormat::NV12
-                                 ? wr::ColorDepth::Color8
-                                 : wr::ColorDepth::Color16,
-                             wr::ToWrYuvColorSpace(mYUVColorSpace),
-                             wr::ToWrColorRange(mColorRange), aFilter);
+      aBuilder.PushNV12Image(
+          aBounds, aClip, true, aImageKeys[0], aImageKeys[1],
+          GetFormat() == gfx::SurfaceFormat::NV12 ? wr::ColorDepth::Color8
+                                                  : wr::ColorDepth::Color16,
+          wr::ToWrYuvColorSpace(mYUVColorSpace),
+          wr::ToWrColorRange(mColorRange), aFilter, aPreferCompositorSurface);
       break;
     }
     default: {
@@ -1288,13 +1292,14 @@ void DXGIYCbCrTextureHostD3D11::PushResourceUpdates(
 void DXGIYCbCrTextureHostD3D11::PushDisplayItems(
     wr::DisplayListBuilder& aBuilder, const wr::LayoutRect& aBounds,
     const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
-    const Range<wr::ImageKey>& aImageKeys) {
+    const Range<wr::ImageKey>& aImageKeys,
+    const bool aPreferCompositorSurface) {
   MOZ_ASSERT(aImageKeys.length() == 3);
 
   aBuilder.PushYCbCrPlanarImage(
       aBounds, aClip, true, aImageKeys[0], aImageKeys[1], aImageKeys[2],
       wr::ToWrColorDepth(mColorDepth), wr::ToWrYuvColorSpace(mYUVColorSpace),
-      wr::ToWrColorRange(mColorRange), aFilter);
+      wr::ToWrColorRange(mColorRange), aFilter, aPreferCompositorSurface);
 }
 
 bool DXGIYCbCrTextureHostD3D11::AcquireTextureSource(

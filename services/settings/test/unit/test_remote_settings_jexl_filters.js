@@ -6,12 +6,17 @@ const { RemoteSettings } = ChromeUtils.import(
 let client;
 
 async function createRecords(records) {
-  const collection = await client.openCollection();
-  await collection.clear();
-  for (const record of records) {
-    await collection.create(record);
-  }
-  await collection.db.saveLastModified(42); // Prevent from loading JSON dump.
+  await client.db.importChanges(
+    {},
+    42,
+    records.map((record, i) => ({
+      id: `record-${i}`,
+      ...record,
+    })),
+    {
+      clear: true,
+    }
+  );
 }
 
 function run_test() {
@@ -39,11 +44,12 @@ add_task(async function test_returns_all_without_target() {
 
 add_task(async function test_filters_can_be_disabled() {
   const c = RemoteSettings("no-jexl", { filterFunc: null });
-  const collection = await c.openCollection();
-  await collection.create({
-    filter_expression: "1 == 2",
-  });
-  await collection.db.saveLastModified(42); // Prevent from loading JSON dump.
+  await c.db.importChanges({}, 42, [
+    {
+      id: "abc",
+      filter_expression: "1 == 2",
+    },
+  ]);
 
   const list = await c.get();
   equal(list.length, 1);
@@ -65,7 +71,7 @@ add_task(async function test_returns_entries_where_jexl_is_true() {
     },
     {
       willMatch: true,
-      filter_expression: 'env.appID == "xpcshell@tests.mozilla.org"',
+      filter_expression: 'env.appinfo.ID == "xpcshell@tests.mozilla.org"',
     },
     {
       willMatch: false,

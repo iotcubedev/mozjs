@@ -13,10 +13,6 @@
 #include "mozilla/gfx/Triangle.h"
 #include "mozilla/gfx/Polygon.h"
 
-#ifdef XP_MACOSX
-class MacIOSurface;
-#endif
-
 namespace mozilla {
 namespace layers {
 
@@ -38,6 +34,11 @@ class BasicCompositingRenderTarget : public CompositingRenderTarget {
   // root render targets and equal to GetOrigin() for non-root render targets.
   gfx::IntPoint GetClipSpaceOrigin() const { return mClipSpaceOrigin; }
 
+  // In render target coordinates, i.e. the same space as GetOrigin().
+  // NOT relative to mClipSpaceOrigin!
+  void SetClipRect(const Maybe<gfx::IntRect>& aRect) { mClipRect = aRect; }
+  const Maybe<gfx::IntRect>& GetClipRect() const { return mClipRect; }
+
   void BindRenderTarget();
 
   gfx::SurfaceFormat GetFormat() const override {
@@ -48,6 +49,7 @@ class BasicCompositingRenderTarget : public CompositingRenderTarget {
   RefPtr<gfx::DrawTarget> mDrawTarget;
   gfx::IntSize mSize;
   gfx::IntPoint mClipSpaceOrigin;
+  Maybe<gfx::IntRect> mClipRect;
 };
 
 class BasicCompositor : public Compositor {
@@ -144,14 +146,14 @@ class BasicCompositor : public Compositor {
   void NormalDrawingDone() override;
   void EndFrame() override;
 
+  RefPtr<SurfacePoolHandle> GetSurfacePoolHandle() override;
+
   bool SupportsPartialTextureUpdate() override { return true; }
   bool CanUseCanvasLayerForSize(const gfx::IntSize& aSize) override {
     return true;
   }
   int32_t GetMaxTextureSize() const override;
   void SetDestinationSurfaceSize(const gfx::IntSize& aSize) override {}
-
-  void SetScreenRenderOffset(const ScreenPoint& aOffset) override {}
 
   void MakeCurrent(MakeCurrentFlags aFlags = 0) override {}
 
@@ -202,11 +204,7 @@ class BasicCompositor : public Compositor {
   // BeginFrameForWindow has been called with a non-null aNativeLayer.
   RefPtr<NativeLayer> mCurrentNativeLayer;
 
-#ifdef XP_MACOSX
-  // The MacIOSurface that we're currently rendering to, if any.
-  // Non-null in the same cases as mCurrentNativeLayer.
-  RefPtr<MacIOSurface> mCurrentIOSurface;
-#endif
+  RefPtr<SurfacePoolHandle> mSurfacePoolHandle;
 
   gfx::IntRegion mInvalidRegion;
 

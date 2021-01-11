@@ -7,6 +7,7 @@
 #include "core/TelemetryCommon.h"
 #include "core/TelemetryOrigin.h"
 #include "gtest/gtest.h"
+#include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/Unused.h"
 #include "nsPrintfCString.h"
@@ -111,11 +112,11 @@ bool EventPresent(JSContext* aCx, const JS::RootedValue& aSnapshot,
   EXPECT_FALSE(aSnapshot.isNullOrUndefined())
       << "Event snapshot must not be null/undefined.";
   bool isArray = false;
-  EXPECT_TRUE(JS_IsArrayObject(aCx, aSnapshot, &isArray) && isArray)
+  EXPECT_TRUE(JS::IsArrayObject(aCx, aSnapshot, &isArray) && isArray)
       << "The snapshot must be an array.";
   JS::RootedObject arrayObj(aCx, &aSnapshot.toObject());
   uint32_t arrayLength = 0;
-  EXPECT_TRUE(JS_GetArrayLength(aCx, arrayObj, &arrayLength))
+  EXPECT_TRUE(JS::GetArrayLength(aCx, arrayObj, &arrayLength))
       << "Array must have a length.";
   EXPECT_TRUE(arrayLength > 0) << "Array must have at least one element.";
 
@@ -123,11 +124,11 @@ bool EventPresent(JSContext* aCx, const JS::RootedValue& aSnapshot,
     JS::Rooted<JS::Value> element(aCx);
     EXPECT_TRUE(JS_GetElement(aCx, arrayObj, arrayIdx, &element))
         << "Must be able to get element.";
-    EXPECT_TRUE(JS_IsArrayObject(aCx, element, &isArray) && isArray)
+    EXPECT_TRUE(JS::IsArrayObject(aCx, element, &isArray) && isArray)
         << "Element must be an array.";
     JS::RootedObject eventArray(aCx, &element.toObject());
     uint32_t eventLength;
-    EXPECT_TRUE(JS_GetArrayLength(aCx, eventArray, &eventLength))
+    EXPECT_TRUE(JS::GetArrayLength(aCx, eventArray, &eventLength))
         << "Event array must have a length.";
     EXPECT_TRUE(eventLength >= 4)
         << "Event array must have at least 4 elements (timestamp, category, "
@@ -171,7 +172,7 @@ bool EventPresent(JSContext* aCx, const JS::RootedValue& aSnapshot,
 }
 
 void GetOriginSnapshot(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
-                       bool aClear = false) {
+                       bool aClear) {
   nsCOMPtr<nsITelemetry> telemetry =
       do_GetService("@mozilla.org/base/telemetry;1");
 
@@ -211,11 +212,11 @@ void GetEncodedOriginStrings(
 
   JS::RootedObject prioDataObj(aCx, &snapshot.toObject());
   bool isArray = false;
-  ASSERT_TRUE(JS_IsArrayObject(aCx, prioDataObj, &isArray) && isArray)
+  ASSERT_TRUE(JS::IsArrayObject(aCx, prioDataObj, &isArray) && isArray)
   << "The metric's origins must be in an array.";
 
   uint32_t length = 0;
-  ASSERT_TRUE(JS_GetArrayLength(aCx, prioDataObj, &length));
+  ASSERT_TRUE(JS::GetArrayLength(aCx, prioDataObj, &length));
   ASSERT_TRUE(length > 0)
   << "Length of returned array must greater than 0";
 
@@ -264,7 +265,7 @@ void GetEncodedOriginStrings(
 }
 
 void GetEventSnapshot(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
-                      ProcessID aProcessType = ProcessID::Parent) {
+                      ProcessID aProcessType) {
   nsCOMPtr<nsITelemetry> telemetry =
       do_GetService("@mozilla.org/base/telemetry;1");
 
@@ -297,13 +298,11 @@ void GetScalarsSnapshot(bool aKeyed, JSContext* aCx,
   nsresult rv;
 
   if (aKeyed) {
-    rv = telemetry->GetSnapshotForKeyedScalars(NS_LITERAL_CSTRING("main"),
-                                               false, false /* filter */, aCx,
-                                               &scalarsSnapshot);
+    rv = telemetry->GetSnapshotForKeyedScalars(
+        "main"_ns, false, false /* filter */, aCx, &scalarsSnapshot);
   } else {
-    rv = telemetry->GetSnapshotForScalars(NS_LITERAL_CSTRING("main"), false,
-                                          false /* filter */, aCx,
-                                          &scalarsSnapshot);
+    rv = telemetry->GetSnapshotForScalars("main"_ns, false, false /* filter */,
+                                          aCx, &scalarsSnapshot);
   }
 
   // Validate the snapshot.
@@ -361,12 +360,11 @@ void GetSnapshots(JSContext* cx, nsCOMPtr<nsITelemetry> mTelemetry,
                   const char* name, JS::MutableHandleValue valueOut,
                   bool is_keyed) {
   JS::RootedValue snapshots(cx);
-  nsresult rv = is_keyed ? mTelemetry->GetSnapshotForKeyedHistograms(
-                               NS_LITERAL_CSTRING("main"), false,
-                               false /* filter */, cx, &snapshots)
-                         : mTelemetry->GetSnapshotForHistograms(
-                               NS_LITERAL_CSTRING("main"), false,
-                               false /* filter */, cx, &snapshots);
+  nsresult rv = is_keyed
+                    ? mTelemetry->GetSnapshotForKeyedHistograms(
+                          "main"_ns, false, false /* filter */, cx, &snapshots)
+                    : mTelemetry->GetSnapshotForHistograms(
+                          "main"_ns, false, false /* filter */, cx, &snapshots);
 
   JS::RootedValue snapshot(cx);
   GetProperty(cx, "parent", snapshots, &snapshot);

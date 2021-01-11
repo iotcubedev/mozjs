@@ -39,16 +39,23 @@ add_task(async function() {
       /* tab may have already been closed in case of failure */
     }
     await PlacesUtils.history.clear();
+    await UrlbarTestUtils.formHistory.clear();
   });
 
-  await promiseAutocompleteResultPopup("moz");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "moz",
+  });
   Assert.equal(
     gURLBar.value,
     "moz",
     "Preselected search keyword result shouldn't automatically add a space"
   );
 
-  await promiseAutocompleteResultPopup("moz open a search");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "moz open a search",
+  });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
   Assert.equal(result.image, ICON_URI, "Should have the correct image");
 

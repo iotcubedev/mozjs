@@ -73,7 +73,6 @@ add_task(async function test_tab_switch_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "about:mozilla",
       fireInputEvent: true,
     });
@@ -96,12 +95,12 @@ add_task(async function test_search_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "foo",
       fireInputEvent: true,
     });
 
-    const details = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
+    let index = await UrlbarTestUtils.promiseSuggestionsPresent(window);
+    const details = await UrlbarTestUtils.getDetailsOfResultAt(window, index);
 
     // We'll initially display no separator.
     assertElementsDisplayed(details, {
@@ -110,7 +109,10 @@ add_task(async function test_search_result() {
       type: UrlbarUtils.RESULT_TYPE.SEARCH,
     });
 
-    EventUtils.sendKey("down");
+    // Down to select the first search suggestion.
+    for (let i = index; i > 0; --i) {
+      EventUtils.synthesizeKey("KEY_ArrowDown");
+    }
 
     // We should now be displaying one.
     assertElementsDisplayed(details, {
@@ -136,7 +138,6 @@ add_task(async function test_url_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });
@@ -164,22 +165,21 @@ add_task(async function test_keyword_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get ",
       fireInputEvent: true,
     });
 
     let details = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
 
+    // Because only the keyword is typed, we show the bookmark url.
     assertElementsDisplayed(details, {
       separator: true,
-      title: "example.com",
+      title: TEST_URL + "?q=",
       type: UrlbarUtils.RESULT_TYPE.KEYWORD,
     });
 
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get test",
       fireInputEvent: true,
     });
@@ -220,7 +220,6 @@ add_task(async function test_omnibox_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "omniboxtest ",
       fireInputEvent: true,
     });
@@ -301,7 +300,6 @@ add_task(async function test_remote_tab_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });

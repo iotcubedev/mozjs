@@ -4,45 +4,43 @@
 ---
 newtab-unit-tests:
     description: newtab unit tests
-    platform: linux64/opt
+    platform: linux1804-64/opt
     treeherder:
         symbol: node(newtab)
         kind: test
-        tier: 2
-    worker-type: t-linux-xlarge
+        tier: 1
+    worker-type: t-linux-xlarge-source
     worker:
-        docker-image: {in-tree: "desktop1604-test"}
+        docker-image: {in-tree: "ubuntu1804-test"}
         max-run-time: 1800
-    require-build: true
-    fetches:
-        build:
-            - target.tar.bz2
+    require-build:
+        by-project:
+            try:
+                linux1804-64/opt: build-linux64/opt
+            default:
+                linux1804-64/opt: build-linux64-shippable/opt
     run:
         using: run-task
         cache-dotcache: true
-        # We fetch our own Firefox nightly because the version of firefox
-        # currently in the desktop1604-test docker image is too old to
-        # pass our unit tests.
         cwd: '{checkout}'
         command: >
-            export FIREFOX_BIN=$MOZ_FETCHES_DIR/firefox/firefox &&
             cd /builds/worker/checkouts/gecko/browser/components/newtab &&
             npm install &&
             node bin/try-runner.js
-    attributes:
-        code-review: true
     when:
         files-changed:
             - "browser/components/newtab/**"
 
 debugger-tests:
     description: devtools debugger unit tests and flow type checks
-    platform: linux64/opt
+    platform: linux1804-64/opt
+    attributes:
+        code-review: true
     treeherder:
         symbol: node(debugger)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
@@ -55,20 +53,20 @@ debugger-tests:
             cd devtools/client/debugger/ &&
             yarn &&
             node bin/try-runner.js
-    attributes:
-        code-review: true
     when:
         files-changed:
             - 'devtools/client/debugger/**'
 
 devtools-tests:
     description: devtools node-based tests (for instance jest)
-    platform: linux64/opt
+    platform: linux1804-64/opt
+    attributes:
+        code-review: true
     treeherder:
         symbol: node(devtools)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
@@ -82,6 +80,7 @@ devtools-tests:
             node devtools-node-test-runner.js --suite=aboutdebugging &&
             node devtools-node-test-runner.js --suite=accessibility &&
             node devtools-node-test-runner.js --suite=application &&
+            node devtools-node-test-runner.js --suite=compatibility &&
             node devtools-node-test-runner.js --suite=framework &&
             node devtools-node-test-runner.js --suite=netmonitor &&
             node devtools-node-test-runner.js --suite=webconsole
@@ -92,12 +91,12 @@ devtools-tests:
 
 eslint-plugin-mozilla:
     description: eslint-plugin-mozilla integration tests
-    platform: linux64/opt
+    platform: linux1804-64/opt
     treeherder:
         symbol: node(epm)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800

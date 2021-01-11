@@ -6,22 +6,26 @@
 
 // Needed for CreateToolhelp32Snapshot
 #include <tlhelp32.h>
-#ifndef ONLY_SERVICE_LAUNCHING
 
-#  include <stdio.h>
-#  include "mozilla/UniquePtr.h"
-#  include "pathhash.h"
-#  include "shlobj.h"
-#  include "registrycertificates.h"
-#  include "uachelper.h"
-#  include "updatehelper.h"
-#  include "updateutils_win.h"
+#include <stdio.h>
+#include <direct.h>
+#include "shlobj.h"
 
 // Needed for PathAppendW
-#  include <shlwapi.h>
+#include <shlwapi.h>
+
+#include "updatehelper.h"
+#include "updateutils_win.h"
+
+#ifdef MOZ_MAINTENANCE_SERVICE
+#  include "mozilla/UniquePtr.h"
+#  include "pathhash.h"
+#  include "registrycertificates.h"
+#  include "uachelper.h"
 
 using mozilla::MakeUnique;
 using mozilla::UniquePtr;
+#endif
 
 BOOL PathGetSiblingFilePath(LPWSTR destinationBuffer, LPCWSTR siblingFilePath,
                             LPCWSTR newFileName);
@@ -30,28 +34,227 @@ BOOL PathGetSiblingFilePath(LPWSTR destinationBuffer, LPCWSTR siblingFilePath,
  * Obtains the path of a file in the same directory as the specified file.
  *
  * @param  destinationBuffer A buffer of size MAX_PATH + 1 to store the result.
- * @param  siblingFIlePath   The path of another file in the same directory
+ * @param  siblingFilePath   The path of another file in the same directory
  * @param  newFileName       The filename of another file in the same directory
  * @return TRUE if successful
  */
 BOOL PathGetSiblingFilePath(LPWSTR destinationBuffer, LPCWSTR siblingFilePath,
                             LPCWSTR newFileName) {
-  if (wcslen(siblingFilePath) >= MAX_PATH) {
+  if (wcslen(siblingFilePath) > MAX_PATH) {
     return FALSE;
   }
 
-  wcsncpy(destinationBuffer, siblingFilePath, MAX_PATH);
+  wcsncpy(destinationBuffer, siblingFilePath, MAX_PATH + 1);
   if (!PathRemoveFileSpecW(destinationBuffer)) {
-    return FALSE;
-  }
-
-  if (wcslen(destinationBuffer) + wcslen(newFileName) >= MAX_PATH) {
     return FALSE;
   }
 
   return PathAppendSafe(destinationBuffer, newFileName);
 }
 
+/**
+ * Obtains the path of the secure directory used to write the status and log
+ * files for updates applied with an elevated updater or an updater that is
+ * launched using the maintenance service.
+ *
+ * Example
+ * Destination buffer value:
+ *   C:\Program Files (x86)\Mozilla Maintenance Service\UpdateLogs
+ *
+ * @param  outBuf
+ *         A buffer of size MAX_PATH + 1 to store the result.
+ * @return TRUE if successful
+ */
+BOOL GetSecureOutputDirectoryPath(LPWSTR outBuf) {
+  PWSTR progFilesX86;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFilesX86, KF_FLAG_CREATE,
+                                  nullptr, &progFilesX86))) {
+    return FALSE;
+  }
+  if (wcslen(progFilesX86) > MAX_PATH) {
+    CoTaskMemFree(progFilesX86);
+    return FALSE;
+  }
+  wcsncpy(outBuf, progFilesX86, MAX_PATH + 1);
+  CoTaskMemFree(progFilesX86);
+
+  if (!PathAppendSafe(outBuf, L"Mozilla Maintenance Service")) {
+    return FALSE;
+  }
+
+  // Create the Maintenance Service directory in case it doesn't exist.
+  if (!CreateDirectoryW(outBuf, nullptr) &&
+      GetLastError() != ERROR_ALREADY_EXISTS) {
+    return FALSE;
+  }
+
+  if (!PathAppendSafe(outBuf, L"UpdateLogs")) {
+    return FALSE;
+  }
+
+  // Create the secure update output directory in case it doesn't exist.
+  if (!CreateDirectoryW(outBuf, nullptr) &&
+      GetLastError() != ERROR_ALREADY_EXISTS) {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+/**
+ * Obtains the name of the update output file using the update patch directory
+ * path and file extension (must include the '.' separator) passed to this
+ * function.
+ *
+ * Example
+ * Patch directory path parameter:
+ *   C:\ProgramData\Mozilla\updates\0123456789ABCDEF\updates\0
+ * File extension parameter:
+ *   .status
+ * Destination buffer value:
+ *   0123456789ABCDEF.status
+ *
+ * @param  patchDirPath
+ *         The path to the update patch directory.
+ * @param  fileExt
+ *         The file extension for the file including the '.' separator.
+ * @param  outBuf
+ *         A buffer of size MAX_PATH + 1 to store the result.
+ * @return TRUE if successful
+ */
+BOOL GetSecureOutputFileName(LPCWSTR patchDirPath, LPCWSTR fileExt,
+                             LPWSTR outBuf) {
+  size_t fullPathLen = wcslen(patchDirPath);
+  if (fullPathLen > MAX_PATH) {
+    return FALSE;
+  }
+
+  size_t relPathLen = wcslen(PATCH_DIR_PATH);
+  if (relPathLen > fullPathLen) {
+    return FALSE;
+  }
+
+  // The patch directory path must end with updates\0 for updates applied with
+  // an elevated updater or an updater that is launched using the maintenance
+  // service.
+  if (_wcsnicmp(patchDirPath + fullPathLen - relPathLen, PATCH_DIR_PATH,
+                relPathLen) != 0) {
+    return FALSE;
+  }
+
+  wcsncpy(outBuf, patchDirPath, MAX_PATH + 1);
+  if (!PathRemoveFileSpecW(outBuf)) {
+    return FALSE;
+  }
+
+  if (!PathRemoveFileSpecW(outBuf)) {
+    return FALSE;
+  }
+
+  PathStripPathW(outBuf);
+
+  size_t outBufLen = wcslen(outBuf);
+  size_t fileExtLen = wcslen(fileExt);
+  if (outBufLen + fileExtLen > MAX_PATH) {
+    return FALSE;
+  }
+
+  wcsncat(outBuf, fileExt, fileExtLen);
+
+  return TRUE;
+}
+
+/**
+ * Obtains the full path of the secure update output file using the update patch
+ * directory path and file extension (must include the '.' separator) passed to
+ * this function.
+ *
+ * Example
+ * Patch directory path parameter:
+ *   C:\ProgramData\Mozilla\updates\0123456789ABCDEF\updates\0
+ * File extension parameter:
+ *   .status
+ * Destination buffer value:
+ *   C:\Program Files (x86)\Mozilla Maintenance
+ *     Service\UpdateLogs\0123456789ABCDEF.status
+ *
+ * @param  patchDirPath
+ *         The path to the update patch directory.
+ * @param  fileExt
+ *         The file extension for the file including the '.' separator.
+ * @param  outBuf
+ *         A buffer of size MAX_PATH + 1 to store the result.
+ * @return TRUE if successful
+ */
+BOOL GetSecureOutputFilePath(LPCWSTR patchDirPath, LPCWSTR fileExt,
+                             LPWSTR outBuf) {
+  if (!GetSecureOutputDirectoryPath(outBuf)) {
+    return FALSE;
+  }
+
+  WCHAR statusFileName[MAX_PATH + 1] = {L'\0'};
+  if (!GetSecureOutputFileName(patchDirPath, fileExt, statusFileName)) {
+    return FALSE;
+  }
+
+  return PathAppendSafe(outBuf, statusFileName);
+}
+
+/**
+ * Writes a UUID to the ID file in the secure output directory. This is used by
+ * the unelevated updater to determine whether an existing update status file in
+ * the secure output directory has been updated.
+ *
+ * @param  patchDirPath
+ *         The path to the update patch directory.
+ * @return TRUE if successful
+ */
+BOOL WriteSecureIDFile(LPCWSTR patchDirPath) {
+  WCHAR uuidString[MAX_PATH + 1] = {L'\0'};
+  if (!GetUUIDString(uuidString)) {
+    return FALSE;
+  }
+
+  WCHAR idFilePath[MAX_PATH + 1] = {L'\0'};
+  if (!GetSecureOutputFilePath(patchDirPath, L".id", idFilePath)) {
+    return FALSE;
+  }
+
+  FILE* idFile = _wfopen(idFilePath, L"wb+");
+  if (idFile == nullptr) {
+    return FALSE;
+  }
+
+  if (fprintf(idFile, "%ls\n", uuidString) == -1) {
+    fclose(idFile);
+    return FALSE;
+  }
+
+  fclose(idFile);
+
+  return TRUE;
+}
+
+/**
+ * Removes the update status and log files from the secure output directory.
+ *
+ * @param  patchDirPath
+ *         The path to the update patch directory.
+ */
+void RemoveSecureOutputFiles(LPCWSTR patchDirPath) {
+  WCHAR filePath[MAX_PATH + 1] = {L'\0'};
+  if (GetSecureOutputFilePath(patchDirPath, L".id", filePath)) {
+    (void)_wremove(filePath);
+  }
+  if (GetSecureOutputFilePath(patchDirPath, L".status", filePath)) {
+    (void)_wremove(filePath);
+  }
+  if (GetSecureOutputFilePath(patchDirPath, L".log", filePath)) {
+    (void)_wremove(filePath);
+  }
+}
+
+#ifdef MOZ_MAINTENANCE_SERVICE
 /**
  * Starts the upgrade process for update of the service if it is
  * already installed.
@@ -112,6 +315,10 @@ BOOL StartServiceUpdate(LPCWSTR installDir) {
     return FALSE;
   }
 
+  if (wcslen(installDir) > MAX_PATH) {
+    return FALSE;
+  }
+
   // Get the new maintenance service path from the install dir
   WCHAR newMaintServicePath[MAX_PATH + 1] = {L'\0'};
   wcsncpy(newMaintServicePath, installDir, MAX_PATH);
@@ -149,8 +356,6 @@ BOOL StartServiceUpdate(LPCWSTR installDir) {
   }
   return svcUpdateProcessStarted;
 }
-
-#endif
 
 /**
  * Executes a maintenance service command
@@ -206,8 +411,6 @@ StartServiceCommand(int argc, LPCWSTR* argv) {
   return lastError;
 }
 
-#ifndef ONLY_SERVICE_LAUNCHING
-
 /**
  * Launch a service initiated action for a software update with the
  * specified arguments.
@@ -241,24 +444,25 @@ LaunchServiceSoftwareUpdateCommand(int argc, LPCWSTR* argv) {
 }
 
 /**
- * Sets update.status to a specific failure code
+ * Writes a specific failure code for the update status to a file in the secure
+ * output directory. The status file's name without the '.' separator and
+ * extension is the same as the update directory name.
  *
- * @param  updateDirPath   The path of the update directory
- * @param  errorCode       Error code to set
- *
+ * @param  patchDirPath
+ *         The path of the update patch directory.
+ * @param  errorCode
+ *         Error code to set
  * @return TRUE if successful
  */
-BOOL WriteStatusFailure(LPCWSTR updateDirPath, int errorCode) {
-  // The temp file is not removed on failure since there is client code that
-  // will remove it.
-  WCHAR tmpUpdateStatusFilePath[MAX_PATH + 1] = {L'\0'};
-  if (!GetUUIDTempFilePath(updateDirPath, L"svc", tmpUpdateStatusFilePath)) {
+BOOL WriteStatusFailure(LPCWSTR patchDirPath, int errorCode) {
+  WCHAR statusFilePath[MAX_PATH + 1] = {L'\0'};
+  if (!GetSecureOutputFilePath(patchDirPath, L".status", statusFilePath)) {
     return FALSE;
   }
 
-  HANDLE tmpStatusFile = CreateFileW(tmpUpdateStatusFilePath, GENERIC_WRITE, 0,
-                                     nullptr, CREATE_ALWAYS, 0, nullptr);
-  if (tmpStatusFile == INVALID_HANDLE_VALUE) {
+  HANDLE hStatusFile = CreateFileW(statusFilePath, GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, 0, nullptr);
+  if (hStatusFile == INVALID_HANDLE_VALUE) {
     return FALSE;
   }
 
@@ -266,28 +470,15 @@ BOOL WriteStatusFailure(LPCWSTR updateDirPath, int errorCode) {
   sprintf(failure, "failed: %d", errorCode);
   DWORD toWrite = strlen(failure);
   DWORD wrote;
-  BOOL ok = WriteFile(tmpStatusFile, failure, toWrite, &wrote, nullptr);
-  CloseHandle(tmpStatusFile);
+  BOOL ok = WriteFile(hStatusFile, failure, toWrite, &wrote, nullptr);
+  CloseHandle(hStatusFile);
 
   if (!ok || wrote != toWrite) {
     return FALSE;
   }
 
-  WCHAR updateStatusFilePath[MAX_PATH + 1] = {L'\0'};
-  wcsncpy(updateStatusFilePath, updateDirPath, MAX_PATH);
-  if (!PathAppendSafe(updateStatusFilePath, L"update.status")) {
-    return FALSE;
-  }
-
-  if (MoveFileExW(tmpUpdateStatusFilePath, updateStatusFilePath,
-                  MOVEFILE_REPLACE_EXISTING) == 0) {
-    return FALSE;
-  }
-
   return TRUE;
 }
-
-#endif
 
 /**
  * Waits for a service to enter a stopped state.
@@ -417,8 +608,7 @@ WaitForServiceStop(LPCWSTR serviceName, DWORD maxWaitSeconds) {
   CloseServiceHandle(serviceManager);
   return lastServiceState;
 }
-
-#ifndef ONLY_SERVICE_LAUNCHING
+#endif
 
 /**
  * Determines if there is at least one process running for the specified
@@ -456,7 +646,7 @@ IsProcessRunning(LPCWSTR filename) {
 }
 
 /**
- * Waits for the specified applicaiton to exit.
+ * Waits for the specified application to exit.
  *
  * @param filename   The application to wait for.
  * @param maxSeconds The maximum amount of seconds to wait for all
@@ -483,6 +673,7 @@ WaitForProcessExit(LPCWSTR filename, DWORD maxSeconds) {
   return applicationRunningError;
 }
 
+#ifdef MOZ_MAINTENANCE_SERVICE
 /**
  *  Determines if the fallback key exists or not
  *
@@ -499,8 +690,6 @@ BOOL DoesFallbackKeyExist() {
   RegCloseKey(testOnlyFallbackKey);
   return TRUE;
 }
-
-#endif
 
 /**
  * Determines if the file system for the specified file handle is local
@@ -571,3 +760,4 @@ BOOL IsUnpromptedElevation(BOOL& isUnpromptedElevation) {
 
   return success;
 }
+#endif

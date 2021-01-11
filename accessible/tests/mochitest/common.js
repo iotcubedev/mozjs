@@ -1,3 +1,17 @@
+// This file has circular dependencies that may require other files. Rather
+// than use import-globals-from, we list the globals individually here to save
+// confusing ESLint.
+// actions.js
+/* globals testActionNames */
+// attributes.js
+/* globals testAttrs, testAbsentAttrs, testTextAttrs */
+// relations.js
+/* globals testRelation */
+// role.js
+/* globals isRole */
+// state.js
+/* globals testStates */
+
 // //////////////////////////////////////////////////////////////////////////////
 // Interfaces
 
@@ -8,6 +22,8 @@ const nsIAccessibleStateChangeEvent = Ci.nsIAccessibleStateChangeEvent;
 const nsIAccessibleCaretMoveEvent = Ci.nsIAccessibleCaretMoveEvent;
 const nsIAccessibleScrollingEvent = Ci.nsIAccessibleScrollingEvent;
 const nsIAccessibleTextChangeEvent = Ci.nsIAccessibleTextChangeEvent;
+const nsIAccessibleTextSelectionChangeEvent =
+  Ci.nsIAccessibleTextSelectionChangeEvent;
 const nsIAccessibleVirtualCursorChangeEvent =
   Ci.nsIAccessibleVirtualCursorChangeEvent;
 const nsIAccessibleObjectAttributeChangedEvent =
@@ -978,7 +994,7 @@ function shortenString(aString, aMaxLength) {
  * Return main chrome window (crosses chrome boundary)
  */
 function getMainChromeWindow(aWindow) {
-  return aWindow.docShell.rootTreeItem.domWindow;
+  return aWindow.browsingContext.topChromeWindow;
 }
 
 /** Sets the test plugin(s) initially expected enabled state.

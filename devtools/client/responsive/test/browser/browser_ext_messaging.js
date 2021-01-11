@@ -12,92 +12,94 @@ const TEST_URL = "http://example.com/";
 const { PromiseTestUtils } = ChromeUtils.import(
   "resource://testing-common/PromiseTestUtils.jsm"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/Message manager disconnected/);
-PromiseTestUtils.whitelistRejectionsGlobally(/Receiving end does not exist/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Message manager disconnected/
+);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Receiving end does not exist/
+);
 
-add_task(async function test_port_kept_connected_on_switch_to_RDB() {
-  const extension = ExtensionTestUtils.loadExtension({
-    manifest: {
-      content_scripts: [
-        {
-          matches: [TEST_URL],
-          js: ["content-script.js"],
-          run_at: "document_start",
-        },
-      ],
-    },
-    background() {
-      let currentPort;
-
-      browser.runtime.onConnect.addListener(port => {
-        currentPort = port;
-        port.onDisconnect.addListener(() =>
-          browser.test.sendMessage("port-disconnected")
-        );
-        port.onMessage.addListener(msg =>
-          browser.test.sendMessage("port-message-received", msg)
-        );
-        browser.test.sendMessage("port-connected");
-      });
-
-      browser.test.onMessage.addListener(async msg => {
-        if (msg !== "test:port-message-send") {
-          browser.test.fail(`Unexpected test message received: ${msg}`);
-        }
-
-        currentPort.postMessage("ping");
-      });
-
-      browser.test.sendMessage("background:ready");
-    },
-    files: {
-      "content-script.js": function contentScript() {
-        const port = browser.runtime.connect();
-        port.onMessage.addListener(msg => port.postMessage(`${msg}-pong`));
+const extension = ExtensionTestUtils.loadExtension({
+  manifest: {
+    content_scripts: [
+      {
+        matches: [TEST_URL],
+        js: ["content-script.js"],
+        run_at: "document_start",
       },
-    },
-  });
+    ],
+  },
+  background() {
+    let currentPort;
 
+    browser.runtime.onConnect.addListener(port => {
+      currentPort = port;
+      port.onDisconnect.addListener(() =>
+        browser.test.sendMessage("port-disconnected")
+      );
+      port.onMessage.addListener(msg =>
+        browser.test.sendMessage("port-message-received", msg)
+      );
+      browser.test.sendMessage("port-connected");
+    });
+
+    browser.test.onMessage.addListener(async msg => {
+      if (msg !== "test:port-message-send") {
+        browser.test.fail(`Unexpected test message received: ${msg}`);
+      }
+
+      currentPort.postMessage("ping");
+    });
+
+    browser.test.sendMessage("background:ready");
+  },
+  files: {
+    "content-script.js": function contentScript() {
+      const port = browser.runtime.connect();
+      port.onMessage.addListener(msg => port.postMessage(`${msg}-pong`));
+    },
+  },
+});
+
+add_task(async function setup_first_test() {
   await extension.startup();
 
   await extension.awaitMessage("background:ready");
+});
 
-  const tab = await addTab(TEST_URL);
+addRDMTaskWithPreAndPost(
+  TEST_URL,
+  async function pre_task() {
+    await extension.awaitMessage("port-connected");
+  },
+  async function test_port_kept_connected_on_switch_to_RDB() {
+    extension.sendMessage("test:port-message-send");
 
-  await extension.awaitMessage("port-connected");
+    is(
+      await extension.awaitMessage("port-message-received"),
+      "ping-pong",
+      "Got the expected message back from the content script"
+    );
+  },
+  async function post_task() {
+    extension.sendMessage("test:port-message-send");
 
-  await openRDM(tab);
+    is(
+      await extension.awaitMessage("port-message-received"),
+      "ping-pong",
+      "Got the expected message back from the content script"
+    );
+  }
+);
 
-  extension.sendMessage("test:port-message-send");
-
-  is(
-    await extension.awaitMessage("port-message-received"),
-    "ping-pong",
-    "Got the expected message back from the content script"
-  );
-
-  await closeRDM(tab);
-
-  extension.sendMessage("test:port-message-send");
-
-  is(
-    await extension.awaitMessage("port-message-received"),
-    "ping-pong",
-    "Got the expected message back from the content script"
-  );
-
-  await removeTab(tab);
-
+add_task(async function cleanup_first_test() {
   await extension.awaitMessage("port-disconnected");
 
   await extension.unload();
 });
 
-add_task(async function test_tab_sender() {
-  const tab = await addTab(TEST_URL);
-  await openRDM(tab);
-
-  const extension = ExtensionTestUtils.loadExtension({
+addRDMTask(TEST_URL, async function test_tab_sender() {
+  const extension2 = ExtensionTestUtils.loadExtension({
     manifest: {
       permissions: ["tabs"],
 
@@ -210,23 +212,20 @@ add_task(async function test_tab_sender() {
     },
   });
 
-  const contentScriptReady = extension.awaitMessage("content-script-ready");
-  const backgroundScriptReady = extension.awaitMessage(
+  const contentScriptReady = extension2.awaitMessage("content-script-ready");
+  const backgroundScriptReady = extension2.awaitMessage(
     "background-script-ready"
   );
-  const finish = extension.awaitFinish("rdm-messaging");
+  const finish = extension2.awaitFinish("rdm-messaging");
 
-  await extension.startup();
+  await extension2.startup();
 
   // It appears the background script and content script can loaded in either order, so
   // we'll wait for the both to listen before proceeding.
   await backgroundScriptReady;
   await contentScriptReady;
-  extension.sendMessage("resume");
+  extension2.sendMessage("resume");
 
   await finish;
-  await extension.unload();
-
-  await closeRDM(tab);
-  await removeTab(tab);
+  await extension2.unload();
 });

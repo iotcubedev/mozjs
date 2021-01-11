@@ -16,19 +16,20 @@
 #include "nsDocShellLoadTypes.h"
 #include "nsIChannel.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsISelectionController.h"
 #include "nsTraceRefcnt.h"
 #include "nsIWebProgress.h"
 #include "prenv.h"
 #include "nsIDocShellTreeItem.h"
-#include "nsIURI.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/dom/BorrowedAttrInfo.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLBodyElement.h"
 #include "mozilla/dom/Selection.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
+
+using mozilla::dom::BorrowedAttrInfo;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Logging helpers
@@ -124,9 +125,12 @@ static void LogDocShellTree(dom::Document* aDocumentNode) {
     treeItem->GetInProcessParent(getter_AddRefs(parentTreeItem));
     nsCOMPtr<nsIDocShellTreeItem> rootTreeItem;
     treeItem->GetInProcessRootTreeItem(getter_AddRefs(rootTreeItem));
-    printf("docshell hierarchy, parent: %p, root: %p, is tab document: %s;",
-           static_cast<void*>(parentTreeItem), static_cast<void*>(rootTreeItem),
-           (nsCoreUtils::IsTabDocument(aDocumentNode) ? "yes" : "no"));
+    printf(
+        "in-process docshell hierarchy, parent: %p, root: %p, "
+        "is top level: %s;",
+        static_cast<void*>(parentTreeItem), static_cast<void*>(rootTreeItem),
+        (nsCoreUtils::IsTopLevelContentDocInProcess(aDocumentNode) ? "yes"
+                                                                   : "no"));
   }
 }
 

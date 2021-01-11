@@ -9,7 +9,9 @@
 #include "WrapperFactory.h"
 
 #include "nsDependentString.h"
+#include "nsIConsoleService.h"
 #include "nsIScriptError.h"
+#include "nsIXPConnect.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ScriptSettings.h"
 
@@ -45,15 +47,15 @@ using namespace XrayUtils;
 
 #define Between(x, a, b) (a <= x && x <= b)
 
-static_assert(JSProto_URIError - JSProto_Error == 7,
+static_assert(JSProto_URIError - JSProto_Error == 8,
               "New prototype added in error object range");
 #define AssertErrorObjectKeyInBounds(key)                      \
   static_assert(Between(key, JSProto_Error, JSProto_URIError), \
                 "We depend on js/ProtoKey.h ordering here");
 MOZ_FOR_EACH(AssertErrorObjectKeyInBounds, (),
-             (JSProto_Error, JSProto_InternalError, JSProto_EvalError,
-              JSProto_RangeError, JSProto_ReferenceError, JSProto_SyntaxError,
-              JSProto_TypeError, JSProto_URIError));
+             (JSProto_Error, JSProto_InternalError, JSProto_AggregateError,
+              JSProto_EvalError, JSProto_RangeError, JSProto_ReferenceError,
+              JSProto_SyntaxError, JSProto_TypeError, JSProto_URIError));
 
 static_assert(JSProto_Uint8ClampedArray - JSProto_Int8Array == 8,
               "New prototype added in typed array range");
@@ -433,7 +435,7 @@ static bool TryResolvePropertyFromSpecs(
     // pass along JITInfo. It's probably ok though, since Xrays are already
     // pretty slow.
     desc.value().setUndefined();
-    unsigned flags = psMatch->flags;
+    unsigned attrs = psMatch->attributes();
     if (psMatch->isAccessor()) {
       if (psMatch->isSelfHosted()) {
         JSFunction* getterFun = JS::GetSelfHostedFunction(
@@ -444,7 +446,7 @@ static bool TryResolvePropertyFromSpecs(
         RootedObject getterObj(cx, JS_GetFunctionObject(getterFun));
         RootedObject setterObj(cx);
         if (psMatch->u.accessors.setter.selfHosted.funname) {
-          MOZ_ASSERT(flags & JSPROP_SETTER);
+          MOZ_ASSERT(attrs & JSPROP_SETTER);
           JSFunction* setterFun = JS::GetSelfHostedFunction(
               cx, psMatch->u.accessors.setter.selfHosted.funname, id, 0);
           if (!setterFun) {
@@ -453,13 +455,13 @@ static bool TryResolvePropertyFromSpecs(
           setterObj = JS_GetFunctionObject(setterFun);
         }
         if (!JS_DefinePropertyById(cx, holder, id, getterObj, setterObj,
-                                   flags)) {
+                                   attrs)) {
           return false;
         }
       } else {
         if (!JS_DefinePropertyById(
                 cx, holder, id, psMatch->u.accessors.getter.native.op,
-                psMatch->u.accessors.setter.native.op, flags)) {
+                psMatch->u.accessors.setter.native.op, attrs)) {
           return false;
         }
       }
@@ -468,8 +470,7 @@ static bool TryResolvePropertyFromSpecs(
       if (!psMatch->getValue(cx, &v)) {
         return false;
       }
-      if (!JS_DefinePropertyById(cx, holder, id, v,
-                                 flags & ~JSPROP_INTERNAL_USE_BIT)) {
+      if (!JS_DefinePropertyById(cx, holder, id, v, attrs)) {
         return false;
       }
     }
@@ -663,6 +664,11 @@ bool JSXrayTraits::resolveOwnProperty(JSContext* cx, HandleObject wrapper,
           FillPropertyDescriptor(desc, nullptr, 0, UndefinedValue());
         }
         return true;
+      }
+
+      if (key == JSProto_AggregateError &&
+          id == GetJSIDByIndex(cx, XPCJSContext::IDX_ERRORS)) {
+        return getOwnPropertyFromWrapperIfSafe(cx, wrapper, id, desc);
       }
     } else if (key == JSProto_RegExp) {
       if (id == GetJSIDByIndex(cx, XPCJSContext::IDX_LASTINDEX)) {
@@ -1165,13 +1171,19 @@ static void ExpandoObjectFinalize(JSFreeOp* fop, JSObject* obj) {
   NS_RELEASE(principal);
 }
 
-const JSClassOps XrayExpandoObjectClassOps = {nullptr,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr,
-                                              ExpandoObjectFinalize};
+const JSClassOps XrayExpandoObjectClassOps = {
+    nullptr,                // addProperty
+    nullptr,                // delProperty
+    nullptr,                // enumerate
+    nullptr,                // newEnumerate
+    nullptr,                // resolve
+    nullptr,                // mayResolve
+    ExpandoObjectFinalize,  // finalize
+    nullptr,                // call
+    nullptr,                // hasInstance
+    nullptr,                // construct
+    nullptr,                // trace
+};
 
 bool XrayTraits::expandoObjectMatchesConsumer(JSContext* cx,
                                               HandleObject expandoObject,
@@ -1694,18 +1706,18 @@ bool DOMXrayTraits::delete_(JSContext* cx, JS::HandleObject wrapper,
 bool DOMXrayTraits::defineProperty(JSContext* cx, HandleObject wrapper,
                                    HandleId id, Handle<PropertyDescriptor> desc,
                                    Handle<PropertyDescriptor> existingDesc,
-                                   JS::ObjectOpResult& result, bool* defined) {
+                                   JS::ObjectOpResult& result, bool* done) {
   // Check for an indexed property on a Window.  If that's happening, do
-  // nothing but claim we defined it so it won't get added as an expando.
+  // nothing but set done to tru so it won't get added as an expando.
   if (IsWindow(cx, wrapper)) {
     if (IsArrayIndex(GetArrayIndexFromId(id))) {
-      *defined = true;
+      *done = true;
       return result.succeed();
     }
   }
 
   JS::Rooted<JSObject*> obj(cx, getTargetObject(wrapper));
-  return XrayDefineProperty(cx, wrapper, obj, id, desc, result, defined);
+  return XrayDefineProperty(cx, wrapper, obj, id, desc, result, done);
 }
 
 bool DOMXrayTraits::enumerateNames(JSContext* cx, HandleObject wrapper,
@@ -1982,12 +1994,12 @@ bool XrayWrapper<Base, Traits>::defineProperty(JSContext* cx,
     }
   }
 
-  bool defined = false;
+  bool done = false;
   if (!Traits::singleton.defineProperty(cx, wrapper, id, desc, existing_desc,
-                                        result, &defined)) {
+                                        result, &done)) {
     return false;
   }
-  if (defined) {
+  if (done) {
     return true;
   }
 

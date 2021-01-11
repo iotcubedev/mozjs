@@ -28,9 +28,10 @@
 // IMPORTANT: Do not change this list without review from
 //            a JavaScript Engine peer!
 var ecmaGlobals = [
+  { name: "AggregateError", insecureContext: true },
   { name: "Array", insecureContext: true },
   { name: "ArrayBuffer", insecureContext: true },
-  { name: "Atomics", insecureContext: true, disabled: true },
+  { name: "Atomics", insecureContext: true },
   { name: "BigInt", insecureContext: true },
   { name: "BigInt64Array", insecureContext: true },
   { name: "BigUint64Array", insecureContext: true },
@@ -41,6 +42,7 @@ var ecmaGlobals = [
   { name: "Date", insecureContext: true },
   { name: "Error", insecureContext: true },
   { name: "EvalError", insecureContext: true },
+  { name: "FinalizationRegistry", insecureContext: true },
   { name: "Float32Array", insecureContext: true },
   { name: "Float64Array", insecureContext: true },
   { name: "Function", insecureContext: true },
@@ -66,7 +68,11 @@ var ecmaGlobals = [
   { name: "Reflect", insecureContext: true },
   { name: "RegExp", insecureContext: true },
   { name: "Set", insecureContext: true },
-  { name: "SharedArrayBuffer", insecureContext: true, disabled: true },
+  {
+    name: "SharedArrayBuffer",
+    insecureContext: true,
+    crossOringinIsolated: true,
+  },
   { name: "String", insecureContext: true },
   { name: "Symbol", insecureContext: true },
   { name: "SyntaxError", insecureContext: true },
@@ -78,6 +84,7 @@ var ecmaGlobals = [
   { name: "Uint8ClampedArray", insecureContext: true },
   { name: "URIError", insecureContext: true },
   { name: "WeakMap", insecureContext: true },
+  { name: "WeakRef", insecureContext: true },
   { name: "WeakSet", insecureContext: true },
   {
     name: "WebAssembly",
@@ -213,15 +220,20 @@ var interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "PromiseRejectionEvent", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushManager", insecureContext: true, fennecOrDesktop: true },
+  { name: "PushManager", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "PushSubscription", insecureContext: true, fennecOrDesktop: true },
+  { name: "PushSubscription", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   {
     name: "PushSubscriptionOptions",
     insecureContext: true,
-    fennecOrDesktop: true,
   },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "Report", nightly: true, insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportBody", nightly: true, insecureContext: true },
+  // IMPORTANT: Do not change this list without review from a DOM peer!
+  { name: "ReportingObserver", nightly: true, insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "Request", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -231,7 +243,7 @@ var interfaceNamesInGlobalScope = [
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "StorageManager", fennec: false },
   // IMPORTANT: Do not change this list without review from a DOM peer!
-  { name: "SubtleCrypto", insecureContext: true },
+  { name: "SubtleCrypto" },
   // IMPORTANT: Do not change this list without review from a DOM peer!
   { name: "TextDecoder", insecureContext: true },
   // IMPORTANT: Do not change this list without review from a DOM peer!
@@ -284,11 +296,13 @@ var interfaceNamesInGlobalScope = [
 
 function createInterfaceMap({
   isNightly,
+  isEarlyBetaOrEarlier,
   isRelease,
   isDesktop,
   isAndroid,
   isInsecureContext,
   isFennec,
+  isCrossOringinIsolated,
 }) {
   var interfaceMap = {};
 
@@ -311,7 +325,9 @@ function createInterfaceMap({
           // false.  That way entries without an insecureContext annotation
           // will get treated as "insecureContext: false", which means exposed
           // only in secure contexts.
-          (isInsecureContext && !Boolean(entry.insecureContext)) ||
+          (isInsecureContext && !entry.insecureContext) ||
+          entry.earlyBetaOrEarlier === !isEarlyBetaOrEarlier ||
+          entry.crossOringinIsolated === !isCrossOringinIsolated ||
           entry.disabled
         ) {
           interfaceMap[entry.name] = false;

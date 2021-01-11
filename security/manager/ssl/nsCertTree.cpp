@@ -100,7 +100,7 @@ nsCertTreeDispInfo::nsCertTreeDispInfo(nsCertTreeDispInfo& other) {
   mCert = other.mCert;
 }
 
-nsCertTreeDispInfo::~nsCertTreeDispInfo() {}
+nsCertTreeDispInfo::~nsCertTreeDispInfo() = default;
 
 NS_IMETHODIMP
 nsCertTreeDispInfo::GetCert(nsIX509Cert** _cert) {
@@ -276,7 +276,7 @@ nsCertTree::nsCertCompareFunc nsCertTree::GetCompareFuncFromCertType(
 
 struct nsCertAndArrayAndPositionAndCounterAndTracker {
   RefPtr<nsCertAddonInfo> certai;
-  nsTArray<RefPtr<nsCertTreeDispInfo> >* array;
+  nsTArray<RefPtr<nsCertTreeDispInfo>>* array;
   int position;
   int counter;
   nsTHashtable<nsCStringHashKey>* tracker;
@@ -333,7 +333,7 @@ static void CollectAllHostPortOverridesCallback(const nsCertOverride& aSettings,
 }
 
 struct nsArrayAndPositionAndCounterAndTracker {
-  nsTArray<RefPtr<nsCertTreeDispInfo> >* array;
+  nsTArray<RefPtr<nsCertTreeDispInfo>>* array;
   int position;
   int counter;
   nsTHashtable<nsCStringHashKey>* tracker;
@@ -370,12 +370,10 @@ static void AddRemaningHostPortOverridesCallback(
   }
 }
 
-nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
-                                                uint32_t aWantedType,
-                                                nsCertCompareFunc aCertCmpFn,
-                                                void* aCertCmpFnArg) {
+nsresult nsCertTree::GetCertsByTypeFromCertList(
+    const nsTArray<RefPtr<nsIX509Cert>>& aCertList, uint32_t aWantedType,
+    nsCertCompareFunc aCertCmpFn, void* aCertCmpFnArg) {
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("GetCertsByTypeFromCertList"));
-  if (!aCertList) return NS_ERROR_FAILURE;
 
   if (!mOriginalOverrideService) return NS_ERROR_FAILURE;
 
@@ -387,27 +385,7 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
   }
 
   int count = 0;
-  nsCOMPtr<nsISimpleEnumerator> certListEnumerator;
-  nsresult rv = aCertList->GetEnumerator(getter_AddRefs(certListEnumerator));
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-  bool hasMore = false;
-  rv = certListEnumerator->HasMoreElements(&hasMore);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-  while (hasMore) {
-    nsCOMPtr<nsISupports> certSupports;
-    rv = certListEnumerator->GetNext(getter_AddRefs(certSupports));
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
-    nsCOMPtr<nsIX509Cert> cert = do_QueryInterface(certSupports);
-    if (!cert) {
-      return NS_ERROR_FAILURE;
-    }
-
+  for (const auto& cert : aCertList) {
     bool wantThisCert = (aWantedType == nsIX509Cert::ANY_CERT);
     bool wantThisCertIfNoOverrides = false;
     bool wantThisCertIfHaveOverrides = false;
@@ -415,7 +393,7 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
 
     if (!wantThisCert) {
       uint32_t thisCertType;
-      rv = cert->GetCertType(&thisCertType);
+      nsresult rv = cert->GetCertType(&thisCertType);
       if (NS_FAILED(rv)) {
         return rv;
       }
@@ -425,34 +403,9 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
       // overrides, we are storing certs without any trust flags associated.
       // So we must check whether the cert really belongs to the
       // server, email or unknown tab. We will lookup the cert in the override
-      // list to come to the decision. Unfortunately, the lookup in the
-      // override list is quite expensive. Therefore we are using this
-      // lengthy if/else statement to minimize
-      // the number of override-list-lookups.
-
-      if (aWantedType == nsIX509Cert::SERVER_CERT &&
-          thisCertType == nsIX509Cert::UNKNOWN_CERT) {
-        // This unknown cert was stored without trust
-        // Are there host:port based overrides stored?
-        // If yes, display them.
-        addOverrides = true;
-      } else if (aWantedType == nsIX509Cert::SERVER_CERT &&
-                 thisCertType == nsIX509Cert::SERVER_CERT) {
-        // This server cert is explicitly marked as a web site peer,
-        // with or without trust, but editable, so show it
-        wantThisCert = true;
-        // Are there host:port based overrides stored?
-        // If yes, display them.
-        addOverrides = true;
-      } else if (aWantedType == nsIX509Cert::SERVER_CERT &&
-                 thisCertType == nsIX509Cert::EMAIL_CERT) {
-        // This cert might have been categorized as an email cert
-        // because it carries an email address. But is it really one?
-        // Our cert categorization is uncertain when it comes to
-        // distinguish between email certs and web site certs.
-        // So, let's see if we have an override for that cert
-        // and if there is, conclude it's really a web site cert.
-        addOverrides = true;
+      // list to come to the decision.
+      if (aWantedType == nsIX509Cert::SERVER_CERT) {
+        wantThisCertIfHaveOverrides = true;
       } else if (aWantedType == nsIX509Cert::EMAIL_CERT &&
                  thisCertType == nsIX509Cert::EMAIL_CERT) {
         // This cert might have been categorized as an email cert
@@ -484,7 +437,7 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
       if (wantThisCertIfHaveOverrides) {
         if (NS_SUCCEEDED(rv) && ocount > 0) {
           // there are overrides for this cert
-          wantThisCert = true;
+          addOverrides = true;
         }
       }
     }
@@ -531,11 +484,6 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
         count += cap.counter;
       }
     }
-
-    rv = certListEnumerator->HasMoreElements(&hasMore);
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
   }
 
   if (aWantedType == nsIX509Cert::SERVER_CERT) {
@@ -556,7 +504,8 @@ nsresult nsCertTree::GetCertsByTypeFromCertList(nsIX509CertList* aCertList,
 // Load all of the certificates in the DB for this type.  Sort them
 // by token, organization, then common name.
 NS_IMETHODIMP
-nsCertTree::LoadCertsFromCache(nsIX509CertList* aCache, uint32_t aType) {
+nsCertTree::LoadCertsFromCache(const nsTArray<RefPtr<nsIX509Cert>>& aCache,
+                               uint32_t aType) {
   if (mTreeArray) {
     FreeCertArray();
     delete[] mTreeArray;
@@ -584,8 +533,8 @@ nsCertTree::LoadCerts(uint32_t aType) {
   ClearCompareHash();
 
   nsCOMPtr<nsIX509CertDB> certdb(do_GetService(NS_X509CERTDB_CONTRACTID));
-  nsCOMPtr<nsIX509CertList> certList;
-  nsresult rv = certdb->GetCerts(getter_AddRefs(certList));
+  nsTArray<RefPtr<nsIX509Cert>> certList;
+  nsresult rv = certdb->GetCerts(certList);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -914,7 +863,7 @@ nsCertTree::GetCellText(int32_t row, nsTreeColumn* col, nsAString& _retval) {
 
   treeArrayEl* el = GetThreadDescAtIndex(row);
   if (el) {
-    if (NS_LITERAL_STRING("certcol").Equals(colID))
+    if (u"certcol"_ns.Equals(colID))
       _retval.Assign(el->orgName);
     else
       _retval.Truncate();
@@ -946,42 +895,42 @@ nsCertTree::GetCellText(int32_t row, nsTreeColumn* col, nsAString& _retval) {
     }
   }
 
-  if (NS_LITERAL_STRING("certcol").Equals(colID)) {
+  if (u"certcol"_ns.Equals(colID)) {
     if (!cert) {
       rv = GetPIPNSSBundleString("CertNotStored", _retval);
     } else {
       rv = cert->GetDisplayName(_retval);
     }
-  } else if (NS_LITERAL_STRING("tokencol").Equals(colID) && cert) {
+  } else if (u"tokencol"_ns.Equals(colID) && cert) {
     rv = cert->GetTokenName(_retval);
-  } else if (NS_LITERAL_STRING("emailcol").Equals(colID) && cert) {
+  } else if (u"emailcol"_ns.Equals(colID) && cert) {
     rv = cert->GetEmailAddress(_retval);
-  } else if (NS_LITERAL_STRING("issuedcol").Equals(colID) && cert) {
+  } else if (u"issuedcol"_ns.Equals(colID) && cert) {
     nsCOMPtr<nsIX509CertValidity> validity;
 
     rv = cert->GetValidity(getter_AddRefs(validity));
     if (NS_SUCCEEDED(rv)) {
       validity->GetNotBeforeLocalDay(_retval);
     }
-  } else if (NS_LITERAL_STRING("expiredcol").Equals(colID) && cert) {
+  } else if (u"expiredcol"_ns.Equals(colID) && cert) {
     nsCOMPtr<nsIX509CertValidity> validity;
 
     rv = cert->GetValidity(getter_AddRefs(validity));
     if (NS_SUCCEEDED(rv)) {
       validity->GetNotAfterLocalDay(_retval);
     }
-  } else if (NS_LITERAL_STRING("serialnumcol").Equals(colID) && cert) {
+  } else if (u"serialnumcol"_ns.Equals(colID) && cert) {
     rv = cert->GetSerialNumber(_retval);
-  } else if (NS_LITERAL_STRING("sitecol").Equals(colID)) {
+  } else if (u"sitecol"_ns.Equals(colID)) {
     if (certdi->mTypeOfEntry == nsCertTreeDispInfo::host_port_override) {
       nsAutoCString hostPort;
       nsCertOverrideService::GetHostWithPort(certdi->mAsciiHost, certdi->mPort,
                                              hostPort);
       _retval = NS_ConvertUTF8toUTF16(hostPort);
     } else {
-      _retval = NS_LITERAL_STRING("*");
+      _retval = u"*"_ns;
     }
-  } else if (NS_LITERAL_STRING("lifetimecol").Equals(colID)) {
+  } else if (u"lifetimecol"_ns.Equals(colID)) {
     const char* stringID = (certdi->mIsTemporary) ? "CertExceptionTemporary"
                                                   : "CertExceptionPermanent";
     rv = GetPIPNSSBundleString(stringID, _retval);
@@ -1179,7 +1128,7 @@ int32_t nsCertTree::CmpByCrit(nsIX509Cert* a, CompareCacheHashEntry* ace,
 
   int32_t result;
   if (!str_a.IsVoid() && !str_b.IsVoid())
-    result = Compare(str_a, str_b, nsCaseInsensitiveStringComparator());
+    result = Compare(str_a, str_b, nsCaseInsensitiveStringComparator);
   else
     result = str_a.IsVoid() ? (str_b.IsVoid() ? 0 : -1) : 1;
 

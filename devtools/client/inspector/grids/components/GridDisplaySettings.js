@@ -9,7 +9,7 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { getStr } = require("devtools/client/inspector/layout/utils/l10n");
 
-const Types = require("../types");
+const Types = require("devtools/client/inspector/grids/types");
 
 class GridDisplaySettings extends PureComponent {
   static get propTypes() {
@@ -59,7 +59,13 @@ class GridDisplaySettings extends PureComponent {
 
     return dom.div(
       { className: "grid-container" },
-      dom.span({}, getStr("layout.gridDisplaySettings")),
+      dom.span(
+        {
+          role: "heading",
+          "aria-level": "3",
+        },
+        getStr("layout.gridDisplaySettings")
+      ),
       dom.ul(
         {},
         dom.li(

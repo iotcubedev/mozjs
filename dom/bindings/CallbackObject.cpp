@@ -9,7 +9,6 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "jsfriendapi.h"
 #include "nsIScriptGlobalObject.h"
-#include "nsIXPConnect.h"
 #include "nsIScriptContext.h"
 #include "nsPIDOMWindow.h"
 #include "nsJSUtils.h"
@@ -33,7 +32,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(CallbackObject)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(CallbackObject)
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(CallbackObject)
+NS_IMPL_CYCLE_COLLECTION_MULTI_ZONE_JSHOLDER_CLASS(CallbackObject)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CallbackObject)
   tmp->ClearJSReferences();
@@ -101,7 +100,7 @@ void CallbackObject::FinishSlowJSInitIfMoreThanOneOwner(JSContext* aCx) {
   MOZ_ASSERT(mRefCnt.get() > 0);
   if (mRefCnt.get() > 1) {
     mozilla::HoldJSObjects(this);
-    if (JS::ContextOptionsRef(aCx).asyncStack()) {
+    if (JS::IsAsyncStackCaptureEnabledForRealm(aCx)) {
       JS::RootedObject stack(aCx);
       if (!JS::CaptureCurrentStack(aCx, &stack)) {
         JS_ClearPendingException(aCx);
@@ -200,6 +199,10 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
       mErrorResult(aRv),
       mExceptionHandling(aExceptionHandling),
       mIsMainThread(NS_IsMainThread()) {
+  MOZ_ASSERT_IF(aExceptionHandling == eReportExceptions ||
+                    aExceptionHandling == eRethrowExceptions,
+                !aRealm);
+
   CycleCollectedJSContext* ccjs = CycleCollectedJSContext::Get();
   if (ccjs) {
     ccjs->EnterMicroTask();
@@ -215,10 +218,8 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
 
   JSObject* wrappedCallback = aCallback->CallbackPreserveColor();
   if (!wrappedCallback) {
-    aRv.ThrowDOMException(
-        NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-        NS_LITERAL_CSTRING(
-            "Cannot execute callback from a nuked compartment."));
+    aRv.ThrowNotSupportedError(
+        "Cannot execute callback from a nuked compartment.");
     return;
   }
 
@@ -226,24 +227,10 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
 
   {
     // First, find the real underlying callback.
-    JSObject* realCallback = js::UncheckedUnwrap(wrappedCallback);
+    JS::Rooted<JSObject*> realCallback(ccjs->RootingCx(),
+                                       js::UncheckedUnwrap(wrappedCallback));
 
-    // Check that it's ok to run this callback. JS-implemented WebIDL is always
-    // OK to run, since it runs with Chrome privileges anyway.
-    if (mIsMainThread && !aIsJSImplementedWebIDL) {
-      // Make sure to use realCallback to get the global of the callback
-      // object, not the wrapper.
-      if (!xpc::Scriptability::Get(realCallback).Allowed()) {
-        aRv.ThrowDOMException(
-            NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-            NS_LITERAL_CSTRING(
-                "Refusing to execute function from global in which "
-                "script is disabled."));
-        return;
-      }
-    }
-
-    // Now get the global for this callback. Note that for the case of
+    // Get the global for this callback. Note that for the case of
     // JS-implemented WebIDL we never have a window here.
     nsGlobalWindowInner* win = mIsMainThread && !aIsJSImplementedWebIDL
                                    ? xpc::WindowGlobalOrNull(realCallback)
@@ -252,10 +239,9 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
       // We don't want to run script in windows that have been navigated away
       // from.
       if (!win->HasActiveDocument()) {
-        aRv.ThrowDOMException(
-            NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-            NS_LITERAL_CSTRING("Refusing to execute function from window "
-                               "whose document is no longer active."));
+        aRv.ThrowNotSupportedError(
+            "Refusing to execute function from window whose document is no "
+            "longer active.");
         return;
       }
       globalObject = win;
@@ -264,14 +250,21 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
       globalObject = xpc::NativeGlobal(realCallback);
       MOZ_ASSERT(globalObject);
     }
+
+    // Make sure to use realCallback to get the global of the callback
+    // object, not the wrapper.
+    if (globalObject->IsScriptForbidden(realCallback, aIsJSImplementedWebIDL)) {
+      aRv.ThrowNotSupportedError(
+          "Refusing to execute function from global in which script is "
+          "disabled.");
+      return;
+    }
   }
 
   // Bail out if there's no useful global.
   if (!globalObject->HasJSGlobal()) {
-    aRv.ThrowDOMException(
-        NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-        NS_LITERAL_CSTRING("Refusing to execute function from global which is "
-                           "being torn down."));
+    aRv.ThrowNotSupportedError(
+        "Refusing to execute function from global which is being torn down.");
     return;
   }
 
@@ -285,10 +278,9 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
     // nsIGlobalObject has severed its reference to the JS global. Let's just
     // be safe here, so that nobody has to waste a day debugging gaia-ui tests.
     if (!incumbent->HasJSGlobal()) {
-      aRv.ThrowDOMException(
-          NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-          NS_LITERAL_CSTRING("Refusing to execute function because our "
-                             "incumbent global is being torn down."));
+      aRv.ThrowNotSupportedError(
+          "Refusing to execute function because our incumbent global is being "
+          "torn down.");
       return;
     }
     mAutoIncumbentScript.emplace(incumbent);
@@ -320,34 +312,17 @@ CallbackObject::CallSetup::CallSetup(CallbackObject* aCallback,
 
   // And now we're ready to go.
   mCx = cx;
+
+  // We don't really have a good error message prefix to use for the
+  // BindingCallContext.
+  mCallContext.emplace(cx, nullptr);
 }
 
 bool CallbackObject::CallSetup::ShouldRethrowException(
     JS::Handle<JS::Value> aException) {
   if (mExceptionHandling == eRethrowExceptions) {
-    if (!mRealm) {
-      // Caller didn't ask us to filter for only exceptions we subsume.
-      return true;
-    }
-
-    // On workers, we don't have nsIPrincipals to work with.  But we also only
-    // have one realm, so check whether mRealm is the same as the current realm
-    // of mCx.
-    if (mRealm == js::GetContextRealm(mCx)) {
-      return true;
-    }
-
-    MOZ_ASSERT(NS_IsMainThread());
-
-    // At this point mCx is in the realm of our unwrapped callback, so just
-    // check whether the principal of mRealm subsumes that of the current
-    // realm/global of mCx.
-    nsIPrincipal* callerPrincipal =
-        nsJSPrincipals::get(JS::GetRealmPrincipals(mRealm));
-    nsIPrincipal* calleePrincipal = nsContentUtils::SubjectPrincipal();
-    if (callerPrincipal->SubsumesConsideringDomain(calleePrincipal)) {
-      return true;
-    }
+    MOZ_ASSERT(!mRealm);
+    return true;
   }
 
   MOZ_ASSERT(mRealm);
@@ -403,7 +378,7 @@ CallbackObject::CallSetup::~CallSetup() {
 
         // IsJSContextException shouldn't be true anymore because we will report
         // the exception on the JSContext ... so throw something else.
-        mErrorResult.ThrowWithCustomCleanup(NS_ERROR_UNEXPECTED);
+        mErrorResult.Throw(NS_ERROR_UNEXPECTED);
       }
     }
   }

@@ -5,6 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "MediaCapabilities.h"
+
+#include <inttypes.h>
+
+#include <utility>
+
 #include "AllocationPolicy.h"
 #include "Benchmark.h"
 #include "DecoderBenchmark.h"
@@ -15,7 +20,7 @@
 #include "PDMFactory.h"
 #include "VPXDecoder.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/Move.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/TaskQueue.h"
 #include "mozilla/dom/DOMMozPromiseRequestHolder.h"
@@ -26,8 +31,6 @@
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/layers/KnowsCompositor.h"
 #include "nsContentUtils.h"
-
-#include <inttypes.h>
 
 static mozilla::LazyLogModule sMediaCapabilitiesLog("MediaCapabilities");
 
@@ -79,19 +82,17 @@ static nsCString MediaCapabilitiesInfoToStr(
 static nsCString MediaDecodingConfigurationToStr(
     const MediaDecodingConfiguration& aConfig) {
   nsCString str;
-  str += NS_LITERAL_CSTRING("[");
+  str += "["_ns;
   if (aConfig.mVideo.WasPassed()) {
-    str += NS_LITERAL_CSTRING("video:") +
-           VideoConfigurationToStr(&aConfig.mVideo.Value());
+    str += "video:"_ns + VideoConfigurationToStr(&aConfig.mVideo.Value());
     if (aConfig.mAudio.WasPassed()) {
-      str += NS_LITERAL_CSTRING(" ");
+      str += " "_ns;
     }
   }
   if (aConfig.mAudio.WasPassed()) {
-    str += NS_LITERAL_CSTRING("audio:") +
-           AudioConfigurationToStr(&aConfig.mAudio.Value());
+    str += "audio:"_ns + AudioConfigurationToStr(&aConfig.mAudio.Value());
   }
-  str += NS_LITERAL_CSTRING("]");
+  str += "]"_ns;
   return str;
 }
 
@@ -110,7 +111,8 @@ already_AddRefed<Promise> MediaCapabilities::DecodingInfo(
   if (!aConfiguration.mVideo.WasPassed() &&
       !aConfiguration.mAudio.WasPassed()) {
     aRv.ThrowTypeError<MSG_MISSING_REQUIRED_DICTIONARY_MEMBER>(
-        NS_LITERAL_STRING("'audio' or 'video'"));
+        "'audio' or 'video' member of argument of "
+        "MediaCapabilities.decodingInfo");
     return nullptr;
   }
 
@@ -168,7 +170,8 @@ already_AddRefed<Promise> MediaCapabilities::DecodingInfo(
     // describing a single media codec. Otherwise, it MUST contain no
     // parameters.
     if (videoTracks.Length() != 1) {
-      promise->MaybeReject(NS_ERROR_DOM_TYPE_ERR);
+      promise->MaybeRejectWithTypeError<MSG_NO_CODECS_PARAMETER>(
+          videoContainer->OriginalString());
       return promise.forget();
     }
     MOZ_DIAGNOSTIC_ASSERT(videoTracks.ElementAt(0),
@@ -183,7 +186,8 @@ already_AddRefed<Promise> MediaCapabilities::DecodingInfo(
     // describing a single media codec. Otherwise, it MUST contain no
     // parameters.
     if (audioTracks.Length() != 1) {
-      promise->MaybeReject(NS_ERROR_DOM_TYPE_ERR);
+      promise->MaybeRejectWithTypeError<MSG_NO_CODECS_PARAMETER>(
+          audioContainer->OriginalString());
       return promise.forget();
     }
     MOZ_DIAGNOSTIC_ASSERT(audioTracks.ElementAt(0),
@@ -250,7 +254,7 @@ already_AddRefed<Promise> MediaCapabilities::DecodingInfo(
           // once at a time as it can quickly exhaust the system resources
           // otherwise.
           static RefPtr<AllocPolicy> sVideoAllocPolicy = [&taskQueue]() {
-            SystemGroup::Dispatch(
+            SchedulerGroup::Dispatch(
                 TaskCategory::Other,
                 NS_NewRunnableFunction(
                     "MediaCapabilities::AllocPolicy:Video", []() {
@@ -454,7 +458,8 @@ already_AddRefed<Promise> MediaCapabilities::EncodingInfo(
   if (!aConfiguration.mVideo.WasPassed() &&
       !aConfiguration.mAudio.WasPassed()) {
     aRv.ThrowTypeError<MSG_MISSING_REQUIRED_DICTIONARY_MEMBER>(
-        NS_LITERAL_STRING("'audio' or 'video'"));
+        "'audio' or 'video' member of argument of "
+        "MediaCapabilities.encodingInfo");
     return nullptr;
   }
 
@@ -532,8 +537,11 @@ Maybe<MediaContainerType> MediaCapabilities::CheckAudioConfiguration(
 }
 
 bool MediaCapabilities::CheckTypeForMediaSource(const nsAString& aType) {
-  return NS_SUCCEEDED(MediaSource::IsTypeSupported(
-      aType, nullptr /* DecoderDoctorDiagnostics */));
+  IgnoredErrorResult rv;
+  MediaSource::IsTypeSupported(aType, nullptr /* DecoderDoctorDiagnostics */,
+                               rv);
+
+  return !rv.Failed();
 }
 
 bool MediaCapabilities::CheckTypeForFile(const nsAString& aType) {

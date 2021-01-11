@@ -309,6 +309,13 @@ class MOZ_STACK_CLASS LayerMetricsWrapper final {
         PixelCastJustification::MovingDownToChildren);
   }
 
+  LayerIntSize GetRemoteDocumentSize() const {
+    MOZ_ASSERT(IsValid());
+
+    return AsRefLayer() ? AsRefLayer()->GetRemoteDocumentSize()
+                        : LayerIntSize();
+  }
+
   bool HasTransformAnimation() const {
     MOZ_ASSERT(IsValid());
 
@@ -336,8 +343,6 @@ class MOZ_STACK_CLASS LayerMetricsWrapper final {
     }
     return Nothing();
   }
-
-  Maybe<wr::RenderRoot> GetReferentRenderRoot() const { return Nothing(); }
 
   Maybe<ParentLayerIntRect> GetClipRect() const {
     MOZ_ASSERT(IsValid());
@@ -393,10 +398,69 @@ class MOZ_STACK_CLASS LayerMetricsWrapper final {
     return Nothing();
   }
 
+  Maybe<uint64_t> GetFixedPositionAnimationId() const {
+    MOZ_ASSERT(IsValid());
+    // This function is only really needed for template-compatibility with
+    // WebRenderScrollDataWrapper. Although it will be called, the return
+    // value is not used.
+    return Nothing();
+  }
+
   ScrollableLayerGuid::ViewID GetFixedPositionScrollContainerId() const {
     MOZ_ASSERT(IsValid());
 
-    return mLayer->GetFixedPositionScrollContainerId();
+    if (AtBottomLayer()) {
+      return mLayer->GetFixedPositionScrollContainerId();
+    }
+    return ScrollableLayerGuid::NULL_SCROLL_ID;
+  }
+
+  SideBits GetFixedPositionSides() const {
+    MOZ_ASSERT(IsValid());
+
+    if (AtBottomLayer()) {
+      return mLayer->GetFixedPositionSides();
+    }
+    return SideBits::eNone;
+  }
+
+  ScrollableLayerGuid::ViewID GetStickyScrollContainerId() const {
+    MOZ_ASSERT(IsValid());
+
+    if (AtBottomLayer() && mLayer->GetIsStickyPosition()) {
+      return mLayer->GetStickyScrollContainerId();
+    }
+    return ScrollableLayerGuid::NULL_SCROLL_ID;
+  }
+
+  const LayerRectAbsolute& GetStickyScrollRangeOuter() const {
+    MOZ_ASSERT(IsValid());
+
+    if (AtBottomLayer() && mLayer->GetIsStickyPosition()) {
+      return mLayer->GetStickyScrollRangeOuter();
+    }
+
+    static const LayerRectAbsolute empty;
+    return empty;
+  }
+
+  const LayerRectAbsolute& GetStickyScrollRangeInner() const {
+    MOZ_ASSERT(IsValid());
+
+    if (AtBottomLayer() && mLayer->GetIsStickyPosition()) {
+      return mLayer->GetStickyScrollRangeInner();
+    }
+
+    static const LayerRectAbsolute empty;
+    return empty;
+  }
+
+  Maybe<uint64_t> GetStickyPositionAnimationId() const {
+    MOZ_ASSERT(IsValid());
+    // This function is only really needed for template-compatibility with
+    // WebRenderScrollDataWrapper. Although it will be called, the return
+    // value is not used.
+    return Nothing();
   }
 
   Maybe<uint64_t> GetZoomAnimationId() const {

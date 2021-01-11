@@ -18,12 +18,12 @@ UNIFIED_SOURCES += [
     'testArrayBufferWithUserOwnedContents.cpp',
     'testAtomicOperations.cpp',
     'testAtomizeUtf8NonAsciiLatin1CodePoint.cpp',
+    'testBigInt.cpp',
     'testBoundFunction.cpp',
     'testBug604087.cpp',
     'testCallArgs.cpp',
     'testCallNonGenericMethodOnProxy.cpp',
     'testChromeBuffer.cpp',
-    'testCloneScript.cpp',
     'testCompileNonSyntactic.cpp',
     'testCompileUtf8.cpp',
     'testDateToLocaleString.cpp',
@@ -53,7 +53,7 @@ UNIFIED_SOURCES += [
     'testGCExactRooting.cpp',
     'testGCFinalizeCallback.cpp',
     'testGCGrayMarking.cpp',
-    'testGCHeapPostBarriers.cpp',
+    'testGCHeapBarriers.cpp',
     'testGCHooks.cpp',
     'testGCMarking.cpp',
     'testGCOutOfMemory.cpp',
@@ -93,6 +93,7 @@ UNIFIED_SOURCES += [
     'testRegExp.cpp',
     'testResolveRecursion.cpp',
     'tests.cpp',
+    'testSABAccounting.cpp',
     'testSameValue.cpp',
     'testSavedStacks.cpp',
     'testScriptInfo.cpp',
@@ -102,6 +103,7 @@ UNIFIED_SOURCES += [
     'testSetPropertyIgnoringNamedGetter.cpp',
     'testSharedImmutableStringsCache.cpp',
     'testSourcePolicy.cpp',
+    'testSparseBitmap.cpp',
     'testStringBuffer.cpp',
     'testStringIsArrayIndex.cpp',
     'testStructuredClone.cpp',
@@ -131,7 +133,7 @@ SOURCES += [
     'hidePointer.cpp',
 ]
 
-if CONFIG['ENABLE_ION']:
+if not CONFIG['JS_CODEGEN_NONE']:
     UNIFIED_SOURCES += [
         'testJitDCEinGVN.cpp',
         'testJitFoldsTo.cpp',
@@ -151,15 +153,10 @@ if CONFIG['NIGHTLY_BUILD']:
         'testErrorInterceptorGC.cpp',
     ]
 
-if CONFIG['JS_BUILD_BINAST'] and CONFIG['JS_STANDALONE'] and not CONFIG['FUZZING']:
-    # Standalone builds leave the source directory untouched,
-    # which lets us run tests with the data files intact.
-    # Otherwise, in the current state of the build system,
-    # we can't have data files in js/src tests.
-    # Also, fuzzing builds modify the const matching in the
-    # token reader and hence affect the correctness of the tests.
+if CONFIG['OS_ARCH'] not in ('WINNT', 'Darwin') and CONFIG['OS_TARGET'] != 'Android':
+    # open_memstream() not available on Windows, macOS, or Android
     UNIFIED_SOURCES += [
-        'testBinASTReader.cpp',
+        'testPrintError.cpp',
     ]
 
 

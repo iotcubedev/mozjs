@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::common::{from_cookie, from_name, to_cookie, to_name, Cookie, Timeouts};
+use crate::common::{from_cookie, from_name, to_cookie, to_name, Cookie, Frame, Timeouts, Window};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Url {
+    pub url: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LegacyWebElement {
@@ -53,6 +58,86 @@ pub struct Keys {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PrintParameters {
+    pub orientation: PrintOrientation,
+    pub scale: f64,
+    pub background: bool,
+    pub page: PrintPage,
+    pub margin: PrintMargins,
+    pub page_ranges: Vec<String>,
+    pub shrink_to_fit: bool,
+}
+
+impl Default for PrintParameters {
+    fn default() -> Self {
+        PrintParameters {
+            orientation: PrintOrientation::default(),
+            scale: 1.0,
+            background: false,
+            page: PrintPage::default(),
+            margin: PrintMargins::default(),
+            page_ranges: Vec::new(),
+            shrink_to_fit: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrintOrientation {
+    Landscape,
+    Portrait,
+}
+
+impl Default for PrintOrientation {
+    fn default() -> Self {
+        PrintOrientation::Portrait
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrintPage {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Default for PrintPage {
+    fn default() -> Self {
+        PrintPage {
+            width: 21.59,
+            height: 27.94,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrintMargins {
+    pub top: f64,
+    pub bottom: f64,
+    pub left: f64,
+    pub right: f64,
+}
+
+impl Default for PrintMargins {
+    fn default() -> Self {
+        PrintMargins {
+            top: 1.0,
+            bottom: 1.0,
+            left: 1.0,
+            right: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScreenshotOptions {
+    pub id: Option<String>,
+    pub highlights: Vec<Option<String>>,
+    pub full: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Script {
     pub script: String,
     pub args: Option<Vec<Value>>,
@@ -85,6 +170,12 @@ pub enum Command {
     ElementClear(LegacyWebElement),
     #[serde(rename = "WebDriver:ElementClick")]
     ElementClick(LegacyWebElement),
+    #[serde(rename = "WebDriver:ElementSendKeys")]
+    ElementSendKeys {
+        id: String,
+        text: String,
+        value: Vec<String>,
+    },
     #[serde(rename = "WebDriver:ExecuteAsyncScript")]
     ExecuteAsyncScript(Script),
     #[serde(rename = "WebDriver:ExecuteScript")]
@@ -107,12 +198,22 @@ pub enum Command {
     },
     #[serde(rename = "WebDriver:FullscreenWindow")]
     FullscreenWindow,
+    #[serde(rename = "WebDriver:Navigate")]
+    Get(Url),
     #[serde(rename = "WebDriver:GetActiveElement")]
     GetActiveElement,
     #[serde(rename = "WebDriver:GetAlertText")]
     GetAlertText,
     #[serde(rename = "WebDriver:GetCookies")]
     GetCookies,
+    #[serde(rename = "WebDriver:GetElementCSSValue")]
+    GetCSSValue {
+        id: String,
+        #[serde(rename = "propertyName")]
+        property: String,
+    },
+    #[serde(rename = "WebDriver:GetCurrentURL")]
+    GetCurrentUrl,
     #[serde(rename = "WebDriver:GetElementAttribute")]
     GetElementAttribute { id: String, name: String },
     #[serde(rename = "WebDriver:GetElementProperty")]
@@ -123,8 +224,12 @@ pub enum Command {
     GetElementTagName(LegacyWebElement),
     #[serde(rename = "WebDriver:GetElementText")]
     GetElementText(LegacyWebElement),
+    #[serde(rename = "WebDriver:GetPageSource")]
+    GetPageSource,
     #[serde(rename = "WebDriver:GetTimeouts")]
     GetTimeouts,
+    #[serde(rename = "WebDriver:GetTitle")]
+    GetTitle,
     #[serde(rename = "WebDriver:GetWindowHandle")]
     GetWindowHandle,
     #[serde(rename = "WebDriver:GetWindowHandles")]
@@ -147,12 +252,30 @@ pub enum Command {
     MinimizeWindow,
     #[serde(rename = "WebDriver:NewWindow")]
     NewWindow(NewWindow),
+    #[serde(rename = "WebDriver:Print")]
+    Print(PrintParameters),
+    #[serde(rename = "WebDriver:Refresh")]
+    Refresh,
+    #[serde(rename = "WebDriver:ReleaseActions")]
+    ReleaseActions,
     #[serde(rename = "WebDriver:SendAlertText")]
     SendAlertText(Keys),
     #[serde(rename = "WebDriver:SetTimeouts")]
     SetTimeouts(Timeouts),
     #[serde(rename = "WebDriver:SetWindowRect")]
     SetWindowRect(WindowRect),
+    #[serde(rename = "WebDriver:SwitchToFrame")]
+    SwitchToFrame(Frame),
+    #[serde(rename = "WebDriver:SwitchToParentFrame")]
+    SwitchToParentFrame,
+    #[serde(rename = "WebDriver:SwitchToWindow")]
+    SwitchToWindow(Window),
+    #[serde(rename = "WebDriver:TakeScreenshot")]
+    TakeElementScreenshot(ScreenshotOptions),
+    #[serde(rename = "WebDriver:TakeScreenshot")]
+    TakeFullScreenshot(ScreenshotOptions),
+    #[serde(rename = "WebDriver:TakeScreenshot")]
+    TakeScreenshot(ScreenshotOptions),
 }
 
 #[cfg(test)]
@@ -161,6 +284,17 @@ mod tests {
     use crate::common::Date;
     use crate::test::{assert_ser, assert_ser_de};
     use serde_json::json;
+
+    #[test]
+    fn test_json_screenshot() {
+        let data = ScreenshotOptions {
+            id: None,
+            highlights: vec![],
+            full: false,
+        };
+        let json = json!({"full":false,"highlights":[],"id":null});
+        assert_ser_de(&data, json);
+    }
 
     #[test]
     fn test_json_selector_css() {
@@ -255,6 +389,7 @@ mod tests {
             secure: false,
             http_only: false,
             expiry: Some(Date(1564488092)),
+            same_site: None,
         };
         let json = json!({"WebDriver:AddCookie": {"cookie": {"name": "hello", "value": "world", "secure": false, "httpOnly": false, "expiry": 1564488092}}});
         assert_ser_de(&Command::AddCookie(cookie), json);
@@ -301,6 +436,17 @@ mod tests {
                 value: "bar".into(),
             },
             json!({"WebDriver:FindElement": {"element": "foo", "using": "xpath", "value": "bar" }}),
+        );
+    }
+
+    #[test]
+    fn test_json_get_css_value() {
+        assert_ser_de(
+            &Command::GetCSSValue {
+                id: "foo".into(),
+                property: "bar".into(),
+            },
+            json!({"WebDriver:GetElementCSSValue": {"id": "foo", "propertyName": "bar"}}),
         );
     }
 }

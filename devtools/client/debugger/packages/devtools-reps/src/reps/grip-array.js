@@ -3,7 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 const { lengthBubble } = require("../shared/grip-length-bubble");
 const {
@@ -15,8 +16,6 @@ const {
 } = require("./rep-utils");
 const { MODE } = require("./constants");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
 const { ModePropType } = require("./array");
 const DEFAULT_TITLE = "Array";
 
@@ -24,6 +23,7 @@ const DEFAULT_TITLE = "Array";
  * Renders an array. The array is enclosed by left and right bracket
  * and the max number of rendered items depends on the current mode.
  */
+
 GripArray.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
@@ -32,10 +32,11 @@ GripArray.propTypes = {
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function GripArray(props) {
-  const { object, mode = MODE.SHORT } = props;
+  const { object, mode = MODE.SHORT, shouldRenderTooltip } = props;
 
   let brackets;
   const needSpace = function(space) {
@@ -45,6 +46,7 @@ function GripArray(props) {
   const config = {
     "data-link-actor-id": object.actor,
     className: "objectBox objectBox-array",
+    title: shouldRenderTooltip ? "Array" : null,
   };
 
   const title = getTitle(props, object);
@@ -82,10 +84,7 @@ function GripArray(props) {
   brackets = needSpace(items.length > 0);
 
   return span(
-    {
-      "data-link-actor-id": object.actor,
-      className: "objectBox objectBox-array",
-    },
+    config,
     title,
     span(
       {

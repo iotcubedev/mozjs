@@ -13,11 +13,12 @@ crashes-id = Report ID
 crashes-send-date = Submitted
 crashes-all-reports = All Crash Reports
 crashes-no-config = This application has not been configured to display crash reports.
-extensions-title = Extensions
-extensions-name = Name
-extensions-enabled = Enabled
-extensions-version = Version
-extensions-id = ID
+support-addons-title = Add-ons
+support-addons-name = Name
+support-addons-type = Type
+support-addons-enabled = Enabled
+support-addons-version = Version
+support-addons-id = ID
 security-software-title = Security Software
 security-software-type = Type
 security-software-name = Name
@@ -35,6 +36,7 @@ app-basics-title = Application Basics
 app-basics-name = Name
 app-basics-version = Version
 app-basics-build-id = Build ID
+app-basics-distribution-id = Distribution ID
 app-basics-update-channel = Update Channel
 # This message refers to the folder used to store updates on the device,
 # as in "Folder for updates". "Update" is a noun, not a verb.
@@ -74,6 +76,9 @@ show-dir-label =
         [windows] Open Folder
        *[other] Open Directory
     }
+experimental-features-title = Experimental Features
+experimental-features-name = Name
+experimental-features-value = Value
 modified-key-prefs-title = Important Modified Preferences
 modified-prefs-name = Name
 modified-prefs-value = Value
@@ -93,11 +98,11 @@ graphics-crash-guards-title = Crash Guard Disabled Features
 graphics-workarounds-title = Workarounds
 # Windowing system in use on Linux (e.g. X11, Wayland).
 graphics-window-protocol = Window Protocol
+# Desktop environment in use on Linux (e.g. GNOME, KDE, XFCE, etc).
+graphics-desktop-environment = Desktop Environment
 place-database-title = Places Database
 place-database-integrity = Integrity
 place-database-verify-integrity = Verify Integrity
-js-title = JavaScript
-js-incremental-gc = Incremental GC
 a11y-title = Accessibility
 a11y-activated = Activated
 a11y-force-disabled = Prevent Accessibility
@@ -117,6 +122,18 @@ sandbox-sys-call-number = Syscall
 sandbox-sys-call-args = Arguments
 safe-mode-title = Try Safe Mode
 restart-in-safe-mode-label = Restart with Add-ons Disabled…
+clear-startup-cache-title = Try clearing the startup cache
+clear-startup-cache-label = Clear startup cache…
+startup-cache-dialog-title = Clear startup cache
+startup-cache-dialog-body = Restart { -brand-short-name } to clear startup cache. This will not change your settings or remove extensions you’ve added to { -brand-short-name }.
+restart-button-label = Restart
+
+## Media titles
+
+audio-backend = Audio Backend
+max-audio-channels = Max Channels
+sample-rate = Preferred Sample Rate
+roundtrip-latency = Roundtrip latency (standard deviation)
 media-title = Media
 media-output-devices-title = Output Devices
 media-input-devices-title = Input Devices
@@ -129,6 +146,11 @@ media-device-format = Format
 media-device-channels = Channels
 media-device-rate = Rate
 media-device-latency = Latency
+media-capabilities-title = Media Capabilities
+# List all the entries of the database.
+media-capabilities-enumerate = Enumerate database
+##
+
 intl-title = Internationalization & Localization
 intl-app-title = Application Settings
 intl-locales-requested = Requested Locales
@@ -138,6 +160,20 @@ intl-locales-default = Default Locale
 intl-os-title = Operating System
 intl-os-prefs-system-locales = System Locales
 intl-regional-prefs = Regional Preferences
+
+## Remote Debugging
+##
+## The Firefox remote protocol provides low-level debugging interfaces
+## used to inspect state and control execution of documents,
+## browser instrumentation, user interaction simulation,
+## and for subscribing to browser-internal events.
+##
+## See also https://firefox-source-docs.mozilla.org/remote/
+
+remote-debugging-title = Remote Debugging (Chromium Protocol)
+remote-debugging-accepting-connections = Accepting Connections
+remote-debugging-url = URL
+##
 
 # Variables
 # $days (Integer) - Number of days of crashes to log
@@ -231,11 +267,10 @@ webgl2-renderer = WebGL 2 Driver Renderer
 webgl2-version = WebGL 2 Driver Version
 webgl2-driver-extensions = WebGL 2 Driver Extensions
 webgl2-extensions = WebGL 2 Extensions
-blocklisted-bug = Blocklisted due to known issues
 
 # Variables
-# $bugNumber (string) - String of bug number from Bugzilla
-bug-link = bug { $bugNumber }
+#   $bugNumber (string) - Bug number on Bugzilla
+support-blocklisted-bug = Blocklisted due to known issues: <a data-l10n-name="bug-link">bug { $bugNumber }</a>
 
 # Variables
 # $failureCode (string) - String that can be searched in the source tree.
@@ -243,8 +278,9 @@ unknown-failure = Blocklisted; failure code { $failureCode }
 
 d3d11layers-crash-guard = D3D11 Compositor
 d3d11video-crash-guard = D3D11 Video Decoder
-d3d9video-crash-buard = D3D9 Video Decoder
+d3d9video-crash-guard = D3D9 Video Decoder
 glcontext-crash-guard = OpenGL
+wmfvpxvideo-crash-guard = WMF VPX Video Decoder
 
 reset-on-next-restart = Reset on Next Restart
 gpu-process-kill-button = Terminate GPU Process
@@ -255,11 +291,6 @@ content-uses-tiling = Uses Tiling (Content)
 off-main-thread-paint-enabled = Off Main Thread Painting Enabled
 off-main-thread-paint-worker-count = Off Main Thread Painting Worker Count
 target-frame-rate = Target Frame Rate
-
-audio-backend = Audio Backend
-max-audio-channels = Max Channels
-channel-layout = Preferred Channel Layout
-sample-rate = Preferred Sample Rate
 
 min-lib-versions = Expected minimum version
 loaded-lib-versions = Version in use
@@ -276,6 +307,12 @@ sandbox-proc-type-content = content
 sandbox-proc-type-file = file content
 sandbox-proc-type-media-plugin = media plugin
 sandbox-proc-type-data-decoder = data decoder
+
+startup-cache-title = Startup Cache
+startup-cache-disk-cache-path = Disk Cache Path
+startup-cache-ignore-disk-cache = Ignore Disk Cache
+startup-cache-found-disk-cache-on-init = Found Disk Cache on Init
+startup-cache-wrote-to-disk-cache = Wrote to Disk Cache
 
 launcher-process-status-0 = Enabled
 launcher-process-status-1 = Disabled due to failure
@@ -302,6 +339,7 @@ touch-enabled = touch input enabled
 drag-enabled = scrollbar drag enabled
 keyboard-enabled = keyboard enabled
 autoscroll-enabled = autoscroll enabled
+zooming-enabled = smooth pinch-zoom enabled
 
 ## Variables
 ## $preferenceKey (string) - String ID of preference

@@ -1,11 +1,10 @@
-// |reftest| skip-if(release_or_beta) -- Promise.allSettled is not released yet
 // Copyright (C) 2019 Leo Balter. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
 /*---
 description: >
   Gets constructor's `resolve` method once from zero to many invocations.
-esid: sec-promise.allsettled
+esid: sec-promise.all
 info: |
   Runtime Semantics: PerformPromiseAll
 
@@ -15,7 +14,6 @@ info: |
   1. Repeat,
     ...
     1. Let nextPromise be ? Call(promiseResolve, constructor, &laquo; nextValue &raquo;).
-features: [Promise.allSettled]
 ---*/
 
 var resolve = Promise.resolve;

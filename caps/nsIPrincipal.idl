@@ -7,11 +7,16 @@
 
 #include "nsIContentSecurityPolicy.idl"
 #include "nsISerializable.idl"
+#include "nsIAboutModule.idl"
+#include "nsIReferrerInfo.idl"
+interface nsIChannel;
+#include "mozIDOMWindow.idl"
 
 %{C++
 struct JSPrincipals;
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
+#include "nsString.h"
 #include "mozilla/DebugOnly.h"
 namespace mozilla {
 class OriginAttributes;
@@ -43,6 +48,7 @@ interface nsIURI;
 [ptr] native JSPrincipals(JSPrincipals);
 [ref] native PrincipalArray(const nsTArray<nsCOMPtr<nsIPrincipal>>);
 [ref] native const_OriginAttributes(const mozilla::OriginAttributes);
+native ReferrerPolicy(mozilla::dom::ReferrerPolicy);
 
 [scriptable, builtinclass, uuid(f75f502d-79fd-48be-a079-e5a7b8f80c8b)]
 interface nsIPrincipal : nsISerializable
@@ -55,6 +61,14 @@ interface nsIPrincipal : nsISerializable
     boolean equals(in nsIPrincipal other);
 
     /**
+     * Returns whether the other principal is equivalent to this principal
+     * for permission purposes
+     * Matches {originAttributes ,equalsURIForPermission}
+     */
+
+    boolean equalsForPermission(in nsIPrincipal other, in bool aExactHost);
+
+    /**
      * Like equals, but takes document.domain changes into account.
      */
     boolean equalsConsideringDomain(in nsIPrincipal other);
@@ -63,6 +77,11 @@ interface nsIPrincipal : nsISerializable
       DECL_FAST_INLINE_HELPER(Equals)
       DECL_FAST_INLINE_HELPER(EqualsConsideringDomain)
     %}
+
+    /*
+    * Returns whether the Principals URI is equal to the other URI
+    */
+    boolean equalsURI(in nsIURI aOtherURI);
 
     /**
      * Returns a hash value for the principal.
@@ -138,15 +157,50 @@ interface nsIPrincipal : nsISerializable
      *
      *
      * @param uri    The URI about to be loaded.
-     * @param report If true, will report a warning to the console service
-     *               if the load is not allowed.
      * @param allowIfInheritsPrincipal   If true, the load is allowed if the
      *                                   loadee inherits the principal of the
      *                                   loader.
      * @throws NS_ERROR_DOM_BAD_URI if the load is not allowed.
      */
-    void checkMayLoad(in nsIURI uri, in boolean report,
+    void checkMayLoad(in nsIURI uri,
                       in boolean allowIfInheritsPrincipal);
+
+    /**
+     * Like checkMayLoad, but if returning an error will also report that error
+     * to the console, using the provided window id.  The window id may be 0 to
+     * report to just the browser console, not web consoles.
+     */
+    void checkMayLoadWithReporting(in nsIURI uri,
+                                   in boolean allowIfInheritsPrincipal,
+                                   in unsigned long long innerWindowID);
+
+    /**
+    * Checks if the provided URI is considered third-party to the
+    * URI of the principal.
+    * Returns true if the URI is third-party.
+    *
+    * @param uri - The URI to check
+    */
+    boolean isThirdPartyURI(in nsIURI uri);
+
+    /**
+    * Checks if the provided principal is considered third-party to the
+    * URI of the Principal.
+    * Returns true if the principal is third-party.
+    *
+    * @param principal - The principal to check
+    */
+    boolean isThirdPartyPrincipal(in nsIPrincipal principal);
+
+    /**
+    * Checks if the provided channel is considered third-party to the
+    * URI of the principal. 
+    * Returns true if the channel is third-party.
+    * Returns false if the Principal is a System Principal
+    *
+    * @param channel - The Channel to check
+    */
+    boolean isThirdPartyChannel(in nsIChannel channel);
 
     /**
      * A dictionary of the non-default origin attributes associated with this
@@ -178,6 +232,153 @@ interface nsIPrincipal : nsISerializable
      * if principalA.origin == principalB.origin.
      */
     readonly attribute ACString origin;
+
+    /**
+     * Returns an ASCII compatible representation
+     * of the principals Origin
+     */
+    [noscript] readonly attribute ACString asciiOrigin;
+
+    /**
+     * Returns the "host:port" portion of the 
+     * Principals URI, if any.
+     */
+    readonly attribute ACString hostPort;
+
+    /**
+     * Returns the "host:port" portion of the 
+     * Principals URI, if any.
+     */
+    readonly attribute ACString asciiHost;
+
+    /**
+     * Returns the "host" portion of the 
+     * Principals URI, if any.
+     */
+    readonly attribute ACString host;
+
+    /**
+     * Returns the prepath of the principals uri
+     * follows the format scheme:
+     * "scheme://username:password@hostname:portnumber/"
+     */
+    [noscript] readonly attribute ACString prepath;
+
+    /**
+     * Returns the filePath of the principals uri. See nsIURI.
+     */
+    [noscript] readonly attribute ACString filePath;
+
+    /**
+      * Returns the ASCII Spec from the Principals URI.
+      * Might return the empty string, e.g. for the case of
+      * a SystemPrincipal or an EpxandedPrincipal.
+      *
+      * WARNING: DO NOT USE FOR SECURITY CHECKS.
+      * just for logging purposes!
+     */
+    readonly attribute ACString asciiSpec;
+
+    /* Returns the Pre Path of the Principals URI with
+    * user:pass stripped for privacy and spoof prevention
+    */
+    readonly attribute ACString exposablePrePath;
+
+    /* Returns the Spec of the Principals URI with
+    * user/pass/ref/query stripped for privacy and spoof prevention
+    */
+    readonly attribute ACString exposableSpec;
+
+    /**
+     * Return the scheme of the principals URI
+     */
+    readonly attribute ACString scheme;
+
+    /**
+    * Checks if the Principal's URI Scheme matches with the parameter
+    *
+    * @param scheme    The scheme to be checked
+    */
+    boolean schemeIs(in string scheme);
+
+    // Nicer, C++ Callable Version of SchemeIs
+    %{C++
+      inline bool SchemeIs(const char* aScheme) {
+        bool ret;
+        SchemeIs(aScheme, &ret);
+        return ret;
+      }
+    %}
+
+    /*
+    * Checks if the Principal's URI is contained in the given Pref
+    * @param pref    The pref to be checked
+    */
+    bool isURIInPrefList(in string pref);
+
+    /*
+    * Uses NS_Security Compare to determine if the
+    * other URI is same-origin as the uri of the Principal
+    */
+    bool isSameOrigin(in nsIURI otherURI, in bool aIsPrivateWin);
+
+    /*
+    * Checks if the Principal is allowed to load the Provided file:// URI
+    * using NS_RelaxStrictFileOriginPolicy
+    */
+    bool allowsRelaxStrictFileOriginPolicy(in nsIURI aURI);
+
+
+    /*
+    *  Generates a Cache-Key for the Cors-Preflight Cache
+    */
+    ACString getPrefLightCacheKey(in nsIURI aURI ,in bool aWithCredentials);
+
+
+    /*
+    *  Checks if the Principals URI has first party storage access 
+    *  when loaded inside the provided 3rd party resource window. 
+    *  See also: ContentBlocking::ShouldAllowAccessFor
+    */
+    bool hasFirstpartyStorageAccess(in mozIDOMWindow aWindow, out uint32_t rejectedReason);
+    
+    
+    /*
+    * Returns a Key for the LocalStorage Manager, used to 
+    * check the Principals Origin Storage usage. 
+    */
+    readonly attribute ACString localStorageQuotaKey;
+
+    /**
+     * Implementation of
+     * https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy
+     *
+     * The value returned by this method feeds into the the Secure Context
+     * algorithm that determins the value of Window.isSecureContext and
+     * WorkerGlobalScope.isSecureContext.
+     *
+     * This method returns false instead of throwing upon errors.
+     */ 
+    [infallible]
+    readonly attribute boolean isOriginPotentiallyTrustworthy;
+
+    /**
+     * Returns the Flags of the Principals 
+     * associated AboutModule, in case there is one.
+     */
+    uint32_t getAboutModuleFlags();
+
+    /*
+    * Returns the Key to access the Principals 
+    * Origin Local/Session Storage
+    */
+    readonly attribute ACString storageOriginKey;
+
+    /**
+     * Creates and Returns a new ReferrerInfo with the 
+     * Principals URI
+     */
+    nsIReferrerInfo createReferrerInfo(in ReferrerPolicy aReferrerPolicy);
 
     /**
      * The base part of |origin| without the concatenation with |originSuffix|.
@@ -283,6 +484,46 @@ interface nsIPrincipal : nsISerializable
      * an expanded principal, which contains at least one addon principal.
      */
     [infallible] readonly attribute boolean isAddonOrExpandedAddonPrincipal;
+
+    %{C++
+    // MOZ_DBG support
+    friend std::ostream& operator<<(std::ostream& aOut, const nsIPrincipal& aPrincipal) {
+      nsIPrincipal* principal = const_cast<nsIPrincipal*>(&aPrincipal);
+      nsAutoCString origin;
+      mozilla::DebugOnly<nsresult> rv = principal->GetOrigin(origin);
+      MOZ_ASSERT(NS_SUCCEEDED(rv));
+      return aOut << "nsIPrincipal { " << origin << " }";
+    }
+    %}
+    /*
+    * Returns true if the URI is an Onion URI
+    */
+    [infallible] readonly attribute boolean isOnion;
+
+    /*
+     * Returns true if the Domain Policy allows js execution
+     * for the Principals URI
+     */
+    readonly attribute boolean isScriptAllowedByPolicy;
+
+
+     /*
+     * Returns true if the Principal can acess l10n 
+     * features for the Provided DocumentURI
+     */
+    boolean isL10nAllowed(in nsIURI aDocumentURI);
+    
+    /**
+    * Returns a nsIPrincipal, with one less Subdomain Segment
+    * Returns `nullptr` if there are no more segments to remove.
+    */
+
+    [infallible] readonly attribute nsIPrincipal nextSubDomainPrincipal;
+
+    /**
+     * Returns if the principal is for an IP address.
+     */
+    [infallible] readonly attribute boolean isIpAddress;
 };
 
 /**

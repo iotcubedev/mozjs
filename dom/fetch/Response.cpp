@@ -10,7 +10,7 @@
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
-
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BodyStream.h"
 #include "mozilla/dom/FetchBinding.h"
@@ -103,18 +103,24 @@ already_AddRefed<Response> Response::Redirect(const GlobalObject& aGlobal,
     if (doc) {
       baseURI = doc->GetBaseURI();
     }
+    // Don't use NS_ConvertUTF16toUTF8 because that doesn't let us handle OOM.
+    nsAutoCString url;
+    if (!AppendUTF16toUTF8(aUrl, url, fallible)) {
+      aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+      return nullptr;
+    }
+
     nsCOMPtr<nsIURI> resolvedURI;
-    nsresult rv =
-        NS_NewURI(getter_AddRefs(resolvedURI), aUrl, nullptr, baseURI);
+    nsresult rv = NS_NewURI(getter_AddRefs(resolvedURI), url, nullptr, baseURI);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      aRv.ThrowTypeError<MSG_INVALID_URL>(aUrl);
+      aRv.ThrowTypeError<MSG_INVALID_URL>(url);
       return nullptr;
     }
 
     nsAutoCString spec;
     rv = resolvedURI->GetSpec(spec);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      aRv.ThrowTypeError<MSG_INVALID_URL>(aUrl);
+      aRv.ThrowTypeError<MSG_INVALID_URL>(url);
       return nullptr;
     }
 
@@ -131,16 +137,19 @@ already_AddRefed<Response> Response::Redirect(const GlobalObject& aGlobal,
       return nullptr;
     }
 
-    url->Stringify(parsedURL);
+    url->GetHref(parsedURL);
   }
 
   if (aStatus != 301 && aStatus != 302 && aStatus != 303 && aStatus != 307 &&
       aStatus != 308) {
-    aRv.ThrowRangeError<MSG_INVALID_REDIRECT_STATUSCODE_ERROR>();
+    aRv.ThrowRangeError("Invalid redirect status code.");
     return nullptr;
   }
 
-  Optional<Nullable<fetch::ResponseBodyInit>> body;
+  // We can't just pass nullptr for our null-valued Nullable, because the
+  // fetch::ResponseBodyInit is a non-temporary type due to the MOZ_RAII
+  // annotations on some of its members.
+  Nullable<fetch::ResponseBodyInit> body;
   ResponseInit init;
   init.mStatus = aStatus;
   init.mStatusText.AssignASCII("");
@@ -149,8 +158,8 @@ already_AddRefed<Response> Response::Redirect(const GlobalObject& aGlobal,
     return nullptr;
   }
 
-  r->GetInternalHeaders()->Set(NS_LITERAL_CSTRING("Location"),
-                               NS_ConvertUTF16toUTF8(parsedURL), aRv);
+  r->GetInternalHeaders()->Set("Location"_ns, NS_ConvertUTF16toUTF8(parsedURL),
+                               aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
@@ -162,8 +171,7 @@ already_AddRefed<Response> Response::Redirect(const GlobalObject& aGlobal,
 
 /*static*/
 already_AddRefed<Response> Response::Constructor(
-    const GlobalObject& aGlobal,
-    const Optional<Nullable<fetch::ResponseBodyInit>>& aBody,
+    const GlobalObject& aGlobal, const Nullable<fetch::ResponseBodyInit>& aBody,
     const ResponseInit& aInit, ErrorResult& aRv) {
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
 
@@ -173,7 +181,7 @@ already_AddRefed<Response> Response::Constructor(
   }
 
   if (aInit.mStatus < 200 || aInit.mStatus > 599) {
-    aRv.ThrowRangeError<MSG_INVALID_RESPONSE_STATUSCODE_ERROR>();
+    aRv.ThrowRangeError("Invalid response status code.");
     return nullptr;
   }
 
@@ -216,7 +224,7 @@ already_AddRefed<Response> Response::Constructor(
       }
 
       internalResponse->InitChannelInfo(info);
-    } else if (nsContentUtils::IsSystemPrincipal(global->PrincipalOrNull())) {
+    } else if (global->PrincipalOrNull()->IsSystemPrincipal()) {
       info.InitFromChromeGlobal(global);
 
       internalResponse->InitChannelInfo(info);
@@ -259,9 +267,9 @@ already_AddRefed<Response> Response::Constructor(
     }
   }
 
-  if (aBody.WasPassed() && !aBody.Value().IsNull()) {
+  if (!aBody.IsNull()) {
     if (aInit.mStatus == 204 || aInit.mStatus == 205 || aInit.mStatus == 304) {
-      aRv.ThrowTypeError<MSG_RESPONSE_NULL_STATUS_WITH_BODY>();
+      aRv.ThrowTypeError("Response body is given with a null body status.");
       return nullptr;
     }
 
@@ -269,7 +277,7 @@ already_AddRefed<Response> Response::Constructor(
     nsCOMPtr<nsIInputStream> bodyStream;
     int64_t bodySize = InternalResponse::UNKNOWN_BODY_SIZE;
 
-    const fetch::ResponseBodyInit& body = aBody.Value().Value();
+    const fetch::ResponseBodyInit& body = aBody.Value();
     if (body.IsReadableStream()) {
       aRv.MightThrowJSException();
 
@@ -346,11 +354,10 @@ already_AddRefed<Response> Response::Constructor(
     internalResponse->SetBody(bodyStream, bodySize);
 
     if (!contentTypeWithCharset.IsVoid() &&
-        !internalResponse->Headers()->Has(NS_LITERAL_CSTRING("Content-Type"),
-                                          aRv)) {
+        !internalResponse->Headers()->Has("Content-Type"_ns, aRv)) {
       // Ignore Append() failing here.
       ErrorResult error;
-      internalResponse->Headers()->Append(NS_LITERAL_CSTRING("Content-Type"),
+      internalResponse->Headers()->Append("Content-Type"_ns,
                                           contentTypeWithCharset, error);
       error.SuppressException();
     }

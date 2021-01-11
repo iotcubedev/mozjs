@@ -4,7 +4,9 @@
 
 "use strict";
 
-const { AutoRefreshHighlighter } = require("./auto-refresh");
+const {
+  AutoRefreshHighlighter,
+} = require("devtools/server/actors/highlighters/auto-refresh");
 const {
   CANVAS_SIZE,
   DEFAULT_COLOR,
@@ -18,14 +20,14 @@ const {
   getPointsFromDiagonal,
   updateCanvasElement,
   updateCanvasPosition,
-} = require("./utils/canvas");
+} = require("devtools/server/actors/highlighters/utils/canvas");
 const {
   CanvasFrameAnonymousContentHelper,
   createNode,
   createSVGNode,
   getComputedStyle,
   moveInfobar,
-} = require("./utils/markup");
+} = require("devtools/server/actors/highlighters/utils/markup");
 const { apply } = require("devtools/shared/layout/dom-matrix-2d");
 const {
   getCurrentZoom,
@@ -677,7 +679,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
    * @return {Boolean} true if the current node has a CSS grid layout, false otherwise.
    */
   isGrid() {
-    return this.currentNode.getGridFragments().length > 0;
+    return this.currentNode.hasGridFragments();
   }
 
   /**
@@ -1273,7 +1275,7 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
    * @param  {Boolean||undefined} isStackedLine
    *         Boolean indicating if the line is stacked.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   renderGridLineNumber(
     lineNumber,
     linePos,
@@ -1489,7 +1491,6 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     this.ctx.fillText(numberText, x, y);
     this.ctx.restore();
   }
-  /* eslint-enable complexity */
 
   /**
    * Determine which edge of a line number box to aim the line number arrow at.
@@ -1944,7 +1945,12 @@ class CssGridHighlighter extends AutoRefreshHighlighter {
     const container = this.getElement("line-infobar-container");
     moveInfobar(
       container,
-      getBoundsFromPoints([{ x, y }, { x, y }, { x, y }, { x, y }]),
+      getBoundsFromPoints([
+        { x, y },
+        { x, y },
+        { x, y },
+        { x, y },
+      ]),
       this.win
     );
   }

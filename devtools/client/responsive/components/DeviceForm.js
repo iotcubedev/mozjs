@@ -14,10 +14,12 @@ const {
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
-const ViewportDimension = createFactory(require("./ViewportDimension"));
+const ViewportDimension = createFactory(
+  require("devtools/client/responsive/components/ViewportDimension")
+);
 
-const { getStr } = require("../utils/l10n");
-const Types = require("../types");
+const { getStr } = require("devtools/client/responsive/utils/l10n");
+const Types = require("devtools/client/responsive/types");
 
 class DeviceForm extends PureComponent {
   static get propTypes() {
@@ -49,6 +51,7 @@ class DeviceForm extends PureComponent {
     this.onChangeSize = this.onChangeSize.bind(this);
     this.onDeviceFormHide = this.onDeviceFormHide.bind(this);
     this.onDeviceFormSave = this.onDeviceFormSave.bind(this);
+    this.onInputFocus = this.onInputFocus.bind(this);
     this.validateNameField = this.validateNameField.bind(this);
   }
 
@@ -59,7 +62,9 @@ class DeviceForm extends PureComponent {
     });
   }
 
-  onDeviceFormSave() {
+  onDeviceFormSave(e) {
+    e.preventDefault();
+
     if (!this.pixelRatioInputRef.current.checkValidity()) {
       return;
     }
@@ -92,6 +97,13 @@ class DeviceForm extends PureComponent {
     // Ensure that we have onDeviceFormHide before calling it.
     if (this.props.onDeviceFormHide) {
       this.props.onDeviceFormHide();
+    }
+  }
+
+  onInputFocus(e) {
+    // If the formType is "add", select all text in input field when focused.
+    if (this.props.formType === "add") {
+      e.target.select();
     }
   }
 
@@ -144,6 +156,7 @@ class DeviceForm extends PureComponent {
         dom.input({
           defaultValue: device.name,
           ref: this.nameInputRef,
+          onFocus: this.onInputFocus,
         })
       ),
       dom.label(
@@ -169,6 +182,7 @@ class DeviceForm extends PureComponent {
           step: "any",
           defaultValue: device.pixelRatio,
           ref: this.pixelRatioInputRef,
+          onFocus: this.onInputFocus,
         })
       ),
       dom.label(
@@ -180,6 +194,7 @@ class DeviceForm extends PureComponent {
         dom.input({
           defaultValue: device.userAgent,
           ref: this.userAgentInputRef,
+          onFocus: this.onInputFocus,
         })
       ),
       dom.label(

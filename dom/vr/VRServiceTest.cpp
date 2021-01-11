@@ -34,7 +34,7 @@ template <class T>
 bool ReadFloat32Array(T& aDestination, const Float32Array& aSource,
                       ErrorResult& aRv) {
   constexpr size_t length = std::extent<T>::value;
-  aSource.ComputeLengthAndData();
+  aSource.ComputeState();
   if (aSource.Length() != length) {
     aRv.Throw(NS_ERROR_INVALID_ARG);
     // We don't want to MOZ_ASSERT here, as that would cause the
@@ -362,6 +362,7 @@ NS_IMPL_RELEASE_INHERITED(VRMockController, DOMEventTargetHelper)
 VRMockController::VRMockController(VRServiceTest* aVRServiceTest,
                                    uint32_t aControllerIdx)
     : DOMEventTargetHelper(aVRServiceTest->GetOwner()),
+      mVRServiceTest(aVRServiceTest),
       mControllerIdx(aControllerIdx) {
   MOZ_ASSERT(aControllerIdx < kVRControllerMaxCount);
 }

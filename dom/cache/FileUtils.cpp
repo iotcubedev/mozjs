@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/cache/FileUtils.h"
+#include "FileUtilsImpl.h"
 
 #include "DBSchema.h"
 #include "mozilla/dom/InternalResponse.h"
@@ -18,7 +18,6 @@
 #include "nsIUUIDGenerator.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
-#include "nsISimpleEnumerator.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
@@ -72,7 +71,7 @@ nsresult BodyCreateDir(nsIFile* aBaseDir) {
     return rv;
   }
 
-  rv = aBodyDir->Append(NS_LITERAL_STRING("morgue"));
+  rv = aBodyDir->Append(u"morgue"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -98,7 +97,7 @@ nsresult BodyDeleteDir(const QuotaInfo& aQuotaInfo, nsIFile* aBaseDir) {
     return rv;
   }
 
-  rv = aBodyDir->Append(NS_LITERAL_STRING("morgue"));
+  rv = aBodyDir->Append(u"morgue"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -125,7 +124,7 @@ nsresult BodyGetCacheDir(nsIFile* aBaseDir, const nsID& aId,
   }
   MOZ_DIAGNOSTIC_ASSERT(*aCacheDirOut);
 
-  rv = (*aCacheDirOut)->Append(NS_LITERAL_STRING("morgue"));
+  rv = (*aCacheDirOut)->Append(u"morgue"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -358,31 +357,43 @@ nsresult BodyMaybeUpdatePaddingSize(const QuotaInfo& aQuotaInfo,
 nsresult BodyDeleteFiles(const QuotaInfo& aQuotaInfo, nsIFile* aBaseDir,
                          const nsTArray<nsID>& aIdList) {
   nsresult rv = NS_OK;
-
-  for (uint32_t i = 0; i < aIdList.Length(); ++i) {
-    nsCOMPtr<nsIFile> tmpFile;
-    rv = BodyIdToFile(aBaseDir, aIdList[i], BODY_FILE_TMP,
-                      getter_AddRefs(tmpFile));
+  for (const auto id : aIdList) {
+    nsCOMPtr<nsIFile> bodyDir;
+    rv = BodyGetCacheDir(aBaseDir, id, getter_AddRefs(bodyDir));
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
 
-    rv = RemoveNsIFile(aQuotaInfo, tmpFile);
-    // Only treat file deletion as a hard failure in DEBUG builds.  Users
-    // can unfortunately hit this on windows if anti-virus is scanning files,
-    // etc.
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
+    const auto removeFileForId = [&aQuotaInfo, &id](nsIFile* bodyFile,
+                                                    const nsACString& leafName,
+                                                    bool& fileDeleted) {
+      MOZ_DIAGNOSTIC_ASSERT(bodyFile);
 
-    nsCOMPtr<nsIFile> finalFile;
-    rv = BodyIdToFile(aBaseDir, aIdList[i], BODY_FILE_FINAL,
-                      getter_AddRefs(finalFile));
+      nsID fileId;
+      if (NS_WARN_IF(!fileId.Parse(leafName.BeginReading()))) {
+        DebugOnly<nsresult> result =
+            RemoveNsIFile(aQuotaInfo, bodyFile, /* aTrackQuota */ false);
+        MOZ_ASSERT(NS_SUCCEEDED(result));
+        fileDeleted = true;
+        return NS_OK;
+      }
+
+      if (id.Equals(fileId)) {
+        DebugOnly<nsresult> result = RemoveNsIFile(aQuotaInfo, bodyFile);
+        MOZ_ASSERT(NS_SUCCEEDED(result));
+        fileDeleted = true;
+        return NS_OK;
+      }
+
+      fileDeleted = false;
+      return NS_OK;
+    };
+    rv = BodyTraverseFiles(aQuotaInfo, bodyDir, removeFileForId,
+                           /* aCanRemoveFiles */ false,
+                           /* aTrackQuota */ true);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
-
-    rv = RemoveNsIFile(aQuotaInfo, finalFile);
-    // Again, only treat removal as hard failure in debug build.
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 
   return NS_OK;
@@ -453,9 +464,9 @@ nsresult LockedDirectoryPaddingWrite(nsIFile* aBaseDir,
   }
 
   if (aPaddingFileType == DirPaddingFile::TMP_FILE) {
-    rv = file->Append(NS_LITERAL_STRING(PADDING_TMP_FILE_NAME));
+    rv = file->Append(nsLiteralString(PADDING_TMP_FILE_NAME));
   } else {
-    rv = file->Append(NS_LITERAL_STRING(PADDING_FILE_NAME));
+    rv = file->Append(nsLiteralString(PADDING_FILE_NAME));
   }
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -496,7 +507,7 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile* aBaseDir,
   }
 
   // Add the root morgue directory
-  rv = dir->Append(NS_LITERAL_STRING("morgue"));
+  rv = dir->Append(u"morgue"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -519,58 +530,45 @@ nsresult BodyDeleteOrphanedFiles(const QuotaInfo& aQuotaInfo, nsIFile* aBaseDir,
 
     // If a file got in here somehow, try to remove it and move on
     if (NS_WARN_IF(!isDir)) {
-      rv = RemoveNsIFile(aQuotaInfo, subdir);
-      MOZ_ASSERT(NS_SUCCEEDED(rv));
+      DebugOnly<nsresult> result =
+          RemoveNsIFile(aQuotaInfo, subdir, /* aTrackQuota */ false);
+      MOZ_ASSERT(NS_SUCCEEDED(result));
       continue;
     }
 
-    nsCOMPtr<nsIDirectoryEnumerator> subEntries;
-    rv = subdir->GetDirectoryEntries(getter_AddRefs(subEntries));
+    const auto removeOrphanedFiles =
+        [&aQuotaInfo, &aKnownBodyIdList](
+            nsIFile* bodyFile, const nsACString& leafName, bool& fileDeleted) {
+          MOZ_DIAGNOSTIC_ASSERT(bodyFile);
+          // Finally, parse the uuid out of the name.  If its fails to parse,
+          // the ignore the file.
+          nsID id;
+          if (NS_WARN_IF(!id.Parse(leafName.BeginReading()))) {
+            DebugOnly<nsresult> result = RemoveNsIFile(aQuotaInfo, bodyFile);
+            MOZ_ASSERT(NS_SUCCEEDED(result));
+            fileDeleted = true;
+            return NS_OK;
+          }
+
+          if (!aKnownBodyIdList.Contains(id)) {
+            DebugOnly<nsresult> result = RemoveNsIFile(aQuotaInfo, bodyFile);
+            MOZ_ASSERT(NS_SUCCEEDED(result));
+            fileDeleted = true;
+            return NS_OK;
+          }
+
+          fileDeleted = false;
+          return NS_OK;
+        };
+    rv = BodyTraverseFiles(aQuotaInfo, subdir, removeOrphanedFiles,
+                           /* aCanRemoveFiles */ true,
+                           /* aTrackQuota */ true);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
-
-    // Now iterate over all the files in the subdir
-    nsCOMPtr<nsIFile> file;
-    while (NS_SUCCEEDED(rv = subEntries->GetNextFile(getter_AddRefs(file))) &&
-           file) {
-      nsAutoCString leafName;
-      rv = file->GetNativeLeafName(leafName);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return rv;
-      }
-
-      // Delete all tmp files regardless of known bodies.  These are
-      // all considered orphans.
-      if (StringEndsWith(leafName, NS_LITERAL_CSTRING(".tmp"))) {
-        // remove recursively in case its somehow a directory
-        rv = RemoveNsIFileRecursively(aQuotaInfo, file);
-        MOZ_ASSERT(NS_SUCCEEDED(rv));
-        continue;
-      }
-
-      nsCString suffix(NS_LITERAL_CSTRING(".final"));
-
-      // Otherwise, it must be a .final file.  If its not, then just
-      // skip it.
-      if (NS_WARN_IF(!StringEndsWith(leafName, suffix) ||
-                     leafName.Length() != NSID_LENGTH - 1 + suffix.Length())) {
-        continue;
-      }
-
-      // Finally, parse the uuid out of the name.  If its fails to parse,
-      // the ignore the file.
-      nsID id;
-      if (NS_WARN_IF(!id.Parse(leafName.BeginReading()))) {
-        continue;
-      }
-
-      if (!aKnownBodyIdList.Contains(id)) {
-        // remove recursively in case its somehow a directory
-        rv = RemoveNsIFileRecursively(aQuotaInfo, file);
-        MOZ_ASSERT(NS_SUCCEEDED(rv));
-      }
-    }
+  }
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
   }
 
   return rv;
@@ -587,12 +585,12 @@ nsresult GetMarkerFileHandle(const QuotaInfo& aQuotaInfo, nsIFile** aFileOut) {
     return rv;
   }
 
-  rv = marker->Append(NS_LITERAL_STRING("cache"));
+  rv = marker->Append(u"cache"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
-  rv = marker->Append(NS_LITERAL_STRING("context_open.marker"));
+  rv = marker->Append(u"context_open.marker"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -632,8 +630,9 @@ nsresult DeleteMarkerFile(const QuotaInfo& aQuotaInfo) {
     return rv;
   }
 
-  rv = RemoveNsIFile(aQuotaInfo, marker);
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
+  DebugOnly<nsresult> result =
+      RemoveNsIFile(aQuotaInfo, marker, /* aTrackQuota */ false);
+  MOZ_ASSERT(NS_SUCCEEDED(result));
 
   // Again, no fsync is necessary.  If the OS crashes before the file
   // removal is flushed, then the Cache will search for stale data on
@@ -660,7 +659,8 @@ bool MarkerFileExists(const QuotaInfo& aQuotaInfo) {
 }
 
 // static
-nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile* aFile) {
+nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile* aFile,
+                                  const bool aTrackQuota) {
   MOZ_DIAGNOSTIC_ASSERT(aFile);
 
   bool isDirectory = false;
@@ -674,7 +674,7 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile* aFile) {
   }
 
   if (!isDirectory) {
-    return RemoveNsIFile(aQuotaInfo, aFile);
+    return RemoveNsIFile(aQuotaInfo, aFile, aTrackQuota);
   }
 
   // Unfortunately, we need to traverse all the entries and delete files one by
@@ -688,7 +688,7 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile* aFile) {
   nsCOMPtr<nsIFile> file;
   while (NS_SUCCEEDED((rv = entries->GetNextFile(getter_AddRefs(file)))) &&
          file) {
-    rv = RemoveNsIFileRecursively(aQuotaInfo, file);
+    rv = RemoveNsIFileRecursively(aQuotaInfo, file, aTrackQuota);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -707,25 +707,34 @@ nsresult RemoveNsIFileRecursively(const QuotaInfo& aQuotaInfo, nsIFile* aFile) {
 }
 
 // static
-nsresult RemoveNsIFile(const QuotaInfo& aQuotaInfo, nsIFile* aFile) {
+nsresult RemoveNsIFile(const QuotaInfo& aQuotaInfo, nsIFile* aFile,
+                       const bool aTrackQuota) {
   MOZ_DIAGNOSTIC_ASSERT(aFile);
 
+  nsresult rv;
   int64_t fileSize = 0;
-  nsresult rv = aFile->GetFileSize(&fileSize);
+  if (aTrackQuota) {
+    rv = aFile->GetFileSize(&fileSize);
+    if (rv == NS_ERROR_FILE_NOT_FOUND ||
+        rv == NS_ERROR_FILE_TARGET_DOES_NOT_EXIST) {
+      return NS_OK;
+    }
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  }
+
+  rv = aFile->Remove(/* recursive */ false);
   if (rv == NS_ERROR_FILE_NOT_FOUND ||
       rv == NS_ERROR_FILE_TARGET_DOES_NOT_EXIST) {
+    MOZ_ASSERT(!aTrackQuota);
     return NS_OK;
   }
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
-  rv = aFile->Remove(/* recursive */ false);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  if (fileSize > 0) {
+  if (aTrackQuota && fileSize > 0) {
     DecreaseUsageForQuotaInfo(aQuotaInfo, fileSize);
   }
 
@@ -758,9 +767,9 @@ bool DirectoryPaddingFileExists(nsIFile* aBaseDir,
 
   nsString fileName;
   if (aPaddingFileType == DirPaddingFile::TMP_FILE) {
-    fileName = NS_LITERAL_STRING(PADDING_TMP_FILE_NAME);
+    fileName = nsLiteralString(PADDING_TMP_FILE_NAME);
   } else {
-    fileName = NS_LITERAL_STRING(PADDING_FILE_NAME);
+    fileName = nsLiteralString(PADDING_FILE_NAME);
   }
 
   rv = file->Append(fileName);
@@ -791,7 +800,7 @@ nsresult LockedDirectoryPaddingGet(nsIFile* aBaseDir,
     return rv;
   }
 
-  rv = file->Append(NS_LITERAL_STRING(PADDING_FILE_NAME));
+  rv = file->Append(nsLiteralString(PADDING_FILE_NAME));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -957,12 +966,12 @@ nsresult LockedDirectoryPaddingFinalizeWrite(nsIFile* aBaseDir) {
     return rv;
   }
 
-  rv = file->Append(NS_LITERAL_STRING(PADDING_TMP_FILE_NAME));
+  rv = file->Append(nsLiteralString(PADDING_TMP_FILE_NAME));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
-  rv = file->RenameTo(nullptr, NS_LITERAL_STRING(PADDING_FILE_NAME));
+  rv = file->RenameTo(nullptr, nsLiteralString(PADDING_FILE_NAME));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -1021,9 +1030,9 @@ nsresult LockedDirectoryPaddingDeleteFile(nsIFile* aBaseDir,
   }
 
   if (aPaddingFileType == DirPaddingFile::TMP_FILE) {
-    rv = file->Append(NS_LITERAL_STRING(PADDING_TMP_FILE_NAME));
+    rv = file->Append(nsLiteralString(PADDING_TMP_FILE_NAME));
   } else {
-    rv = file->Append(NS_LITERAL_STRING(PADDING_FILE_NAME));
+    rv = file->Append(nsLiteralString(PADDING_FILE_NAME));
   }
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;

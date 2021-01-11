@@ -14,11 +14,14 @@
 
 const EXPORTED_SYMBOLS = ["LoginHelper"];
 
-// Globals
-
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "OSKeyStore",
+  "resource://gre/modules/OSKeyStore.jsm"
 );
 
 /**
@@ -27,20 +30,27 @@ const { XPCOMUtils } = ChromeUtils.import(
 this.LoginHelper = {
   debug: null,
   enabled: null,
+  storageEnabled: null,
   formlessCaptureEnabled: null,
   generationAvailable: null,
+  generationConfidenceThreshold: null,
   generationEnabled: null,
+  includeOtherSubdomainsInLookup: null,
   insecureAutofill: null,
-  managementURI: null,
   privateBrowsingCaptureEnabled: null,
   schemeUpgrades: null,
   showAutoCompleteFooter: null,
+  showAutoCompleteImport: null,
+  testOnlyUserHasInteractedWithDocument: null,
+  userInputRequiredToCapture: null,
+  captureInputChanges: null,
 
   init() {
     // Watch for pref changes to update cached pref values.
     Services.prefs.addObserver("signon.", () => this.updateSignonPrefs());
     this.updateSignonPrefs();
     Services.telemetry.setEventRecordingEnabled("pwmgr", true);
+    Services.telemetry.setEventRecordingEnabled("form_autocomplete", true);
   },
 
   updateSignonPrefs() {
@@ -48,13 +58,23 @@ this.LoginHelper = {
     this.autofillAutocompleteOff = Services.prefs.getBoolPref(
       "signon.autofillForms.autocompleteOff"
     );
+    this.captureInputChanges = Services.prefs.getBoolPref(
+      "signon.capture.inputChanges.enabled"
+    );
     this.debug = Services.prefs.getBoolPref("signon.debug");
     this.enabled = Services.prefs.getBoolPref("signon.rememberSignons");
+    this.storageEnabled = Services.prefs.getBoolPref(
+      "signon.storeSignons",
+      true
+    );
     this.formlessCaptureEnabled = Services.prefs.getBoolPref(
       "signon.formlessCapture.enabled"
     );
     this.generationAvailable = Services.prefs.getBoolPref(
       "signon.generation.available"
+    );
+    this.generationConfidenceThreshold = parseFloat(
+      Services.prefs.getStringPref("signon.generation.confidenceThreshold")
     );
     this.generationEnabled = Services.prefs.getBoolPref(
       "signon.generation.enabled"
@@ -62,9 +82,11 @@ this.LoginHelper = {
     this.insecureAutofill = Services.prefs.getBoolPref(
       "signon.autofillForms.http"
     );
-    this.managementURI = Services.prefs.getStringPref(
-      "signon.management.overrideURI",
-      null
+    this.includeOtherSubdomainsInLookup = Services.prefs.getBoolPref(
+      "signon.includeOtherSubdomainsInLookup"
+    );
+    this.passwordEditCaptureEnabled = Services.prefs.getBoolPref(
+      "signon.passwordEditCapture.enabled"
     );
     this.privateBrowsingCaptureEnabled = Services.prefs.getBoolPref(
       "signon.privateBrowsingCapture.enabled"
@@ -73,8 +95,42 @@ this.LoginHelper = {
     this.showAutoCompleteFooter = Services.prefs.getBoolPref(
       "signon.showAutoCompleteFooter"
     );
+
+    // Only enable experiment telemetry for specific pref-controlled branches.
+    this.showAutoCompleteImport = Services.prefs.getStringPref(
+      "signon.showAutoCompleteImport",
+      ""
+    );
+    if (["control", "import"].includes(this.showAutoCompleteImport)) {
+      Services.telemetry.setEventRecordingEnabled("exp_import", true);
+    } else {
+      Services.telemetry.setEventRecordingEnabled("exp_import", false);
+    }
+
     this.storeWhenAutocompleteOff = Services.prefs.getBoolPref(
       "signon.storeWhenAutocompleteOff"
+    );
+
+    if (
+      Services.prefs.getBoolPref(
+        "signon.testOnlyUserHasInteractedByPrefValue",
+        false
+      )
+    ) {
+      this.testOnlyUserHasInteractedWithDocument = Services.prefs.getBoolPref(
+        "signon.testOnlyUserHasInteractedWithDocument",
+        false
+      );
+      log.debug(
+        "updateSignonPrefs, using pref value for testOnlyUserHasInteractedWithDocument",
+        this.testOnlyUserHasInteractedWithDocument
+      );
+    } else {
+      this.testOnlyUserHasInteractedWithDocument = null;
+    }
+
+    this.userInputRequiredToCapture = Services.prefs.getBoolPref(
+      "signon.userInputRequiredToCapture.enabled"
     );
   },
 
@@ -123,9 +179,10 @@ this.LoginHelper = {
   },
 
   /**
-   * Due to the way the signons2.txt file is formatted, we need to make
+   * Due to the way the signons2.txt file was formatted, we needed to make
    * sure certain field values or characters do not cause the file to
-   * be parsed incorrectly.  Reject logins that we can't store correctly.
+   * be parsed incorrectly. These characters can cause problems in other
+   * formats/languages too so reject logins that may not be stored correctly.
    *
    * @throws String with English message in case validation failed.
    */
@@ -144,6 +201,10 @@ this.LoginHelper = {
     // Mostly not a formatting problem, although ".\0" can be quirky.
     if (badCharacterPresent(aLogin, "\0")) {
       throw new Error("login values can't contain nulls");
+    }
+
+    if (!aLogin.password || typeof aLogin.password != "string") {
+      throw new Error("passwords must be non-empty strings");
     }
 
     // In theory these nulls should just be rolled up into the encrypted
@@ -203,6 +264,7 @@ this.LoginHelper = {
   /**
    * Helper to avoid the property bags when calling
    * Services.logins.searchLogins from JS.
+   * @deprecated Use Services.logins.searchLoginsAsync instead.
    *
    * @param {Object} aSearchOptions - A regular JS object to copy to a property bag before searching
    * @return {nsILoginInfo[]} - The result of calling searchLogins.
@@ -230,7 +292,7 @@ this.LoginHelper = {
    * Get the parts of the URL we want for identification.
    * Strip out things like the userPass portion and handle javascript:.
    */
-  getLoginOrigin(uriString, allowJS) {
+  getLoginOrigin(uriString, allowJS = false) {
     let realm = "";
     try {
       let uri = Services.io.newURI(uriString);
@@ -294,6 +356,12 @@ this.LoginHelper = {
 
     if (aOptions.acceptWildcardMatch && aLoginOrigin == "") {
       return true;
+    }
+
+    // We can only match logins now if either of these flags are true, so
+    // avoid doing the work of constructing URL objects if neither is true.
+    if (!aOptions.acceptDifferentSubdomains && !aOptions.schemeUpgrades) {
+      return false;
     }
 
     try {
@@ -386,14 +454,14 @@ this.LoginHelper = {
    * Creates a new login object that results by modifying the given object with
    * the provided data.
    *
-   * @param aOldStoredLogin
-   *        Existing nsILoginInfo object to modify.
-   * @param aNewLoginData
-   *        The new login values, either as nsILoginInfo or nsIProperyBag.
+   * @param {nsILoginInfo} aOldStoredLogin
+   *        Existing login object to modify.
+   * @param {nsILoginInfo|nsIProperyBag} aNewLoginData
+   *        The new login values, either as an nsILoginInfo or nsIProperyBag.
    *
-   * @return The newly created nsILoginInfo object.
+   * @return {nsILoginInfo} The newly created nsILoginInfo object.
    *
-   * @throws String with English message in case validation failed.
+   * @throws {Error} With English message in case validation failed.
    */
   buildModifiedLogin(aOldStoredLogin, aNewLoginData) {
     function bagHasProperty(aPropName) {
@@ -475,7 +543,7 @@ this.LoginHelper = {
     }
 
     // Sanity check the login
-    if (newLogin.origin == null || newLogin.origin.length == 0) {
+    if (newLogin.origin == null || !newLogin.origin.length) {
       throw new Error("Can't add a login with a null or empty origin.");
     }
 
@@ -484,7 +552,7 @@ this.LoginHelper = {
       throw new Error("Can't add a login with a null username.");
     }
 
-    if (newLogin.password == null || newLogin.password.length == 0) {
+    if (newLogin.password == null || !newLogin.password.length) {
       throw new Error("Can't add a login with a null or empty password.");
     }
 
@@ -645,7 +713,7 @@ this.LoginHelper = {
      * over the existingLogin.
      */
     function isLoginPreferred(existingLogin, login) {
-      if (!resolveBy || resolveBy.length == 0) {
+      if (!resolveBy || !resolveBy.length) {
         // If there is no preference, prefer the existing login.
         return false;
       }
@@ -722,6 +790,14 @@ this.LoginHelper = {
             ) {
               return true;
             }
+            // if the existing login host *is* a match and the new one isn't
+            // we explicitly want to keep the existing one
+            if (
+              existingLoginURI.host == preferredOriginURI.host &&
+              newLoginURI.host != preferredOriginURI.host
+            ) {
+              return false;
+            }
             break;
           }
           case "timeLastUsed":
@@ -781,31 +857,50 @@ this.LoginHelper = {
    *                 The name of the entry point, used for telemetry
    */
   openPasswordManager(window, { filterString = "", entryPoint = "" } = {}) {
-    if (this.managementURI && window.openTrustedLinkIn) {
-      let managementURL = this.managementURI.replace(
-        "%DOMAIN%",
-        window.encodeURIComponent(filterString)
-      );
-      // We assume that managementURL has a '?' already
-      window.openTrustedLinkIn(
-        managementURL + `&entryPoint=${entryPoint}`,
-        "tab"
-      );
-      return;
+    const params = new URLSearchParams({
+      ...(filterString && { filter: filterString }),
+      ...(entryPoint && { entryPoint }),
+    });
+    const separator = params.toString() ? "?" : "";
+    const destination = `about:logins${separator}${params}`;
+
+    // We assume that managementURL has a '?' already
+    window.openTrustedLinkIn(destination, "tab");
+  },
+
+  /**
+   * Checks if a field type is password compatible.
+   *
+   * @param {Element} element
+   *                  the field we want to check.
+   *
+   * @returns {Boolean} true if the field can
+   *                    be treated as a password input
+   */
+  isPasswordFieldType(element) {
+    if (ChromeUtils.getClassName(element) !== "HTMLInputElement") {
+      return false;
     }
-    Services.telemetry.recordEvent("pwmgr", "open_management", entryPoint);
-    let win = Services.wm.getMostRecentWindow("Toolkit:PasswordManager");
-    if (win) {
-      win.setFilter(filterString);
-      win.focus();
-    } else {
-      window.openDialog(
-        "chrome://passwordmgr/content/passwordManager.xul",
-        "Toolkit:PasswordManager",
-        "",
-        { filterString }
-      );
+
+    if (!element.isConnected) {
+      // If the element isn't connected then it isn't visible to the user so
+      // shouldn't be considered. It must have been connected in the past.
+      return false;
     }
+
+    if (!element.hasBeenTypePassword) {
+      return false;
+    }
+
+    // Ensure the element is of a type that could have autocomplete.
+    // These include the types with user-editable values. If not, even if it used to be
+    // a type=password, we can't treat it as a password input now
+    let acInfo = element.getAutocompleteInfo();
+    if (!acInfo) {
+      return false;
+    }
+
+    return true;
   },
 
   /**
@@ -825,6 +920,10 @@ this.LoginHelper = {
     if (!element.isConnected) {
       // If the element isn't connected then it isn't visible to the user so
       // shouldn't be considered. It must have been connected in the past.
+      return false;
+    }
+
+    if (element.hasBeenTypePassword) {
       return false;
     }
 
@@ -871,16 +970,55 @@ this.LoginHelper = {
   async maybeImportLogins(loginDatas) {
     let loginsToAdd = [];
     let loginMap = new Map();
-    for (let loginData of loginDatas) {
+    for (let rawLoginData of loginDatas) {
+      // Do some sanitization on a clone of the loginData.
+      let loginData = ChromeUtils.shallowClone(rawLoginData);
+      loginData.origin = this.getLoginOrigin(loginData.origin);
+      if (!loginData.origin) {
+        continue;
+      }
+
+      loginData.formActionOrigin =
+        this.getLoginOrigin(loginData.formActionOrigin, true) ||
+        (typeof loginData.httpRealm == "string" ? null : "");
+
+      loginData.httpRealm =
+        typeof loginData.httpRealm == "string" ? loginData.httpRealm : null;
+
+      if (loginData.guid) {
+        // First check for `guid` matches if it's set.
+        // `guid` matches will allow every kind of update, including reverting
+        // to older passwords which can be useful if the user wants to recover
+        // an old password.
+        let existingLogins = await Services.logins.searchLoginsAsync({
+          guid: loginData.guid,
+          origin: loginData.origin, // Ignored outside of GV.
+        });
+
+        if (existingLogins.length) {
+          log.debug("maybeImportLogins: Found existing login with GUID");
+          // There should only be one `guid` match.
+          let existingLogin = existingLogins[0].QueryInterface(
+            Ci.nsILoginMetaInfo
+          );
+
+          // Use a property bag rather than an nsILoginInfo so we don't clobber
+          // properties that the import source doesn't provide.
+          let propBag = this.newPropertyBag(loginData);
+          Services.logins.modifyLogin(existingLogin, propBag);
+          // Updated a login so we're done.
+          continue;
+        }
+      }
+
       // create a new login
       let login = Cc["@mozilla.org/login-manager/loginInfo;1"].createInstance(
         Ci.nsILoginInfo
       );
       login.init(
         loginData.origin,
-        loginData.formActionOrigin ||
-          (typeof loginData.httpRealm == "string" ? null : ""),
-        typeof loginData.httpRealm == "string" ? loginData.httpRealm : null,
+        loginData.formActionOrigin,
+        loginData.httpRealm,
         loginData.username,
         loginData.password,
         loginData.usernameElement || "",
@@ -893,6 +1031,7 @@ this.LoginHelper = {
       login.timePasswordChanged =
         loginData.timePasswordChanged || loginData.timeCreated;
       login.timesUsed = loginData.timesUsed || 1;
+      login.guid = loginData.guid || null;
 
       try {
         // Ensure we only send checked logins through, since the validation is optimized
@@ -990,9 +1129,9 @@ this.LoginHelper = {
 
   /**
    * Convert an array of nsILoginInfo to vanilla JS objects suitable for
-   * sending over IPC.
+   * sending over IPC. Avoid using this in other cases.
    *
-   * NB: All members of nsILoginInfo and nsILoginMetaInfo are strings.
+   * NB: All members of nsILoginInfo (not nsILoginMetaInfo) are strings.
    */
   loginsToVanillaObjects(logins) {
     return logins.map(this.loginToVanillaObject);
@@ -1019,10 +1158,9 @@ this.LoginHelper = {
     let formLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].createInstance(
       Ci.nsILoginInfo
     );
-    // For compatibility for the Lockwise extension we fallback to hostname/formSubmitURL
     formLogin.init(
-      login.origin || login.hostname,
-      "formSubmitURL" in login ? login.formSubmitURL : login.formActionOrigin,
+      login.origin,
+      login.formActionOrigin,
       login.httpRealm,
       login.username,
       login.password,
@@ -1062,6 +1200,113 @@ this.LoginHelper = {
   },
 
   /**
+   * Shows the Master Password prompt if enabled, or the
+   * OS auth dialog otherwise.
+   * @param {Element} browser
+   *        The <browser> that the prompt should be shown on
+   * @param OSReauthEnabled Boolean indicating if OS reauth should be tried
+   * @param expirationTime Optional timestamp indicating next required re-authentication
+   * @param messageText Formatted and localized string to be displayed when the OS auth dialog is used.
+   * @param captionText Formatted and localized string to be displayed when the OS auth dialog is used.
+   */
+  async requestReauth(
+    browser,
+    OSReauthEnabled,
+    expirationTime,
+    messageText,
+    captionText
+  ) {
+    let isAuthorized = false;
+    let telemetryEvent;
+
+    // This does no harm if master password isn't set.
+    let tokendb = Cc["@mozilla.org/security/pk11tokendb;1"].createInstance(
+      Ci.nsIPK11TokenDB
+    );
+    let token = tokendb.getInternalKeyToken();
+
+    // Do we have a recent authorization?
+    if (expirationTime && Date.now() < expirationTime) {
+      isAuthorized = true;
+      telemetryEvent = {
+        object: token.hasPassword ? "master_password" : "os_auth",
+        method: "reauthenticate",
+        value: "success_no_prompt",
+      };
+      return {
+        isAuthorized,
+        telemetryEvent,
+      };
+    }
+
+    // Default to true if there is no master password and OS reauth is not available
+    if (!token.hasPassword && !OSReauthEnabled) {
+      isAuthorized = true;
+      telemetryEvent = {
+        object: "os_auth",
+        method: "reauthenticate",
+        value: "success_disabled",
+      };
+      return {
+        isAuthorized,
+        telemetryEvent,
+      };
+    }
+    // Use the OS auth dialog if there is no master password
+    if (!token.hasPassword && OSReauthEnabled) {
+      let result = await OSKeyStore.ensureLoggedIn(
+        messageText,
+        captionText,
+        browser.ownerGlobal,
+        false
+      );
+      isAuthorized = result.authenticated;
+      telemetryEvent = {
+        object: "os_auth",
+        method: "reauthenticate",
+        value: result.auth_details,
+        extra: result.auth_details_extra,
+      };
+      return {
+        isAuthorized,
+        telemetryEvent,
+      };
+    }
+    // We'll attempt to re-auth via Master Password, force a log-out
+    token.checkPassword("");
+
+    // If a master password prompt is already open, just exit early and return false.
+    // The user can re-trigger it after responding to the already open dialog.
+    if (Services.logins.uiBusy) {
+      isAuthorized = false;
+      return {
+        isAuthorized,
+        telemetryEvent,
+      };
+    }
+
+    // So there's a master password. But since checkPassword didn't succeed, we're logged out (per nsIPK11Token.idl).
+    try {
+      // Relogin and ask for the master password.
+      token.login(true); // 'true' means always prompt for token password. User will be prompted until
+      // clicking 'Cancel' or entering the correct password.
+    } catch (e) {
+      // An exception will be thrown if the user cancels the login prompt dialog.
+      // User is also logged out of Software Security Device.
+    }
+    isAuthorized = token.isLoggedIn();
+    telemetryEvent = {
+      object: "master_password",
+      method: "reauthenticate",
+      value: isAuthorized ? "success" : "fail",
+    };
+    return {
+      isAuthorized,
+      telemetryEvent,
+    };
+  },
+
+  /**
    * Send a notification when stored data is changed.
    */
   notifyStorageChanged(changeType, data) {
@@ -1088,7 +1333,7 @@ this.LoginHelper = {
   },
 
   isUserFacingLogin(login) {
-    return !login.origin.startsWith("chrome://");
+    return login.origin != "chrome://FirefoxAccounts"; // FXA_PWDMGR_HOST
   },
 
   async getAllUserFacingLogins() {
@@ -1115,9 +1360,41 @@ this.LoginHelper = {
       data: guidSupportsString,
     });
   },
-};
 
-LoginHelper.init();
+  /**
+   * Determine the <browser> that a prompt should be shown on.
+   *
+   * Some sites pop up a temporary login window, which disappears
+   * upon submission of credentials. We want to put the notification
+   * prompt in the opener window if this seems to be happening.
+   *
+   * @param {Element} browser
+   *        The <browser> that a prompt was triggered for
+   * @returns {Element} The <browser> that the prompt should be shown on,
+   *                    which could be in a different window.
+   */
+  getBrowserForPrompt(browser) {
+    let chromeWindow = browser.ownerGlobal;
+    let openerBrowsingContext = browser.browsingContext.opener;
+    let openerBrowser = openerBrowsingContext
+      ? openerBrowsingContext.top.embedderElement
+      : null;
+    if (openerBrowser) {
+      let chromeDoc = chromeWindow.document.documentElement;
+
+      // Check to see if the current window was opened with chrome
+      // disabled, and if so use the opener window. But if the window
+      // has been used to visit other pages (ie, has a history),
+      // assume it'll stick around and *don't* use the opener.
+      if (chromeDoc.getAttribute("chromehidden") && !browser.canGoBack) {
+        log.debug("Using opener window for prompt.");
+        return openerBrowser;
+      }
+    }
+
+    return browser;
+  },
+};
 
 XPCOMUtils.defineLazyPreferenceGetter(
   LoginHelper,
@@ -1126,5 +1403,11 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 XPCOMUtils.defineLazyGetter(this, "log", () => {
-  return LoginHelper.createLogger("LoginHelper");
+  let processName =
+    Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT
+      ? "Main"
+      : "Content";
+  return LoginHelper.createLogger(`LoginHelper(${processName})`);
 });
+
+LoginHelper.init();

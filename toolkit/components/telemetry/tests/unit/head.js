@@ -40,6 +40,9 @@ const gIsMac = AppConstants.platform == "macosx";
 const gIsAndroid = AppConstants.platform == "android";
 const gIsLinux = AppConstants.platform == "linux";
 
+// Desktop Firefox, ie. not mobile Firefox or Thunderbird.
+const gIsFirefox = AppConstants.MOZ_APP_NAME == "firefox";
+
 const Telemetry = Services.telemetry;
 
 const MILLISECONDS_PER_MINUTE = 60 * 1000;
@@ -85,9 +88,7 @@ const PingServer = {
     this.registerPingHandler((request, response) => {
       let r = request;
       this._log.trace(
-        `defaultPingHandler() - ${r.method} ${r.scheme}://${r.host}:${r.port}${
-          r.path
-        }`
+        `defaultPingHandler() - ${r.method} ${r.scheme}://${r.host}:${r.port}${r.path}`
       );
       let deferred = this._defers[this._defers.length - 1];
       this._defers.push(PromiseUtils.defer());
@@ -202,12 +203,14 @@ function decodeRequestPayload(request) {
     payload = JSON.parse(new TextDecoder().decode(bytes));
   }
 
-  // Check for canary value
-  Assert.notEqual(
-    TelemetryUtils.knownClientID,
-    payload.clientId,
-    "Known clientId should never appear in a ping on the server"
-  );
+  if (payload && "clientId" in payload) {
+    // Check for canary value
+    Assert.notEqual(
+      TelemetryUtils.knownClientID,
+      payload.clientId,
+      `Known clientId shouldn't appear in a "${payload.type}" ping on the server.`
+    );
+  }
 
   return payload;
 }
@@ -348,7 +351,10 @@ function fakeNow(...args) {
   const modules = [
     ChromeUtils.import("resource://gre/modules/TelemetrySession.jsm", null),
     ChromeUtils.import("resource://gre/modules/TelemetryEnvironment.jsm", null),
-    ChromeUtils.import("resource://gre/modules/TelemetryController.jsm", null),
+    ChromeUtils.import(
+      "resource://gre/modules/TelemetryControllerParent.jsm",
+      null
+    ),
     ChromeUtils.import("resource://gre/modules/TelemetryStorage.jsm", null),
     ChromeUtils.import("resource://gre/modules/TelemetrySend.jsm", null),
     ChromeUtils.import(
@@ -395,7 +401,7 @@ function fakeMidnightPingFuzzingDelay(delayMs) {
 
 function fakeGeneratePingId(func) {
   let module = ChromeUtils.import(
-    "resource://gre/modules/TelemetryController.jsm",
+    "resource://gre/modules/TelemetryControllerParent.jsm",
     null
   );
   module.Policy.generatePingId = func;
@@ -403,7 +409,7 @@ function fakeGeneratePingId(func) {
 
 function fakeCachedClientId(uuid) {
   let module = ChromeUtils.import(
-    "resource://gre/modules/TelemetryController.jsm",
+    "resource://gre/modules/TelemetryControllerParent.jsm",
     null
   );
   module.Policy.getCachedClientID = () => uuid;
@@ -445,7 +451,10 @@ function truncateToDays(aMsec) {
 // Returns a promise that resolves to true when the passed promise rejects,
 // false otherwise.
 function promiseRejects(promise) {
-  return promise.then(() => false, () => true);
+  return promise.then(
+    () => false,
+    () => true
+  );
 }
 
 // Generates a random string of at least a specific length.
@@ -520,9 +529,6 @@ if (runningInParent) {
   // Speed up child process accumulations
   Services.prefs.setIntPref(TelemetryUtils.Preferences.IPCBatchTimeout, 10);
 
-  // Ensure we're not in a GeckoView-like environment by default
-  Services.prefs.setBoolPref("toolkit.telemetry.isGeckoViewMode", false);
-
   // Make sure ecosystem telemetry is disabled, no matter which build
   // Individual tests will enable it when appropriate
   Services.prefs.setBoolPref(
@@ -558,6 +564,9 @@ if (runningInParent) {
 TelemetryController.testInitLogging();
 
 // Avoid timers interrupting test behavior.
-fakeSchedulerTimer(() => {}, () => {});
+fakeSchedulerTimer(
+  () => {},
+  () => {}
+);
 // Make pind sending predictable.
 fakeMidnightPingFuzzingDelay(0);

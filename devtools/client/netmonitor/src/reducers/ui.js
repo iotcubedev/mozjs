@@ -8,6 +8,7 @@ const Services = require("Services");
 const {
   CLEAR_REQUESTS,
   OPEN_NETWORK_DETAILS,
+  OPEN_ACTION_BAR,
   RESIZE_NETWORK_DETAILS,
   ENABLE_PERSISTENT_LOGS,
   DISABLE_BROWSER_CACHE,
@@ -16,6 +17,7 @@ const {
   RESET_COLUMNS,
   RESPONSE_HEADERS,
   SELECT_DETAILS_PANEL_TAB,
+  SELECT_ACTION_BAR_TAB,
   SEND_CUSTOM_REQUEST,
   SELECT_REQUEST,
   TOGGLE_COLUMN,
@@ -23,7 +25,8 @@ const {
   PANELS,
   MIN_COLUMN_WIDTH,
   SET_COLUMNS_WIDTH,
-} = require("../constants");
+  SET_HEADERS_URL_PREVIEW_EXPANDED,
+} = require("devtools/client/netmonitor/src/constants");
 
 const cols = {
   status: true,
@@ -34,7 +37,7 @@ const cols = {
   protocol: false,
   scheme: false,
   remoteip: false,
-  cause: true,
+  initiator: true,
   type: true,
   cookies: false,
   setCookies: false,
@@ -79,8 +82,12 @@ function UI(initialState = {}) {
       "devtools.netmonitor.persistlog"
     ),
     browserCacheDisabled: Services.prefs.getBoolPref("devtools.cache.disabled"),
+    slowLimit: Services.prefs.getIntPref("devtools.netmonitor.audits.slow"),
     statisticsOpen: false,
     waterfallWidth: null,
+    networkActionOpen: false,
+    selectedActionBarTabId: null,
+    shouldExpandHeadersUrlPreview: false,
     ...initialState,
   };
 }
@@ -104,6 +111,13 @@ function openNetworkDetails(state, action) {
   return {
     ...state,
     networkDetailsOpen: action.open,
+  };
+}
+
+function openNetworkAction(state, action) {
+  return {
+    ...state,
+    networkActionOpen: action.open,
   };
 }
 
@@ -140,6 +154,20 @@ function setDetailsPanelTab(state, action) {
   return {
     ...state,
     detailsPanelSelectedTab: action.id,
+  };
+}
+
+function setActionBarTab(state, action) {
+  return {
+    ...state,
+    selectedActionBarTabId: action.id,
+  };
+}
+
+function setHeadersUrlPreviewExpanded(state, action) {
+  return {
+    ...state,
+    shouldExpandHeadersUrlPreview: action.expanded,
   };
 }
 
@@ -205,6 +233,8 @@ function ui(state = UI(), action) {
       return openNetworkDetails(state, { open: false });
     case SELECT_DETAILS_PANEL_TAB:
       return setDetailsPanelTab(state, action);
+    case SELECT_ACTION_BAR_TAB:
+      return setActionBarTab(state, action);
     case SELECT_REQUEST:
       return openNetworkDetails(state, { open: true });
     case TOGGLE_COLUMN:
@@ -213,6 +243,10 @@ function ui(state = UI(), action) {
       return resizeWaterfall(state, action);
     case SET_COLUMNS_WIDTH:
       return setColumnsWidth(state, action);
+    case OPEN_ACTION_BAR:
+      return openNetworkAction(state, action);
+    case SET_HEADERS_URL_PREVIEW_EXPANDED:
+      return setHeadersUrlPreviewExpanded(state, action);
     default:
       return state;
   }

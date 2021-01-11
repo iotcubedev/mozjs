@@ -46,7 +46,7 @@ newscalar:
     notification_emails: ["telemetry-client-dev@mozilla.org"]
     record_in_processes: ["main"]
     release_channel_collection: opt-out
-    products: ["firefox", "fennec", "geckoview"]
+    products: ["firefox", "fennec"]
     keyed: false
         """
 
@@ -58,8 +58,9 @@ newscalar:
                     "expires": "never",
                     "record_on_release": True,
                     "keyed": False,
+                    "keys": [],
                     "stores": ["main"],
-                    "products": ["firefox", "fennec", "geckoview"],
+                    "products": ["firefox", "fennec"],
                 },
                 "withoptin": {
                     "kind": "nsITelemetry::SCALAR_TYPE_COUNT",
@@ -67,6 +68,7 @@ newscalar:
                     "expires": "never",
                     "record_on_release": False,
                     "keyed": False,
+                    "keys": [],
                     "stores": ["main"],
                     "products": ["firefox"],
                 }

@@ -6,10 +6,9 @@
 
 #include "ConvolverNode.h"
 #include "mozilla/dom/ConvolverNodeBinding.h"
-#include "nsAutoPtr.h"
 #include "AlignmentUtils.h"
 #include "AudioNodeEngine.h"
-#include "AudioNodeStream.h"
+#include "AudioNodeTrack.h"
 #include "blink/Reverb.h"
 #include "PlayingRefChangeHandler.h"
 
@@ -100,7 +99,7 @@ class ConvolverNodeEngine final : public AudioNodeEngine {
       mRightConvolverMode = RightConvolverMode::Always;
     }
 
-    mReverb = aReverb;
+    mReverb.reset(aReverb);
   }
 
   void AllocateReverbInput(const AudioBlock& aInput,
@@ -121,7 +120,7 @@ class ConvolverNodeEngine final : public AudioNodeEngine {
     }
   }
 
-  void ProcessBlock(AudioNodeStream* aStream, GraphTime aFrom,
+  void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                     const AudioBlock& aInput, AudioBlock* aOutput,
                     bool* aFinished) override;
 
@@ -146,7 +145,7 @@ class ConvolverNodeEngine final : public AudioNodeEngine {
  private:
   // Keeping mReverbInput across process calls avoids unnecessary reallocation.
   AudioBlock mReverbInput;
-  nsAutoPtr<WebCore::Reverb> mReverb;
+  UniquePtr<WebCore::Reverb> mReverb;
   // Tracks samples of the tail remaining to be output.  INT32_MIN is a
   // special value to indicate that the end of any previous tail has been
   // handled.
@@ -170,8 +169,7 @@ static void AddScaledLeftToRight(AudioBlock* aBlock, float aScale) {
   AudioBlockAddChannelWithScale(left, aScale, right);
 }
 
-void ConvolverNodeEngine::ProcessBlock(AudioNodeStream* aStream,
-                                       GraphTime aFrom,
+void ConvolverNodeEngine::ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
                                        const AudioBlock& aInput,
                                        AudioBlock* aOutput, bool* aFinished) {
   if (!mReverb) {
@@ -189,10 +187,10 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeStream* aStream,
         mRemainingLeftOutput = INT32_MIN;
         MOZ_ASSERT(mRemainingRightOutput <= 0);
         MOZ_ASSERT(mRemainingRightHistory <= 0);
-        aStream->ScheduleCheckForInactive();
+        aTrack->ScheduleCheckForInactive();
         RefPtr<PlayingRefChanged> refchanged =
-            new PlayingRefChanged(aStream, PlayingRefChanged::RELEASE);
-        aStream->Graph()->DispatchToMainThreadStableState(refchanged.forget());
+            new PlayingRefChanged(aTrack, PlayingRefChanged::RELEASE);
+        aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
       }
       aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
       return;
@@ -200,8 +198,8 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeStream* aStream,
   } else {
     if (mRemainingLeftOutput <= 0) {
       RefPtr<PlayingRefChanged> refchanged =
-          new PlayingRefChanged(aStream, PlayingRefChanged::ADDREF);
-      aStream->Graph()->DispatchToMainThreadStableState(refchanged.forget());
+          new PlayingRefChanged(aTrack, PlayingRefChanged::ADDREF);
+      aTrack->Graph()->DispatchToMainThreadStableState(refchanged.forget());
     }
 
     // Use mVolume as a flag to detect whether AllocateReverbInput() gets
@@ -212,7 +210,7 @@ void ConvolverNodeEngine::ProcessBlock(AudioNodeStream* aStream,
     // only a single impulse response channel.  See RightConvolverMode.
     if (mRightConvolverMode != RightConvolverMode::Always) {
       ChannelInterpretation channelInterpretation =
-          aStream->GetChannelInterpretation();
+          aTrack->GetChannelInterpretation();
       if (inputChannelCount == 2) {
         if (mRemainingRightHistory <= 0) {
           // Will start the second convolver.  Choose to convolve the right
@@ -337,8 +335,8 @@ ConvolverNode::ConvolverNode(AudioContext* aContext)
                 ChannelInterpretation::Speakers),
       mNormalize(true) {
   ConvolverNodeEngine* engine = new ConvolverNodeEngine(this, mNormalize);
-  mStream = AudioNodeStream::Create(
-      aContext, engine, AudioNodeStream::NO_STREAM_FLAGS, aContext->Graph());
+  mTrack = AudioNodeTrack::Create(
+      aContext, engine, AudioNodeTrack::NO_TRACK_FLAGS, aContext->Graph());
 }
 
 /* static */
@@ -395,14 +393,23 @@ void ConvolverNode::SetBuffer(JSContext* aCx, AudioBuffer* aBuffer,
         // Supported number of channels
         break;
       default:
-        aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+        aRv.ThrowNotSupportedError(
+            nsPrintfCString("%u is not a supported number of channels",
+                            aBuffer->NumberOfChannels()));
         return;
     }
   }
 
-  // Send the buffer to the stream
-  AudioNodeStream* ns = mStream;
-  MOZ_ASSERT(ns, "Why don't we have a stream here?");
+  if (aBuffer && (aBuffer->SampleRate() != Context()->SampleRate())) {
+    aRv.ThrowNotSupportedError(nsPrintfCString(
+        "Buffer sample rate (%g) does not match AudioContext sample rate (%g)",
+        aBuffer->SampleRate(), Context()->SampleRate()));
+    return;
+  }
+
+  // Send the buffer to the track
+  AudioNodeTrack* ns = mTrack;
+  MOZ_ASSERT(ns, "Why don't we have a track here?");
   if (aBuffer) {
     AudioChunk data = aBuffer->GetThreadSharedChannelsForRate(aCx);
     if (data.mBufferFormat == AUDIO_FORMAT_S16) {
@@ -414,8 +421,11 @@ void ConvolverNode::SetBuffer(JSContext* aCx, AudioBuffer* aBuffer,
       // There is currently no value in providing 16/32-byte aligned data
       // because PadAndMakeScaledDFT() will copy the data (without SIMD
       // instructions) to aligned arrays for the FFT.
-      RefPtr<SharedBuffer> floatBuffer = SharedBuffer::Create(
-          sizeof(float) * data.mDuration * data.ChannelCount());
+      CheckedInt<size_t> bufferSize(sizeof(float));
+      bufferSize *= data.mDuration;
+      bufferSize *= data.ChannelCount();
+      RefPtr<SharedBuffer> floatBuffer =
+          SharedBuffer::Create(bufferSize, fallible);
       if (!floatBuffer) {
         aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
         return;
@@ -448,11 +458,11 @@ void ConvolverNode::SetBuffer(JSContext* aCx, AudioBuffer* aBuffer,
     const size_t MaxFFTSize = 32768;
 
     bool allocationFailure = false;
-    nsAutoPtr<WebCore::Reverb> reverb(new WebCore::Reverb(
+    UniquePtr<WebCore::Reverb> reverb(new WebCore::Reverb(
         data, MaxFFTSize, !Context()->IsOffline(), mNormalize,
         aBuffer->SampleRate(), &allocationFailure));
     if (!allocationFailure) {
-      ns->SetReverb(reverb.forget(), data.ChannelCount());
+      ns->SetReverb(reverb.release(), data.ChannelCount());
     } else {
       aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return;
@@ -463,9 +473,7 @@ void ConvolverNode::SetBuffer(JSContext* aCx, AudioBuffer* aBuffer,
   mBuffer = aBuffer;
 }
 
-void ConvolverNode::SetNormalize(bool aNormalize) {
-  mNormalize = aNormalize;
-}
+void ConvolverNode::SetNormalize(bool aNormalize) { mNormalize = aNormalize; }
 
 }  // namespace dom
 }  // namespace mozilla

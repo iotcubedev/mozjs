@@ -180,9 +180,9 @@ class Test_get_config(object):
         --suite other-e10s
         --executablePath /some/random/path
         --cycles 20
-        --geckoProfile
-        --geckoProfileInterval 1000
-        --geckoProfileEntries 1000
+        --gecko-profile
+        --gecko-profile-interval 1000
+        --gecko-profile-entries 1000
         --mainthread
         --tpcycles 20
         --mozAfterPaint
@@ -479,8 +479,7 @@ class Test_get_config(object):
         assert 'mac_counters' not in test_config
         assert test_config['filters'] is not None
         assert test_config['preferences'] == {
-            'devtools.memory.enabled': True,
-            'addon.test.damp.webserver': '${webserver}'
+            'devtools.memory.enabled': True
         }
         assert test_config['unit'] == 'ms'
 

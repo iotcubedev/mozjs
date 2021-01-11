@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory(require("devtools/shared/flags"));
@@ -211,8 +215,8 @@ WorkerDispatcher.prototype = {
   start(url, win = window) {
     this.worker = new win.Worker(url);
 
-    this.worker.onerror = () => {
-      console.error(`Error in worker ${url}`);
+    this.worker.onerror = err => {
+      console.error(`Error in worker ${url}`, err.message);
     };
   },
 

@@ -37,6 +37,7 @@
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
 #include "mozilla/layers/UiCompositorControllerParent.h"
 #include "mozilla/layers/MemoryReportingMLGPU.h"
+#include "mozilla/layers/VideoBridgeParent.h"
 #include "mozilla/webrender/RenderThread.h"
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "mozilla/HangDetails.h"
@@ -58,6 +59,8 @@
 #  include "mozilla/WindowsVersion.h"
 #  include <process.h>
 #  include <dwrite.h>
+#else
+#  include <unistd.h>
 #endif
 #ifdef MOZ_WIDGET_GTK
 #  include <gtk/gtk.h>
@@ -68,8 +71,11 @@
 #endif
 #include "nsAppRunner.h"
 
-namespace mozilla {
-namespace gfx {
+#if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
+#  include "mozilla/SandboxTestingChild.h"
+#endif
+
+namespace mozilla::gfx {
 
 using namespace ipc;
 using namespace layers;
@@ -84,7 +90,7 @@ GPUParent::~GPUParent() { sGPUParent = nullptr; }
 GPUParent* GPUParent::GetSingleton() { return sGPUParent; }
 
 bool GPUParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
-                     MessageLoop* aIOLoop, IPC::Channel* aChannel) {
+                     MessageLoop* aIOLoop, UniquePtr<IPC::Channel> aChannel) {
   // Initialize the thread manager before starting IPC. Otherwise, messages
   // may be posted to the main thread and we won't be able to process them.
   if (NS_WARN_IF(NS_FAILED(nsThreadManager::get().Init()))) {
@@ -92,7 +98,7 @@ bool GPUParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
   }
 
   // Now it's safe to start IPC.
-  if (NS_WARN_IF(!Open(aChannel, aParentPid, aIOLoop))) {
+  if (NS_WARN_IF(!Open(std::move(aChannel), aParentPid, aIOLoop))) {
     return false;
   }
 
@@ -126,9 +132,10 @@ bool GPUParent::Init(base::ProcessId aParentPid, const char* aParentBuildID,
 #endif
 
   CompositorThreadHolder::Start();
-  APZThreadUtils::SetControllerThread(MessageLoop::current());
+  APZThreadUtils::SetControllerThread(NS_GetCurrentThread());
   apz::InitializeGlobalState();
   LayerTreeOwnerTracker::Initialize();
+  CompositorBridgeParent::InitializeStatics();
   mozilla::ipc::SetThisProcessName("GPU Process");
 #ifdef XP_WIN
   wmf::MFStartup();
@@ -179,6 +186,8 @@ mozilla::ipc::IPCResult GPUParent::RecvInit(
   gfxConfig::Inherit(Feature::OPENGL_COMPOSITING, devicePrefs.oglCompositing());
   gfxConfig::Inherit(Feature::ADVANCED_LAYERS, devicePrefs.advancedLayers());
   gfxConfig::Inherit(Feature::DIRECT2D, devicePrefs.useD2D1());
+  gfxConfig::Inherit(Feature::WEBGPU, devicePrefs.webGPU());
+  gfxConfig::Inherit(Feature::D3D11_HW_ANGLE, devicePrefs.d3d11HwAngle());
 
   {  // Let the crash reporter know if we've got WR enabled or not. For other
     // processes this happens in gfxPlatform::InitWebRenderConfig.
@@ -201,8 +210,11 @@ mozilla::ipc::IPCResult GPUParent::RecvInit(
   if (gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)) {
     if (DeviceManagerDx::Get()->CreateCompositorDevices() &&
         gfxVars::RemoteCanvasEnabled()) {
-      MOZ_ALWAYS_TRUE(DeviceManagerDx::Get()->CreateCanvasDevice());
-      MOZ_ALWAYS_TRUE(Factory::EnsureDWriteFactory());
+      if (DeviceManagerDx::Get()->CreateCanvasDevice()) {
+        MOZ_ALWAYS_TRUE(Factory::EnsureDWriteFactory());
+      } else {
+        gfxWarning() << "Failed to create canvas device.";
+      }
     }
   }
   if (gfxVars::UseWebRender()) {
@@ -276,6 +288,17 @@ mozilla::ipc::IPCResult GPUParent::RecvInit(
   return IPC_OK();
 }
 
+#if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
+mozilla::ipc::IPCResult GPUParent::RecvInitSandboxTesting(
+    Endpoint<PSandboxTestingChild>&& aEndpoint) {
+  if (!SandboxTestingChild::Initialize(std::move(aEndpoint))) {
+    return IPC_FAIL(
+        this, "InitSandboxTesting failed to initialise the child process.");
+  }
+  return IPC_OK();
+}
+#endif
+
 mozilla::ipc::IPCResult GPUParent::RecvInitCompositorManager(
     Endpoint<PCompositorManagerParent>&& aEndpoint) {
   CompositorManagerParent::Create(std::move(aEndpoint), /* aIsRoot */ true);
@@ -291,6 +314,12 @@ mozilla::ipc::IPCResult GPUParent::RecvInitVsyncBridge(
 mozilla::ipc::IPCResult GPUParent::RecvInitImageBridge(
     Endpoint<PImageBridgeParent>&& aEndpoint) {
   ImageBridgeParent::CreateForGPUProcess(std::move(aEndpoint));
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult GPUParent::RecvInitVideoBridge(
+    Endpoint<PVideoBridgeParent>&& aEndpoint) {
+  VideoBridgeParent::Open(std::move(aEndpoint), VideoBridgeSource::RddProcess);
   return IPC_OK();
 }
 
@@ -377,10 +406,10 @@ mozilla::ipc::IPCResult GPUParent::RecvSimulateDeviceReset(
   DeviceManagerDx::Get()->ForceDeviceReset(
       ForcedDeviceResetReason::COMPOSITOR_UPDATED);
   DeviceManagerDx::Get()->MaybeResetAndReacquireDevices();
+#endif
   if (gfxVars::UseWebRender()) {
     wr::RenderThread::Get()->SimulateDeviceReset();
   }
-#endif
   RecvGetDeviceStatus(aOut);
   return IPC_OK();
 }
@@ -563,5 +592,4 @@ void GPUParent::ActorDestroy(ActorDestroyReason aWhy) {
   XRE_ShutdownChildProcess();
 }
 
-}  // namespace gfx
-}  // namespace mozilla
+}  // namespace mozilla::gfx

@@ -7,9 +7,11 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import errno
+import io
 import json
 import os
 import re
+import six
 
 from mozbuild.util import hash_file
 import mozpack.path as mozpath
@@ -21,35 +23,25 @@ import mozpack.path as mozpath
 RE_STRIP_COLORS = re.compile(r'\x1b\[[\d;]+m')
 
 # This captures Clang diagnostics with the standard formatting.
-RE_CLANG_WARNING = re.compile(r"""
+RE_CLANG_WARNING_AND_ERROR = re.compile(r"""
     (?P<file>[^:]+)
     :
     (?P<line>\d+)
     :
     (?P<column>\d+)
     :
-    \swarning:\s
+    \s(?P<type>warning|error):\s
     (?P<message>.+)
     \[(?P<flag>[^\]]+)
     """, re.X)
 
 # This captures Clang-cl warning format.
-RE_CLANG_CL_WARNING = re.compile(r"""
+RE_CLANG_CL_WARNING_AND_ERROR = re.compile(r"""
     (?P<file>.*)
     \((?P<line>\d+),(?P<column>\d+)\)
-    \s?:\s+warning:\s
+    \s?:\s+(?P<type>warning|error):\s
     (?P<message>.*)
     \[(?P<flag>[^\]]+)
-    """, re.X)
-
-# This captures Visual Studio's warning format.
-RE_MSVC_WARNING = re.compile(r"""
-    (?P<file>.*)
-    \((?P<line>\d+)\)
-    \s?:\swarning\s
-    (?P<flag>[^:]+)
-    :\s
-    (?P<message>.*)
     """, re.X)
 
 IN_FILE_INCLUDED_FROM = 'In file included from '
@@ -226,7 +218,7 @@ class WarningsDatabase(object):
         """
 
         # Need to calculate up front since we are mutating original object.
-        filenames = self._files.keys()
+        filenames = list(six.iterkeys(self._files))
         for filename in filenames:
             if not os.path.exists(filename):
                 del self._files[filename]
@@ -245,18 +237,17 @@ class WarningsDatabase(object):
         obj = {'files': {}}
 
         # All this hackery because JSON can't handle sets.
-        for k, v in self._files.iteritems():
+        for k, v in six.iteritems(self._files):
             obj['files'][k] = {}
 
-            for k2, v2 in v.iteritems():
+            for k2, v2 in six.iteritems(v):
                 normalized = v2
-
-                if k2 == 'warnings':
-                    normalized = [w for w in v2]
-
+                if isinstance(v2, set):
+                    normalized = list(v2)
                 obj['files'][k][k2] = normalized
 
-        json.dump(obj, fh, indent=2)
+        to_write = six.ensure_text(json.dumps(obj, indent=2))
+        fh.write(to_write)
 
     def deserialize(self, fh):
         """Load serialized content from a handle into the current instance."""
@@ -265,13 +256,10 @@ class WarningsDatabase(object):
         self._files = obj['files']
 
         # Normalize data types.
-        for filename, value in self._files.iteritems():
-            for k, v in value.iteritems():
-                if k != 'warnings':
-                    continue
-
+        for filename, value in six.iteritems(self._files):
+            if 'warnings' in value:
                 normalized = set()
-                for d in v:
+                for d in value['warnings']:
                     w = CompilerWarning()
                     w.update(d)
                     normalized.add(w)
@@ -280,7 +268,7 @@ class WarningsDatabase(object):
 
     def load_from_file(self, filename):
         """Load the database from a file."""
-        with open(filename, 'rb') as fh:
+        with io.open(filename, 'r', encoding='utf-8') as fh:
             self.deserialize(fh)
 
     def save_to_file(self, filename):
@@ -291,7 +279,7 @@ class WarningsDatabase(object):
         except OSError as e:
             if e.errno != errno.EEXIST:
                 raise
-        with open(filename, 'wb') as fh:
+        with io.open(filename, 'w', encoding='utf-8', newline='\n') as fh:
             self.serialize(fh)
 
 
@@ -339,13 +327,13 @@ class WarningsCollector(object):
         filename = None
 
         # TODO make more efficient so we run minimal regexp matches.
-        match_clang = RE_CLANG_WARNING.match(filtered)
-        match_clang_cl = RE_CLANG_CL_WARNING.match(filtered)
-        match_msvc = RE_MSVC_WARNING.match(filtered)
+        match_clang = RE_CLANG_WARNING_AND_ERROR.match(filtered)
+        match_clang_cl = RE_CLANG_CL_WARNING_AND_ERROR.match(filtered)
         if match_clang:
             d = match_clang.groupdict()
 
             filename = d['file']
+            warning['type'] = d['type']
             warning['line'] = int(d['line'])
             warning['column'] = int(d['column'])
             warning['flag'] = d['flag']
@@ -355,18 +343,12 @@ class WarningsCollector(object):
             d = match_clang_cl.groupdict()
 
             filename = d['file']
+            warning['type'] = d['type']
             warning['line'] = int(d['line'])
             warning['column'] = int(d['column'])
             warning['flag'] = d['flag']
             warning['message'] = d['message'].rstrip()
 
-        elif match_msvc:
-            d = match_msvc.groupdict()
-
-            filename = d['file']
-            warning['line'] = int(d['line'])
-            warning['flag'] = d['flag']
-            warning['message'] = d['message'].rstrip()
         else:
             self.included_from = []
             return None

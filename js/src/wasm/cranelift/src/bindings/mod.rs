@@ -26,8 +26,11 @@ use cranelift_codegen::ir::{self, InstBuilder, SourceLoc};
 use cranelift_codegen::isa;
 use cranelift_wasm::{FuncIndex, GlobalIndex, SignatureIndex, TableIndex, WasmResult};
 
+use smallvec::SmallVec;
+
 use crate::compile;
 use crate::utils::BasicError;
+use crate::wasm2clif::REF_TYPE;
 
 use self::low_level::*;
 
@@ -51,6 +54,8 @@ fn typecode_to_type(type_code: TypeCode) -> WasmResult<Option<ir::Type>> {
         TypeCode::I64 => Ok(Some(ir::types::I64)),
         TypeCode::F32 => Ok(Some(ir::types::F32)),
         TypeCode::F64 => Ok(Some(ir::types::F64)),
+        TypeCode::FuncRef => Ok(Some(REF_TYPE)),
+        TypeCode::AnyRef => Ok(Some(REF_TYPE)),
         TypeCode::BlockVoid => Ok(None),
         _ => Err(BasicError::new(format!("unknown type code: {:?}", type_code)).into()),
     }
@@ -103,6 +108,10 @@ impl GlobalDesc {
                 TypeCode::I64 => Ok(pos.ins().iconst(ir::types::I64, v.u.i64)),
                 TypeCode::F32 => Ok(pos.ins().f32const(Ieee32::with_bits(v.u.i32 as u32))),
                 TypeCode::F64 => Ok(pos.ins().f64const(Ieee64::with_bits(v.u.i64 as u64))),
+                TypeCode::OptRef | TypeCode::AnyRef | TypeCode::FuncRef => {
+                    assert!(v.u.r as usize == 0);
+                    Ok(pos.ins().null(REF_TYPE))
+                }
                 _ => Err(BasicError::new(format!("unexpected type: {}", v.t as u64)).into()),
             }
         }
@@ -128,17 +137,17 @@ impl TableDesc {
 pub struct FuncTypeWithId(*const low_level::FuncTypeWithId);
 
 impl FuncTypeWithId {
-    pub fn args<'a>(self) -> WasmResult<Vec<ir::Type>> {
+    pub fn args<'a>(self) -> WasmResult<SmallVec<[ir::Type; 4]>> {
         let num_args = unsafe { low_level::funcType_numArgs(self.0) };
         // The `funcType_args` callback crashes when there are no arguments. Also note that
         // `slice::from_raw_parts()` requires a non-null pointer for empty slices.
         // TODO: We should get all the parts of a signature in a single callback that returns a
         // struct.
         if num_args == 0 {
-            Ok(Vec::new())
+            Ok(SmallVec::new())
         } else {
             let args = unsafe { slice::from_raw_parts(low_level::funcType_args(self.0), num_args) };
-            let mut ret = Vec::new();
+            let mut ret = SmallVec::new();
             for &arg in args {
                 ret.push(valtype_to_type(arg)?);
             }
@@ -146,9 +155,20 @@ impl FuncTypeWithId {
         }
     }
 
-    pub fn ret_type(self) -> WasmResult<Option<ir::Type>> {
-        let type_code = unsafe { low_level::funcType_retType(self.0) };
-        typecode_to_type(type_code)
+    pub fn results<'a>(self) -> WasmResult<Vec<ir::Type>> {
+        let num_results = unsafe { low_level::funcType_numResults(self.0) };
+        // The same comments as FuncTypeWithId::args apply here.
+        if num_results == 0 {
+            Ok(Vec::new())
+        } else {
+            let results =
+                unsafe { slice::from_raw_parts(low_level::funcType_results(self.0), num_results) };
+            let mut ret = Vec::new();
+            for &result in results {
+                ret.push(valtype_to_type(result)?);
+            }
+            Ok(ret)
+        }
     }
 
     pub fn id_kind(self) -> FuncTypeIdDescKind {
@@ -166,6 +186,7 @@ impl FuncTypeWithId {
 
 /// Thin wrapper for the CraneliftModuleEnvironment structure.
 
+#[derive(Clone, Copy)]
 pub struct ModuleEnvironment<'a> {
     env: &'a CraneliftModuleEnvironment,
 }
@@ -174,8 +195,17 @@ impl<'a> ModuleEnvironment<'a> {
     pub fn new(env: &'a CraneliftModuleEnvironment) -> Self {
         Self { env }
     }
-    pub fn function_signature(&self, func_index: FuncIndex) -> FuncTypeWithId {
-        FuncTypeWithId(unsafe { low_level::env_function_signature(self.env, func_index.index()) })
+    pub fn uses_shared_memory(&self) -> bool {
+        unsafe { low_level::env_uses_shared_memory(self.env) }
+    }
+    pub fn num_types(&self) -> usize {
+        unsafe { low_level::env_num_types(self.env) }
+    }
+    pub fn type_(&self, index: usize) -> FuncTypeWithId {
+        FuncTypeWithId(unsafe { low_level::env_type(self.env, index) })
+    }
+    pub fn func_sig(&self, func_index: FuncIndex) -> FuncTypeWithId {
+        FuncTypeWithId(unsafe { low_level::env_func_sig(self.env, func_index.index()) })
     }
     pub fn func_import_tls_offset(&self, func_index: FuncIndex) -> usize {
         unsafe { low_level::env_func_import_tls_offset(self.env, func_index.index()) }
@@ -201,71 +231,67 @@ impl<'a> ModuleEnvironment<'a> {
 
 impl FuncCompileInput {
     pub fn bytecode(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.bytecode, self.bytecodeSize) }
+        unsafe { slice::from_raw_parts(self.bytecode, self.bytecode_size) }
+    }
+
+    pub fn stackmaps(&self) -> Stackmaps {
+        Stackmaps(self.stackmaps)
     }
 }
 
 impl CompiledFunc {
     pub fn reset(&mut self, compiled_func: &compile::CompiledFunc) {
-        self.numMetadata = compiled_func.metadata.len();
+        self.num_metadata = compiled_func.metadata.len();
         self.metadatas = compiled_func.metadata.as_ptr();
 
-        self.framePushed = compiled_func.frame_pushed as usize;
-        self.containsCalls = compiled_func.contains_calls;
+        self.frame_pushed = compiled_func.frame_pushed as usize;
+        self.contains_calls = compiled_func.contains_calls;
 
         self.code = compiled_func.code_buffer.as_ptr();
-        self.codeSize = compiled_func.code_size as usize;
-        self.jumptablesSize = compiled_func.jumptables_size as usize;
-        self.rodataSize = compiled_func.rodata_size as usize;
-        self.totalSize = compiled_func.code_buffer.len();
+        self.code_size = compiled_func.code_size as usize;
+        self.jumptables_size = compiled_func.jumptables_size as usize;
+        self.rodata_size = compiled_func.rodata_size as usize;
+        self.total_size = compiled_func.code_buffer.len();
 
-        self.numRodataRelocs = compiled_func.rodata_relocs.len();
-        self.rodataRelocs = compiled_func.rodata_relocs.as_ptr();
+        self.num_rodata_relocs = compiled_func.rodata_relocs.len();
+        self.rodata_relocs = compiled_func.rodata_relocs.as_ptr();
     }
 }
 
 impl MetadataEntry {
-    pub fn direct_call(code_offset: CodeOffset, func_index: FuncIndex, srcloc: SourceLoc) -> Self {
+    pub fn direct_call(code_offset: CodeOffset, srcloc: SourceLoc, func_index: FuncIndex) -> Self {
         Self {
             which: CraneliftMetadataEntry_Which_DirectCall,
-            codeOffset: code_offset,
-            moduleBytecodeOffset: srcloc.bits(),
+            code_offset,
+            module_bytecode_offset: srcloc.bits(),
             extra: func_index.index(),
         }
     }
-
-    pub fn indirect_call(code_offset: CodeOffset, srcloc: SourceLoc) -> Self {
+    pub fn indirect_call(ret_addr: CodeOffset, srcloc: SourceLoc) -> Self {
         Self {
             which: CraneliftMetadataEntry_Which_IndirectCall,
-            codeOffset: code_offset,
-            moduleBytecodeOffset: srcloc.bits(),
+            code_offset: ret_addr,
+            module_bytecode_offset: srcloc.bits(),
             extra: 0,
         }
     }
-
     pub fn trap(code_offset: CodeOffset, srcloc: SourceLoc, which: Trap) -> Self {
         Self {
             which: CraneliftMetadataEntry_Which_Trap,
-            codeOffset: code_offset,
-            moduleBytecodeOffset: srcloc.bits(),
+            code_offset,
+            module_bytecode_offset: srcloc.bits(),
             extra: which as usize,
         }
     }
-
-    pub fn memory_access(code_offset: CodeOffset, srcloc: SourceLoc) -> Self {
-        Self {
-            which: CraneliftMetadataEntry_Which_MemoryAccess,
-            codeOffset: code_offset,
-            moduleBytecodeOffset: srcloc.bits(),
-            extra: 0,
-        }
-    }
-
-    pub fn symbolic_access(code_offset: CodeOffset, sym: SymbolicAddress) -> Self {
+    pub fn symbolic_access(
+        code_offset: CodeOffset,
+        srcloc: SourceLoc,
+        sym: SymbolicAddress,
+    ) -> Self {
         Self {
             which: CraneliftMetadataEntry_Which_SymbolicAccess,
-            codeOffset: code_offset,
-            moduleBytecodeOffset: 0,
+            code_offset,
+            module_bytecode_offset: srcloc.bits(),
             extra: sym as usize,
         }
     }
@@ -274,10 +300,32 @@ impl MetadataEntry {
 impl StaticEnvironment {
     /// Returns the default calling convention on this machine.
     pub fn call_conv(&self) -> isa::CallConv {
-        if self.platformIsWindows {
+        if self.platform_is_windows {
             isa::CallConv::BaldrdashWindows
         } else {
             isa::CallConv::BaldrdashSystemV
+        }
+    }
+}
+
+pub struct Stackmaps(*mut self::low_level::BD_Stackmaps);
+
+impl Stackmaps {
+    pub fn add_stackmap(
+        &mut self,
+        inbound_args_size: u32,
+        offset: CodeOffset,
+        map: &cranelift_codegen::binemit::Stackmap,
+    ) {
+        unsafe {
+            let bitslice = map.as_slice();
+            low_level::stackmaps_add(
+                self.0,
+                std::mem::transmute(bitslice.as_ptr()),
+                map.mapped_words() as usize,
+                inbound_args_size as usize,
+                offset as usize,
+            );
         }
     }
 }

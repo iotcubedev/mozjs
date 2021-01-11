@@ -16,7 +16,6 @@
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIObserverService.h"
-#include "nsIServiceManager.h"
 #include "nsITokenPasswordDialogs.h"
 #include "nsNSSComponent.h"
 #include "nsNSSHelper.h"
@@ -24,7 +23,6 @@
 #include "nsPK11TokenDB.h"
 #include "pk11func.h"
 #include "pk11sdr.h"  // For PK11SDR_Encrypt, PK11SDR_Decrypt
-#include "ssl.h"      // For SSL_ClearSessionCache
 
 static mozilla::LazyLogModule gSDRLog("sdrlog");
 
@@ -208,7 +206,8 @@ SecretDecoderRing::AsyncEncryptStrings(const nsTArray<nsCString>& plaintexts,
 
   // plaintexts are already expected to be UTF-8.
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundSdrEncryptStrings", [promise, plaintexts]() mutable {
+      "BackgroundSdrEncryptStrings",
+      [promise, plaintexts = plaintexts.Clone()]() mutable {
         BackgroundSdrEncryptStrings(plaintexts, promise);
       }));
 
@@ -265,7 +264,8 @@ SecretDecoderRing::AsyncDecryptStrings(
 
   // encryptedStrings are expected to be base64.
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundSdrDecryptStrings", [promise, encryptedStrings]() mutable {
+      "BackgroundSdrDecryptStrings",
+      [promise, encryptedStrings = encryptedStrings.Clone()]() mutable {
         BackgroundSdrDecryptStrings(encryptedStrings, promise);
       }));
 
@@ -310,7 +310,7 @@ SecretDecoderRing::ChangePassword() {
 NS_IMETHODIMP
 SecretDecoderRing::Logout() {
   PK11_LogoutAll();
-  SSL_ClearSessionCache();
+  nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
   return NS_OK;
 }
 
@@ -319,7 +319,7 @@ SecretDecoderRing::LogoutAndTeardown() {
   static NS_DEFINE_CID(kNSSComponentCID, NS_NSSCOMPONENT_CID);
 
   PK11_LogoutAll();
-  SSL_ClearSessionCache();
+  nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
 
   nsresult rv;
   nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(kNSSComponentCID, &rv));

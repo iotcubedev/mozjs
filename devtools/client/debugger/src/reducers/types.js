@@ -18,18 +18,21 @@ import type { PauseState } from "./pause";
 import type { PreviewState } from "./preview";
 import type { PendingBreakpointsState } from "../selectors";
 import type { ProjectTextSearchState } from "./project-text-search";
-import type { Record } from "../utils/makeRecord";
 import type { SourcesState } from "./sources";
 import type { SourceActorsState } from "./source-actors";
-import type { TabList } from "./tabs";
+import type { TabsState } from "./tabs";
 import type { UIState } from "./ui";
 import type { QuickOpenState } from "./quick-open";
+import type { SourceTreeState } from "./source-tree";
 import type { EventListenersState } from "./event-listeners";
+import type { ExceptionState } from "./exceptions";
+import type { URL } from "../types";
 
 export type State = {
   ast: ASTState,
   breakpoints: BreakpointsState,
-  expressions: Record<ExpressionState>,
+  exceptions: ExceptionState,
+  expressions: ExpressionState,
   eventListenerBreakpoints: EventListenersState,
   threads: ThreadsState,
   fileSearch: FileSearchState,
@@ -39,7 +42,8 @@ export type State = {
   projectTextSearch: ProjectTextSearchState,
   sources: SourcesState,
   sourceActors: SourceActorsState,
-  tabs: TabList,
+  sourceTree: SourceTreeState,
+  tabs: TabsState,
   ui: UIState,
   quickOpen: QuickOpenState,
 };
@@ -47,7 +51,7 @@ export type State = {
 export type Selector<T> = State => T;
 
 export type PendingSelectedLocation = {
-  url: string,
+  url: URL,
   line?: number,
   column?: number,
 };
@@ -55,10 +59,13 @@ export type PendingSelectedLocation = {
 export type {
   SourcesMap,
   SourcesMapByThread,
+  SourceBase,
   SourceResourceState,
+  SourceResource,
 } from "./sources";
 export type { ActiveSearchType, OrientationType } from "./ui";
 export type { BreakpointsMap, XHRBreakpointsList } from "./breakpoints";
 export type { Command } from "./pause";
 export type { LoadedSymbols, Symbols } from "./ast";
 export type { Preview } from "./preview";
+export type { Tab, TabList, TabsSources } from "./tabs";

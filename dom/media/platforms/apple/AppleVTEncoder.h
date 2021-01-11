@@ -21,23 +21,7 @@ class Image;
 
 class AppleVTEncoder final : public MediaDataEncoder {
  public:
-  using Config = VideoConfig<H264Specific>;
-
-  struct FrameParams {
-    using TimeUnit = media::TimeUnit;
-
-    const gfx::IntSize mSize;
-    const TimeUnit mDecodeTime;
-    const TimeUnit mTimestamp;
-    const bool mIsKey;
-
-    FrameParams(gfx::IntSize aSize, TimeUnit aDecodeTime, TimeUnit aTimestamp,
-                bool aIsKey)
-        : mSize(aSize),
-          mDecodeTime(aDecodeTime),
-          mTimestamp(aTimestamp),
-          mIsKey(aIsKey) {}
-  };
+  using Config = H264Config;
 
   AppleVTEncoder(const Config& aConfig, RefPtr<TaskQueue> aTaskQueue)
       : mConfig(aConfig),
@@ -56,9 +40,8 @@ class AppleVTEncoder final : public MediaDataEncoder {
 
   nsCString GetDescriptionName() const override {
     MOZ_ASSERT(mSession);
-    return mIsHardwareAccelerated
-               ? NS_LITERAL_CSTRING("apple hardware VT encoder")
-               : NS_LITERAL_CSTRING("apple software VT encoder");
+    return mIsHardwareAccelerated ? "apple hardware VT encoder"_ns
+                                  : "apple software VT encoder"_ns;
   }
 
   void OutputFrame(CMSampleBufferRef aBuffer);

@@ -22,9 +22,10 @@
 #include "SVGPathSegUtils.h"
 #include <algorithm>
 
-using namespace mozilla;
 using namespace mozilla::dom::SVGPathSeg_Binding;
 using namespace mozilla::gfx;
+
+namespace mozilla {
 
 static inline bool IsMoveto(uint16_t aSegType) {
   return aSegType == PATHSEG_MOVETO_ABS || aSegType == PATHSEG_MOVETO_REL;
@@ -133,26 +134,6 @@ uint32_t SVGPathData::CountItems() const {
   return count;
 }
 #endif
-
-bool SVGPathData::GetSegmentLengths(nsTArray<double>* aLengths) const {
-  aLengths->Clear();
-  SVGPathTraversalState state;
-
-  uint32_t i = 0;
-  while (i < mData.Length()) {
-    state.length = 0.0;
-    SVGPathSegUtils::TraversePathSegment(&mData[i], state);
-    if (!aLengths->AppendElement(state.length)) {
-      aLengths->Clear();
-      return false;
-    }
-    i += 1 + SVGPathSegUtils::ArgCountForType(mData[i]);
-  }
-
-  MOZ_ASSERT(i == mData.Length(), "Very, very bad - mData corrupt");
-
-  return true;
-}
 
 bool SVGPathData::GetDistancesFromOriginToEndsOfVisibleSegments(
     FallibleTArray<double>* aOutput) const {
@@ -279,13 +260,13 @@ static void ApproximateZeroLengthSubpathSquareCaps(PathBuilder* aPB,
   } while (0)
 
 already_AddRefed<Path> SVGPathData::BuildPath(PathBuilder* aBuilder,
-                                              uint8_t aStrokeLineCap,
+                                              StyleStrokeLinecap aStrokeLineCap,
                                               Float aStrokeWidth) const {
   if (mData.IsEmpty() || !IsMoveto(SVGPathSegUtils::DecodeType(mData[0]))) {
     return nullptr;  // paths without an initial moveto are invalid
   }
 
-  bool hasLineCaps = aStrokeLineCap != NS_STYLE_STROKE_LINECAP_BUTT;
+  bool hasLineCaps = aStrokeLineCap != StyleStrokeLinecap::Butt;
   bool subpathHasLength = false;  // visual length
   bool subpathContainsNonMoveTo = false;
 
@@ -528,7 +509,7 @@ already_AddRefed<Path> SVGPathData::BuildPathForMeasuring() const {
       gfxPlatform::GetPlatform()->ScreenReferenceDrawTarget();
   RefPtr<PathBuilder> builder =
       drawTarget->CreatePathBuilder(FillRule::FILL_WINDING);
-  return BuildPath(builder, NS_STYLE_STROKE_LINECAP_BUTT, 0);
+  return BuildPath(builder, StyleStrokeLinecap::Butt, 0);
 }
 
 // We could simplify this function because this is only used by CSS motion path
@@ -537,7 +518,7 @@ already_AddRefed<Path> SVGPathData::BuildPathForMeasuring() const {
 /* static */
 already_AddRefed<Path> SVGPathData::BuildPath(
     Span<const StylePathCommand> aPath, PathBuilder* aBuilder,
-    uint8_t aStrokeLineCap, Float aStrokeWidth, float aZoomFactor) {
+    StyleStrokeLinecap aStrokeLineCap, Float aStrokeWidth, float aZoomFactor) {
   if (aPath.IsEmpty() || !aPath[0].IsMoveTo()) {
     return nullptr;  // paths without an initial moveto are invalid
   }
@@ -556,7 +537,7 @@ already_AddRefed<Path> SVGPathData::BuildPath(
            aType == StylePathCommand::Tag::SmoothQuadBezierCurveTo;
   };
 
-  bool hasLineCaps = aStrokeLineCap != NS_STYLE_STROKE_LINECAP_BUTT;
+  bool hasLineCaps = aStrokeLineCap != StyleStrokeLinecap::Butt;
   bool subpathHasLength = false;  // visual length
   bool subpathContainsNonMoveTo = false;
 
@@ -1042,12 +1023,11 @@ void SVGPathData::GetMarkerPositioningData(nsTArray<SVGMark>* aMarks) const {
     }
 
     // Add the mark at the end of this segment, and set its position:
-    if (!aMarks->AppendElement(SVGMark(static_cast<float>(segEnd.x),
-                                       static_cast<float>(segEnd.y), 0.0f,
-                                       SVGMark::eMid))) {
-      aMarks->Clear();  // OOM, so try to free some
-      return;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    aMarks->AppendElement(SVGMark(static_cast<float>(segEnd.x),
+                                  static_cast<float>(segEnd.y), 0.0f,
+                                  SVGMark::eMid));
 
     if (segType == PATHSEG_CLOSEPATH && prevSegType != PATHSEG_CLOSEPATH) {
       aMarks->LastElement().angle = aMarks->ElementAt(pathStartIndex).angle =
@@ -1077,3 +1057,5 @@ size_t SVGPathData::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
 size_t SVGPathData::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
+
+}  // namespace mozilla

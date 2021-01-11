@@ -323,28 +323,40 @@ function* assertEventuallyWithGC(conditionFunctor, message) {
   ok(false, message + " (even after " + maxGC + " garbage collections)");
 }
 
+// Asserts that a functor `f` throws an exception that is an instance of
+// `ctor`. If it doesn't throw, or throws a different type of exception, this
+// throws an Error, including the optional `msg` given.
+// Otherwise, it returns the message of the exception.
+//
+// TODO This is DUPLICATED from https://searchfox.org/mozilla-central/rev/cfd1cc461f1efe0d66c2fdc17c024a203d5a2fd8/js/src/tests/shell.js#163
+// This should be moved to a more generic place, as it is in no way specific
+// to IndexedDB.
+function assertThrowsInstanceOf(f, ctor, msg) {
+  var fullmsg;
+  try {
+    f();
+  } catch (exc) {
+    if (exc instanceof ctor) {
+      return exc.message;
+    }
+    fullmsg = `Assertion failed: expected exception ${ctor.name}, got ${exc}`;
+  }
+
+  if (fullmsg === undefined) {
+    fullmsg = `Assertion failed: expected exception ${ctor.name}, no exception thrown`;
+  }
+  if (msg !== undefined) {
+    fullmsg += " - " + msg;
+  }
+
+  throw new Error(fullmsg);
+}
+
 function isWasmSupported() {
   let testingFunctions = SpecialPowers.Cu.getJSTestingFunctions();
   return testingFunctions.wasmIsSupported();
 }
 
-function getWasmBinarySync(text) {
-  let testingFunctions = SpecialPowers.Cu.getJSTestingFunctions();
-  let wasmTextToBinary = SpecialPowers.unwrap(
-    testingFunctions.wasmTextToBinary
-  );
-  let binary = wasmTextToBinary(text);
-  return binary;
-}
-
-// (Async versions to imitate the on-worker behavior where getWasmBinarySync is
-// not available.)
-function getWasmBinary(text) {
-  let binary = getWasmBinarySync(text);
-  SimpleTest.executeSoon(function() {
-    testGenerator.next(binary);
-  });
-}
 function getWasmModule(_binary_) {
   let module = new WebAssembly.Module(_binary_);
   return module;
@@ -377,6 +389,24 @@ function expectingUpgrade(request) {
     };
     request.onsuccess = function(event) {
       ok(false, "Got success, but did not expect it!");
+      reject(event);
+    };
+  });
+}
+
+function expectingError(request, errorName) {
+  return new Promise(function(resolve, reject) {
+    request.onerror = function(event) {
+      is(errorName, event.target.error.name, "Correct exception type");
+      event.stopPropagation();
+      resolve(event);
+    };
+    request.onsuccess = function(event) {
+      ok(false, "Got success, but did not expect it!");
+      reject(event);
+    };
+    request.onupgradeneeded = function(event) {
+      ok(false, "Got upgrade, but did not expect it!");
       reject(event);
     };
   });
@@ -625,14 +655,6 @@ function workerScript() {
     return self.wasmSupported;
   };
 
-  self.getWasmBinarySync = function(_text_) {
-    self.ok(false, "This can't be used on workers");
-  };
-
-  self.getWasmBinary = function(_text_) {
-    self.postMessage({ op: "getWasmBinary", text: _text_ });
-  };
-
   self.getWasmModule = function(_binary_) {
     let module = new WebAssembly.Module(_binary_);
     return module;
@@ -681,11 +703,6 @@ function workerScript() {
         if (self._clearAllDatabasesCallback) {
           self._clearAllDatabasesCallback();
         }
-        break;
-
-      case "getWasmBinaryDone":
-        info("Worker: get wasm binary done");
-        testGenerator.next(message.wasmBinary);
         break;
 
       default:
@@ -797,13 +814,6 @@ async function executeWorkerTestAndCleanUp(testScriptPath) {
           case "clearAllDatabases":
             clearAllDatabases(function() {
               worker.postMessage({ op: "clearAllDatabasesDone" });
-            });
-            break;
-
-          case "getWasmBinary":
-            worker.postMessage({
-              op: "getWasmBinaryDone",
-              wasmBinary: getWasmBinarySync(message.text),
             });
             break;
 

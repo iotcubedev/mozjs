@@ -9,9 +9,11 @@
 #include "Rule.h"
 
 #include "mozilla/css/GroupRule.h"
+#include "mozilla/dom/CSSImportRule.h"
 #include "mozilla/dom/DocumentOrShadowRoot.h"
 #include "nsCCUncollectableMarker.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "nsWrapperCacheInlines.h"
 
 using namespace mozilla;
@@ -42,12 +44,9 @@ bool Rule::IsKnownLive() const {
     return false;
   }
 
-  if (!sheet->IsKeptAliveByDocument()) {
-    return false;
-  }
-
-  return nsCCUncollectableMarker::InGeneration(
-      GetComposedDoc()->GetMarkedCCGeneration());
+  Document* doc = sheet->GetKeptAliveByDocument();
+  return doc &&
+         nsCCUncollectableMarker::InGeneration(doc->GetMarkedCCGeneration());
 }
 
 void Rule::UnlinkDeclarationWrapper(nsWrapperCache& aDecl) {
@@ -100,6 +99,14 @@ bool Rule::IsReadOnly() const {
              "a parent rule should be read only iff the owning sheet is "
              "read only");
   return mSheet && mSheet->IsReadOnly();
+}
+
+bool Rule::IsIncompleteImportRule() const {
+  if (Type() != CSSRule_Binding::IMPORT_RULE) {
+    return false;
+  }
+  auto* sheet = static_cast<const dom::CSSImportRule*>(this)->GetStyleSheet();
+  return !sheet || !sheet->IsComplete();
 }
 
 }  // namespace css

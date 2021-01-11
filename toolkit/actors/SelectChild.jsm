@@ -28,7 +28,7 @@ const kStateHover = 0x00000004; // NS_EVENT_STATE_HOVER
 
 // Duplicated in SelectParent.jsm
 // Please keep these lists in sync.
-const SUPPORTED_PROPERTIES = [
+const SUPPORTED_OPTION_OPTGROUP_PROPERTIES = [
   "direction",
   "color",
   "background-color",
@@ -37,6 +37,12 @@ const SUPPORTED_PROPERTIES = [
   "font-weight",
   "font-size",
   "font-style",
+];
+
+const SUPPORTED_SELECT_PROPERTIES = [
+  ...SUPPORTED_OPTION_OPTGROUP_PROPERTIES,
+  "scrollbar-width",
+  "scrollbar-color",
 ];
 
 // A process global state for whether or not content thinks
@@ -65,7 +71,7 @@ Object.defineProperty(SelectContentHelper, "open", {
   },
 });
 
-this.SelectContentHelper.prototype = {
+SelectContentHelper.prototype = {
   init() {
     let win = this.element.ownerGlobal;
     win.addEventListener("pagehide", this, { mozSystemGroup: true });
@@ -85,6 +91,13 @@ this.SelectContentHelper.prototype = {
       subtree: true,
       attributes: true,
     });
+
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "disablePopupAutohide",
+      "ui.popup.disable_autohide",
+      false
+    );
   },
 
   uninit() {
@@ -117,8 +130,8 @@ this.SelectContentHelper.prototype = {
       options,
       rect,
       selectedIndex: this.element.selectedIndex,
-      style: supportedStyles(computedStyles),
-      defaultStyle: supportedStyles(defaultStyles),
+      style: supportedStyles(computedStyles, SUPPORTED_SELECT_PROPERTIES),
+      defaultStyle: supportedStyles(defaultStyles, SUPPORTED_SELECT_PROPERTIES),
     });
     this._clearPseudoClassStyles();
     gOpen = true;
@@ -186,8 +199,8 @@ this.SelectContentHelper.prototype = {
     this.actor.sendAsyncMessage("Forms:UpdateDropDown", {
       options: this._buildOptionList(),
       selectedIndex: this.element.selectedIndex,
-      style: supportedStyles(computedStyles),
-      defaultStyle: supportedStyles(defaultStyles),
+      style: supportedStyles(computedStyles, SUPPORTED_SELECT_PROPERTIES),
+      defaultStyle: supportedStyles(defaultStyles, SUPPORTED_SELECT_PROPERTIES),
     });
     this._clearPseudoClassStyles();
   },
@@ -197,6 +210,7 @@ this.SelectContentHelper.prototype = {
       view: win,
       bubbles: true,
       cancelable: true,
+      composed: true,
     });
     target.dispatchEvent(mouseEvent);
   },
@@ -305,7 +319,7 @@ this.SelectContentHelper.prototype = {
         }
         break;
       case "blur": {
-        if (this.element !== event.target) {
+        if (this.element !== event.target || this.disablePopupAutohide) {
           break;
         }
         this._closeAfterBlur = true;
@@ -322,7 +336,7 @@ this.SelectContentHelper.prototype = {
         }
         break;
       case "transitionend":
-        if (SUPPORTED_PROPERTIES.includes(event.propertyName)) {
+        if (SUPPORTED_SELECT_PROPERTIES.includes(event.propertyName)) {
           this._updateTimer.arm();
         }
         break;
@@ -334,16 +348,16 @@ function getComputedStyles(element) {
   return element.ownerGlobal.getComputedStyle(element);
 }
 
-function supportedStyles(cs) {
+function supportedStyles(cs, supportedProps) {
   let styles = {};
-  for (let property of SUPPORTED_PROPERTIES) {
+  for (let property of supportedProps) {
     styles[property] = cs.getPropertyValue(property);
   }
   return styles;
 }
 
 function supportedStylesEqual(styles, otherStyles) {
-  for (let property of SUPPORTED_PROPERTIES) {
+  for (let property in styles) {
     if (styles[property] !== otherStyles[property]) {
       return false;
     }
@@ -352,7 +366,7 @@ function supportedStylesEqual(styles, otherStyles) {
 }
 
 function uniqueStylesIndex(cs, uniqueStyles) {
-  let styles = supportedStyles(cs);
+  let styles = supportedStyles(cs, SUPPORTED_OPTION_OPTGROUP_PROPERTIES);
   for (let i = uniqueStyles.length; i--; ) {
     if (supportedStylesEqual(uniqueStyles[i], styles)) {
       return i;
@@ -373,8 +387,11 @@ function buildOptionListForChildren(node, uniqueStyles) {
         continue;
       }
 
+      // The option code-path should match HTMLOptionElement::GetRenderedLabel.
       let textContent =
-        tagName == "OPTGROUP" ? child.getAttribute("label") : child.text;
+        tagName == "OPTGROUP"
+          ? child.getAttribute("label")
+          : child.label || child.text;
       if (textContent == null) {
         textContent = "";
       }

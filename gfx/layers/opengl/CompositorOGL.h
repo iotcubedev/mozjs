@@ -37,14 +37,6 @@
 #include "nsXULAppAPI.h"      // for XRE_GetProcessType
 #include "nscore.h"           // for NS_IMETHOD
 
-#ifdef XP_MACOSX
-// This file uses IOSurfacePtr instead of IOSurfaceRef because IOSurfaceRef is
-// hard to forward declare, and including <IOSurface/IOSurface.h> brings in
-// MacTypes.h which defines Point and Rect which cause name lookup trouble.
-struct DummyIOSurface;
-typedef DummyIOSurface* IOSurfacePtr;
-#endif
-
 class nsIWidget;
 
 namespace mozilla {
@@ -54,7 +46,6 @@ namespace layers {
 class CompositingRenderTarget;
 class CompositingRenderTargetOGL;
 class DataTextureSource;
-class GLManagerCompositor;
 class ShaderProgramOGL;
 class TextureSource;
 class TextureSourceOGL;
@@ -114,7 +105,6 @@ class PerUnitTexturePoolOGL : public CompositorTexturePoolOGL {
 class CompositorOGL final : public Compositor {
   typedef mozilla::gl::GLContext GLContext;
 
-  friend class GLManagerCompositor;
   friend class CompositingRenderTargetOGL;
 
   std::map<ShaderConfigOGL, ShaderProgramOGL*> mPrograms;
@@ -153,11 +143,10 @@ class CompositorOGL final : public Compositor {
   }
 
   // Returns a render target for the native layer.
-  // aInvalidRegion will be mutated to include existing invalid areas in the
-  // layer. aInvalidRegion is in window coordinates, i.e. in the same space
-  // as aNativeLayer->GetRect().
+  // aInvalidRegion is in window coordinates, i.e. in the same space as
+  // aNativeLayer->GetPosition().
   already_AddRefed<CompositingRenderTargetOGL> RenderTargetForNativeLayer(
-      NativeLayer* aNativeLayer, gfx::IntRegion& aInvalidRegion);
+      NativeLayer* aNativeLayer, const gfx::IntRegion& aInvalidRegion);
 
   already_AddRefed<CompositingRenderTarget> CreateRenderTarget(
       const gfx::IntRect& aRect, SurfaceInitMode aInit) override;
@@ -201,6 +190,8 @@ class CompositorOGL final : public Compositor {
 
   void WaitForGPU() override;
 
+  RefPtr<SurfacePoolHandle> GetSurfacePoolHandle() override;
+
   bool SupportsPartialTextureUpdate() override;
 
   bool CanUseCanvasLayerForSize(const gfx::IntSize& aSize) override {
@@ -216,10 +207,6 @@ class CompositorOGL final : public Compositor {
    * an EGL surface.
    */
   void SetDestinationSurfaceSize(const gfx::IntSize& aSize) override;
-
-  void SetScreenRenderOffset(const ScreenPoint& aOffset) override {
-    mRenderOffset = aOffset;
-  }
 
   void MakeCurrent(MakeCurrentFlags aFlags = 0) override;
 
@@ -259,17 +246,9 @@ class CompositorOGL final : public Compositor {
    */
   GLuint GetTemporaryTexture(GLenum aTarget, GLenum aUnit);
 
-  const gfx::Matrix4x4& GetProjMatrix() const { return mProjMatrix; }
-
-  void SetProjMatrix(const gfx::Matrix4x4& aProjMatrix) {
-    mProjMatrix = aProjMatrix;
-  }
-
   const gfx::IntSize GetDestinationSurfaceSize() const {
     return gfx::IntSize(mSurfaceSize.width, mSurfaceSize.height);
   }
-
-  const ScreenPoint& GetScreenRenderOffset() const { return mRenderOffset; }
 
   /**
    * Allow the origin of the surface to be offset so that content does not
@@ -283,11 +262,6 @@ class CompositorOGL final : public Compositor {
   // destroying this CompositorOGL.
   void RegisterTextureSource(TextureSource* aTextureSource);
   void UnregisterTextureSource(TextureSource* aTextureSource);
-
-#ifdef XP_MACOSX
-  void RegisterIOSurface(IOSurfacePtr aSurface);
-  void UnregisterIOSurface(IOSurfacePtr aSurface);
-#endif
 
  private:
   template <typename Geometry>
@@ -308,6 +282,7 @@ class CompositorOGL final : public Compositor {
   /** Widget associated with this compositor */
   LayoutDeviceIntSize mWidgetSize;
   RefPtr<GLContext> mGLContext;
+  RefPtr<SurfacePoolHandle> mSurfacePoolHandle;
   UniquePtr<GLBlitTextureImageHelper> mBlitTextureImageHelper;
   gfx::Matrix4x4 mProjMatrix;
   bool mCanRenderToDefaultFramebuffer = true;
@@ -318,8 +293,6 @@ class CompositorOGL final : public Compositor {
 
   /** The size of the surface we are rendering to */
   gfx::IntSize mSurfaceSize;
-
-  ScreenPoint mRenderOffset;
 
   /** The origin of the content on the surface */
   ScreenIntPoint mSurfaceOrigin;
@@ -536,19 +509,9 @@ class CompositorOGL final : public Compositor {
    */
   gfx::IntSize mViewportSize;
 
+  gfx::IntRegion mCurrentFrameInvalidRegion;
+
   ShaderProgramOGL* mCurrentProgram;
-
-#ifdef XP_MACOSX
-  struct IOSurfaceRefHasher {
-    std::size_t operator()(const IOSurfacePtr& aSurface) const {
-      return HashGeneric(reinterpret_cast<uintptr_t>(aSurface));
-    }
-  };
-
-  std::unordered_map<IOSurfacePtr, RefPtr<CompositingRenderTargetOGL>,
-                     IOSurfaceRefHasher>
-      mRegisteredIOSurfaceRenderTargets;
-#endif
 };
 
 }  // namespace layers

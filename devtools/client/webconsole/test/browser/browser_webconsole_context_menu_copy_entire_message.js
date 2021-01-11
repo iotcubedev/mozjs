@@ -43,7 +43,7 @@ add_task(async function() {
   const hud = await openNewTabAndConsole(TEST_URI);
 
   info("Call the log function defined in the test page");
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.wrappedJSObject.logStuff();
   });
 
@@ -51,7 +51,10 @@ add_task(async function() {
   await testMessagesCopy(hud, true);
 
   // Disable timestamp and wait until timestamp are not displayed anymore.
-  await pushPref(PREF_MESSAGE_TIMESTAMP, false);
+  await toggleConsoleSetting(
+    hud,
+    ".webconsole-console-settings-menu-item-timestamps"
+  );
   await waitFor(
     () => hud.ui.outputNode.querySelector(".message .timestamp") === null
   );
@@ -130,7 +133,7 @@ async function testMessagesCopy(hud, timestamp) {
   lines = clipboardText.split(newLineString);
   is(
     lines[0],
-    `${timestamp ? getTimestampText(message) + " " : ""}Error: "error object"`,
+    `${timestamp ? getTimestampText(message) + " " : ""}Error: error object`,
     "Error object first line has expected text"
   );
   if (timestamp) {
@@ -158,7 +161,7 @@ async function testMessagesCopy(hud, timestamp) {
   is(
     lines[0],
     (timestamp ? getTimestampText(message) + " " : "") +
-      "ReferenceError: z is not defined test.js:11:5",
+      "Uncaught ReferenceError: z is not defined",
     "ReferenceError first line has expected text"
   );
   if (timestamp) {
@@ -167,6 +170,11 @@ async function testMessagesCopy(hud, timestamp) {
       "Log line has the right format:\n" + lines[0]
     );
   }
+  is(
+    lines[1],
+    `    <anonymous> ${TEST_URI}test.js:11`,
+    "ReferenceError second line has expected text"
+  );
   ok(
     !!message.querySelector(".learn-more-link"),
     "There is a Learn More link in the ReferenceError message"
@@ -195,7 +203,10 @@ async function copyMessageContent(hud, messageEl) {
   const copyMenuItem = menuPopup.querySelector("#console-menu-copy");
   ok(copyMenuItem, "copy menu item is enabled");
 
-  return waitForClipboardPromise(() => copyMenuItem.click(), data => data);
+  return waitForClipboardPromise(
+    () => copyMenuItem.click(),
+    data => data
+  );
 }
 
 /**

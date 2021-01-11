@@ -3,23 +3,32 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const dom = require("react-dom-factories");
-const PropTypes = require("prop-types");
+const {
+  button,
+  span,
+} = require("devtools/client/shared/vendor/react-dom-factories");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { wrapRender } = require("./rep-utils");
 const { MODE } = require("./constants");
-const { span } = dom;
 
 /**
  * Renders an object. An object is represented by a list of its
  * properties enclosed in curly brackets.
  */
+
 Accessor.propTypes = {
   object: PropTypes.object.isRequired,
   mode: PropTypes.oneOf(Object.values(MODE)),
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function Accessor(props) {
-  const { object, evaluation, onInvokeGetterButtonClick } = props;
+  const {
+    object,
+    evaluation,
+    onInvokeGetterButtonClick,
+    shouldRenderTooltip,
+  } = props;
 
   if (evaluation) {
     const { Rep, Grip } = require("./rep");
@@ -37,7 +46,7 @@ function Accessor(props) {
   }
 
   if (hasGetter(object) && onInvokeGetterButtonClick) {
-    return dom.button({
+    return button({
       className: "invoke-getter",
       title: "Invoke getter",
       onClick: event => {
@@ -56,9 +65,14 @@ function Accessor(props) {
     accessors.push("Setter");
   }
 
+  const accessorsString = accessors.join(" & ");
+
   return span(
-    { className: "objectBox objectBox-accessor objectTitle" },
-    accessors.join(" & ")
+    {
+      className: "objectBox objectBox-accessor objectTitle",
+      title: shouldRenderTooltip ? accessorsString : null,
+    },
+    accessorsString
   );
 }
 

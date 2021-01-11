@@ -12,3 +12,23 @@ a.disabled-link:visited {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.app {
+  display: grid;
+  min-width: calc(var(--base-unit) * 90);
+}
+
+/* wide layout -> two columns, 1 row */
+@media(min-width: 701px) {
+  .app {
+    grid-template-columns: calc(var(--base-unit) * 50) auto;
+    height: 100vh;
+  }
+}
+
+/* vertical layout -> 1 column, 2 rows */
+@media(max-width: 700px) {
+  .app {
+    grid-template-rows: auto 1fr;
+  }
+}

@@ -16,9 +16,11 @@ const gDashboard = Cc["@mozilla.org/network/dashboard;1"].getService(
 const gDirServ = Cc["@mozilla.org/file/directory_service;1"].getService(
   Ci.nsIDirectoryServiceProvider
 );
-const gNetLinkSvc = Cc[
-  "@mozilla.org/network/network-link-service;1"
-].getService(Ci.nsINetworkLinkService);
+const gNetLinkSvc =
+  Cc["@mozilla.org/network/network-link-service;1"] &&
+  Cc["@mozilla.org/network/network-link-service;1"].getService(
+    Ci.nsINetworkLinkService
+  );
 
 const gRequestNetworkingData = {
   http: gDashboard.requestHttpConnections,
@@ -57,7 +59,7 @@ function displayHttp(data) {
     let row = document.createElement("tr");
     row.appendChild(col(data.connections[i].host));
     row.appendChild(col(data.connections[i].port));
-    row.appendChild(col(data.connections[i].spdy));
+    row.appendChild(col(data.connections[i].httpVersion));
     row.appendChild(col(data.connections[i].ssl));
     row.appendChild(col(data.connections[i].active.length));
     row.appendChild(col(data.connections[i].idle.length));
@@ -88,6 +90,21 @@ function displaySockets(data) {
 }
 
 function displayDns(data) {
+  let suffixContent = document.getElementById("dns_suffix_content");
+  let suffixParent = suffixContent.parentNode;
+  let suffixes = [];
+  try {
+    suffixes = gNetLinkSvc.dnsSuffixList; // May throw
+  } catch (e) {}
+  let suffix_tbody = document.createElement("tbody");
+  suffix_tbody.id = "dns_suffix_content";
+  for (let suffix of suffixes) {
+    let row = document.createElement("tr");
+    row.appendChild(col(suffix));
+    suffix_tbody.appendChild(row);
+  }
+  suffixParent.replaceChild(suffix_tbody, suffixContent);
+
   let cont = document.getElementById("dns_content");
   let parent = cont.parentNode;
   let new_cont = document.createElement("tbody");
@@ -107,6 +124,7 @@ function displayDns(data) {
 
     row.appendChild(column);
     row.appendChild(col(data.entries[i].expiration));
+    row.appendChild(col(data.entries[i].originAttributesSuffix));
     new_cont.appendChild(row);
   }
 
@@ -135,7 +153,10 @@ function displayWebsockets(data) {
 
 function displayRcwnStats(data) {
   let status = Services.prefs.getBoolPref("network.http.rcwn.enabled");
-  let linkType = gNetLinkSvc.linkType;
+  let linkType = Ci.nsINetworkLinkService.LINK_TYPE_UNKNOWN;
+  try {
+    linkType = gNetLinkSvc.linkType;
+  } catch (e) {}
   if (
     !(
       linkType == Ci.nsINetworkLinkService.LINK_TYPE_UNKNOWN ||
@@ -179,13 +200,21 @@ function displayRcwnStats(data) {
 }
 
 function displayNetworkID() {
-  let linkIsUp = gNetLinkSvc.isLinkUp;
-  let linkStatusKnown = gNetLinkSvc.linkStatusKnown;
-  let networkID = gNetLinkSvc.networkID;
+  try {
+    let linkIsUp = gNetLinkSvc.isLinkUp;
+    let linkStatusKnown = gNetLinkSvc.linkStatusKnown;
+    let networkID = gNetLinkSvc.networkID;
 
-  document.getElementById("networkid_isUp").innerText = linkIsUp;
-  document.getElementById("networkid_statusKnown").innerText = linkStatusKnown;
-  document.getElementById("networkid_id").innerText = networkID;
+    document.getElementById("networkid_isUp").innerText = linkIsUp;
+    document.getElementById(
+      "networkid_statusKnown"
+    ).innerText = linkStatusKnown;
+    document.getElementById("networkid_id").innerText = networkID;
+  } catch (e) {
+    document.getElementById("networkid_isUp").innerText = "<unknown>";
+    document.getElementById("networkid_statusKnown").innerText = "<unknown>";
+    document.getElementById("networkid_id").innerText = "<unknown>";
+  }
 }
 
 function requestAllNetworkingData() {
@@ -205,12 +234,6 @@ function init() {
   }
   gInited = true;
   gDashboard.enableLogging = true;
-  if (Services.prefs.getBoolPref("network.warnOnAboutNetworking")) {
-    let div = document.getElementById("warning_message");
-    div.classList.add("active");
-    div.hidden = false;
-    document.getElementById("confpref").addEventListener("click", confirm);
-  }
 
   requestAllNetworkingData();
 
@@ -247,6 +270,13 @@ function init() {
   let dnsLookupButton = document.getElementById("dnsLookupButton");
   dnsLookupButton.addEventListener("click", function() {
     doLookup();
+  });
+
+  let clearDNSCache = document.getElementById("clearDNSCache");
+  clearDNSCache.addEventListener("click", function() {
+    Cc["@mozilla.org/network/dns-service;1"]
+      .getService(Ci.nsIDNSService)
+      .clearCache(true);
   });
 
   let setLogButton = document.getElementById("set-log-file-button");
@@ -302,7 +332,7 @@ function updateLogFile() {
 
   // If the log file was set from an env var, we disable the ability to set it
   // at runtime.
-  if (logPath.length > 0) {
+  if (logPath.length) {
     currentLogFile.innerText = logPath;
     setLogFileButton.disabled = true;
   } else {
@@ -319,7 +349,7 @@ function updateLogModules() {
     gEnv.get("NSPR_LOG_MODULES");
   let currentLogModules = document.getElementById("current-log-modules");
   let setLogModulesButton = document.getElementById("set-log-modules-button");
-  if (logModules.length > 0) {
+  if (logModules.length) {
     currentLogModules.innerText = logModules;
     // If the log modules are set by an environment variable at startup, do not
     // allow changing them throught a pref. It would be difficult to figure out
@@ -405,8 +435,10 @@ function setLogModules() {
     } else if (module == "sync") {
       Services.prefs.setBoolPref("logging.config.sync", true);
     } else {
-      let [key, value] = module.split(":");
-      Services.prefs.setIntPref(`logging.${key}`, parseInt(value, 10));
+      let lastColon = module.lastIndexOf(":");
+      let key = module.slice(0, lastColon);
+      let value = parseInt(module.slice(lastColon + 1), 10);
+      Services.prefs.setIntPref(`logging.${key}`, value);
     }
   }
 
@@ -423,14 +455,6 @@ function stopLogging() {
   // clear the log file as well
   Services.prefs.clearUserPref("logging.config.LOG_FILE");
   updateLogFile();
-}
-
-function confirm() {
-  let div = document.getElementById("warning_message");
-  div.classList.remove("active");
-  div.hidden = true;
-  let warnBox = document.getElementById("warncheck");
-  Services.prefs.setBoolPref("network.warnOnAboutNetworking", warnBox.checked);
 }
 
 function show(button) {

@@ -26,6 +26,11 @@ ChromeUtils.defineModuleGetter(
 );
 ChromeUtils.defineModuleGetter(
   this,
+  "fxAccounts",
+  "resource://gre/modules/FxAccounts.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
   "FxAccounts",
   "resource://gre/modules/FxAccounts.jsm"
 );
@@ -41,8 +46,8 @@ ChromeUtils.defineModuleGetter(
 );
 ChromeUtils.defineModuleGetter(
   this,
-  "ReaderParent",
-  "resource:///modules/ReaderParent.jsm"
+  "AboutReaderParent",
+  "resource:///actors/AboutReaderParent.jsm"
 );
 ChromeUtils.defineModuleGetter(
   this,
@@ -53,6 +58,11 @@ ChromeUtils.defineModuleGetter(
   this,
   "UpdateUtils",
   "resource://gre/modules/UpdateUtils.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "BrowserUsageTelemetry",
+  "resource:///modules/BrowserUsageTelemetry.jsm"
 );
 
 // See LOG_LEVELS in Console.jsm. Common examples: "All", "Info", "Warn", & "Error".
@@ -164,7 +174,7 @@ var UITour = {
         query: aDocument => {
           // The pocket's urlbar page action button is pre-defined in the DOM.
           // It would be hidden if toggled off from the urlbar.
-          let node = aDocument.getElementById("pocket-button-box");
+          let node = aDocument.getElementById("pocket-button");
           if (node && !node.hidden) {
             return node;
           }
@@ -193,27 +203,6 @@ var UITour = {
           return searchbar.querySelector(".searchbar-search-button");
         },
         widgetName: "search-container",
-      },
-    ],
-    [
-      "searchPrefsLink",
-      {
-        query: aDocument => {
-          let element = null;
-          let popup = aDocument.getElementById("PopupSearchAutoComplete");
-          if (popup.state != "open") {
-            return null;
-          }
-          element = aDocument.getAnonymousElementByAttribute(
-            popup,
-            "anonid",
-            "search-settings"
-          );
-          if (!element || !UITour.isElementVisible(element)) {
-            return null;
-          }
-          return element;
-        },
       },
     ],
     [
@@ -332,8 +321,8 @@ var UITour = {
     );
   },
 
-  onPageEvent(aMessage, aEvent) {
-    let browser = aMessage.target;
+  onPageEvent(aEvent, aBrowser) {
+    let browser = aBrowser;
     let window = browser.ownerGlobal;
 
     // Does the window have tabs? We need to make sure since windowless browsers do
@@ -344,9 +333,7 @@ var UITour = {
       window = Services.wm.getMostRecentWindow("navigator:browser");
     }
 
-    let messageManager = browser.messageManager;
-
-    log.debug("onPageEvent:", aEvent.detail, aMessage);
+    log.debug("onPageEvent:", aEvent.detail);
 
     if (typeof aEvent.detail != "object") {
       log.warn("Malformed event - detail not an object");
@@ -417,7 +404,7 @@ var UITour = {
             }
 
             let buttons = [];
-            if (Array.isArray(data.buttons) && data.buttons.length > 0) {
+            if (Array.isArray(data.buttons) && data.buttons.length) {
               for (let buttonData of data.buttons) {
                 if (
                   typeof buttonData == "object" &&
@@ -428,7 +415,7 @@ var UITour = {
                   let button = {
                     label: buttonData.label,
                     callback: event => {
-                      this.sendPageCallback(messageManager, callback);
+                      this.sendPageCallback(browser, callback);
                     },
                   };
 
@@ -455,19 +442,12 @@ var UITour = {
             let infoOptions = {};
             if (typeof data.closeButtonCallbackID == "string") {
               infoOptions.closeButtonCallback = () => {
-                this.sendPageCallback(
-                  messageManager,
-                  data.closeButtonCallbackID
-                );
+                this.sendPageCallback(browser, data.closeButtonCallbackID);
               };
             }
             if (typeof data.targetCallbackID == "string") {
               infoOptions.targetCallback = details => {
-                this.sendPageCallback(
-                  messageManager,
-                  data.targetCallbackID,
-                  details
-                );
+                this.sendPageCallback(browser, data.targetCallbackID, details);
               };
             }
 
@@ -494,7 +474,7 @@ var UITour = {
         this.noautohideMenus.add(data.name);
         this.showMenu(window, data.name, () => {
           if (typeof data.showCallbackID == "string") {
-            this.sendPageCallback(messageManager, data.showCallbackID);
+            this.sendPageCallback(browser, data.showCallbackID);
           }
         });
         break;
@@ -518,7 +498,7 @@ var UITour = {
         }
 
         this.getConfiguration(
-          messageManager,
+          browser,
           window,
           data.configuration,
           data.callbackID
@@ -549,19 +529,21 @@ var UITour = {
         Promise.resolve()
           .then(() => {
             return data.email
-              ? FxAccounts.config.promiseEmailURI(data.email, "uitour")
-              : FxAccounts.config.promiseSignUpURI("uitour");
+              ? FxAccounts.config.promiseEmailURI(
+                  data.email,
+                  data.entrypoint || "uitour"
+                )
+              : FxAccounts.config.promiseConnectAccountURI(
+                  data.entrypoint || "uitour"
+                );
           })
           .then(uri => {
             const url = new URL(uri);
-            // Call our helper to validate extraURLCampaignParams and populate URLSearchParams
-            if (
-              !this._populateCampaignParams(url, data.extraURLCampaignParams)
-            ) {
+            // Call our helper to validate extraURLParams and populate URLSearchParams
+            if (!this._populateURLParams(url, data.extraURLParams)) {
               log.warn("showFirefoxAccounts: invalid campaign args specified");
               return;
             }
-
             // We want to replace the current tab.
             browser.loadURI(url.href, {
               triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
@@ -573,23 +555,25 @@ var UITour = {
       }
 
       case "showConnectAnotherDevice": {
-        FxAccounts.config.promiseConnectDeviceURI("uitour").then(uri => {
-          const url = new URL(uri);
-          // Call our helper to validate extraURLCampaignParams and populate URLSearchParams
-          if (!this._populateCampaignParams(url, data.extraURLCampaignParams)) {
-            log.warn(
-              "showConnectAnotherDevice: invalid campaign args specified"
-            );
-            return;
-          }
+        FxAccounts.config
+          .promiseConnectDeviceURI(data.entrypoint || "uitour")
+          .then(uri => {
+            const url = new URL(uri);
+            // Call our helper to validate extraURLParams and populate URLSearchParams
+            if (!this._populateURLParams(url, data.extraURLParams)) {
+              log.warn(
+                "showConnectAnotherDevice: invalid campaign args specified"
+              );
+              return;
+            }
 
-          // We want to replace the current tab.
-          browser.loadURI(url.href, {
-            triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
-              {}
-            ),
+            // We want to replace the current tab.
+            browser.loadURI(url.href, {
+              triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal(
+                {}
+              ),
+            });
           });
-        });
         break;
       }
 
@@ -606,7 +590,7 @@ var UITour = {
         let targetPromise = this.getTarget(window, data.name);
         targetPromise
           .then(target => {
-            this.addNavBarWidget(target, messageManager, data.callbackID);
+            this.addNavBarWidget(target, browser, data.callbackID);
           })
           .catch(log.error);
         break;
@@ -637,7 +621,7 @@ var UITour = {
             "browser.uitour.treatment." + name
           );
         } catch (ex) {}
-        this.sendPageCallback(messageManager, data.callbackID, { value });
+        this.sendPageCallback(browser, data.callbackID, { value });
         break;
       }
 
@@ -658,14 +642,14 @@ var UITour = {
             let searchbar = target.node;
 
             if (searchbar.textbox.open) {
-              this.sendPageCallback(messageManager, data.callbackID);
+              this.sendPageCallback(browser, data.callbackID);
             } else {
               let onPopupShown = () => {
                 searchbar.textbox.popup.removeEventListener(
                   "popupshown",
                   onPopupShown
                 );
-                this.sendPageCallback(messageManager, data.callbackID);
+                this.sendPageCallback(browser, data.callbackID);
               };
 
               searchbar.textbox.popup.addEventListener(
@@ -681,20 +665,20 @@ var UITour = {
 
       case "ping": {
         if (typeof data.callbackID == "string") {
-          this.sendPageCallback(messageManager, data.callbackID);
+          this.sendPageCallback(browser, data.callbackID);
         }
         break;
       }
 
       case "forceShowReaderIcon": {
-        ReaderParent.forceShowReaderIcon(browser);
+        AboutReaderParent.forceShowReaderIcon(browser);
         break;
       }
 
       case "toggleReaderMode": {
         let targetPromise = this.getTarget(window, "readerMode-urlBar");
         targetPromise.then(target => {
-          ReaderParent.toggleReaderMode({ target: target.node });
+          AboutReaderParent.toggleReaderMode({ target: target.node });
         });
         break;
       }
@@ -793,12 +777,9 @@ var UITour = {
 
           for (let browser of tourBrowsers) {
             let messageManager = browser.messageManager;
-            if (aSubject != messageManager) {
-              continue;
+            if (!messageManager || aSubject == messageManager) {
+              this.teardownTourForBrowser(window, browser, true);
             }
-
-            this.teardownTourForBrowser(window, browser, true);
-            return;
           }
         }
         break;
@@ -807,52 +788,74 @@ var UITour = {
   },
 
   // Given a string that is a JSONified represenation of an object with
-  // additional utm_* URL params that should be appended, validate and append
-  // them to the passed URL object. Returns true if the params
-  // were validated and appended, and false if the request should be ignored.
-  _populateCampaignParams(url, extraURLCampaignParams) {
+  // additional "flow_id", "flow_begin_time", "device_id", utm_* URL params
+  // that should be appended, validate and append them to the passed URL object.
+  // Returns true if the params were validated and appended, and false if the
+  // request should be ignored.
+  _populateURLParams(url, extraURLParams) {
+    const FLOW_ID_LENGTH = 64;
+    const FLOW_BEGIN_TIME_LENGTH = 13;
+
     // We are extra paranoid about what params we allow to be appended.
-    if (typeof extraURLCampaignParams == "undefined") {
+    if (typeof extraURLParams == "undefined") {
       // no params, so it's all good.
       return true;
     }
-    if (typeof extraURLCampaignParams != "string") {
-      log.warn(
-        "_populateCampaignParams: extraURLCampaignParams is not a string"
-      );
+    if (typeof extraURLParams != "string") {
+      log.warn("_populateURLParams: extraURLParams is not a string");
       return false;
     }
-    let campaignParams;
+    let urlParams;
     try {
-      if (extraURLCampaignParams) {
-        campaignParams = JSON.parse(extraURLCampaignParams);
-        if (typeof campaignParams != "object") {
+      if (extraURLParams) {
+        urlParams = JSON.parse(extraURLParams);
+        if (typeof urlParams != "object") {
           log.warn(
-            "_populateCampaignParams: extraURLCampaignParams is not a stringified object"
+            "_populateURLParams: extraURLParams is not a stringified object"
           );
           return false;
         }
       }
     } catch (ex) {
-      log.warn(
-        "_populateCampaignParams: extraURLCampaignParams is not a JSON object"
-      );
+      log.warn("_populateURLParams: extraURLParams is not a JSON object");
       return false;
     }
-    if (campaignParams) {
+    if (urlParams) {
+      // Expected to JSON parse the following for FxA flow parameters:
+      //
+      // {String} flow_id - Flow Id, such as '5445b28b8b7ba6cf71e345f8fff4bc59b2a514f78f3e2cc99b696449427fd445'
+      // {Number} flow_begin_time - Flow begin timestamp, such as 1590780440325
+      // {String} device_id - Device Id, such as '7e450f3337d3479b8582ea1c9bb5ba6c'
+      if (
+        (urlParams.flow_begin_time &&
+          urlParams.flow_begin_time.toString().length !==
+            FLOW_BEGIN_TIME_LENGTH) ||
+        (urlParams.flow_id && urlParams.flow_id.length !== FLOW_ID_LENGTH)
+      ) {
+        log.warn(
+          "_populateURLParams: flow parameters are not properly structured"
+        );
+        return false;
+      }
+
       // The regex that the name of each param must match - there's no
       // character restriction on the value - they will be escaped as necessary.
       let reSimpleString = /^[-_a-zA-Z0-9]*$/;
-      for (let name in campaignParams) {
-        let value = campaignParams[name];
+      for (let name in urlParams) {
+        let value = urlParams[name];
+        const validName =
+          name.startsWith("utm_") ||
+          name === "entrypoint_experiment" ||
+          name === "entrypoint_variation" ||
+          name === "flow_begin_time" ||
+          name === "flow_id" ||
+          name === "device_id";
         if (
           typeof name != "string" ||
-          typeof value != "string" ||
-          !name.startsWith("utm_") ||
-          value.length == 0 ||
+          !validName ||
           !reSimpleString.test(name)
         ) {
-          log.warn("_populateCampaignParams: invalid campaign param specified");
+          log.warn("_populateURLParams: invalid campaign param specified");
           return false;
         }
         url.searchParams.append(name, value);
@@ -860,7 +863,6 @@ var UITour = {
     }
     return true;
   },
-
   /**
    * Tear down a tour from a tab e.g. upon switching/closing tabs.
    */
@@ -960,10 +962,13 @@ var UITour = {
     return null;
   },
 
-  sendPageCallback(aMessageManager, aCallbackID, aData = {}) {
+  sendPageCallback(aBrowser, aCallbackID, aData = {}) {
     let detail = { data: aData, callbackID: aCallbackID };
     log.debug("sendPageCallback", detail);
-    aMessageManager.sendAsyncMessage("UITour:SendPageCallback", detail);
+    let contextToVisit = aBrowser.browsingContext;
+    let global = contextToVisit.currentWindowGlobal;
+    let actor = global.getActor("UITour");
+    actor.sendAsyncMessage("UITour:SendPageCallback", detail);
   },
 
   isElementVisible(aElement) {
@@ -1047,8 +1052,9 @@ var UITour = {
    * @param {ChromeWindow} aWindow the chrome window
    * @param {bool} aShouldOpen true means we should open the menu, otherwise false
    * @param {String} aMenuName "appMenu" or "pageActionPanel"
+   * @param {Object} aOptions Extra config arguments, example `autohide: true`.
    */
-  _setMenuStateForAnnotation(aWindow, aShouldOpen, aMenuName) {
+  _setMenuStateForAnnotation(aWindow, aShouldOpen, aMenuName, aOptions = {}) {
     log.debug("_setMenuStateForAnnotation: Menu is ", aMenuName);
     log.debug(
       "_setMenuStateForAnnotation: Menu is expected to be:",
@@ -1071,7 +1077,7 @@ var UITour = {
     if (aShouldOpen) {
       log.debug("_setMenuStateForAnnotation: Opening the menu");
       promise = new Promise(resolve => {
-        this.showMenu(aWindow, aMenuName, resolve);
+        this.showMenu(aWindow, aMenuName, resolve, aOptions);
       });
     } else if (!this.noautohideMenus.has(aMenuName)) {
       // If the menu was opened explictly by api user through `Mozilla.UITour.showMenu`,
@@ -1091,8 +1097,9 @@ var UITour = {
    *
    * @param {ChromeWindow} aChromeWindow The chrome window
    * @param {Object} aTarget The target on which we show highlight or show info.
+   * @param {Object} options Extra config arguments, example `autohide: true`.
    */
-  async _ensureTarget(aChromeWindow, aTarget) {
+  async _ensureTarget(aChromeWindow, aTarget, aOptions = {}) {
     let shouldOpenAppMenu = false;
     let shouldOpenPageActionPanel = false;
     if (this.targetIsInAppMenu(aTarget)) {
@@ -1144,7 +1151,8 @@ var UITour = {
       promise = this._setMenuStateForAnnotation(
         aChromeWindow,
         true,
-        menuToOpen
+        menuToOpen,
+        aOptions
       );
     }
     return promise;
@@ -1182,13 +1190,12 @@ var UITour = {
    *                      window.
    * @param aTarget    The element to highlight.
    * @param aEffect    (optional) The effect to use from UITour.highlightEffects or "none".
+   * @param aOptions   (optional) Extra config arguments, example `autohide: true`.
    * @see UITour.highlightEffects
    */
-  async showHighlight(aChromeWindow, aTarget, aEffect = "none") {
+  async showHighlight(aChromeWindow, aTarget, aEffect = "none", aOptions = {}) {
     let showHighlightElement = aAnchorEl => {
-      let highlighter = aChromeWindow.document.getElementById(
-        "UITourHighlight"
-      );
+      let highlighter = this.getHighlightAndMaybeCreate(aChromeWindow.document);
 
       let effect = aEffect;
       if (effect == "random") {
@@ -1266,7 +1273,7 @@ var UITour = {
     };
 
     try {
-      await this._ensureTarget(aChromeWindow, aTarget);
+      await this._ensureTarget(aChromeWindow, aTarget, aOptions);
       let anchorEl = await this._correctAnchor(aChromeWindow, aTarget);
       showHighlightElement(anchorEl);
     } catch (e) {
@@ -1275,7 +1282,7 @@ var UITour = {
   },
 
   _hideHighlightElement(aWindow) {
-    let highlighter = aWindow.document.getElementById("UITourHighlight");
+    let highlighter = this.getHighlightAndMaybeCreate(aWindow.document);
     this._removeAnnotationPanelMutationObserver(highlighter.parentElement);
     highlighter.parentElement.hidePopup();
     highlighter.removeAttribute("active");
@@ -1313,7 +1320,7 @@ var UITour = {
       aAnchorEl.focus();
 
       let document = aChromeWindow.document;
-      let tooltip = document.getElementById("UITourTooltip");
+      let tooltip = this.getTooltipAndMaybeCreate(document);
       let tooltipTitle = document.getElementById("UITourTooltipTitle");
       let tooltipDesc = document.getElementById("UITourTooltipDescription");
       let tooltipIcon = document.getElementById("UITourTooltipIcon");
@@ -1396,7 +1403,7 @@ var UITour = {
       );
 
       tooltip.setAttribute("targetName", aAnchor.targetName);
-      tooltip.hidden = false;
+
       let alignment = "bottomcenter topright";
       if (aAnchor.infoPanelPosition) {
         alignment = aAnchor.infoPanelPosition;
@@ -1426,9 +1433,42 @@ var UITour = {
     }
   },
 
+  getHighlightContainerAndMaybeCreate(document) {
+    let highlightContainer = document.getElementById(
+      "UITourHighlightContainer"
+    );
+    if (!highlightContainer) {
+      let wrapper = document.getElementById("UITourHighlightTemplate");
+      wrapper.replaceWith(wrapper.content);
+      highlightContainer = document.getElementById("UITourHighlightContainer");
+    }
+
+    return highlightContainer;
+  },
+
+  getTooltipAndMaybeCreate(document) {
+    let tooltip = document.getElementById("UITourTooltip");
+    if (!tooltip) {
+      let wrapper = document.getElementById("UITourTooltipTemplate");
+      wrapper.replaceWith(wrapper.content);
+      tooltip = document.getElementById("UITourTooltip");
+    }
+    return tooltip;
+  },
+
+  getHighlightAndMaybeCreate(document) {
+    let highlight = document.getElementById("UITourHighlight");
+    if (!highlight) {
+      let wrapper = document.getElementById("UITourHighlightTemplate");
+      wrapper.replaceWith(wrapper.content);
+      highlight = document.getElementById("UITourHighlight");
+    }
+    return highlight;
+  },
+
   isInfoOnTarget(aChromeWindow, aTargetName) {
     let document = aChromeWindow.document;
-    let tooltip = document.getElementById("UITourTooltip");
+    let tooltip = this.getTooltipAndMaybeCreate(document);
     return (
       tooltip.getAttribute("targetName") == aTargetName &&
       tooltip.state != "closed"
@@ -1437,7 +1477,7 @@ var UITour = {
 
   _hideInfoElement(aWindow) {
     let document = aWindow.document;
-    let tooltip = document.getElementById("UITourTooltip");
+    let tooltip = this.getTooltipAndMaybeCreate(document);
     this._removeAnnotationPanelMutationObserver(tooltip);
     tooltip.hidePopup();
     let tooltipButtons = document.getElementById("UITourTooltipButtons");
@@ -1452,7 +1492,7 @@ var UITour = {
     this._setMenuStateForAnnotation(aWindow, false, "pageActionPanel");
   },
 
-  showMenu(aWindow, aMenuName, aOpenCallback = null) {
+  showMenu(aWindow, aMenuName, aOpenCallback = null, aOptions = {}) {
     log.debug("showMenu:", aMenuName);
     function openMenuButton(aMenuBtn) {
       if (!aMenuBtn || !aMenuBtn.hasMenu() || aMenuBtn.open) {
@@ -1483,7 +1523,9 @@ var UITour = {
         menu.show = () => aWindow.BrowserPageActions.showPanel();
       }
 
-      menu.node.setAttribute("noautohide", "true");
+      if (!aOptions.autohide) {
+        menu.node.setAttribute("noautohide", "true");
+      }
       // If the popup is already opened, don't recreate the widget as it may cause a flicker.
       if (menu.node.state != "open") {
         this.recreatePopup(menu.node);
@@ -1586,10 +1628,10 @@ var UITour = {
     let annotationElements = new Map([
       // [annotationElement (panel), method to hide the annotation]
       [
-        win.document.getElementById("UITourHighlightContainer"),
+        this.getHighlightContainerAndMaybeCreate(win.document),
         hideHighlightMethod,
       ],
-      [win.document.getElementById("UITourTooltip"), hideInfoMethod],
+      [this.getTooltipAndMaybeCreate(win.document), hideInfoMethod],
     ]);
     annotationElements.forEach((hideMethod, annotationElement) => {
       if (annotationElement.state != "closed") {
@@ -1657,20 +1699,20 @@ var UITour = {
     aPanel.hidden = false;
   },
 
-  getConfiguration(aMessageManager, aWindow, aConfiguration, aCallbackID) {
+  getConfiguration(aBrowser, aWindow, aConfiguration, aCallbackID) {
     switch (aConfiguration) {
       case "appinfo":
-        this.getAppInfo(aMessageManager, aWindow, aCallbackID);
+        this.getAppInfo(aBrowser, aWindow, aCallbackID);
         break;
       case "availableTargets":
-        this.getAvailableTargets(aMessageManager, aWindow, aCallbackID);
+        this.getAvailableTargets(aBrowser, aWindow, aCallbackID);
         break;
       case "search":
       case "selectedSearchEngine":
         Services.search
           .getVisibleEngines()
           .then(engines => {
-            this.sendPageCallback(aMessageManager, aCallbackID, {
+            this.sendPageCallback(aBrowser, aCallbackID, {
               searchEngineIdentifier: Services.search.defaultEngine.identifier,
               engines: engines
                 .filter(engine => engine.identifier)
@@ -1678,14 +1720,24 @@ var UITour = {
             });
           })
           .catch(() => {
-            this.sendPageCallback(aMessageManager, aCallbackID, {
+            this.sendPageCallback(aBrowser, aCallbackID, {
               engines: [],
               searchEngineIdentifier: "",
             });
           });
         break;
+      case "fxa":
+        this.getFxA(aBrowser, aCallbackID);
+        break;
+      case "fxaConnections":
+        this.getFxAConnections(aBrowser, aCallbackID);
+        break;
+
+      // NOTE: 'sync' is deprecated and should be removed in Firefox 73 (because
+      // by then, all consumers will have upgraded to use 'fxa' in that version
+      // and later.)
       case "sync":
-        this.sendPageCallback(aMessageManager, aCallbackID, {
+        this.sendPageCallback(aBrowser, aCallbackID, {
           setup: Services.prefs.prefHasUserValue("services.sync.username"),
           desktopDevices: Services.prefs.getIntPref(
             "services.sync.clients.devices.desktop",
@@ -1703,7 +1755,7 @@ var UITour = {
         break;
       case "canReset":
         this.sendPageCallback(
-          aMessageManager,
+          aBrowser,
           aCallbackID,
           ResetProfile.resetSupported()
         );
@@ -1736,7 +1788,110 @@ var UITour = {
     }
   },
 
-  getAppInfo(aMessageManager, aWindow, aCallbackID) {
+  // Get data about the local FxA account. This should be a low-latency request
+  // - everything returned here can be obtained locally without hitting any
+  // remote servers. See also `getFxAConnections()`
+  getFxA(aBrowser, aCallbackID) {
+    (async () => {
+      let setup = !!(await fxAccounts.getSignedInUser());
+      let result = { setup };
+      if (!setup) {
+        this.sendPageCallback(aBrowser, aCallbackID, result);
+        return;
+      }
+      // We are signed in so need to build a richer result.
+      // Each of the "browser services" - currently only "sync" is supported
+      result.browserServices = {};
+      let hasSync = Services.prefs.prefHasUserValue("services.sync.username");
+      if (hasSync) {
+        result.browserServices.sync = {
+          // We always include 'setup' for b/w compatibility.
+          setup: true,
+          desktopDevices: Services.prefs.getIntPref(
+            "services.sync.clients.devices.desktop",
+            0
+          ),
+          mobileDevices: Services.prefs.getIntPref(
+            "services.sync.clients.devices.mobile",
+            0
+          ),
+          totalDevices: Services.prefs.getIntPref(
+            "services.sync.numClients",
+            0
+          ),
+        };
+      }
+      // And the account state.
+      result.accountStateOK = await fxAccounts.hasLocalSession();
+      this.sendPageCallback(aBrowser, aCallbackID, result);
+    })().catch(err => {
+      log.error(err);
+      this.sendPageCallback(aBrowser, aCallbackID, {});
+    });
+  },
+
+  // Get data about the FxA account "connections" (ie, other devices, other
+  // apps, etc. Note that this is likely to be a high-latency request - we will
+  // usually hit the FxA servers to obtain this info.
+  getFxAConnections(aBrowser, aCallbackID) {
+    (async () => {
+      let setup = !!(await fxAccounts.getSignedInUser());
+      let result = { setup };
+      if (!setup) {
+        this.sendPageCallback(aBrowser, aCallbackID, result);
+        return;
+      }
+      // We are signed in so need to build a richer result.
+      let devices = fxAccounts.device.recentDeviceList;
+      // A recent device list is fine, but if we don't even have that we should
+      // wait for it to be fetched.
+      if (!devices) {
+        try {
+          await fxAccounts.device.refreshDeviceList();
+        } catch (ex) {
+          log.warn("failed to fetch device list", ex);
+        }
+        devices = fxAccounts.device.recentDeviceList;
+      }
+      if (devices) {
+        // A falsey `devices` should be impossible, so we omit `devices` from
+        // the result object so the consuming page can try to differentiate
+        // between "no additional devices" and "something's wrong"
+        result.numOtherDevices = Math.max(0, devices.length - 1);
+        result.numDevicesByType = devices
+          .filter(d => !d.isCurrentDevice)
+          .reduce((accum, d) => {
+            let type = d.type || "unknown";
+            accum[type] = (accum[type] || 0) + 1;
+            return accum;
+          }, {});
+      }
+
+      try {
+        // Each of the "account services", which we turn into a map keyed by ID.
+        let attachedClients = await fxAccounts.listAttachedOAuthClients();
+        result.accountServices = attachedClients
+          .filter(c => !!c.id)
+          .reduce((accum, c) => {
+            accum[c.id] = {
+              id: c.id,
+              lastAccessedWeeksAgo: c.lastAccessedDaysAgo
+                ? Math.floor(c.lastAccessedDaysAgo / 7)
+                : null,
+            };
+            return accum;
+          }, {});
+      } catch (ex) {
+        log.warn("Failed to build the attached clients list", ex);
+      }
+      this.sendPageCallback(aBrowser, aCallbackID, result);
+    })().catch(err => {
+      log.error(err);
+      this.sendPageCallback(aBrowser, aCallbackID, {});
+    });
+  },
+
+  getAppInfo(aBrowser, aWindow, aCallbackID) {
     (async () => {
       let appinfo = { version: Services.appinfo.version };
 
@@ -1792,14 +1947,14 @@ var UITour = {
       appinfo.profileCreatedWeeksAgo = createdWeeksAgo;
       appinfo.profileResetWeeksAgo = resetWeeksAgo;
 
-      this.sendPageCallback(aMessageManager, aCallbackID, appinfo);
+      this.sendPageCallback(aBrowser, aCallbackID, appinfo);
     })().catch(err => {
       log.error(err);
-      this.sendPageCallback(aMessageManager, aCallbackID, {});
+      this.sendPageCallback(aBrowser, aCallbackID, {});
     });
   },
 
-  getAvailableTargets(aMessageManager, aChromeWindow, aCallbackID) {
+  getAvailableTargets(aBrowser, aChromeWindow, aCallbackID) {
     (async () => {
       let window = aChromeWindow;
       let data = this.availableTargetsCache.get(window);
@@ -1808,7 +1963,7 @@ var UITour = {
           "getAvailableTargets: Using cached targets list",
           data.targets.join(",")
         );
-        this.sendPageCallback(aMessageManager, aCallbackID, data);
+        this.sendPageCallback(aBrowser, aCallbackID, data);
         return;
       }
 
@@ -1829,16 +1984,16 @@ var UITour = {
         targets: targetNames,
       };
       this.availableTargetsCache.set(window, data);
-      this.sendPageCallback(aMessageManager, aCallbackID, data);
+      this.sendPageCallback(aBrowser, aCallbackID, data);
     })().catch(err => {
       log.error(err);
-      this.sendPageCallback(aMessageManager, aCallbackID, {
+      this.sendPageCallback(aBrowser, aCallbackID, {
         targets: [],
       });
     });
   },
 
-  addNavBarWidget(aTarget, aMessageManager, aCallbackID) {
+  addNavBarWidget(aTarget, aBrowser, aCallbackID) {
     if (aTarget.node) {
       log.error(
         "addNavBarWidget: can't add a widget already present:",
@@ -1862,7 +2017,12 @@ var UITour = {
       aTarget.widgetName,
       CustomizableUI.AREA_NAVBAR
     );
-    this.sendPageCallback(aMessageManager, aCallbackID);
+    BrowserUsageTelemetry.recordWidgetChange(
+      aTarget.widgetName,
+      CustomizableUI.AREA_NAVBAR,
+      "uitour"
+    );
+    this.sendPageCallback(aBrowser, aCallbackID);
   },
 
   _addAnnotationPanelMutationObserver(aPanelEl) {
@@ -1932,25 +2092,20 @@ var UITour = {
       }
 
       for (let browser of openTourBrowsers) {
-        let messageManager = browser.messageManager;
-        if (!messageManager) {
-          log.error(
-            "notify: Trying to notify a browser without a messageManager",
-            browser
-          );
-          continue;
-        }
         let detail = {
           event: eventName,
           params,
         };
-        messageManager.sendAsyncMessage("UITour:SendPageNotification", detail);
+        let contextToVisit = browser.browsingContext;
+        let global = contextToVisit.currentWindowGlobal;
+        let actor = global.getActor("UITour");
+        actor.sendAsyncMessage("UITour:SendPageNotification", detail);
       }
     }
   },
 };
 
-this.UITour.init();
+UITour.init();
 
 /**
  * UITour Health Report

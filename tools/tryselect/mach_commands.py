@@ -9,6 +9,7 @@ import importlib
 import os
 import sys
 
+import six
 from mach.decorators import (
     CommandProvider,
     Command,
@@ -56,7 +57,7 @@ class TryConfig(object):
         choices = Registrar.command_handlers['try'].subcommand_handlers.keys()
 
         return [
-            ('try.default', 'string', desc, 'syntax', {'choices': choices}),
+            ('try.default', 'string', desc, 'auto', {'choices': choices}),
             ('try.maxhistory', 'int', "Maximum number of pushes to save in history.", 10),
         ]
 
@@ -101,14 +102,9 @@ class TrySelect(MachCommandBase):
         special preset handling. They can all save and load presets the same
         way.
         """
-        from tryselect.preset import migrate_old_presets
         from tryselect.util.dicttools import merge
 
         user_presets = self.presets.handlers[0]
-
-        # TODO: Remove after Jan 1, 2020.
-        migrate_old_presets(user_presets)
-
         if preset_action == 'list':
             self.presets.list()
             sys.exit()
@@ -160,22 +156,29 @@ class TrySelect(MachCommandBase):
 
     def handle_try_config(self, **kwargs):
         from tryselect.util.dicttools import merge
+
+        to_validate = []
         kwargs.setdefault('try_config', {})
-        for cls in self.parser.templates.itervalues():
+        for cls in six.itervalues(self.parser.task_configs):
             try_config = cls.try_config(**kwargs)
             if try_config is not None:
+                to_validate.append(cls)
                 kwargs['try_config'] = merge(kwargs['try_config'], try_config)
 
             for name in cls.dests:
                 del kwargs[name]
 
+        # Validate task_configs after they have all been parsed to avoid
+        # depending on the order they were processed.
+        for cls in to_validate:
+            cls.validate(**kwargs)
         return kwargs
 
     def run(self, **kwargs):
         if 'preset' in self.parser.common_groups:
             kwargs = self.handle_presets(**kwargs)
 
-        if self.parser.templates:
+        if self.parser.task_configs:
             kwargs = self.handle_try_config(**kwargs)
 
         mod = importlib.import_module('tryselect.selectors.{}'.format(self.subcommand))
@@ -193,9 +196,9 @@ class TrySelect(MachCommandBase):
         that provides its own set of command line arguments and are
         listed below.
 
-        If no subcommand is specified, the `syntax` selector is run by
-        default. Run |mach try syntax --help| for more information on
-        scheduling with the `syntax` selector.
+        If no subcommand is specified, the `auto` selector is run by
+        default. Run |mach try auto --help| for more information on
+        scheduling with the `auto` selector.
         """
         # We do special handling of presets here so that `./mach try --preset foo`
         # works no matter what subcommand 'foo' was saved with.
@@ -215,11 +218,34 @@ class TrySelect(MachCommandBase):
                 description='Select tasks on try using a fuzzy finder',
                 parser=get_parser('fuzzy'))
     def try_fuzzy(self, **kwargs):
-        """Select which tasks to use with fzf.
+        """Select which tasks to run with a fuzzy finding interface (fzf).
 
-        This selector runs all task labels through a fuzzy finding interface.
-        All selected task labels and their dependencies will be scheduled on
-        try.
+        When entering the fzf interface you'll be confronted by two panes. The
+        one on the left contains every possible task you can schedule, the one
+        on the right contains the list of selected tasks. In other words, the
+        tasks that will be scheduled once you you press <enter>.
+
+        At first fzf will automatically select whichever task is under your
+        cursor, which simplifies the case when you are looking for a single
+        task. But normally you'll want to select many tasks. To accomplish
+        you'll generally start by typing a query in the search bar to filter
+        down the list of tasks (see Extended Search below). Then you'll either:
+
+        A) Move the cursor to each task you want and press <tab> to select it.
+        Notice it now shows up in the pane to the right.
+
+        OR
+
+        B) Press <ctrl-a> to select every task that matches your filter.
+
+        You can delete your query, type a new one and select further tasks as
+        many times as you like. Once you are happy with your selection, press
+        <enter> to push the selected tasks to try.
+
+        All selected task labels and their dependencies will be scheduled. This
+        means you can select a test task and its build will automatically be
+        filled in.
+
 
         Keyboard Shortcuts
         ------------------
@@ -227,20 +253,22 @@ class TrySelect(MachCommandBase):
         When in the fuzzy finder interface, start typing to filter down the
         task list. Then use the following keyboard shortcuts to select tasks:
 
-          accept: <enter>
-          cancel: <ctrl-c> or <esc>
-          cursor-up: <ctrl-k> or <up>
-          cursor-down: <ctrl-j> or <down>
-          toggle-select-down: <tab>
-          toggle-select-up: <shift-tab>
-          select-all: <ctrl-a>
-          deselect-all: <ctrl-d>
-          toggle-all: <ctrl-t>
-          clear-input: <alt-bspace>
+          Ctrl-K / Up    => Move cursor up
+          Ctrl-J / Down  => Move cursor down
+          Tab            => Select task + move cursor down
+          Shift-Tab      => Select task + move cursor up
+          Ctrl-A         => Select all currently filtered tasks
+          Ctrl-D         => De-select all currently filtered tasks
+          Ctrl-T         => Toggle select all currently filtered tasks
+          Alt-Bspace     => Clear query from input bar
+          Enter          => Accept selection and exit
+          Ctrl-C / Esc   => Cancel selection and exit
+          ?              => Toggle preview pane
 
         There are many more shortcuts enabled by default, you can also define
         your own shortcuts by setting `--bind` in the $FZF_DEFAULT_OPTS
         environment variable. See `man fzf` for more info.
+
 
         Extended Search
         ---------------
@@ -256,6 +284,13 @@ class TrySelect(MachCommandBase):
         For example:
 
           ^start 'exact | !ignore fuzzy end$
+
+
+        Documentation
+        -------------
+
+        For more detailed documentation, please see:
+        https://firefox-source-docs.mozilla.org/tools/try/selectors/fuzzy.html
         """
         if kwargs.pop('interactive'):
             kwargs['query'].append('INTERACTIVE')
@@ -271,6 +306,8 @@ class TrySelect(MachCommandBase):
             kwargs_copy['push'] = False
             kwargs_copy['save'] = None
             kwargs['query'] = self.run(save_query=True, **kwargs_copy)
+            if not kwargs['query']:
+                return
 
         if kwargs.get('paths'):
             kwargs['test_paths'] = kwargs['paths']
@@ -294,6 +331,15 @@ class TrySelect(MachCommandBase):
         path = os.path.join('tools', 'tryselect', 'selectors', 'chooser', 'requirements.txt')
         self.virtualenv_manager.install_pip_requirements(path, quiet=True)
 
+        return self.run(**kwargs)
+
+    @SubCommand('try',
+                'auto',
+                description='Automatically determine which tasks to run. This runs the same '
+                            'set of tasks that would be run on autoland. This '
+                            'selector is EXPERIMENTAL.',
+                parser=get_parser('auto'))
+    def try_auto(self, **kwargs):
         return self.run(**kwargs)
 
     @SubCommand('try',
@@ -392,5 +438,16 @@ class TrySelect(MachCommandBase):
                 parser=get_parser('release'))
     def try_release(self, **kwargs):
         """Push the current tree to try, configured for a staging release.
+        """
+        return self.run(**kwargs)
+
+    @SubCommand('try',
+                'scriptworker',
+                description='Run scriptworker tasks against a recent release.',
+                parser=get_parser('scriptworker'))
+    def try_scriptworker(self, **kwargs):
+        """Run scriptworker tasks against a recent release.
+
+        Requires VPN and shipit access.
         """
         return self.run(**kwargs)

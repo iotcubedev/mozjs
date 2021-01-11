@@ -16,16 +16,10 @@
 #include "nsAnnoProtocolHandler.h"
 #include "nsFaviconService.h"
 #include "nsIChannel.h"
-#include "nsIInputStreamChannel.h"
-#include "nsILoadGroup.h"
-#include "nsIStandardURL.h"
-#include "nsIStringStream.h"
 #include "nsIInputStream.h"
 #include "nsISupportsUtils.h"
 #include "nsIURI.h"
-#include "nsIURIMutator.h"
 #include "nsNetUtil.h"
-#include "nsIOutputStream.h"
 #include "nsInputStreamPump.h"
 #include "nsContentUtils.h"
 #include "nsServiceManagerUtils.h"
@@ -33,6 +27,8 @@
 #include "SimpleChannel.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/storage.h"
+#include "mozIStorageResultSet.h"
+#include "mozIStorageRow.h"
 #include "Helpers.h"
 #include "FaviconHelpers.h"
 
@@ -49,15 +45,15 @@ static nsresult GetDefaultIcon(nsIChannel* aOriginalChannel,
                                nsIChannel** aChannel) {
   nsCOMPtr<nsIURI> defaultIconURI;
   nsresult rv = NS_NewURI(getter_AddRefs(defaultIconURI),
-                          NS_LITERAL_CSTRING(FAVICON_DEFAULT_URL));
+                          nsLiteralCString(FAVICON_DEFAULT_URL));
   NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsILoadInfo> loadInfo = aOriginalChannel->LoadInfo();
   rv = NS_NewChannelInternal(aChannel, defaultIconURI, loadInfo);
   NS_ENSURE_SUCCESS(rv, rv);
   Unused << (*aChannel)->SetContentType(
-      NS_LITERAL_CSTRING(FAVICON_DEFAULT_MIMETYPE));
+      nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
   Unused << aOriginalChannel->SetContentType(
-      NS_LITERAL_CSTRING(FAVICON_DEFAULT_MIMETYPE));
+      nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
   return NS_OK;
 }
 
@@ -107,9 +103,9 @@ class faviconAsyncLoader : public AsyncStatementCallback {
 
       // Eventually override the default mimeType for svg.
       if (width == UINT16_MAX) {
-        rv = mChannel->SetContentType(NS_LITERAL_CSTRING(SVG_MIME_TYPE));
+        rv = mChannel->SetContentType(nsLiteralCString(SVG_MIME_TYPE));
       } else {
-        rv = mChannel->SetContentType(NS_LITERAL_CSTRING(PNG_MIME_TYPE));
+        rv = mChannel->SetContentType(nsLiteralCString(PNG_MIME_TYPE));
       }
       NS_ENSURE_SUCCESS(rv, rv);
 
@@ -165,7 +161,7 @@ class faviconAsyncLoader : public AsyncStatementCallback {
   }
 
  protected:
-  virtual ~faviconAsyncLoader() {}
+  virtual ~faviconAsyncLoader() = default;
 
  private:
   nsCOMPtr<nsIChannel> mChannel;
@@ -279,7 +275,7 @@ nsresult nsAnnoProtocolHandler::NewFaviconChannel(nsIURI* aURI,
           rv = chan->AsyncOpen(listener);
           NS_ENSURE_SUCCESS(rv, Err(rv));
 
-          return RequestOrReason(chan.forget());
+          return RequestOrReason(std::move(chan));
         };
 
         // Now we go ahead and get our data asynchronously for the favicon.

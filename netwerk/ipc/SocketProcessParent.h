@@ -7,7 +7,9 @@
 #define mozilla_net_SocketProcessParent_h
 
 #include "mozilla/UniquePtr.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/CrashReporterHelper.h"
+#include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/net/PSocketProcessParent.h"
 
 namespace mozilla {
@@ -17,10 +19,6 @@ class MemoryReport;
 class MemoryReportRequestHost;
 }  // namespace dom
 
-namespace ipc {
-class CrashReporterHost;
-}  // namespace ipc
-
 namespace net {
 
 class SocketProcessHost;
@@ -29,7 +27,8 @@ class SocketProcessHost;
 // by SocketProcessHost.
 class SocketProcessParent final
     : public PSocketProcessParent,
-      public ipc::CrashReporterHelper<GeckoProcessType_Content> {
+      public ipc::CrashReporterHelper<GeckoProcessType_Socket>,
+      public ipc::ParentToChildStreamActorManager {
  public:
   friend class SocketProcessHost;
 
@@ -53,27 +52,73 @@ class SocketProcessParent final
   mozilla::ipc::IPCResult RecvRecordDiscardedData(
       const DiscardedData& aDiscardedData);
 
-  PWebrtcProxyChannelParent* AllocPWebrtcProxyChannelParent(
-      const TabId& aTabId);
-  bool DeallocPWebrtcProxyChannelParent(PWebrtcProxyChannelParent* aActor);
-  PDNSRequestParent* AllocPDNSRequestParent(
-      const nsCString& aHost, const OriginAttributes& aOriginAttributes,
+  PWebrtcTCPSocketParent* AllocPWebrtcTCPSocketParent(
+      const Maybe<TabId>& aTabId);
+  bool DeallocPWebrtcTCPSocketParent(PWebrtcTCPSocketParent* aActor);
+  already_AddRefed<PDNSRequestParent> AllocPDNSRequestParent(
+      const nsCString& aHost, const nsCString& aTrrServer,
+      const uint16_t& aType, const OriginAttributes& aOriginAttributes,
       const uint32_t& aFlags);
   virtual mozilla::ipc::IPCResult RecvPDNSRequestConstructor(
       PDNSRequestParent* actor, const nsCString& hostName,
+      const nsCString& trrServer, const uint16_t& type,
       const OriginAttributes& aOriginAttributes,
       const uint32_t& flags) override;
-  bool DeallocPDNSRequestParent(PDNSRequestParent*);
-  PProxyConfigLookupParent* AllocPProxyConfigLookupParent();
-  virtual mozilla::ipc::IPCResult RecvPProxyConfigLookupConstructor(
-      PProxyConfigLookupParent* aActor) override;
-  bool DeallocPProxyConfigLookupParent(PProxyConfigLookupParent* aActor);
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
   bool SendRequestMemoryReport(const uint32_t& aGeneration,
                                const bool& aAnonymize,
                                const bool& aMinimizeMemoryUsage,
                                const Maybe<ipc::FileDescriptor>& aDMDFile);
+
+  PFileDescriptorSetParent* AllocPFileDescriptorSetParent(
+      const FileDescriptor& fd);
+  bool DeallocPFileDescriptorSetParent(PFileDescriptorSetParent* aActor);
+
+  PChildToParentStreamParent* AllocPChildToParentStreamParent();
+  bool DeallocPChildToParentStreamParent(PChildToParentStreamParent* aActor);
+  PParentToChildStreamParent* AllocPParentToChildStreamParent();
+  bool DeallocPParentToChildStreamParent(PParentToChildStreamParent* aActor);
+
+  PParentToChildStreamParent* SendPParentToChildStreamConstructor(
+      PParentToChildStreamParent* aActor) override;
+  PFileDescriptorSetParent* SendPFileDescriptorSetConstructor(
+      const FileDescriptor& aFD) override;
+
+  mozilla::ipc::IPCResult RecvObserveHttpActivity(
+      const HttpActivityArgs& aArgs, const uint32_t& aActivityType,
+      const uint32_t& aActivitySubtype, const PRTime& aTimestamp,
+      const uint64_t& aExtraSizeData, const nsCString& aExtraStringData);
+
+  mozilla::ipc::IPCResult RecvInitBackground(
+      Endpoint<PBackgroundParent>&& aEndpoint);
+
+  already_AddRefed<PAltServiceParent> AllocPAltServiceParent();
+
+  mozilla::ipc::IPCResult RecvGetTLSClientCert(
+      const nsCString& aHostName, const OriginAttributes& aOriginAttributes,
+      const int32_t& aPort, const uint32_t& aProviderFlags,
+      const uint32_t& aProviderTlsFlags, const ByteArray& aServerCert,
+      Maybe<ByteArray>&& aClientCert, nsTArray<ByteArray>&& aCollectedCANames,
+      bool* aSucceeded, ByteArray* aOutCert, ByteArray* aOutKey,
+      nsTArray<ByteArray>* aBuiltChain);
+
+  already_AddRefed<PProxyConfigLookupParent> AllocPProxyConfigLookupParent(
+      nsIURI* aURI, const uint32_t& aProxyResolveFlags);
+  mozilla::ipc::IPCResult RecvPProxyConfigLookupConstructor(
+      PProxyConfigLookupParent* aActor, nsIURI* aURI,
+      const uint32_t& aProxyResolveFlags) override;
+
+  mozilla::ipc::IPCResult RecvCachePushCheck(
+      nsIURI* aPushedURL, OriginAttributes&& aOriginAttributes,
+      nsCString&& aRequestString, CachePushCheckResolver&& aResolver);
+
+  already_AddRefed<PRemoteLazyInputStreamParent>
+  AllocPRemoteLazyInputStreamParent(const nsID& aID, const uint64_t& aSize);
+
+  mozilla::ipc::IPCResult RecvPRemoteLazyInputStreamConstructor(
+      PRemoteLazyInputStreamParent* aActor, const nsID& aID,
+      const uint64_t& aSize);
 
  private:
   SocketProcessHost* mHost;

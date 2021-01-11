@@ -42,7 +42,7 @@ class MP4DemuxerBinding {
       : resource(new MockMediaResource(aFileName)),
         mDemuxer(new MP4Demuxer(resource)),
         mTaskQueue(
-            new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK))),
+            new TaskQueue(GetMediaThreadPool(MediaThreadType::CONTROLLER))),
         mIndex(0) {
     EXPECT_EQ(NS_OK, resource->Open());
   }
@@ -143,7 +143,7 @@ class MP4DemuxerBinding {
     Unused << mTaskQueue->Dispatch(r.forget());
   }
 
-  virtual ~MP4DemuxerBinding() {}
+  virtual ~MP4DemuxerBinding() = default;
 };
 
 TEST(MP4Demuxer, Seek)

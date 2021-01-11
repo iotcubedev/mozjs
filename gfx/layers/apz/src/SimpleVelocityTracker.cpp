@@ -10,8 +10,8 @@
 #include "mozilla/StaticPrefs_apz.h"
 #include "mozilla/StaticPtr.h"  // for StaticAutoPtr
 
-#define SVT_LOG(...)
-// #define SVT_LOG(...) printf_stderr("SimpleVelocityTracker: " __VA_ARGS__)
+static mozilla::LazyLogModule sApzSvtLog("apz.simplevelocitytracker");
+#define SVT_LOG(...) MOZ_LOG(sApzSvtLog, LogLevel::Debug, (__VA_ARGS__))
 
 namespace mozilla {
 namespace layers {
@@ -21,72 +21,56 @@ namespace layers {
 // delta can be really small, which can make the velocity computation very
 // volatile. To avoid this we impose a minimum time delta below which we do
 // not recompute the velocity.
-const uint32_t MIN_VELOCITY_SAMPLE_TIME_MS = 5;
+const TimeDuration MIN_VELOCITY_SAMPLE_TIME = TimeDuration::FromMilliseconds(5);
 
 extern StaticAutoPtr<ComputedTimingFunction> gVelocityCurveFunction;
 
 SimpleVelocityTracker::SimpleVelocityTracker(Axis* aAxis)
-    : mAxis(aAxis), mVelocitySampleTimeMs(0), mVelocitySamplePos(0) {}
+    : mAxis(aAxis), mVelocitySamplePos(0) {}
 
 void SimpleVelocityTracker::StartTracking(ParentLayerCoord aPos,
-                                          uint32_t aTimestampMs) {
+                                          TimeStamp aTimestamp) {
   Clear();
-  mVelocitySampleTimeMs = aTimestampMs;
+  mVelocitySampleTime = aTimestamp;
   mVelocitySamplePos = aPos;
 }
 
 Maybe<float> SimpleVelocityTracker::AddPosition(ParentLayerCoord aPos,
-                                                uint32_t aTimestampMs) {
-  if (aTimestampMs <= mVelocitySampleTimeMs + MIN_VELOCITY_SAMPLE_TIME_MS) {
-    // See also the comment on MIN_VELOCITY_SAMPLE_TIME_MS.
-    // We still update mPos so that the positioning is correct (and we don't run
-    // into problems like bug 1042734) but the velocity will remain where it
-    // was. In particular we don't update either mVelocitySampleTimeMs or
-    // mVelocitySamplePos so that eventually when we do get an event with the
-    // required time delta we use the corresponding distance delta as well.
-    SVT_LOG("%p|%s skipping velocity computation for small time delta %dms\n",
-            mAxis->mAsyncPanZoomController, mAxis->Name(),
-            (aTimestampMs - mVelocitySampleTimeMs));
+                                                TimeStamp aTimestamp) {
+  if (aTimestamp <= mVelocitySampleTime + MIN_VELOCITY_SAMPLE_TIME) {
+    // See also the comment on MIN_VELOCITY_SAMPLE_TIME.
+    // We don't update either mVelocitySampleTime or mVelocitySamplePos so that
+    // eventually when we do get an event with the required time delta we use
+    // the corresponding distance delta as well.
+    SVT_LOG("%p|%s skipping velocity computation for small time delta %f ms\n",
+            mAxis->OpaqueApzcPointer(), mAxis->Name(),
+            (aTimestamp - mVelocitySampleTime).ToMilliseconds());
     return Nothing();
   }
 
-  float newVelocity = (float)(mVelocitySamplePos - aPos) /
-                      (float)(aTimestampMs - mVelocitySampleTimeMs);
+  float newVelocity =
+      (float)(mVelocitySamplePos - aPos) /
+      (float)(aTimestamp - mVelocitySampleTime).ToMilliseconds();
 
   newVelocity = ApplyFlingCurveToVelocity(newVelocity);
 
   SVT_LOG("%p|%s updating velocity to %f with touch\n",
-          mAxis->mAsyncPanZoomController, mAxis->Name(), newVelocity);
-  mVelocitySampleTimeMs = aTimestampMs;
+          mAxis->OpaqueApzcPointer(), mAxis->Name(), newVelocity);
+  mVelocitySampleTime = aTimestamp;
   mVelocitySamplePos = aPos;
 
-  AddVelocityToQueue(aTimestampMs, newVelocity);
+  AddVelocityToQueue(aTimestamp, newVelocity);
 
   return Some(newVelocity);
 }
 
-float SimpleVelocityTracker::HandleDynamicToolbarMovement(
-    uint32_t aStartTimestampMs, uint32_t aEndTimestampMs,
-    ParentLayerCoord aDelta) {
-  float timeDelta = aEndTimestampMs - aStartTimestampMs;
-  MOZ_ASSERT(timeDelta != 0);
-  // Negate the delta to convert from spatial coordinates (e.g. toolbar
-  // has moved up --> negative delta) to scroll coordinates (e.g. toolbar
-  // has moved up --> scroll offset is increasing).
-  float velocity = -aDelta / timeDelta;
-  velocity = ApplyFlingCurveToVelocity(velocity);
-  mVelocitySampleTimeMs = aEndTimestampMs;
-
-  AddVelocityToQueue(aEndTimestampMs, velocity);
-  return velocity;
-}
-
-Maybe<float> SimpleVelocityTracker::ComputeVelocity(uint32_t aTimestampMs) {
+Maybe<float> SimpleVelocityTracker::ComputeVelocity(TimeStamp aTimestamp) {
   float velocity = 0;
   int count = 0;
   for (const auto& e : mVelocityQueue) {
-    uint32_t timeDelta = (aTimestampMs - e.first);
-    if (timeDelta < StaticPrefs::apz_velocity_relevance_time_ms()) {
+    TimeDuration timeDelta = (aTimestamp - e.first);
+    if (timeDelta < TimeDuration::FromMilliseconds(
+                        StaticPrefs::apz_velocity_relevance_time_ms())) {
       count++;
       velocity += e.second;
     }
@@ -100,9 +84,9 @@ Maybe<float> SimpleVelocityTracker::ComputeVelocity(uint32_t aTimestampMs) {
 
 void SimpleVelocityTracker::Clear() { mVelocityQueue.Clear(); }
 
-void SimpleVelocityTracker::AddVelocityToQueue(uint32_t aTimestampMs,
+void SimpleVelocityTracker::AddVelocityToQueue(TimeStamp aTimestamp,
                                                float aVelocity) {
-  mVelocityQueue.AppendElement(std::make_pair(aTimestampMs, aVelocity));
+  mVelocityQueue.AppendElement(std::make_pair(aTimestamp, aVelocity));
   if (mVelocityQueue.Length() >
       StaticPrefs::apz_max_velocity_queue_size_AtStartup()) {
     mVelocityQueue.RemoveElementAt(0);
@@ -133,7 +117,7 @@ float SimpleVelocityTracker::ApplyFlingCurveToVelocity(float aVelocity) const {
             funcInput, ComputedTimingFunction::BeforeFlag::Unset);
         float curvedVelocity = (funcOutput * scale) + curveThreshold;
         SVT_LOG("%p|%s curving up velocity from %f to %f\n",
-                mAxis->mAsyncPanZoomController, mAxis->Name(), newVelocity,
+                mAxis->OpaqueApzcPointer(), mAxis->Name(), newVelocity,
                 curvedVelocity);
         newVelocity = curvedVelocity;
       }

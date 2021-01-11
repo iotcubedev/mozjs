@@ -23,7 +23,7 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   virtual ~AudioParam();
 
  public:
-  AudioParam(AudioNode* aNode, uint32_t aIndex, const char* aName,
+  AudioParam(AudioNode* aNode, uint32_t aIndex, const char16_t* aName,
              float aDefaultValue,
              float aMinValue = std::numeric_limits<float>::lowest(),
              float aMaxValue = std::numeric_limits<float>::max());
@@ -145,7 +145,7 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
 
   uint32_t ParentNodeId() { return mNode->Id(); }
 
-  void GetName(nsAString& aName) { aName.AssignASCII(mName); }
+  void GetName(nsAString& aName) { aName.Assign(mName); }
 
   float DefaultValue() const { return mDefaultValue; }
 
@@ -153,8 +153,8 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
 
   float MaxValue() const { return mMaxValue; }
 
-  bool IsStreamSuspended() const {
-    return mStream ? mStream->IsSuspended() : false;
+  bool IsTrackSuspended() const {
+    return mTrack ? mTrack->IsSuspended() : false;
   }
 
   const nsTArray<AudioNode::InputNode>& InputNodes() const {
@@ -167,11 +167,11 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
     return mInputNodes.AppendElement();
   }
 
-  // May create the stream if it doesn't exist
-  MediaStream* Stream();
+  // May create the track if it doesn't exist
+  mozilla::MediaTrack* Track();
 
-  // Return nullptr if stream doesn't exist.
-  MediaStream* GetStream() const;
+  // Return nullptr if track doesn't exist.
+  mozilla::MediaTrack* GetTrack() const;
 
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override {
     size_t amount = AudioParamTimeline::SizeOfExcludingThis(aMallocSizeOf);
@@ -181,8 +181,8 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
     // Just count the array, actual nodes are counted in mNode.
     amount += mInputNodes.ShallowSizeOfExcludingThis(aMallocSizeOf);
 
-    if (mNodeStreamPort) {
-      amount += mNodeStreamPort->SizeOfIncludingThis(aMallocSizeOf);
+    if (mNodeTrackPort) {
+      amount += mNodeTrackPort->SizeOfIncludingThis(aMallocSizeOf);
     }
 
     return amount;
@@ -216,7 +216,7 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
 
   void SendEventToEngine(const AudioTimelineEvent& aEvent);
 
-  void DisconnectFromGraphAndDestroyStream();
+  void DisconnectFromGraphAndDestroyTrack();
 
   nsCycleCollectingAutoRefCnt mRefCnt;
   NS_DECL_OWNINGTHREAD
@@ -224,9 +224,9 @@ class AudioParam final : public nsWrapperCache, public AudioParamTimeline {
   // For every InputNode, there is a corresponding entry in mOutputParams of the
   // InputNode's mInputNode.
   nsTArray<AudioNode::InputNode> mInputNodes;
-  const char* mName;
-  // The input port used to connect the AudioParam's stream to its node's stream
-  RefPtr<MediaInputPort> mNodeStreamPort;
+  const char16_t* mName;
+  // The input port used to connect the AudioParam's track to its node's track
+  RefPtr<MediaInputPort> mNodeTrackPort;
   const uint32_t mIndex;
   const float mDefaultValue;
   const float mMinValue;

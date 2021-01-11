@@ -31,7 +31,7 @@ Python function of your devising.
 Creating a Callback Action
 --------------------------
 
-.. note:
+.. note::
 
     You can generate ``actions.json`` on the command line with ``./mach taskgraph actions``.
 
@@ -266,6 +266,6 @@ More Information
 For further details on actions in general, see `the actions.json spec`_.
 The hooks used for in-tree actions are set up by `ci-admin`_ based on configuration in `ci-configuration`_.
 
-.. _the actions.json spec: https://docs.taskcluster.net/manual/tasks/actions/spec
+.. _the actions.json spec: https://firefox-ci-tc.services.mozilla.com/docs/manual/tasks/actions/spec
 .. _ci-admin: http://hg.mozilla.org/ci/ci-admin/
 .. _ci-configuration: http://hg.mozilla.org/ci/ci-configuration/

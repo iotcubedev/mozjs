@@ -71,33 +71,9 @@ RemoteMediator.prototype = {
     install.mimetype = XPINSTALL_MIMETYPE;
     install.triggeringPrincipal = principal;
     install.callbackID = callbackID;
+    install.browsingContext = BrowsingContext.getFromWindow(window);
 
-    if (Services.appinfo.processType == Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT) {
-      // When running in the main process this might be a frame inside an
-      // in-content UI page, walk up to find the first frame element in a chrome
-      // privileged document
-      let element = window.frameElement;
-      while (
-        element &&
-        !element.ownerDocument.nodePrincipal.isSystemPrincipal
-      ) {
-        element = element.ownerGlobal.frameElement;
-      }
-
-      if (element) {
-        let listener = Cc["@mozilla.org/addons/integration;1"].getService();
-        return listener.wrappedJSObject.receiveMessage({
-          name: MSG_INSTALL_ADDON,
-          target: element,
-          data: install,
-        });
-      }
-    }
-
-    // Fall back to sending through the message manager
-    let messageManager = window.docShell.messageManager;
-
-    return messageManager.sendSyncMessage(MSG_INSTALL_ADDON, install)[0];
+    return Services.cpmm.sendSyncMessage(MSG_INSTALL_ADDON, install)[0];
   },
 
   _addCallback(callback) {
@@ -111,7 +87,7 @@ RemoteMediator.prototype = {
     return callbackID;
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsISupportsWeakReference]),
+  QueryInterface: ChromeUtils.generateQI(["nsISupportsWeakReference"]),
 };
 
 function InstallTrigger() {}
@@ -175,22 +151,14 @@ InstallTrigger.prototype = {
       }
     }
 
-    let sourceHost;
-
-    try {
-      sourceHost = this._principal.URI.host;
-    } catch (err) {
-      // Ignore errors when retrieving the host for the principal (e.g. null principals raise
-      // an NS_ERROR_FAILURE when principal.URI.host is accessed).
-    }
-
     let installData = {
       uri: url.spec,
       hash: item.Hash || null,
       name: item.name,
       icon: iconUrl ? iconUrl.spec : null,
       method: "installTrigger",
-      sourceHost,
+      sourceHost: this._window.location?.host,
+      sourceURL: this._window.location?.href,
     };
 
     return this._mediator.install(
@@ -232,7 +200,7 @@ InstallTrigger.prototype = {
 
   classID: Components.ID("{9df8ef2b-94da-45c9-ab9f-132eb55fddf1}"),
   contractID: "@mozilla.org/addons/installtrigger;1",
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
 };
 
 var EXPORTED_SYMBOLS = ["InstallTrigger"];

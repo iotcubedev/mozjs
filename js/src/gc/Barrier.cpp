@@ -70,7 +70,17 @@ bool CurrentThreadIsIonCompilingSafeForMinorGC() {
   return jcx && jcx->inIonBackendSafeForMinorGC();
 }
 
-bool CurrentThreadIsGCSweeping() { return TlsContext.get()->gcSweeping; }
+bool CurrentThreadIsGCMarking() {
+  return TlsContext.get()->gcUse == JSContext::GCUse::Marking;
+}
+
+bool CurrentThreadIsGCSweeping() {
+  return TlsContext.get()->gcUse == JSContext::GCUse::Sweeping;
+}
+
+bool CurrentThreadIsGCFinalizing() {
+  return TlsContext.get()->gcUse == JSContext::GCUse::Finalizing;
+}
 
 bool CurrentThreadIsTouchingGrayThings() {
   return TlsContext.get()->isTouchingGrayThings;
@@ -184,12 +194,45 @@ template struct JS_PUBLIC_API MovableCellHasher<AbstractGeneratorObject*>;
 template struct JS_PUBLIC_API MovableCellHasher<EnvironmentObject*>;
 template struct JS_PUBLIC_API MovableCellHasher<GlobalObject*>;
 template struct JS_PUBLIC_API MovableCellHasher<JSScript*>;
-template struct JS_PUBLIC_API MovableCellHasher<LazyScript*>;
+template struct JS_PUBLIC_API MovableCellHasher<BaseScript*>;
 template struct JS_PUBLIC_API MovableCellHasher<ScriptSourceObject*>;
 template struct JS_PUBLIC_API MovableCellHasher<SavedFrame*>;
 template struct JS_PUBLIC_API MovableCellHasher<WasmInstanceObject*>;
 
 }  // namespace js
+
+// Post-write barrier, used by the C++ Heap<T> implementation.
+
+JS_PUBLIC_API void JS::HeapObjectPostWriteBarrier(JSObject** objp,
+                                                  JSObject* prev,
+                                                  JSObject* next) {
+  MOZ_ASSERT(objp);
+  js::InternalBarrierMethods<JSObject*>::postBarrier(objp, prev, next);
+}
+
+JS_PUBLIC_API void JS::HeapStringPostWriteBarrier(JSString** strp,
+                                                  JSString* prev,
+                                                  JSString* next) {
+  MOZ_ASSERT(strp);
+  js::InternalBarrierMethods<JSString*>::postBarrier(strp, prev, next);
+}
+
+JS_PUBLIC_API void JS::HeapBigIntPostWriteBarrier(JS::BigInt** bip,
+                                                  JS::BigInt* prev,
+                                                  JS::BigInt* next) {
+  MOZ_ASSERT(bip);
+  js::InternalBarrierMethods<JS::BigInt*>::postBarrier(bip, prev, next);
+}
+
+JS_PUBLIC_API void JS::HeapValuePostWriteBarrier(JS::Value* valuep,
+                                                 const Value& prev,
+                                                 const Value& next) {
+  MOZ_ASSERT(valuep);
+  js::InternalBarrierMethods<JS::Value>::postBarrier(valuep, prev, next);
+}
+
+// Combined pre- and post-write barriers, used by the rust Heap<T>
+// implementation.
 
 JS_PUBLIC_API void JS::HeapObjectWriteBarriers(JSObject** objp, JSObject* prev,
                                                JSObject* next) {
@@ -203,6 +246,14 @@ JS_PUBLIC_API void JS::HeapStringWriteBarriers(JSString** strp, JSString* prev,
   MOZ_ASSERT(strp);
   js::InternalBarrierMethods<JSString*>::preBarrier(prev);
   js::InternalBarrierMethods<JSString*>::postBarrier(strp, prev, next);
+}
+
+JS_PUBLIC_API void JS::HeapBigIntWriteBarriers(JS::BigInt** bip,
+                                               JS::BigInt* prev,
+                                               JS::BigInt* next) {
+  MOZ_ASSERT(bip);
+  js::InternalBarrierMethods<JS::BigInt*>::preBarrier(prev);
+  js::InternalBarrierMethods<JS::BigInt*>::postBarrier(bip, prev, next);
 }
 
 JS_PUBLIC_API void JS::HeapScriptWriteBarriers(JSScript** scriptp,

@@ -169,7 +169,7 @@ void dav1d_sgr_weighted1_##ext(pixel *dst, const ptrdiff_t stride, \
 void dav1d_sgr_weighted2_##ext(pixel *dst, const ptrdiff_t stride, \
                                const coef *t1, const coef *t2, \
                                const int w, const int h, \
-                               const int16_t wt[2]); \
+                               const uint32_t wt); \
 \
 static void sgr_filter_##ext(pixel *const dst, const ptrdiff_t dst_stride, \
                              const pixel (*const left)[4], \
@@ -194,7 +194,7 @@ static void sgr_filter_##ext(pixel *const dst, const ptrdiff_t dst_stride, \
                                w, h, dav1d_sgr_params[sgr_idx][2], edges); \
         dav1d_sgr_filter1_##ext(tmp2, dst, dst_stride, left, lpf, lpf_stride, \
                                w, h, dav1d_sgr_params[sgr_idx][3], edges); \
-        const int16_t wt[2] = { sgr_wt[0], 128 - sgr_wt[0] - sgr_wt[1] }; \
+        const uint32_t wt = ((128 - sgr_wt[0] - sgr_wt[1]) << 16) | (uint16_t) sgr_wt[0]; \
         dav1d_sgr_weighted2_##ext(dst, dst_stride, tmp1, tmp2, w, h, wt); \
     } \
 }
@@ -204,6 +204,7 @@ WIENER_FILTER(ext) \
 SGR_FILTER(ext)
 
 #if BITDEPTH == 8
+WIENER_FILTER(sse2)
 DEF_LR_FILTERS(ssse3)
 # if ARCH_X86_64
 DEF_LR_FILTERS(avx2)
@@ -212,6 +213,11 @@ DEF_LR_FILTERS(avx2)
 
 COLD void bitfn(dav1d_loop_restoration_dsp_init_x86)(Dav1dLoopRestorationDSPContext *const c) {
     const unsigned flags = dav1d_get_cpu_flags();
+
+    if (!(flags & DAV1D_X86_CPU_FLAG_SSE2)) return;
+#if BITDEPTH == 8
+    c->wiener = wiener_filter_sse2;
+#endif
 
     if (!(flags & DAV1D_X86_CPU_FLAG_SSSE3)) return;
 #if BITDEPTH == 8

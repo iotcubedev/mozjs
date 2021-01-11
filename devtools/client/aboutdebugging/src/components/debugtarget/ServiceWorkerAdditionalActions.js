@@ -17,11 +17,13 @@ const Localized = createFactory(FluentReact.Localized);
 
 const {
   getCurrentRuntimeDetails,
-} = require("../../modules/runtimes-state-helper");
+} = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
 
-const Actions = require("../../actions/index");
-const Types = require("../../types/index");
-const { SERVICE_WORKER_STATUSES } = require("../../constants");
+const Actions = require("devtools/client/aboutdebugging/src/actions/index");
+const Types = require("devtools/client/aboutdebugging/src/types/index");
+const {
+  SERVICE_WORKER_STATUSES,
+} = require("devtools/client/aboutdebugging/src/constants");
 
 /**
  * The main purpose of this component is to expose a meaningful prop
@@ -32,7 +34,7 @@ class _ActionButton extends PureComponent {
     return {
       children: PropTypes.node,
       className: PropTypes.string.isRequired,
-      disabled: PropTypes.bool.isRequired,
+      disabled: PropTypes.bool,
       disabledTitle: PropTypes.string,
       onClick: PropTypes.func.isRequired,
     };
@@ -130,6 +132,7 @@ class ServiceWorkerAdditionalActions extends PureComponent {
       className: "default-button default-button--micro qa-unregister-button",
       key: "service-worker-unregister-button",
       labelId: "about-debugging-worker-action-unregister",
+      disabled: false,
       onClick: this.unregister.bind(this),
     });
   }

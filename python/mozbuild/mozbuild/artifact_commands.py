@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 from __future__ import absolute_import
 import argparse
 import hashlib
@@ -5,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import six
 
 from collections import OrderedDict
 
@@ -25,6 +30,16 @@ from mozbuild.base import (
 )
 
 from mozbuild.util import ensureParentDir
+
+
+_COULD_NOT_FIND_ARTIFACTS_TEMPLATE = (
+    'Could not find artifacts for a toolchain build named `{build}`. Local '
+    'commits, dirty/stale files, and other changes in your checkout may cause '
+    'this error. Make sure you are on a fresh, current checkout of '
+    'mozilla-central. If you are already, you may be able to avoid this error '
+    'by running `mach clobber python`. Beware that commands like `mach '
+    'bootstrap` and `mach artifact` are unlikely to work on any versions of '
+    'the code besides recent revisions of mozilla-central.')
 
 
 class SymbolsAction(argparse.Action):
@@ -165,12 +180,16 @@ class PackageFrontend(MachCommandBase):
                      help='Explicit tooltool manifest to process')
     @CommandArgument('--authentication-file', metavar='FILE',
                      help='Use the RelengAPI token found in the given file to authenticate')
-    @CommandArgument('--tooltool-url', metavar='URL',
-                     help='Use the given url as tooltool server')
     @CommandArgument('--no-unpack', action='store_true',
                      help='Do not unpack any downloaded file')
     @CommandArgument('--retry', type=int, default=4,
                      help='Number of times to retry failed downloads')
+    @CommandArgument(
+        "--bootstrap",
+        action="store_true",
+        help="Whether this is being called from bootstrap. "
+        "This verifies the toolchain is annotated as a toolchain used for local development."
+    )
     @CommandArgument('--artifact-manifest', metavar='FILE',
                      help='Store a manifest about the downloaded taskcluster artifacts')
     @CommandArgument('files', nargs='*',
@@ -179,7 +198,8 @@ class PackageFrontend(MachCommandBase):
     def artifact_toolchain(self, verbose=False, cache_dir=None,
                            skip_cache=False, from_build=(),
                            tooltool_manifest=None, authentication_file=None,
-                           tooltool_url=None, no_unpack=False, retry=None,
+                           no_unpack=False, retry=0,
+                           bootstrap=False,
                            artifact_manifest=None, files=()):
         '''Download, cache and install pre-built toolchains.
         '''
@@ -189,14 +209,15 @@ class PackageFrontend(MachCommandBase):
             open_manifest,
             unpack_file,
         )
-        from requests.adapters import HTTPAdapter
         import redo
         import requests
+        import time
 
         from taskgraph.util.taskcluster import (
             get_artifact_url,
         )
 
+        start = time.time()
         self._set_log_level(verbose)
         # Normally, we'd use self.log_manager.enable_unstructured(),
         # but that enables all logging, while we only really want tooltool's
@@ -213,25 +234,15 @@ class PackageFrontend(MachCommandBase):
         if not cache_dir:
             cache_dir = os.path.join(self._mach_context.state_dir, 'toolchains')
 
-        tooltool_url = (tooltool_url or
-                        'https://tooltool.mozilla-releng.net').rstrip('/')
+        tooltool_host = os.environ.get('TOOLTOOL_HOST', 'tooltool.mozilla-releng.net')
+        taskcluster_proxy_url = os.environ.get('TASKCLUSTER_PROXY_URL')
+        if taskcluster_proxy_url:
+            tooltool_url = '{}/{}'.format(taskcluster_proxy_url, tooltool_host)
+        else:
+            tooltool_url = 'https://{}'.format(tooltool_host)
 
         cache = ArtifactCache(cache_dir=cache_dir, log=self.log,
                               skip_cache=skip_cache)
-
-        if authentication_file:
-            with open(authentication_file, 'rb') as f:
-                token = f.read().strip()
-
-            class TooltoolAuthenticator(HTTPAdapter):
-                def send(self, request, *args, **kwargs):
-                    request.headers['Authorization'] = \
-                        'Bearer {}'.format(token)
-                    return super(TooltoolAuthenticator, self).send(
-                        request, *args, **kwargs)
-
-            cache._download_manager.session.mount(
-                tooltool_url, TooltoolAuthenticator())
 
         class DownloadRecord(FileRecord):
             def __init__(self, url, *args, **kwargs):
@@ -261,7 +272,7 @@ class PackageFrontend(MachCommandBase):
                     cot.raise_for_status()
 
                 digest = algorithm = None
-                data = json.loads(cot.content)
+                data = json.loads(cot.text)
                 for algorithm, digest in (data.get('artifacts', {})
                                               .get(artifact_name, {}).items()):
                     pass
@@ -293,12 +304,8 @@ class PackageFrontend(MachCommandBase):
                          'should be determined in the decision task.')
                 return 1
             from taskgraph.optimize.strategies import IndexSearch
-            from taskgraph.parameters import Parameters
             from taskgraph.generator import load_tasks_for_kind
-            params = Parameters(
-                level=os.environ.get('MOZ_SCM_LEVEL', '3'),
-                strict=False,
-            )
+            params = {'level': six.ensure_text(os.environ.get('MOZ_SCM_LEVEL', '3'))}
 
             root_dir = mozpath.join(self.topsrcdir, 'taskcluster/ci')
             toolchains = load_tasks_for_kind(params, 'toolchain', root_dir=root_dir)
@@ -322,17 +329,31 @@ class PackageFrontend(MachCommandBase):
                              'Could not find a toolchain build named `{build}`')
                     return 1
 
+                # Ensure that toolchains installed by `mach bootstrap` have the
+                # `local-toolchain attribute set. Taskgraph ensures that these
+                # are built on trunk projects, so the task will be available to
+                # install here.
+                if bootstrap and not task.attributes.get('local-toolchain'):
+                    self.log(logging.ERROR, 'artifact', {'build': user_value},
+                             'Toolchain `{build}` is not annotated as used for local development.')
+                    return 1
+
+                artifact_name = task.attributes.get('toolchain-artifact')
+                self.log(logging.DEBUG, 'artifact',
+                         {'name': artifact_name,
+                          'index': task.optimization.get('index-search')},
+                         'Searching for {name} in {index}')
                 task_id = IndexSearch().should_replace_task(
                     task, {}, task.optimization.get('index-search', []))
-                artifact_name = task.attributes.get('toolchain-artifact')
                 if task_id in (True, False) or not artifact_name:
                     self.log(logging.ERROR, 'artifact', {'build': user_value},
-                             'Could not find artifacts for a toolchain build '
-                             'named `{build}`. Local commits and other changes '
-                             'in your checkout may cause this error. Try '
-                             'updating to a fresh checkout of mozilla-central '
-                             'to use artifact builds.')
+                             _COULD_NOT_FIND_ARTIFACTS_TEMPLATE)
                     return 1
+
+                self.log(logging.DEBUG, 'artifact',
+                         {'name': artifact_name,
+                          'task_id': task_id},
+                         'Found {name} in {task_id}')
 
                 record = ArtifactRecord(task_id, artifact_name)
                 records[record.filename] = record
@@ -348,9 +369,9 @@ class PackageFrontend(MachCommandBase):
             record = ArtifactRecord(task_id, name)
             records[record.filename] = record
 
-        for record in records.itervalues():
+        for record in six.itervalues(records):
             self.log(logging.INFO, 'artifact', {'name': record.basename},
-                     'Downloading {name}')
+                     'Setting up artifact {name}')
             valid = False
             # sleeptime is 60 per retry.py, used by tooltool_wrapper.sh
             for attempt, _ in enumerate(redo.retrier(attempts=retry+1,
@@ -374,8 +395,7 @@ class PackageFrontend(MachCommandBase):
                         level = logging.WARN
                     else:
                         level = logging.ERROR
-                    # e.message is not always a string, so convert it first.
-                    self.log(level, 'artifact', {}, str(e.message))
+                    self.log(level, 'artifact', {}, str(e))
                     if not should_retry:
                         break
                     if attempt < retry:
@@ -418,7 +438,7 @@ class PackageFrontend(MachCommandBase):
             # Keep a sha256 of each downloaded file, for the chain-of-trust
             # validation.
             if artifact_manifest is not None:
-                with open(local) as fh:
+                with open(local, 'rb') as fh:
                     h = hashlib.sha256()
                     while True:
                         data = fh.read(1024 * 1024)
@@ -429,7 +449,20 @@ class PackageFrontend(MachCommandBase):
                     'sha256': h.hexdigest(),
                 }
             if record.unpack and not no_unpack:
-                unpack_file(local)
+                # Try to unpack the file. If we get an exception importing
+                # zstandard when calling unpack_file, we can try installing
+                # zstandard locally and trying again
+                try:
+                    unpack_file(local)
+                except ImportError as e:
+                    # Need to do this branch while this code is still exercised
+                    # by Python 2.
+                    if six.PY3 and e.name != "zstandard":
+                        raise
+                    elif six.PY2 and e.message != 'No module named zstandard':
+                        raise
+                    self._ensure_zstd()
+                    unpack_file(local)
                 os.unlink(local)
 
         if not downloaded:
@@ -441,5 +474,21 @@ class PackageFrontend(MachCommandBase):
             ensureParentDir(artifact_manifest)
             with open(artifact_manifest, 'w') as fh:
                 json.dump(artifacts, fh, indent=4, sort_keys=True)
+
+        if 'MOZ_AUTOMATION' in os.environ:
+            end = time.time()
+
+            perfherder_data = {
+                'framework': {'name': 'build_metrics'},
+                'suites': [{
+                    'name': 'mach_artifact_toolchain',
+                    'value': end - start,
+                    'lowerIsBetter': True,
+                    'shouldAlert': False,
+                    'subtests': [],
+                }],
+            }
+            self.log(logging.INFO, 'perfherder', {'data': json.dumps(perfherder_data)},
+                     'PERFHERDER_DATA: {data}')
 
         return 0

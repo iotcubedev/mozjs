@@ -10,6 +10,14 @@ const TEST_URI = TEST_PATH + TEST_FILE;
 
 requestLongerTimeout(2);
 
+registerCleanupFunction(async function() {
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      resolve()
+    );
+  });
+});
+
 pushPref("devtools.webconsole.filter.net", false);
 pushPref("devtools.webconsole.filter.netxhr", true);
 
@@ -86,7 +94,7 @@ async function openRequestAfterUpdates(target, hud) {
   const onPayloadReady = waitForPayloadReady(hud);
 
   // Fire an XHR POST request.
-  ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     content.wrappedJSObject.testXhrPostSlowResponse();
   });
 
@@ -108,7 +116,7 @@ async function openRequestAfterUpdates(target, hud) {
 async function openRequestBeforeUpdates(target, hud, tab) {
   const toolbox = gDevTools.getToolbox(target);
 
-  hud.ui.clearOutput(true);
+  await clearOutput(hud);
 
   const xhrUrl = TEST_PATH + "sjs_slow-response-test-server.sjs";
   const onMessage = waitForMessage(hud, xhrUrl);
@@ -116,7 +124,7 @@ async function openRequestBeforeUpdates(target, hud, tab) {
   const onPayloadReady = waitForPayloadReady(hud);
 
   // Fire an XHR POST request.
-  ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     content.wrappedJSObject.testXhrPostSlowResponse();
   });
   const { node: messageNode } = await onMessage;

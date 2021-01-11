@@ -118,8 +118,10 @@ void AudioData::EnsureAudioBuffer() {
     return;
   }
   const AudioDataValue* srcData = GetAdjustedData();
-  mAudioBuffer =
-      SharedBuffer::Create(mFrames * mChannels * sizeof(AudioDataValue));
+  CheckedInt<size_t> bufferSize(sizeof(AudioDataValue));
+  bufferSize *= mFrames;
+  bufferSize *= mChannels;
+  mAudioBuffer = SharedBuffer::Create(bufferSize);
 
   AudioDataValue* destData = static_cast<AudioDataValue*>(mAudioBuffer->Data());
   for (uint32_t i = 0; i < mFrames; ++i) {
@@ -222,26 +224,7 @@ VideoData::VideoData(int64_t aOffset, const TimeUnit& aTime,
   mTimecode = aTimecode;
 }
 
-VideoData::~VideoData() {}
-
-void VideoData::SetListener(UniquePtr<Listener> aListener) {
-  MOZ_ASSERT(!mSentToCompositor,
-             "Listener should be registered before sending data");
-
-  mListener = std::move(aListener);
-}
-
-void VideoData::MarkSentToCompositor() {
-  if (mSentToCompositor) {
-    return;
-  }
-
-  mSentToCompositor = true;
-  if (mListener != nullptr) {
-    mListener->OnSentToCompositor();
-    mListener = nullptr;
-  }
-}
+VideoData::~VideoData() = default;
 
 size_t VideoData::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   size_t size = aMallocSizeOf(this);
@@ -280,12 +263,12 @@ PlanarYCbCrData ConstructPlanarYCbCrData(const VideoInfo& aInfo,
   const VideoData::YCbCrBuffer::Plane& Cr = aBuffer.mPlanes[2];
 
   PlanarYCbCrData data;
-  data.mYChannel = Y.mData + Y.mOffset;
+  data.mYChannel = Y.mData;
   data.mYSize = IntSize(Y.mWidth, Y.mHeight);
   data.mYStride = Y.mStride;
   data.mYSkip = Y.mSkip;
-  data.mCbChannel = Cb.mData + Cb.mOffset;
-  data.mCrChannel = Cr.mData + Cr.mOffset;
+  data.mCbChannel = Cb.mData;
+  data.mCrChannel = Cr.mData;
   data.mCbCrSize = IntSize(Cb.mWidth, Cb.mHeight);
   data.mCbCrStride = Cb.mStride;
   data.mCbSkip = Cb.mSkip;
@@ -499,7 +482,7 @@ already_AddRefed<MediaRawData> MediaRawData::Clone() const {
   return s.forget();
 }
 
-MediaRawData::~MediaRawData() {}
+MediaRawData::~MediaRawData() = default;
 
 size_t MediaRawData::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
   size_t size = aMallocSizeOf(this);

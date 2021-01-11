@@ -42,8 +42,7 @@ loader.lazyRequireGetter(
 loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
-  "devtools/client/responsive/manager",
-  true
+  "devtools/client/responsive/manager"
 );
 loader.lazyRequireGetter(
   this,
@@ -54,18 +53,18 @@ loader.lazyRequireGetter(
 
 loader.lazyImporter(
   this,
-  "BrowserToolboxProcess",
-  "resource://devtools/client/framework/ToolboxProcess.jsm"
+  "BrowserToolboxLauncher",
+  "resource://devtools/client/framework/browser-toolbox/Launcher.jsm"
 );
-loader.lazyImporter(
+loader.lazyRequireGetter(
   this,
-  "ScratchpadManager",
-  "resource://devtools/client/scratchpad/scratchpad-manager.jsm"
+  "ResponsiveUIManager",
+  "devtools/client/responsive/manager"
 );
-loader.lazyImporter(
+loader.lazyRequireGetter(
   this,
-  "ProfilerMenuButton",
-  "resource://devtools/client/performance-new/popup/menu-button.jsm"
+  "PICKER_TYPES",
+  "devtools/shared/picker-constants"
 );
 
 exports.menuitems = [
@@ -93,18 +92,10 @@ exports.menuitems = [
     },
   },
   {
-    id: "menu_webide",
-    l10nKey: "webide",
-    oncommand() {
-      gDevToolsBrowser.openWebIDE();
-    },
-    keyId: "webide",
-  },
-  {
     id: "menu_browserToolbox",
     l10nKey: "browserToolboxMenu",
     oncommand() {
-      BrowserToolboxProcess.init();
+      BrowserToolboxLauncher.init();
     },
     keyId: "browserToolbox",
   },
@@ -128,14 +119,6 @@ exports.menuitems = [
     keyId: "browserConsole",
   },
   {
-    id: "menu_toggleProfilerButtonMenu",
-    l10nKey: "toggleProfilerButtonMenu",
-    checkbox: true,
-    oncommand(event) {
-      ProfilerMenuButton.toggle(event.target.ownerDocument);
-    },
-  },
-  {
     id: "menu_responsiveUI",
     l10nKey: "responsiveDesignMode",
     oncommand(event) {
@@ -155,25 +138,34 @@ exports.menuitems = [
       const target = await TargetFactory.forTab(window.gBrowser.selectedTab);
       await target.attach();
       const inspectorFront = await target.getFront("inspector");
+
+      // If RDM is active, disable touch simulation events if they're enabled.
+      // Similarly, enable them when the color picker is done picking.
+      if (ResponsiveUIManager.isActiveForTab(target.localTab)) {
+        const ui = ResponsiveUIManager.getResponsiveUIForTab(target.localTab);
+        await ui.responsiveFront.setElementPickerState(
+          true,
+          PICKER_TYPES.EYEDROPPER
+        );
+
+        inspectorFront.once("color-picked", async () => {
+          await ui.responsiveFront.setElementPickerState(
+            false,
+            PICKER_TYPES.EYEDROPPER
+          );
+        });
+
+        inspectorFront.once("color-pick-canceled", async () => {
+          await ui.responsiveFront.setElementPickerState(
+            false,
+            PICKER_TYPES.EYEDROPPER
+          );
+        });
+      }
+
       inspectorFront.pickColorFromPage({ copyOnSelect: true, fromMenu: true });
     },
     checkbox: true,
-  },
-  {
-    id: "menu_scratchpad",
-    l10nKey: "scratchpad",
-    oncommand() {
-      ScratchpadManager.openScratchpad();
-    },
-    keyId: "scratchpad",
-  },
-  {
-    id: "menu_devtools_connect",
-    l10nKey: "devtoolsConnect",
-    oncommand(event) {
-      const window = event.target.ownerDocument.defaultView;
-      gDevToolsBrowser.openConnectScreen(window.gBrowser);
-    },
   },
   { separator: true, id: "devToolsEndSeparator" },
   {

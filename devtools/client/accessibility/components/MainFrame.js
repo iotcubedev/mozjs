@@ -14,21 +14,39 @@ const {
 } = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { connect } = require("devtools/client/shared/vendor/react-redux");
-const { reset } = require("../actions/ui");
+const {
+  enable,
+  reset,
+  updateCanBeEnabled,
+  updateCanBeDisabled,
+} = require("devtools/client/accessibility/actions/ui");
 
 // Localization
 const FluentReact = require("devtools/client/shared/vendor/fluent-react");
 const LocalizationProvider = createFactory(FluentReact.LocalizationProvider);
 
 // Constants
-const { SIDEBAR_WIDTH, PORTRAIT_MODE_WIDTH } = require("../constants");
+const {
+  SIDEBAR_WIDTH,
+  PORTRAIT_MODE_WIDTH,
+} = require("devtools/client/accessibility/constants");
 
 // Accessibility Panel
-const AccessibilityTree = createFactory(require("./AccessibilityTree"));
-const AuditProgressOverlay = createFactory(require("./AuditProgressOverlay"));
-const Description = createFactory(require("./Description").Description);
-const RightSidebar = createFactory(require("./RightSidebar"));
-const Toolbar = createFactory(require("./Toolbar"));
+const AccessibilityTree = createFactory(
+  require("devtools/client/accessibility/components/AccessibilityTree")
+);
+const AuditProgressOverlay = createFactory(
+  require("devtools/client/accessibility/components/AuditProgressOverlay")
+);
+const Description = createFactory(
+  require("devtools/client/accessibility/components/Description").Description
+);
+const RightSidebar = createFactory(
+  require("devtools/client/accessibility/components/RightSidebar")
+);
+const Toolbar = createFactory(
+  require("devtools/client/accessibility/components/Toolbar").Toolbar
+);
 const SplitBox = createFactory(
   require("devtools/client/shared/components/splitter/SplitBox")
 );
@@ -40,14 +58,25 @@ const SplitBox = createFactory(
 class MainFrame extends Component {
   static get propTypes() {
     return {
-      accessibility: PropTypes.object.isRequired,
       fluentBundles: PropTypes.array.isRequired,
-      accessibilityWalker: PropTypes.object.isRequired,
       enabled: PropTypes.bool.isRequired,
       dispatch: PropTypes.func.isRequired,
       auditing: PropTypes.array.isRequired,
       supports: PropTypes.object,
-      simulator: PropTypes.object,
+      toolbox: PropTypes.object.isRequired,
+      getAccessibilityTreeRoot: PropTypes.func.isRequired,
+      startListeningForAccessibilityEvents: PropTypes.func.isRequired,
+      stopListeningForAccessibilityEvents: PropTypes.func.isRequired,
+      audit: PropTypes.func.isRequired,
+      simulate: PropTypes.func,
+      enableAccessibility: PropTypes.func.isRequired,
+      resetAccessiblity: PropTypes.func.isRequired,
+      startListeningForLifecycleEvents: PropTypes.func.isRequired,
+      stopListeningForLifecycleEvents: PropTypes.func.isRequired,
+      startListeningForParentLifecycleEvents: PropTypes.func.isRequired,
+      stopListeningForParentLifecycleEvents: PropTypes.func.isRequired,
+      highlightAccessible: PropTypes.func.isRequired,
+      unhighlightAccessible: PropTypes.func.isRequired,
     };
   }
 
@@ -56,39 +85,55 @@ class MainFrame extends Component {
 
     this.resetAccessibility = this.resetAccessibility.bind(this);
     this.onPanelWindowResize = this.onPanelWindowResize.bind(this);
+    this.onCanBeEnabledChange = this.onCanBeEnabledChange.bind(this);
+    this.onCanBeDisabledChange = this.onCanBeDisabledChange.bind(this);
   }
 
   componentWillMount() {
-    this.props.accessibility.on("init", this.resetAccessibility);
-    this.props.accessibility.on("shutdown", this.resetAccessibility);
-    this.props.accessibilityWalker.on(
-      "document-ready",
-      this.resetAccessibility
-    );
-
+    this.props.startListeningForLifecycleEvents({
+      init: this.resetAccessibility,
+      shutdown: this.resetAccessibility,
+    });
+    this.props.startListeningForParentLifecycleEvents({
+      "can-be-enabled-change": this.onCanBeEnabledChange,
+      "can-be-disabled-change": this.onCanBeDisabledChange,
+    });
+    this.props.startListeningForAccessibilityEvents({
+      "top-level-document-ready": this.resetAccessibility,
+    });
     window.addEventListener("resize", this.onPanelWindowResize, true);
   }
 
-  componentWillReceiveProps({ enabled }) {
-    if (this.props.enabled && !enabled) {
-      this.resetAccessibility();
-    }
-  }
-
   componentWillUnmount() {
-    this.props.accessibility.off("init", this.resetAccessibility);
-    this.props.accessibility.off("shutdown", this.resetAccessibility);
-    this.props.accessibilityWalker.off(
-      "document-ready",
-      this.resetAccessibility
-    );
-
+    this.props.stopListeningForLifecycleEvents({
+      init: this.resetAccessibility,
+      shutdown: this.resetAccessibility,
+    });
+    this.props.stopListeningForParentLifecycleEvents({
+      "can-be-enabled-change": this.onCanBeEnabledChange,
+      "can-be-disabled-change": this.onCanBeDisabledChange,
+    });
+    this.props.stopListeningForAccessibilityEvents({
+      "top-level-document-ready": this.resetAccessibility,
+    });
     window.removeEventListener("resize", this.onPanelWindowResize, true);
   }
 
   resetAccessibility() {
-    const { dispatch, accessibility, supports } = this.props;
-    dispatch(reset(accessibility, supports));
+    const { dispatch, resetAccessiblity, supports } = this.props;
+    dispatch(reset(resetAccessiblity, supports));
+  }
+
+  onCanBeEnabledChange(canBeEnabled) {
+    const { enableAccessibility, dispatch } = this.props;
+    dispatch(updateCanBeEnabled(canBeEnabled));
+    if (canBeEnabled) {
+      dispatch(enable(enableAccessibility));
+    }
+  }
+
+  onCanBeDisabledChange(canBeDisabled) {
+    this.props.dispatch(updateCanBeDisabled(canBeDisabled));
   }
 
   get useLandscapeMode() {
@@ -111,16 +156,21 @@ class MainFrame extends Component {
    */
   render() {
     const {
-      accessibility,
-      accessibilityWalker,
       fluentBundles,
       enabled,
       auditing,
-      simulator,
+      simulate,
+      toolbox,
+      getAccessibilityTreeRoot,
+      startListeningForAccessibilityEvents,
+      stopListeningForAccessibilityEvents,
+      audit,
+      highlightAccessible,
+      unhighlightAccessible,
     } = this.props;
 
     if (!enabled) {
-      return Description({ accessibility });
+      return Description();
     }
 
     // Audit is currently running.
@@ -129,8 +179,12 @@ class MainFrame extends Component {
     return LocalizationProvider(
       { bundles: fluentBundles },
       div(
-        { className: "mainFrame", role: "presentation" },
-        Toolbar({ accessibility, accessibilityWalker, simulator }),
+        { className: "mainFrame", role: "presentation", tabIndex: "-1" },
+        Toolbar({
+          audit,
+          simulate,
+          toolboxDoc: toolbox.doc,
+        }),
         isAuditing && AuditProgressOverlay(),
         span(
           {
@@ -149,10 +203,22 @@ class MainFrame extends Component {
               {
                 className: "main-panel",
                 role: "presentation",
+                tabIndex: "-1",
               },
-              AccessibilityTree({ accessibilityWalker })
+              AccessibilityTree({
+                toolboxDoc: toolbox.doc,
+                getAccessibilityTreeRoot,
+                startListeningForAccessibilityEvents,
+                stopListeningForAccessibilityEvents,
+                highlightAccessible,
+                unhighlightAccessible,
+              })
             ),
-            endPanel: RightSidebar({ accessibilityWalker }),
+            endPanel: RightSidebar({
+              highlightAccessible,
+              unhighlightAccessible,
+              toolbox,
+            }),
             vert: this.useLandscapeMode,
           })
         )

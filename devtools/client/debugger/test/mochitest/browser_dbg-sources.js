@@ -14,11 +14,16 @@ add_task(async function() {
   );
   const {
     selectors: { getSelectedSource },
-    getState
+    getState,
   } = dbg;
 
   // Expand nodes and make sure more sources appear.
   await assertSourceCount(dbg, 3);
+  is(
+    findElement(dbg, "sourceNode", 1).textContent.trim(),
+    "Main Thread",
+    "Main thread is labeled properly"
+  );
   await clickElement(dbg, "sourceDirectoryLabel", 3);
 
   await assertSourceCount(dbg, 8);
@@ -43,7 +48,7 @@ add_task(async function() {
   await waitForSelectedSource(dbg, "nested-source");
 
   // Make sure new sources appear in the list.
-  ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
+  SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     const script = content.document.createElement("script");
     script.src = "math.min.js";
     content.document.body.appendChild(script);

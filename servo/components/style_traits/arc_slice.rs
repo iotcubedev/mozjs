@@ -4,6 +4,8 @@
 
 //! A thin atomically-reference-counted slice.
 
+use serde::de::{Deserialize, Deserializer};
+use serde::ser::{Serialize, Serializer};
 use servo_arc::ThinArc;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -24,7 +26,7 @@ const ARC_SLICE_CANARY: u64 = 0xf3f3f3f3f3f3f3f3;
 /// cbindgen:derive-eq=false
 /// cbindgen:derive-neq=false
 #[repr(C)]
-#[derive(Clone, Debug, Eq, PartialEq, ToShmem)]
+#[derive(Debug, Eq, PartialEq, ToShmem)]
 pub struct ArcSlice<T>(#[shmem(field_bound)] ThinArc<u64, T>);
 
 impl<T> Deref for ArcSlice<T> {
@@ -34,6 +36,12 @@ impl<T> Deref for ArcSlice<T> {
     fn deref(&self) -> &Self::Target {
         debug_assert_eq!(self.0.header.header, ARC_SLICE_CANARY);
         &self.0.slice
+    }
+}
+
+impl<T> Clone for ArcSlice<T> {
+    fn clone(&self) -> Self {
+        ArcSlice(self.0.clone())
     }
 }
 
@@ -57,6 +65,25 @@ impl<T> Default for ArcSlice<T> {
             debug_assert_eq!(empty.len(), 0);
             empty
         }
+    }
+}
+
+impl<T: Serialize> Serialize for ArcSlice<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.deref().serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for ArcSlice<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let r = Vec::deserialize(deserializer)?;
+        Ok(ArcSlice::from_iter(r.into_iter()))
     }
 }
 

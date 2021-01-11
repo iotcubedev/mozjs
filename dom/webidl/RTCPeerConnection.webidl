@@ -78,9 +78,12 @@ dictionary RTCOfferOptions : RTCOfferAnswerOptions {
 
 [Pref="media.peerconnection.enabled",
  JSImplementation="@mozilla.org/dom/peerconnection;1",
- Constructor (optional RTCConfiguration configuration = {},
-              optional object? constraints)]
+ Exposed=Window]
 interface RTCPeerConnection : EventTarget  {
+  [Throws]
+  constructor(optional RTCConfiguration configuration = {},
+              optional object? constraints);
+
   [Throws, StaticClassOverride="mozilla::dom::RTCCertificate"]
   static Promise<RTCCertificate> generateCertificate (AlgorithmIdentifier keygenAlgorithm);
 
@@ -91,8 +94,8 @@ interface RTCPeerConnection : EventTarget  {
   Promise<DOMString> getIdentityAssertion();
   Promise<RTCSessionDescriptionInit> createOffer (optional RTCOfferOptions options = {});
   Promise<RTCSessionDescriptionInit> createAnswer (optional RTCAnswerOptions options = {});
-  Promise<void> setLocalDescription (RTCSessionDescriptionInit description);
-  Promise<void> setRemoteDescription (RTCSessionDescriptionInit description);
+  Promise<void> setLocalDescription (optional RTCSessionDescriptionInit description = {});
+  Promise<void> setRemoteDescription (optional RTCSessionDescriptionInit description = {});
   readonly attribute RTCSessionDescription? localDescription;
   readonly attribute RTCSessionDescription? currentLocalDescription;
   readonly attribute RTCSessionDescription? pendingLocalDescription;
@@ -135,20 +138,6 @@ interface RTCPeerConnection : EventTarget  {
   sequence<RTCRtpReceiver> getReceivers();
   sequence<RTCRtpTransceiver> getTransceivers();
 
-  // test-only: for testing getContributingSources
-  [ChromeOnly]
-  DOMHighResTimeStamp mozGetNowInRtpSourceReferenceTime();
-  // test-only: for testing getContributingSources
-  [ChromeOnly]
-  void mozInsertAudioLevelForContributingSource(RTCRtpReceiver receiver,
-                                                unsigned long source,
-                                                DOMHighResTimeStamp timestamp,
-                                                boolean hasLevel,
-                                                byte level);
-  [ChromeOnly]
-  void mozAddRIDExtension(RTCRtpReceiver receiver, unsigned short extensionId);
-  [ChromeOnly]
-  void mozAddRIDFilter(RTCRtpReceiver receiver, DOMString rid);
   [ChromeOnly]
   void mozSetPacketCallback(mozPacketCallback callback);
   [ChromeOnly]

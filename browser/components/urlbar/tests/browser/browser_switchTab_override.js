@@ -27,13 +27,16 @@ add_task(async function test_switchtab_override() {
   });
 
   info("Wait for autocomplete");
-  await promiseAutocompleteResultPopup("dummy_page");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "dummy_page",
+  });
 
   info("Select second autocomplete popup entry");
   EventUtils.synthesizeKey("KEY_ArrowDown");
   let result = await UrlbarTestUtils.getDetailsOfResultAt(
     window,
-    UrlbarTestUtils.getSelectedIndex(window)
+    UrlbarTestUtils.getSelectedRowIndex(window)
   );
   Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.TAB_SWITCH);
 

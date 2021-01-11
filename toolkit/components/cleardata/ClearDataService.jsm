@@ -4,6 +4,9 @@
 
 "use strict";
 
+const { ComponentUtils } = ChromeUtils.import(
+  "resource://gre/modules/ComponentUtils.jsm"
+);
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
@@ -31,7 +34,7 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsITrackingDBService"
 );
 
-// A Cleaner is an object with 3 methods. These methods must return a Promise
+// A Cleaner is an object with 5 methods. These methods must return a Promise
 // object. Here a description of these methods:
 // * deleteAll() - this method _must_ exist. When called, it deletes all the
 //                 data owned by the cleaner.
@@ -41,12 +44,30 @@ XPCOMUtils.defineLazyServiceGetter(
 // * deleteByHost() - this method is implemented only if the cleaner knows
 //                    how to delete data by host + originAttributes pattern. If
 //                    not implemented, deleteAll() will be used as fallback.
-// *deleteByRange() - this method is implemented only if the cleaner knows how
+// * deleteByRange() - this method is implemented only if the cleaner knows how
 //                    to delete data by time range. It receives 2 time range
 //                    parameters: aFrom/aTo. If not implemented, deleteAll() is
 //                    used as fallback.
+// * deleteByLocalFiles() - this method removes data held for local files and
+//                          other hostless origins. If not implemented,
+//                          **no fallback is used**, as for a number of
+//                          cleaners, no such data will ever exist and
+//                          therefore clearing it does not make sense.
+// * deleteByOriginAttributes() - this method is implemented only if the cleaner
+//                                knows how to delete data by originAttributes
+//                                pattern.
 
 const CookieCleaner = {
+  deleteByLocalFiles(aOriginAttributes) {
+    return new Promise(aResolve => {
+      Services.cookies.removeCookiesFromExactHost(
+        "",
+        JSON.stringify(aOriginAttributes)
+      );
+      aResolve();
+    });
+  },
+
   deleteByHost(aHost, aOriginAttributes) {
     return new Promise(aResolve => {
       Services.cookies.removeCookiesFromExactHost(
@@ -58,45 +79,23 @@ const CookieCleaner = {
   },
 
   deleteByRange(aFrom, aTo) {
-    let enumerator = Services.cookies.enumerator;
-    return this._deleteInternal(
-      enumerator,
-      aCookie => aCookie.creationTime > aFrom
-    );
+    return Services.cookies.removeAllSince(aFrom);
+  },
+
+  deleteByOriginAttributes(aOriginAttributesString) {
+    return new Promise(aResolve => {
+      try {
+        Services.cookies.removeCookiesWithOriginAttributes(
+          aOriginAttributesString
+        );
+      } catch (ex) {}
+      aResolve();
+    });
   },
 
   deleteAll() {
     return new Promise(aResolve => {
       Services.cookies.removeAll();
-      aResolve();
-    });
-  },
-
-  _deleteInternal(aEnumerator, aCb) {
-    // A number of iterations after which to yield time back to the system.
-    const YIELD_PERIOD = 10;
-
-    return new Promise((aResolve, aReject) => {
-      let count = 0;
-      for (let cookie of aEnumerator) {
-        if (aCb(cookie)) {
-          Services.cookies.remove(
-            cookie.host,
-            cookie.name,
-            cookie.path,
-            false,
-            cookie.originAttributes
-          );
-          // We don't want to block the main-thread.
-          if (++count % YIELD_PERIOD == 0) {
-            setTimeout(() => {
-              this._deleteInternal(aEnumerator, aCb).then(aResolve, aReject);
-            }, 0);
-            return;
-          }
-        }
-      }
-
       aResolve();
     });
   },
@@ -148,6 +147,13 @@ const NetworkCacheCleaner = {
   deleteByPrincipal(aPrincipal) {
     return new Promise(aResolve => {
       Services.cache2.clearOrigin(aPrincipal);
+      aResolve();
+    });
+  },
+
+  deleteByOriginAttributes(aOriginAttributesString) {
+    return new Promise(aResolve => {
+      Services.cache2.clearOriginAttributes(aOriginAttributesString);
       aResolve();
     });
   },
@@ -365,8 +371,11 @@ const PasswordsCleaner = {
       } catch (ex) {
         // XXXehsan: is there a better way to do this rather than this
         // hacky comparison?
-        if (!ex.message.includes("User canceled Master Password entry")) {
-          throw new Error("Exception occured in clearing passwords :" + ex);
+        if (
+          !ex.message.includes("User canceled Master Password entry") &&
+          ex.result != Cr.NS_ERROR_NOT_IMPLEMENTED
+        ) {
+          throw new Error("Exception occured in clearing passwords: " + ex);
         }
       }
 
@@ -398,6 +407,18 @@ const MediaDevicesCleaner = {
 };
 
 const AppCacheCleaner = {
+  deleteByOriginAttributes(aOriginAttributesString) {
+    return new Promise(aResolve => {
+      let appCacheService = Cc[
+        "@mozilla.org/network/application-cache-service;1"
+      ].getService(Ci.nsIApplicationCacheService);
+      try {
+        appCacheService.evictMatchingOriginAttributes(aOriginAttributesString);
+      } catch (ex) {}
+      aResolve();
+    });
+  },
+
   deleteAll() {
     // AppCache: this doesn't wait for the cleanup to be complete.
     OfflineAppCacheHelper.clear();
@@ -413,14 +434,14 @@ const QuotaCleaner = {
     Services.obs.notifyObservers(
       null,
       "extension:purge-localStorage",
-      aPrincipal.URI.host
+      aPrincipal.host
     );
 
     // Clear sessionStorage
     Services.obs.notifyObservers(
       null,
       "browser:purge-sessionStorage",
-      aPrincipal.URI.host
+      aPrincipal.host
     );
 
     // ServiceWorkers: they must be removed before cleaning QuotaManager.
@@ -446,6 +467,9 @@ const QuotaCleaner = {
   },
 
   deleteByHost(aHost, aOriginAttributes) {
+    // XXX: The aOriginAttributes is expected to always be empty({}). Maybe have
+    // a debug assertion here to ensure that?
+
     // localStorage: The legacy LocalStorage implementation that will
     // eventually be removed depends on this observer notification to clear by
     // host.  Some other subsystems like Reporting headers depend on this too.
@@ -464,103 +488,47 @@ const QuotaCleaner = {
         // QuotaManager: In the event of a failure, we call reject to propagate
         // the error upwards.
 
-        // delete data from both HTTP and HTTPS sites
-        let httpURI = Services.io.newURI("http://" + aHost);
-        let httpsURI = Services.io.newURI("https://" + aHost);
-        let httpPrincipal = Services.scriptSecurityManager.createContentPrincipal(
-          httpURI,
-          aOriginAttributes
-        );
-        let httpsPrincipal = Services.scriptSecurityManager.createContentPrincipal(
-          httpsURI,
-          aOriginAttributes
-        );
-        let promises = [];
-        promises.push(
-          new Promise((aResolve, aReject) => {
-            let req = Services.qms.clearStoragesForPrincipal(
-              httpPrincipal,
-              null,
-              null,
-              true
-            );
-            req.callback = () => {
-              if (req.resultCode == Cr.NS_OK) {
-                aResolve();
-              } else {
-                aReject({ message: "Delete by host failed" });
-              }
-            };
-          })
-        );
-        promises.push(
-          new Promise((aResolve, aReject) => {
-            let req = Services.qms.clearStoragesForPrincipal(
-              httpsPrincipal,
-              null,
-              null,
-              true
-            );
-            req.callback = () => {
-              if (req.resultCode == Cr.NS_OK) {
-                aResolve();
-              } else {
-                aReject({ message: "Delete by host failed" });
-              }
-            };
-          })
-        );
-        if (Services.lsm.nextGenLocalStorageEnabled) {
-          // deleteByHost has the semantics that "foo.example.com" should be
-          // wiped if we are provided an aHost of "example.com".
-          promises.push(
-            new Promise((aResolve, aReject) => {
-              Services.qms.listOrigins(aRequest => {
-                if (aRequest.resultCode != Cr.NS_OK) {
-                  aReject({ message: "Delete by host failed" });
-                  return;
-                }
+        // deleteByHost has the semantics that "foo.example.com" should be
+        // wiped if we are provided an aHost of "example.com".
+        return new Promise((aResolve, aReject) => {
+          Services.qms.listOrigins().callback = aRequest => {
+            if (aRequest.resultCode != Cr.NS_OK) {
+              aReject({ message: "Delete by host failed" });
+              return;
+            }
 
-                let promises = [];
-                for (let item of aRequest.result) {
-                  let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
-                    item.origin
-                  );
-                  let host;
-                  try {
-                    host = principal.URI.host;
-                  } catch (e) {
-                    // There is no host for the given principal.
-                    continue;
-                  }
+            let promises = [];
+            for (const origin of aRequest.result) {
+              let principal = Services.scriptSecurityManager.createContentPrincipalFromOrigin(
+                origin
+              );
+              let host;
+              try {
+                host = principal.host;
+              } catch (e) {
+                // There is no host for the given principal.
+                continue;
+              }
 
-                  if (Services.eTLD.hasRootDomain(host, aHost)) {
-                    promises.push(
-                      new Promise((aResolve, aReject) => {
-                        let clearRequest = Services.qms.clearStoragesForPrincipal(
-                          principal,
-                          null,
-                          "ls"
-                        );
-                        clearRequest.callback = () => {
-                          if (clearRequest.resultCode == Cr.NS_OK) {
-                            aResolve();
-                          } else {
-                            aReject({ message: "Delete by host failed" });
-                          }
-                        };
-                      })
+              if (Services.eTLD.hasRootDomain(host, aHost)) {
+                promises.push(
+                  new Promise((aResolve, aReject) => {
+                    let clearRequest = Services.qms.clearStoragesForPrincipal(
+                      principal
                     );
-                  }
-                }
-
-                Promise.all(promises).then(aResolve);
-              });
-            })
-          );
-        }
-        return Promise.all(promises).then(() => {
-          return exceptionThrown ? Promise.reject() : Promise.resolve();
+                    clearRequest.callback = () => {
+                      if (clearRequest.resultCode == Cr.NS_OK) {
+                        aResolve();
+                      } else {
+                        aReject({ message: "Delete by host failed" });
+                      }
+                    };
+                  })
+                );
+              }
+            }
+            Promise.all(promises).then(exceptionThrown ? aReject : aResolve);
+          };
         });
       });
   },
@@ -575,9 +543,9 @@ const QuotaCleaner = {
       let principal = principals.queryElementAt(i, Ci.nsIPrincipal);
 
       if (
-        principal.URI.scheme != "http" &&
-        principal.URI.scheme != "https" &&
-        principal.URI.scheme != "file"
+        !principal.schemeIs("http") &&
+        !principal.schemeIs("https") &&
+        !principal.schemeIs("file")
       ) {
         continue;
       }
@@ -586,6 +554,36 @@ const QuotaCleaner = {
     }
 
     return Promise.all(promises);
+  },
+
+  deleteByOriginAttributes(aOriginAttributesString) {
+    // The legacy LocalStorage implementation that will eventually be removed.
+    // And it should've been cleared while notifying observers with
+    // clear-origin-attributes-data.
+
+    return ServiceWorkerCleanUp.removeFromOriginAttributes(
+      aOriginAttributesString
+    )
+      .then(
+        _ => /* exceptionThrown = */ false,
+        _ => /* exceptionThrown = */ true
+      )
+      .then(exceptionThrown => {
+        // QuotaManager: In the event of a failure, we call reject to propagate
+        // the error upwards.
+        return new Promise((aResolve, aReject) => {
+          let req = Services.qms.clearStoragesForOriginAttributesPattern(
+            aOriginAttributesString
+          );
+          req.callback = () => {
+            if (req.resultCode == Cr.NS_OK) {
+              aResolve();
+            } else {
+              aReject({ message: "Delete by origin attributes failed" });
+            }
+          };
+        });
+      });
   },
 
   deleteAll() {
@@ -617,9 +615,9 @@ const QuotaCleaner = {
                 item.origin
               );
               if (
-                principal.URI.scheme == "http" ||
-                principal.URI.scheme == "https" ||
-                principal.URI.scheme == "file"
+                principal.schemeIs("http") ||
+                principal.schemeIs("https") ||
+                principal.schemeIs("file")
               ) {
                 promises.push(
                   new Promise((aResolve, aReject) => {
@@ -698,12 +696,12 @@ const PushNotificationsCleaner = {
 const StorageAccessCleaner = {
   deleteByHost(aHost, aOriginAttributes) {
     return new Promise(aResolve => {
-      for (let perm of Services.perms.enumerator) {
+      for (let perm of Services.perms.all) {
         if (perm.type == "storageAccessAPI") {
           let toBeRemoved = false;
           try {
             toBeRemoved = Services.eTLD.hasRootDomain(
-              perm.principal.URI.host,
+              perm.principal.host,
               aHost
             );
           } catch (ex) {
@@ -818,32 +816,24 @@ const AuthCacheCleaner = {
 const PermissionsCleaner = {
   deleteByHost(aHost, aOriginAttributes) {
     return new Promise(aResolve => {
-      for (let perm of Services.perms.enumerator) {
+      for (let perm of Services.perms.all) {
         let toBeRemoved;
         try {
-          toBeRemoved = Services.eTLD.hasRootDomain(
-            perm.principal.URI.host,
-            aHost
-          );
+          toBeRemoved = Services.eTLD.hasRootDomain(perm.principal.host, aHost);
         } catch (ex) {
           continue;
         }
 
         if (!toBeRemoved && perm.type.startsWith("3rdPartyStorage^")) {
           let parts = perm.type.split("^");
-          for (let i = 1; i < parts.length; ++i) {
-            let uri;
-            try {
-              uri = Services.io.newURI(parts[i]);
-            } catch (ex) {
-              continue;
-            }
-
-            toBeRemoved = Services.eTLD.hasRootDomain(uri.host, aHost);
-            if (toBeRemoved) {
-              break;
-            }
+          let uri;
+          try {
+            uri = Services.io.newURI(parts[1]);
+          } catch (ex) {
+            continue;
           }
+
+          toBeRemoved = Services.eTLD.hasRootDomain(uri.host, aHost);
         }
 
         if (!toBeRemoved) {
@@ -863,6 +853,11 @@ const PermissionsCleaner = {
 
   deleteByRange(aFrom, aTo) {
     Services.perms.removeAllSince(aFrom / 1000);
+    return Promise.resolve();
+  },
+
+  deleteByOriginAttributes(aOriginAttributesString) {
+    Services.perms.removePermissionsWithAttributes(aOriginAttributesString);
     return Promise.resolve();
   },
 
@@ -918,19 +913,19 @@ const SecuritySettingsCleaner = {
       let sss = Cc["@mozilla.org/ssservice;1"].getService(
         Ci.nsISiteSecurityService
       );
-      for (let type of [
-        Ci.nsISiteSecurityService.HEADER_HSTS,
-        Ci.nsISiteSecurityService.HEADER_HPKP,
-      ]) {
-        // Also remove HSTS/HPKP information for subdomains by enumerating
-        // the information in the site security service.
-        for (let entry of sss.enumerate(type)) {
-          let hostname = entry.hostname;
-          if (Services.eTLD.hasRootDomain(hostname, aHost)) {
-            // This uri is used as a key to reset the state.
-            let uri = Services.io.newURI("https://" + hostname);
-            sss.resetState(type, uri, 0, entry.originAttributes);
-          }
+      // Also remove HSTS information for subdomains by enumerating
+      // the information in the site security service.
+      for (let entry of sss.enumerate(Ci.nsISiteSecurityService.HEADER_HSTS)) {
+        let hostname = entry.hostname;
+        if (Services.eTLD.hasRootDomain(hostname, aHost)) {
+          // This uri is used as a key to reset the state.
+          let uri = Services.io.newURI("https://" + hostname);
+          sss.resetState(
+            Ci.nsISiteSecurityService.HEADER_HSTS,
+            uri,
+            0,
+            entry.originAttributes
+          );
         }
       }
 
@@ -994,91 +989,146 @@ const ContentBlockingCleaner = {
   },
 };
 
-// Here the map of Flags-Cleaner.
-const FLAGS_MAP = [
-  { flag: Ci.nsIClearDataService.CLEAR_CERT_EXCEPTIONS, cleaner: CertCleaner },
+/**
+ * The about:home startup cache, if it exists, might contain information
+ * about where the user has been, or what they've downloaded.
+ */
+const AboutHomeStartupCacheCleaner = {
+  deleteAll() {
+    // This cleaner only makes sense on Firefox desktop, which is the only
+    // application that uses the about:home startup cache.
+    if (!AppConstants.MOZ_BUILD_APP == "browser") {
+      return Promise.resolve();
+    }
 
-  { flag: Ci.nsIClearDataService.CLEAR_COOKIES, cleaner: CookieCleaner },
+    return new Promise((aResolve, aReject) => {
+      let lci = Services.loadContextInfo.default;
+      let storage = Services.cache2.diskCacheStorage(lci, false);
+      let uri = Services.io.newURI("about:home");
+      try {
+        storage.asyncDoomURI(uri, "", {
+          onCacheEntryDoomed(aResult) {
+            if (
+              Components.isSuccessCode(aResult) ||
+              aResult == Cr.NS_ERROR_NOT_AVAILABLE
+            ) {
+              aResolve();
+            } else {
+              aReject({
+                message: "asyncDoomURI for about:home failed",
+              });
+            }
+          },
+        });
+      } catch (e) {
+        aReject({
+          message: "Failed to doom about:home startup cache entry",
+        });
+      }
+    });
+  },
+};
+
+// Here the map of Flags-Cleaners.
+const FLAGS_MAP = [
+  {
+    flag: Ci.nsIClearDataService.CLEAR_CERT_EXCEPTIONS,
+    cleaners: [CertCleaner],
+  },
+
+  { flag: Ci.nsIClearDataService.CLEAR_COOKIES, cleaners: [CookieCleaner] },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_NETWORK_CACHE,
-    cleaner: NetworkCacheCleaner,
+    cleaners: [NetworkCacheCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_IMAGE_CACHE,
-    cleaner: ImageCacheCleaner,
+    cleaners: [ImageCacheCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_PLUGIN_DATA,
-    cleaner: PluginDataCleaner,
+    cleaners: [PluginDataCleaner],
   },
 
-  { flag: Ci.nsIClearDataService.CLEAR_DOWNLOADS, cleaner: DownloadsCleaner },
+  {
+    flag: Ci.nsIClearDataService.CLEAR_DOWNLOADS,
+    cleaners: [DownloadsCleaner, AboutHomeStartupCacheCleaner],
+  },
 
-  { flag: Ci.nsIClearDataService.CLEAR_PASSWORDS, cleaner: PasswordsCleaner },
+  {
+    flag: Ci.nsIClearDataService.CLEAR_PASSWORDS,
+    cleaners: [PasswordsCleaner],
+  },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_MEDIA_DEVICES,
-    cleaner: MediaDevicesCleaner,
+    cleaners: [MediaDevicesCleaner],
   },
 
-  { flag: Ci.nsIClearDataService.CLEAR_APPCACHE, cleaner: AppCacheCleaner },
+  { flag: Ci.nsIClearDataService.CLEAR_APPCACHE, cleaners: [AppCacheCleaner] },
 
-  { flag: Ci.nsIClearDataService.CLEAR_DOM_QUOTA, cleaner: QuotaCleaner },
+  { flag: Ci.nsIClearDataService.CLEAR_DOM_QUOTA, cleaners: [QuotaCleaner] },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_PREDICTOR_NETWORK_DATA,
-    cleaner: PredictorNetworkCleaner,
+    cleaners: [PredictorNetworkCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_DOM_PUSH_NOTIFICATIONS,
-    cleaner: PushNotificationsCleaner,
+    cleaners: [PushNotificationsCleaner],
   },
 
-  { flag: Ci.nsIClearDataService.CLEAR_HISTORY, cleaner: HistoryCleaner },
+  {
+    flag: Ci.nsIClearDataService.CLEAR_HISTORY,
+    cleaners: [HistoryCleaner, AboutHomeStartupCacheCleaner],
+  },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_SESSION_HISTORY,
-    cleaner: SessionHistoryCleaner,
+    cleaners: [SessionHistoryCleaner, AboutHomeStartupCacheCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_AUTH_TOKENS,
-    cleaner: AuthTokensCleaner,
+    cleaners: [AuthTokensCleaner],
   },
 
-  { flag: Ci.nsIClearDataService.CLEAR_AUTH_CACHE, cleaner: AuthCacheCleaner },
+  {
+    flag: Ci.nsIClearDataService.CLEAR_AUTH_CACHE,
+    cleaners: [AuthCacheCleaner],
+  },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_PERMISSIONS,
-    cleaner: PermissionsCleaner,
+    cleaners: [PermissionsCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_CONTENT_PREFERENCES,
-    cleaner: PreferencesCleaner,
+    cleaners: [PreferencesCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_SECURITY_SETTINGS,
-    cleaner: SecuritySettingsCleaner,
+    cleaners: [SecuritySettingsCleaner],
   },
 
-  { flag: Ci.nsIClearDataService.CLEAR_EME, cleaner: EMECleaner },
+  { flag: Ci.nsIClearDataService.CLEAR_EME, cleaners: [EMECleaner] },
 
-  { flag: Ci.nsIClearDataService.CLEAR_REPORTS, cleaner: ReportsCleaner },
+  { flag: Ci.nsIClearDataService.CLEAR_REPORTS, cleaners: [ReportsCleaner] },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_STORAGE_ACCESS,
-    cleaner: StorageAccessCleaner,
+    cleaners: [StorageAccessCleaner],
   },
 
   {
     flag: Ci.nsIClearDataService.CLEAR_CONTENT_BLOCKING_RECORDS,
-    cleaner: ContentBlockingCleaner,
+    cleaners: [ContentBlockingCleaner],
   },
 ];
 
@@ -1088,8 +1138,8 @@ this.ClearDataService = function() {
 
 ClearDataService.prototype = Object.freeze({
   classID: Components.ID("{0c06583d-7dd8-4293-b1a5-912205f779aa}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIClearDataService]),
-  _xpcom_factory: XPCOMUtils.generateSingletonFactory(ClearDataService),
+  QueryInterface: ChromeUtils.generateQI(["nsIClearDataService"]),
+  _xpcom_factory: ComponentUtils.generateSingletonFactory(ClearDataService),
 
   _initialize() {
     // Let's start all the service we need to cleanup data.
@@ -1099,6 +1149,22 @@ ClearDataService.prototype = Object.freeze({
     if (!Services.qms) {
       Cu.reportError("Failed initializiation of QuotaManagerService.");
     }
+  },
+
+  deleteDataFromLocalFiles(aIsUserRequest, aFlags, aCallback) {
+    if (!aCallback) {
+      return Cr.NS_ERROR_INVALID_ARG;
+    }
+
+    return this._deleteInternal(aFlags, aCallback, aCleaner => {
+      // Some of the 'Cleaners' do not support clearing data for
+      // local files. Ignore those.
+      if (aCleaner.deleteByLocalFiles) {
+        // A generic originAttributes dictionary.
+        return aCleaner.deleteByLocalFiles({});
+      }
+      return Promise.resolve();
+    });
   },
 
   deleteDataFromHost(aHost, aIsUserRequest, aFlags, aCallback) {
@@ -1135,7 +1201,7 @@ ClearDataService.prototype = Object.freeze({
       // is to delete by host.
       if (aCleaner.deleteByHost) {
         return aCleaner.deleteByHost(
-          aPrincipal.URI.host,
+          aPrincipal.host,
           aPrincipal.originAttributes
         );
       }
@@ -1178,11 +1244,35 @@ ClearDataService.prototype = Object.freeze({
     });
   },
 
-  deleteDataFromOriginAttributesPattern(aPattern) {
+  deleteDataFromOriginAttributesPattern(aPattern, aCallback) {
+    if (!aPattern) {
+      return Cr.NS_ERROR_INVALID_ARG;
+    }
+
+    let patternString = JSON.stringify(aPattern);
+    // XXXtt remove clear-origin-attributes-data entirely
     Services.obs.notifyObservers(
       null,
       "clear-origin-attributes-data",
-      JSON.stringify(aPattern)
+      patternString
+    );
+
+    if (!aCallback) {
+      aCallback = {
+        onDataDeleted: () => {},
+      };
+    }
+    return this._deleteInternal(
+      Ci.nsIClearDataService.CLEAR_ALL,
+      aCallback,
+      aCleaner => {
+        if (aCleaner.deleteByOriginAttributes) {
+          return aCleaner.deleteByOriginAttributes(patternString);
+        }
+
+        // We don't want to delete more than what is strictly required.
+        return Promise.resolve();
+      }
     );
   },
 
@@ -1193,11 +1283,15 @@ ClearDataService.prototype = Object.freeze({
   _deleteInternal(aFlags, aCallback, aHelper) {
     let resultFlags = 0;
     let promises = FLAGS_MAP.filter(c => aFlags & c.flag).map(c => {
+      return Promise.all(
+        c.cleaners.map(cleaner => {
+          return aHelper(cleaner).catch(e => {
+            Cu.reportError(e);
+            resultFlags |= c.flag;
+          });
+        })
+      );
       // Let's collect the failure in resultFlags.
-      return aHelper(c.cleaner).catch(e => {
-        Cu.reportError(e);
-        resultFlags |= c.flag;
-      });
     });
     Promise.all(promises).then(() => {
       aCallback.onDataDeleted(resultFlags);

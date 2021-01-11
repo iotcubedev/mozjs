@@ -16,7 +16,7 @@ const ComputedProperty = createFactory(
   require("devtools/client/inspector/boxmodel/components/ComputedProperty")
 );
 
-const Types = require("../types");
+const Types = require("devtools/client/inspector/boxmodel/types");
 
 const BOXMODEL_STRINGS_URI = "devtools/client/locales/boxmodel.properties";
 const BOXMODEL_L10N = new LocalizationHelper(BOXMODEL_STRINGS_URI);
@@ -119,11 +119,19 @@ class BoxModelProperties extends PureComponent {
       dom.div(
         {
           className: "layout-properties-header",
+          role: "heading",
+          "aria-level": "3",
           onDoubleClick: this.onToggleExpander,
         },
         dom.span({
           className: "layout-properties-expander theme-twisty",
           open: this.state.isOpen,
+          role: "button",
+          "aria-label": BOXMODEL_L10N.getStr(
+            this.state.isOpen
+              ? "boxmodel.propertiesHideLabel"
+              : "boxmodel.propertiesShowLabel"
+          ),
           onClick: this.onToggleExpander,
         }),
         BOXMODEL_L10N.getStr("boxmodel.propertiesLabel")
@@ -132,7 +140,7 @@ class BoxModelProperties extends PureComponent {
         {
           className: "layout-properties-wrapper devtools-monospace",
           hidden: !this.state.isOpen,
-          tabIndex: 0,
+          role: "table",
         },
         properties
       )

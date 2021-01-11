@@ -1,4 +1,4 @@
-// |reftest| skip-if(release_or_beta) async -- Promise.allSettled is not released yet
+// |reftest| async
 // Copyright (C) 2019 Leo Balter. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -20,7 +20,8 @@ Promise.resolve().then(function() {
   sequence.push(3);
 }).then(function() {
   sequence.push(4);
-  checkSequence(sequence, 'Promises resolved in unexpected sequence');
+  assert.sameValue(sequence.length, 4);
+checkSequence(sequence, 'Promises resolved in unexpected sequence');
 }).then($DONE, $DONE);
 
 sequence.push(1);

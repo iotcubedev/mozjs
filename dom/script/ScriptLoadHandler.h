@@ -12,7 +12,7 @@
 #define mozilla_dom_ScriptLoadHandler_h
 
 #include "nsIIncrementalStreamLoader.h"
-#include "mozilla/TimeStamp.h"
+#include "mozilla/UniquePtr.h"
 
 namespace mozilla {
 namespace dom {
@@ -23,9 +23,9 @@ class SRICheckDataVerifier;
 
 class ScriptLoadHandler final : public nsIIncrementalStreamLoaderObserver {
  public:
-  explicit ScriptLoadHandler(ScriptLoader* aScriptLoader,
-                             ScriptLoadRequest* aRequest,
-                             SRICheckDataVerifier* aSRIDataVerifier);
+  explicit ScriptLoadHandler(
+      ScriptLoader* aScriptLoader, ScriptLoadRequest* aRequest,
+      UniquePtr<SRICheckDataVerifier>&& aSRIDataVerifier);
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIINCREMENTALSTREAMLOADEROBSERVER
@@ -91,7 +91,7 @@ class ScriptLoadHandler final : public nsIIncrementalStreamLoaderObserver {
   RefPtr<ScriptLoadRequest> mRequest;
 
   // SRI data verifier.
-  nsAutoPtr<SRICheckDataVerifier> mSRIDataVerifier;
+  UniquePtr<SRICheckDataVerifier> mSRIDataVerifier;
 
   // Status of SRI data operations.
   nsresult mSRIStatus;
@@ -99,8 +99,8 @@ class ScriptLoadHandler final : public nsIIncrementalStreamLoaderObserver {
   // Unicode decoder for charset.
   mozilla::UniquePtr<mozilla::Decoder> mDecoder;
 
-  // Used to compute the DOM_SCRIPT_LOAD_INCREMENTAL_AVG_TRANSFER_RATE telemetry.
-  TimeStamp mFirstOnIncrementalData;
+  // Flipped to true after calling NotifyStart the first time
+  bool mPreloadStartNotified = false;
 };
 
 }  // namespace dom

@@ -10,11 +10,31 @@ const { XPCOMUtils } = ChromeUtils.import(
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  AddonTestUtils: "resource://testing-common/AddonTestUtils.jsm",
+  AppConstants: "resource://gre/modules/AppConstants.jsm",
   BrowserTestUtils: "resource://testing-common/BrowserTestUtils.jsm",
+  BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.jsm",
+  FormHistory: "resource://gre/modules/FormHistory.jsm",
+  setTimeout: "resource://gre/modules/Timer.jsm",
+  TestUtils: "resource://testing-common/TestUtils.jsm",
+  UrlbarController: "resource:///modules/UrlbarController.jsm",
+  UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
+  UrlbarProvider: "resource:///modules/UrlbarUtils.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
 });
 
 var UrlbarTestUtils = {
+  /**
+   * Running this init allows helpers to access test scope helpers, like Assert
+   * and SimpleTest. Note this initialization is not enforced, thus helpers
+   * should always check _testScope and provide a fallback path.
+   * @param {object} scope The global scope where tests are being run.
+   */
+  init(scope) {
+    this._testScope = scope;
+  },
+
   /**
    * Waits to a search to be complete.
    * @param {object} win The window containing the urlbar
@@ -33,7 +53,7 @@ var UrlbarTestUtils = {
    * @param {function} options.waitForFocus The SimpleTest function
    * @param {boolean} [options.fireInputEvent] whether an input event should be
    *        used when starting the query (simulates the user's typing, sets
-   *        userTypedValued, etc.)
+   *        userTypedValued, triggers engagement event telemetry, etc.)
    * @param {number} [options.selectionStart] The input's selectionStart
    * @param {number} [options.selectionEnd] The input's selectionEnd
    */
@@ -45,28 +65,33 @@ var UrlbarTestUtils = {
     selectionStart = -1,
     selectionEnd = -1,
   } = {}) {
-    await new Promise(resolve => waitForFocus(resolve, window));
-    let lastSearchString = window.gURLBar._lastSearchString;
+    if (this._testScope) {
+      await this._testScope.SimpleTest.promiseFocus(window);
+    } else {
+      await new Promise(resolve => waitForFocus(resolve, window));
+    }
     window.gURLBar.inputField.focus();
-    window.gURLBar.value = value;
+    // Using the value setter in some cases may trim and fetch unexpected
+    // results, then pick an alternate path.
+    if (UrlbarPrefs.get("trimURLs") && value != BrowserUtils.trimURL(value)) {
+      window.gURLBar.inputField.value = value;
+      fireInputEvent = true;
+    } else {
+      window.gURLBar.value = value;
+    }
     if (selectionStart >= 0 && selectionEnd >= 0) {
       window.gURLBar.selectionEnd = selectionEnd;
       window.gURLBar.selectionStart = selectionStart;
     }
+
+    // An input event will start a new search, so be careful not to start a
+    // search if we fired an input event since that would start two searches.
     if (fireInputEvent) {
       // This is necessary to get the urlbar to set gBrowser.userTypedValue.
       this.fireInputEvent(window);
     } else {
       window.gURLBar.setPageProxyState("invalid");
-    }
-    // An input event will start a new search, with a couple of exceptions, so
-    // be careful not to call _startSearch if we fired an input event since that
-    // would start two searches.  The first exception is when the new search and
-    // old search are the same.  Many tests do consecutive searches with the
-    // same string and expect new searches to start, so call _startSearch
-    // directly then.
-    if (!fireInputEvent || value == lastSearchString) {
-      this._startSearch(window.gURLBar, value, selectionStart, selectionEnd);
+      window.gURLBar.startQuery();
     }
     return this.promiseSearchComplete(window);
   },
@@ -106,16 +131,6 @@ var UrlbarTestUtils = {
     return this.getOneOffSearchButtons(win).style.display != "none";
   },
 
-  _startSearch(urlbar, text, selectionStart = -1, selectionEnd = -1) {
-    urlbar.value = text;
-    if (selectionStart >= 0 && selectionEnd >= 0) {
-      urlbar.selectionEnd = selectionEnd;
-      urlbar.selectionStart = selectionStart;
-    }
-    urlbar.setPageProxyState("invalid");
-    urlbar.startQuery();
-  },
-
   /**
    * Gets an abstracted representation of the result at an index.
    * @param {object} win The window containing the urlbar
@@ -130,6 +145,7 @@ var UrlbarTestUtils = {
     details.url = url;
     details.postData = postData;
     details.type = result.type;
+    details.source = result.source;
     details.heuristic = result.heuristic;
     details.autofill = !!result.autofill;
     details.image = element.getElementsByClassName("urlbarView-favicon")[0].src;
@@ -138,12 +154,14 @@ var UrlbarTestUtils = {
     let actions = element.getElementsByClassName("urlbarView-action");
     let urls = element.getElementsByClassName("urlbarView-url");
     let typeIcon = element.querySelector(".urlbarView-type-icon");
-    let typeIconStyle = win.getComputedStyle(typeIcon);
+    await win.document.l10n.translateFragment(element);
     details.displayed = {
       title: element.getElementsByClassName("urlbarView-title")[0].textContent,
-      action: actions.length > 0 ? actions[0].textContent : null,
-      url: urls.length > 0 ? urls[0].textContent : null,
-      typeIcon: typeIconStyle["background-image"],
+      action: actions.length ? actions[0].textContent : null,
+      url: urls.length ? urls[0].textContent : null,
+      typeIcon: typeIcon
+        ? win.getComputedStyle(typeIcon)["background-image"]
+        : null,
     };
     details.element = {
       action: element.getElementsByClassName("urlbarView-action")[0],
@@ -160,6 +178,9 @@ var UrlbarTestUtils = {
         keyword: result.payload.keyword,
         query: result.payload.query,
         suggestion: result.payload.suggestion,
+        isSearchHistory: result.payload.isSearchHistory,
+        inPrivateWindow: result.payload.inPrivateWindow,
+        isPrivateEngine: result.payload.isPrivateEngine,
       };
     } else if (details.type == UrlbarUtils.RESULT_TYPE.KEYWORD) {
       details.keyword = result.payload.keyword;
@@ -169,29 +190,48 @@ var UrlbarTestUtils = {
 
   /**
    * Gets the currently selected element.
-   * @param {object} win The window containing the urlbar
-   * @returns {HtmlElement|XulElement} the selected element.
+   * @param {object} win The window containing the urlbar.
+   * @returns {HtmlElement|XulElement} The selected element.
    */
   getSelectedElement(win) {
-    return win.gURLBar.view._selected || null;
+    return win.gURLBar.view.selectedElement || null;
   },
 
   /**
-   * Gets the index of the currently selected item.
+   * Gets the index of the currently selected element.
    * @param {object} win The window containing the urlbar.
    * @returns {number} The selected index.
    */
-  getSelectedIndex(win) {
-    return win.gURLBar.view.selectedIndex;
+  getSelectedElementIndex(win) {
+    return win.gURLBar.view.selectedElementIndex;
   },
 
   /**
-   * Selects the item at the index specified.
+   * Gets the currently selected row. If the selected element is a descendant of
+   * a row, this will return the ancestor row.
+   * @param {object} win The window containing the urlbar.
+   * @returns {HTMLElement|XulElement} The selected row.
+   */
+  getSelectedRow(win) {
+    return win.gURLBar.view._getSelectedRow() || null;
+  },
+
+  /**
+   * Gets the index of the currently selected element.
+   * @param {object} win The window containing the urlbar.
+   * @returns {number} The selected row index.
+   */
+  getSelectedRowIndex(win) {
+    return win.gURLBar.view.selectedRowIndex;
+  },
+
+  /**
+   * Selects the element at the index specified.
    * @param {object} win The window containing the urlbar.
    * @param {index} index The index to select.
    */
-  setSelectedIndex(win, index) {
-    win.gURLBar.view.selectedIndex = index;
+  setSelectedRowIndex(win, index) {
+    win.gURLBar.view.selectedRowIndex = index;
   },
 
   /**
@@ -202,10 +242,6 @@ var UrlbarTestUtils = {
    */
   getResultCount(win) {
     return win.gURLBar.view._rows.children.length;
-  },
-
-  getDropMarker(win) {
-    return win.gURLBar.dropmarker;
   },
 
   /**
@@ -220,12 +256,13 @@ var UrlbarTestUtils = {
     // complete.
     return this.promiseSearchComplete(win).then(context => {
       // Look for search suggestions.
-      let hasSearchSuggestion = context.results.some(
+      let firstSearchSuggestionIndex = context.results.findIndex(
         r => r.type == UrlbarUtils.RESULT_TYPE.SEARCH && r.payload.suggestion
       );
-      if (!hasSearchSuggestion) {
+      if (firstSearchSuggestionIndex == -1) {
         throw new Error("Cannot find a search suggestion");
       }
+      return firstSearchSuggestionIndex;
     });
   },
 
@@ -259,6 +296,9 @@ var UrlbarTestUtils = {
     if (win.gURLBar.view.isOpen) {
       return;
     }
+    if (this._testScope) {
+      this._testScope.info("Awaiting for the urlbar panel to open");
+    }
     await new Promise(resolve => {
       win.gURLBar.controller.addQueryListener({
         onViewOpen() {
@@ -285,6 +325,9 @@ var UrlbarTestUtils = {
     if (!win.gURLBar.view.isOpen) {
       return;
     }
+    if (this._testScope) {
+      this._testScope.info("Awaiting for the urlbar panel to close");
+    }
     await new Promise(resolve => {
       win.gURLBar.controller.addQueryListener({
         onViewClose() {
@@ -301,6 +344,27 @@ var UrlbarTestUtils = {
    */
   isPopupOpen(win) {
     return win.gURLBar.view.isOpen;
+  },
+
+  /**
+   * @param {object} win The browser window
+   * @param {string} [engineName]
+   * @returns {boolean} True if the UrlbarInput is in search mode. If
+   *   engineName is specified, only returns true if the search mode engine
+   *   matches.
+   */
+  isInSearchMode(win, engineName = null) {
+    if (!!win.gURLBar.searchMode != win.gURLBar.hasAttribute("searchmode")) {
+      throw new Error(
+        "Urlbar should never be in search mode without the corresponding attribute."
+      );
+    }
+
+    if (engineName) {
+      return win.gURLBar.searchMode.engineName == engineName;
+    }
+
+    return !!win.gURLBar.searchMode;
   },
 
   /**
@@ -327,4 +391,279 @@ var UrlbarTestUtils = {
     });
     win.gURLBar.inputField.dispatchEvent(event);
   },
+
+  /**
+   * Returns a new mock controller.  This is useful for xpcshell tests.
+   * @param {object} options Additional options to pass to the UrlbarController
+   *        constructor.
+   * @returns {UrlbarController} A new controller.
+   */
+  newMockController(options = {}) {
+    return new UrlbarController(
+      Object.assign(
+        {
+          input: {
+            isPrivate: false,
+            window: {
+              location: {
+                href: AppConstants.BROWSER_CHROME_URL,
+              },
+            },
+          },
+        },
+        options
+      )
+    );
+  },
+
+  /**
+   * Initializes some external components used by the urlbar.  This is necessary
+   * in xpcshell tests but not in browser tests.
+   */
+  async initXPCShellDependencies() {
+    // The FormHistoryStartup component must be initialized since urlbar uses
+    // form history.
+    Cc["@mozilla.org/satchel/form-history-startup;1"]
+      .getService(Ci.nsIObserver)
+      .observe(null, "profile-after-change", null);
+
+    // This is necessary because UrlbarMuxerUnifiedComplete.sort calls
+    // Services.search.parseSubmissionURL, so we need engines.
+    try {
+      await AddonTestUtils.promiseStartupManager();
+    } catch (error) {
+      if (!error.message.includes("already started")) {
+        throw error;
+      }
+    }
+  },
 };
+
+UrlbarTestUtils.formHistory = {
+  /**
+   * Performs an operation on the urlbar's form history.
+   *
+   * @param {object} updateObject
+   *   An object describing the form history operation.  See FormHistory.jsm.
+   * @param {object} window
+   *   The window containing the urlbar.
+   */
+  async update(
+    updateObject = {},
+    window = BrowserWindowTracker.getTopWindow()
+  ) {
+    await new Promise((resolve, reject) => {
+      FormHistory.update(
+        Object.assign(
+          {
+            fieldname: this.getFormHistoryName(window),
+          },
+          updateObject
+        ),
+        {
+          handleError(error) {
+            reject(error);
+          },
+          handleCompletion(errored) {
+            if (!errored) {
+              resolve();
+            }
+          },
+        }
+      );
+    });
+  },
+
+  /**
+   * Adds values to the urlbar's form history.
+   *
+   * @param {array} values
+   *   The form history string values to remove.
+   * @param {object} window
+   *   The window containing the urlbar.
+   */
+  async add(values = [], window = BrowserWindowTracker.getTopWindow()) {
+    for (let value of values) {
+      await this.update(
+        {
+          value,
+          op: "bump",
+        },
+        window
+      );
+    }
+  },
+
+  /**
+   * Removes values from the urlbar's form history.  If you want to remove all
+   * history, use clearFormHistory.
+   *
+   * @param {array} values
+   *   The form history string values to remove.
+   * @param {object} window
+   *   The window containing the urlbar.
+   */
+  async remove(values = [], window = BrowserWindowTracker.getTopWindow()) {
+    for (let value of values) {
+      await this.update(
+        {
+          value,
+          op: "remove",
+        },
+        window
+      );
+    }
+  },
+
+  /**
+   * Removes all values from the urlbar's form history.  If you want to remove
+   * individual values, use removeFormHistory.
+   *
+   * @param {object} window
+   *   The window containing the urlbar.
+   */
+  async clear(window = BrowserWindowTracker.getTopWindow()) {
+    await this.update({ op: "remove" }, window);
+  },
+
+  /**
+   * Searches the urlbar's form history.
+   *
+   * @param {object} criteria
+   *   Criteria to narrow the search.  See FormHistory.search.
+   * @param {object} window
+   *   The window containing the urlbar.
+   * @returns {Promise}
+   *   A promise resolved with an array of found form history entries.
+   */
+  search(criteria = {}, window = BrowserWindowTracker.getTopWindow()) {
+    return new Promise((resolve, reject) => {
+      let results = [];
+      FormHistory.search(
+        null,
+        Object.assign(
+          {
+            fieldname: this.getFormHistoryName(window),
+          },
+          criteria
+        ),
+        {
+          handleResult(result) {
+            results.push(result);
+          },
+          handleError(error) {
+            reject(error);
+          },
+          handleCompletion(errored) {
+            if (!errored) {
+              resolve(results);
+            }
+          },
+        }
+      );
+    });
+  },
+
+  /**
+   * Returns a promise that's resolved on the next form history change.
+   *
+   * @param {string} change
+   *   Null to listen for any change, or one of: add, remove, update
+   * @returns {Promise}
+   *   Resolved on the next specified form history change.
+   */
+  promiseChanged(change = null) {
+    return TestUtils.topicObserved(
+      "satchel-storage-changed",
+      (subject, data) => !change || data == "formhistory-" + change
+    );
+  },
+
+  /**
+   * Returns the form history name for the urlbar in a window.
+   *
+   * @param {object} window
+   *   The window.
+   * @returns {string}
+   *   The form history name of the urlbar in the window.
+   */
+  getFormHistoryName(window = BrowserWindowTracker.getTopWindow()) {
+    return window ? window.gURLBar.formHistoryName : "searchbar-history";
+  },
+};
+
+/**
+ * A test provider.  If you need a test provider whose behavior is different
+ * from this, then consider modifying the implementation below if you think the
+ * new behavior would be useful for other tests.  Otherwise, you can create a
+ * new TestProvider instance and then override its methods.
+ */
+class TestProvider extends UrlbarProvider {
+  /**
+   * Constructor.
+   *
+   * @param {array} results
+   *   An array of UrlbarResult objects that will be the provider's results.
+   * @param {string} [name]
+   *   The provider's name.  Provider names should be unique.
+   * @param {UrlbarUtils.PROVIDER_TYPE} [type]
+   *   The provider's type.
+   * @param {number} [priority]
+   *   The provider's priority.  Built-in providers have a priority of zero.
+   * @param {number} [addTimeout]
+   *   If non-zero, each result will be added on this timeout.  If zero, all
+   *   results will be added immediately and synchronously.
+   * @param {function} [onCancel]
+   *   If given, a function that will be called when the provider's cancelQuery
+   *   method is called.
+   */
+  constructor({
+    results,
+    name = Math.floor(Math.random() * 100000),
+    type = UrlbarUtils.PROVIDER_TYPE.PROFILE,
+    priority = 0,
+    addTimeout = 0,
+    onCancel = null,
+  } = {}) {
+    super();
+    this._results = results;
+    this._name = name;
+    this._type = type;
+    this._priority = priority;
+    this._addTimeout = addTimeout;
+    this._onCancel = onCancel;
+  }
+  get name() {
+    return "TestProvider" + this._name;
+  }
+  get type() {
+    return this._type;
+  }
+  getPriority(context) {
+    return this._priority;
+  }
+  isActive(context) {
+    return true;
+  }
+  async startQuery(context, addCallback) {
+    for (let result of this._results) {
+      if (!this._addTimeout) {
+        addCallback(this, result);
+      } else {
+        await new Promise(resolve => {
+          setTimeout(() => {
+            addCallback(this, result);
+            resolve();
+          }, this._addTimeout);
+        });
+      }
+    }
+  }
+  cancelQuery(context) {
+    if (this._onCancel) {
+      this._onCancel();
+    }
+  }
+}
+
+UrlbarTestUtils.TestProvider = TestProvider;

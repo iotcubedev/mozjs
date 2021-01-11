@@ -4,24 +4,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/dom/MediaKeySession.h"
-#include "mozilla/dom/MediaKeyError.h"
-#include "mozilla/dom/MediaKeyMessageEvent.h"
-#include "mozilla/dom/MediaEncryptedEvent.h"
-#include "mozilla/dom/MediaKeyStatusMap.h"
-#include "mozilla/dom/MediaKeySystemAccess.h"
-#include "mozilla/dom/KeyIdsInitDataBinding.h"
-#include "nsCycleCollectionParticipant.h"
-#include "mozilla/CDMProxy.h"
+
+#include <ctime>
+#include <utility>
+
+#include "GMPUtils.h"
 #include "mozilla/AsyncEventDispatcher.h"
-#include "mozilla/Move.h"
+#include "mozilla/CDMProxy.h"
 #include "mozilla/EMEUtils.h"
 #include "mozilla/Encoding.h"
-#include "GMPUtils.h"
+#include "mozilla/dom/HTMLMediaElement.h"
+#include "mozilla/dom/KeyIdsInitDataBinding.h"
+#include "mozilla/dom/MediaEncryptedEvent.h"
+#include "mozilla/dom/MediaKeyError.h"
+#include "mozilla/dom/MediaKeyMessageEvent.h"
+#include "mozilla/dom/MediaKeyStatusMap.h"
+#include "mozilla/dom/MediaKeySystemAccess.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsPrintfCString.h"
 #include "psshparser/PsshParser.h"
-#include <ctime>
 
 namespace mozilla {
 namespace dom {
@@ -48,8 +50,8 @@ static const uint32_t MAX_KEY_ID_LENGTH = 512;
 // platform tests.
 static const uint32_t MAX_CENC_INIT_DATA_LENGTH = 64 * 1024;
 
-MediaKeySession::MediaKeySession(JSContext* aCx, nsPIDOMWindowInner* aParent,
-                                 MediaKeys* aKeys, const nsAString& aKeySystem,
+MediaKeySession::MediaKeySession(nsPIDOMWindowInner* aParent, MediaKeys* aKeys,
+                                 const nsAString& aKeySystem,
                                  MediaKeySessionType aSessionType,
                                  ErrorResult& aRv)
     : DOMEventTargetHelper(aParent),
@@ -67,7 +69,7 @@ MediaKeySession::MediaKeySession(JSContext* aCx, nsPIDOMWindowInner* aParent,
   if (aRv.Failed()) {
     return;
   }
-  mClosed = MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeys.createSession"));
+  mClosed = MakePromise(aRv, "MediaKeys.createSession"_ns);
 }
 
 void MediaKeySession::SetSessionId(const nsAString& aSessionId) {
@@ -121,13 +123,10 @@ void MediaKeySession::UpdateKeyStatusMap() {
     nsAutoCString message(
         nsPrintfCString("MediaKeySession[%p,'%s'] key statuses change {", this,
                         NS_ConvertUTF16toUTF8(mSessionId).get()));
-    using IntegerType = typename std::underlying_type<MediaKeyStatus>::type;
     for (const CDMCaps::KeyStatus& status : keyStatuses) {
       message.Append(nsPrintfCString(
           " (%s,%s)", ToHexString(status.mId).get(),
-          MediaKeyStatusValues::strings[static_cast<IntegerType>(
-                                            status.mStatus)]
-              .value));
+          nsCString(MediaKeyStatusValues::GetString(status.mStatus)).get()));
     }
     message.AppendLiteral(" }");
     // Use %s so we aren't exposing random strings to printf interpolation.
@@ -197,7 +196,7 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
     const nsAString& aInitDataType,
     const ArrayBufferViewOrArrayBuffer& aInitData, ErrorResult& aRv) {
   RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeySession.generateRequest")));
+      MakePromise(aRv, "MediaKeySession.generateRequest"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -207,10 +206,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   if (IsClosed()) {
     EME_LOG("MediaKeySession[%p,'%s'] GenerateRequest() failed, closed", this,
             NS_ConvertUTF16toUTF8(mSessionId).get());
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "Session is closed in MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithInvalidStateError(
+        "Session is closed in MediaKeySession.generateRequest()");
     return promise.forget();
   }
 
@@ -219,10 +216,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   if (!mUninitialized) {
     EME_LOG("MediaKeySession[%p,'%s'] GenerateRequest() failed, uninitialized",
             this, NS_ConvertUTF16toUTF8(mSessionId).get());
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Session is already initialized in "
-                           "MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithInvalidStateError(
+        "Session is already initialized in MediaKeySession.generateRequest()");
     return promise.forget();
   }
 
@@ -232,10 +227,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   // If initDataType is the empty string, return a promise rejected
   // with a newly created TypeError.
   if (aInitDataType.IsEmpty()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING(
-            "Empty initDataType passed to MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithTypeError(
+        "Empty initDataType passed to MediaKeySession.generateRequest()");
     EME_LOG(
         "MediaKeySession[%p,'%s'] GenerateRequest() failed, empty initDataType",
         this, NS_ConvertUTF16toUTF8(mSessionId).get());
@@ -247,10 +240,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   nsTArray<uint8_t> data;
   CopyArrayBufferViewOrArrayBufferData(aInitData, data);
   if (data.IsEmpty()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING(
-            "Empty initData passed to MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithTypeError(
+        "Empty initData passed to MediaKeySession.generateRequest()");
     EME_LOG("MediaKeySession[%p,'%s'] GenerateRequest() failed, empty initData",
             this, NS_ConvertUTF16toUTF8(mSessionId).get());
     return promise.forget();
@@ -262,10 +253,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   // NotSupportedError. String comparison is case-sensitive.
   if (!MediaKeySystemAccess::KeySystemSupportsInitDataType(mKeySystem,
                                                            aInitDataType)) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_NOT_SUPPORTED_ERR,
-        NS_LITERAL_CSTRING("Unsupported initDataType passed to "
-                           "MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithNotSupportedError(
+        "Unsupported initDataType passed to MediaKeySession.generateRequest()");
     EME_LOG(
         "MediaKeySession[%p,'%s'] GenerateRequest() failed, unsupported "
         "initDataType",
@@ -287,10 +276,8 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
   if (!ValidateInitData(data, aInitDataType)) {
     // If the preceding step failed, reject promise with a newly created
     // TypeError.
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING("initData sanitization failed in "
-                           "MediaKeySession.generateRequest()"));
+    promise->MaybeRejectWithTypeError(
+        "initData sanitization failed in MediaKeySession.generateRequest()");
     EME_LOG(
         "MediaKeySession[%p,'%s'] GenerateRequest() initData sanitization "
         "failed",
@@ -324,8 +311,7 @@ already_AddRefed<Promise> MediaKeySession::GenerateRequest(
 
 already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
                                                 ErrorResult& aRv) {
-  RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeySession.load")));
+  RefPtr<DetailedPromise> promise(MakePromise(aRv, "MediaKeySession.load"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -333,9 +319,8 @@ already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
   // 1. If this object is closed, return a promise rejected with an
   // InvalidStateError.
   if (IsClosed()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Session is closed in MediaKeySession.load()"));
+    promise->MaybeRejectWithInvalidStateError(
+        "Session is closed in MediaKeySession.load()");
     EME_LOG("MediaKeySession[%p,'%s'] Load() failed, closed", this,
             NS_ConvertUTF16toUTF8(aSessionId).get());
     return promise.forget();
@@ -344,10 +329,8 @@ already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
   // 2.If this object's uninitialized value is false, return a promise rejected
   // with an InvalidStateError.
   if (!mUninitialized) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "Session is already initialized in MediaKeySession.load()"));
+    promise->MaybeRejectWithInvalidStateError(
+        "Session is already initialized in MediaKeySession.load()");
     EME_LOG("MediaKeySession[%p,'%s'] Load() failed, uninitialized", this,
             NS_ConvertUTF16toUTF8(aSessionId).get());
     return promise.forget();
@@ -359,9 +342,8 @@ already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
   // 4. If sessionId is the empty string, return a promise rejected with a newly
   // created TypeError.
   if (aSessionId.IsEmpty()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING("Trying to load a session with empty session ID"));
+    promise->MaybeRejectWithTypeError(
+        "Trying to load a session with empty session ID");
     // "The sessionId parameter is empty."
     EME_LOG("MediaKeySession[%p,''] Load() failed, no sessionId", this);
     return promise.forget();
@@ -371,9 +353,8 @@ already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
   // on this object's session type is false, return a promise rejected with
   // a newly created TypeError.
   if (mSessionType == MediaKeySessionType::Temporary) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING("Trying to load() into a non-persistent session"));
+    promise->MaybeRejectWithTypeError(
+        "Trying to load() into a non-persistent session");
     EME_LOG(
         "MediaKeySession[%p,''] Load() failed, can't load in a non-persistent "
         "session",
@@ -405,7 +386,7 @@ already_AddRefed<Promise> MediaKeySession::Load(const nsAString& aSessionId,
 already_AddRefed<Promise> MediaKeySession::Update(
     const ArrayBufferViewOrArrayBuffer& aResponse, ErrorResult& aRv) {
   RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeySession.update")));
+      MakePromise(aRv, "MediaKeySession.update"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -416,19 +397,15 @@ already_AddRefed<Promise> MediaKeySession::Update(
     EME_LOG(
         "MediaKeySession[%p,''] Update() called before sessionId set by CDM",
         this);
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "MediaKeySession.Update() called before sessionId set by CDM"));
+    promise->MaybeRejectWithInvalidStateError(
+        "MediaKeySession.Update() called before sessionId set by CDM");
     return promise.forget();
   }
 
   nsTArray<uint8_t> data;
   if (IsClosed() || !mKeys->GetCDMProxy()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "Session is closed or was not properly initialized"));
+    promise->MaybeRejectWithInvalidStateError(
+        "Session is closed or was not properly initialized");
     EME_LOG(
         "MediaKeySession[%p,'%s'] Update() failed, session is closed or was "
         "not properly initialised.",
@@ -437,10 +414,8 @@ already_AddRefed<Promise> MediaKeySession::Update(
   }
   CopyArrayBufferViewOrArrayBufferData(aResponse, data);
   if (data.IsEmpty()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_TYPE_ERR,
-        NS_LITERAL_CSTRING(
-            "Empty response buffer passed to MediaKeySession.update()"));
+    promise->MaybeRejectWithTypeError(
+        "Empty response buffer passed to MediaKeySession.update()");
     EME_LOG("MediaKeySession[%p,'%s'] Update() failed, empty response buffer",
             this, NS_ConvertUTF16toUTF8(mSessionId).get());
     return promise.forget();
@@ -463,8 +438,7 @@ already_AddRefed<Promise> MediaKeySession::Update(
 }
 
 already_AddRefed<Promise> MediaKeySession::Close(ErrorResult& aRv) {
-  RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeySession.close")));
+  RefPtr<DetailedPromise> promise(MakePromise(aRv, "MediaKeySession.close"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -481,18 +455,15 @@ already_AddRefed<Promise> MediaKeySession::Close(ErrorResult& aRv) {
   if (!IsCallable()) {
     EME_LOG("MediaKeySession[%p,''] Close() called before sessionId set by CDM",
             this);
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "MediaKeySession.Close() called before sessionId set by CDM"));
+    promise->MaybeRejectWithInvalidStateError(
+        "MediaKeySession.Close() called before sessionId set by CDM");
     return promise.forget();
   }
   if (!mKeys->GetCDMProxy()) {
     EME_LOG("MediaKeySession[%p,'%s'] Close() null CDMProxy", this,
             NS_ConvertUTF16toUTF8(mSessionId).get());
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("MediaKeySession.Close() lost reference to CDM"));
+    promise->MaybeRejectWithInvalidStateError(
+        "MediaKeySession.Close() lost reference to CDM");
     return promise.forget();
   }
   // 4. Let promise be a new promise.
@@ -528,7 +499,7 @@ bool MediaKeySession::IsClosed() const { return mIsClosed; }
 
 already_AddRefed<Promise> MediaKeySession::Remove(ErrorResult& aRv) {
   RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeySession.remove")));
+      MakePromise(aRv, "MediaKeySession.remove"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -538,27 +509,21 @@ already_AddRefed<Promise> MediaKeySession::Remove(ErrorResult& aRv) {
     EME_LOG(
         "MediaKeySession[%p,''] Remove() called before sessionId set by CDM",
         this);
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "MediaKeySession.Remove() called before sessionId set by CDM"));
+    promise->MaybeRejectWithInvalidStateError(
+        "MediaKeySession.Remove() called before sessionId set by CDM");
     return promise.forget();
   }
   if (mSessionType != MediaKeySessionType::Persistent_license) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_ACCESS_ERR,
-        NS_LITERAL_CSTRING(
-            "Calling MediaKeySession.remove() on non-persistent session"));
+    promise->MaybeRejectWithInvalidAccessError(
+        "Calling MediaKeySession.remove() on non-persistent session");
     // "The operation is not supported on session type sessions."
     EME_LOG("MediaKeySession[%p,'%s'] Remove() failed, sesion not persisrtent.",
             this, NS_ConvertUTF16toUTF8(mSessionId).get());
     return promise.forget();
   }
   if (IsClosed() || !mKeys->GetCDMProxy()) {
-    promise->MaybeReject(
-        NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING(
-            "MediaKeySesison.remove() called but session is not active"));
+    promise->MaybeRejectWithInvalidStateError(
+        "MediaKeySession.remove() called but session is not active");
     // "The session is closed."
     EME_LOG("MediaKeySession[%p,'%s'] Remove() failed, already session closed.",
             this, NS_ConvertUTF16toUTF8(mSessionId).get());
@@ -578,7 +543,7 @@ void MediaKeySession::DispatchKeyMessage(MediaKeyMessageType aMessageType,
     EME_LOG(
         "MediaKeySession[%p,'%s'] DispatchKeyMessage() type=%s message='%s'",
         this, NS_ConvertUTF16toUTF8(mSessionId).get(),
-        MediaKeyMessageTypeValues::strings[uint32_t(aMessageType)].value,
+        nsCString(MediaKeyMessageTypeValues::GetString(aMessageType)).get(),
         ToHexString(aMessage).get());
   }
 
@@ -606,8 +571,8 @@ void MediaKeySession::DispatchKeyStatusesChange() {
 
   UpdateKeyStatusMap();
 
-  RefPtr<AsyncEventDispatcher> asyncDispatcher = new AsyncEventDispatcher(
-      this, NS_LITERAL_STRING("keystatuseschange"), CanBubble::eNo);
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncEventDispatcher(this, u"keystatuseschange"_ns, CanBubble::eNo);
   asyncDispatcher->PostDOMEvent();
 }
 
@@ -648,9 +613,7 @@ void MediaKeySession::SetOnmessage(EventHandlerNonNull* aCallback) {
 }
 
 nsCString ToCString(MediaKeySessionType aType) {
-  using IntegerType = typename std::underlying_type<MediaKeySessionType>::type;
-  auto idx = static_cast<IntegerType>(aType);
-  return nsDependentCString(MediaKeySessionTypeValues::strings[idx].value);
+  return nsCString(MediaKeySessionTypeValues::GetString(aType));
 }
 
 nsString ToString(MediaKeySessionType aType) {

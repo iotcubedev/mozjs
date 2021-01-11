@@ -95,14 +95,14 @@ const checkSetCookiePermissions = (extension, uri, cookie) => {
   // follows. So instead, we follow the rules used by the cookie
   // service.
   //
-  // See source/netwerk/cookie/nsCookieService.cpp, in particular
+  // See source/netwerk/cookie/CookieService.cpp, in particular
   // CheckDomain() and SetCookieInternal().
 
   if (uri.scheme != "http" && uri.scheme != "https") {
     return false;
   }
 
-  if (!extension.whiteListedHosts.matches(uri)) {
+  if (!extension.allowedOrigins.matches(uri)) {
     return false;
   }
 
@@ -224,7 +224,7 @@ const query = function*(detailsIn, props, context) {
   }
 
   // We can use getCookiesFromHost for faster searching.
-  let enumerator;
+  let cookies;
   let host;
   let url;
   let originAttributes = {
@@ -249,15 +249,15 @@ const query = function*(detailsIn, props, context) {
   if (host && "firstPartyDomain" in originAttributes) {
     // getCookiesFromHost is more efficient than getCookiesWithOriginAttributes
     // if the host and all origin attributes are known.
-    enumerator = Services.cookies.getCookiesFromHost(host, originAttributes);
+    cookies = Services.cookies.getCookiesFromHost(host, originAttributes);
   } else {
-    enumerator = Services.cookies.getCookiesWithOriginAttributes(
+    cookies = Services.cookies.getCookiesWithOriginAttributes(
       JSON.stringify(originAttributes),
       host
     );
   }
 
-  // Based on nsCookieService::GetCookieStringInternal
+  // Based on CookieService::GetCookieStringFromHttp
   function matches(cookie) {
     function domainMatches(host) {
       return (
@@ -321,14 +321,14 @@ const query = function*(detailsIn, props, context) {
     }
 
     // Check that the extension has permissions for this host.
-    if (!context.extension.whiteListedHosts.matchesCookie(cookie)) {
+    if (!context.extension.allowedOrigins.matchesCookie(cookie)) {
       return false;
     }
 
     return true;
   }
 
-  for (const cookie of enumerator) {
+  for (const cookie of cookies) {
     if (matches(cookie)) {
       yield { cookie, isPrivate, storeId };
     }
@@ -466,6 +466,15 @@ this.cookies = class extends ExtensionAPI {
 
           let sameSite = SAME_SITE_STATUSES.indexOf(details.sameSite);
 
+          let schemeType = Ci.nsICookie.SCHEME_UNSET;
+          if (uri.scheme === "https") {
+            schemeType = Ci.nsICookie.SCHEME_HTTPS;
+          } else if (uri.scheme === "http") {
+            schemeType = Ci.nsICookie.SCHEME_HTTP;
+          } else if (uri.scheme === "file") {
+            schemeType = Ci.nsICookie.SCHEME_FILE;
+          }
+
           // The permission check may have modified the domain, so use
           // the new value instead.
           Services.cookies.add(
@@ -478,7 +487,8 @@ this.cookies = class extends ExtensionAPI {
             isSession,
             expiry,
             originAttributes,
-            sameSite
+            sameSite,
+            schemeType
           );
 
           return self.cookies.get(details);
@@ -499,7 +509,6 @@ this.cookies = class extends ExtensionAPI {
               cookie.host,
               cookie.name,
               cookie.path,
-              false,
               cookie.originAttributes
             );
 
@@ -543,7 +552,7 @@ this.cookies = class extends ExtensionAPI {
               let notify = (removed, cookie, cause) => {
                 cookie.QueryInterface(Ci.nsICookie);
 
-                if (extension.whiteListedHosts.matchesCookie(cookie)) {
+                if (extension.allowedOrigins.matchesCookie(cookie)) {
                   fire.async({
                     removed,
                     cookie: convertCookie({

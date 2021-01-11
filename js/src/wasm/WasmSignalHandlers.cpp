@@ -23,6 +23,7 @@
 #include "mozilla/ThreadLocal.h"
 
 #include "threading/Thread.h"
+#include "vm/JitActivation.h"  // js::jit::JitActivation
 #include "vm/Realm.h"
 #include "vm/Runtime.h"
 #include "wasm/WasmInstance.h"
@@ -136,7 +137,7 @@ using mozilla::DebugOnly;
 #    define EPC_sig(p) ((p)->uc_mcontext.pc)
 #    define RFP_sig(p) ((p)->uc_mcontext.regs[29])
 #    define RLR_sig(p) ((p)->uc_mcontext.regs[30])
-#    define R31_sig(p) ((p)->uc_mcontext.regs[31])
+#    define R31_sig(p) ((p)->uc_mcontext.sp)
 #  endif
 #  if defined(__linux__) && defined(__mips__)
 #    define EPC_sig(p) ((p)->uc_mcontext.pc)
@@ -706,7 +707,7 @@ static MOZ_MUST_USE bool HandleTrap(CONTEXT* context,
   // due to this trap occurring in the indirect call prologue, while fp points
   // to the caller's Frame which can be in a different Module. In any case,
   // though, the containing JSContext is the same.
-  Instance* instance = ((Frame*)ContextToFP(context))->tls->instance;
+  Instance* instance = ((Frame*)ContextToFP(context))->instance();
   MOZ_RELEASE_ASSERT(&instance->code() == &segment.code() ||
                      trap == Trap::IndirectCallBadSig);
 
@@ -996,11 +997,6 @@ void wasm::EnsureEagerProcessSignalHandlers() {
   return;
 #endif
 
-  // Signal handlers are currently disabled when recording or replaying.
-  if (mozilla::recordreplay::IsRecordingOrReplaying()) {
-    return;
-  }
-
 #if defined(ANDROID) && defined(MOZ_LINKER)
   // Signal handling is broken on some android systems.
   if (IsSignalHandlingBroken()) {
@@ -1171,7 +1167,7 @@ bool wasm::MemoryAccessTraps(const RegisterState& regs, uint8_t* addr,
     return false;
   }
 
-  Instance& instance = *reinterpret_cast<Frame*>(regs.fp)->tls->instance;
+  Instance& instance = *Frame::fromUntaggedWasmExitFP(regs.fp)->instance();
   MOZ_ASSERT(&instance.code() == &segment.code());
 
   if (!instance.memoryAccessInGuardRegion((uint8_t*)addr, numBytes)) {

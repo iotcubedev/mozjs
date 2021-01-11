@@ -253,6 +253,7 @@ matchingProfiles = [
     "cc-number": "************6785",
     "cc-exp-month": 12,
     "cc-exp-year": 2014,
+    "cc-type": "visa",
   },
   {
     guid: "test-guid-2",
@@ -260,6 +261,7 @@ matchingProfiles = [
     "cc-number": "************1234",
     "cc-exp-month": 4,
     "cc-exp-year": 2014,
+    "cc-type": "amex",
   },
   {
     guid: "test-guid-3",
@@ -291,7 +293,7 @@ let creditCardTestCases = [
             primary: "Timothy Berners-Lee",
             secondary: "****6785",
           }),
-          image: "chrome://formautofill/content/icon-credit-card-generic.svg",
+          image: "chrome://formautofill/content/third-party/cc-logo-visa.svg",
         },
         {
           value: "",
@@ -301,7 +303,7 @@ let creditCardTestCases = [
             primary: "John Doe",
             secondary: "****1234",
           }),
-          image: "chrome://formautofill/content/icon-credit-card-generic.svg",
+          image: "chrome://formautofill/content/third-party/cc-logo-amex.png",
         },
       ],
     },
@@ -326,7 +328,7 @@ let creditCardTestCases = [
             primary: "6785",
             secondary: "Timothy Berners-Lee",
           }),
-          image: "chrome://formautofill/content/icon-credit-card-generic.svg",
+          image: "chrome://formautofill/content/third-party/cc-logo-visa.svg",
         },
         {
           value: "",
@@ -337,7 +339,7 @@ let creditCardTestCases = [
             primary: "1234",
             secondary: "John Doe",
           }),
-          image: "chrome://formautofill/content/icon-credit-card-generic.svg",
+          image: "chrome://formautofill/content/third-party/cc-logo-amex.png",
         },
         {
           value: "",
@@ -422,7 +424,7 @@ add_task(async function test_all_patterns() {
         equal(actual.getImageAt(index), item.image);
       });
 
-      if (expectedValue.items.length != 0) {
+      if (expectedValue.items.length) {
         Assert.throws(
           () => actual.getValueAt(expectedItemLength),
           /Index out of range\./

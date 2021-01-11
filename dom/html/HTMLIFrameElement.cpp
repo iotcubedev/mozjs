@@ -28,11 +28,13 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLIFrameElement)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(HTMLIFrameElement,
                                                   nsGenericHTMLFrameElement)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFeaturePolicy)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSandbox)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(HTMLIFrameElement,
                                                 nsGenericHTMLFrameElement)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFeaturePolicy)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mSandbox)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_ADDREF_INHERITED(HTMLIFrameElement, nsGenericHTMLFrameElement)
@@ -55,27 +57,20 @@ HTMLIFrameElement::HTMLIFrameElement(
     : nsGenericHTMLFrameElement(std::move(aNodeInfo), aFromParser) {
   // We always need a featurePolicy, even if not exposed.
   mFeaturePolicy = new mozilla::dom::FeaturePolicy(this);
-
   nsCOMPtr<nsIPrincipal> origin = GetFeaturePolicyDefaultOrigin();
   MOZ_ASSERT(origin);
   mFeaturePolicy->SetDefaultOrigin(origin);
 }
 
-HTMLIFrameElement::~HTMLIFrameElement() {}
+HTMLIFrameElement::~HTMLIFrameElement() = default;
 
 NS_IMPL_ELEMENT_CLONE(HTMLIFrameElement)
 
-nsresult HTMLIFrameElement::BindToTree(BindContext& aContext,
-                                       nsINode& aParent) {
-  nsresult rv = nsGenericHTMLFrameElement::BindToTree(aContext, aParent);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+void HTMLIFrameElement::BindToBrowsingContext(
+    BrowsingContext* aBrowsingContext) {
   if (StaticPrefs::dom_security_featurePolicy_enabled()) {
     RefreshFeaturePolicy(true /* parse the feature policy attribute */);
   }
-  return NS_OK;
 }
 
 bool HTMLIFrameElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
@@ -159,6 +154,20 @@ nsMapRuleToAttributesFunc HTMLIFrameElement::GetAttributeMappingFunction()
   return &MapAttributesIntoRule;
 }
 
+bool HTMLIFrameElement::HasAllowFullscreenAttribute() const {
+  return GetBoolAttr(nsGkAtoms::allowfullscreen) ||
+         GetBoolAttr(nsGkAtoms::mozallowfullscreen);
+}
+
+bool HTMLIFrameElement::AllowFullscreen() const {
+  if (StaticPrefs::dom_security_featurePolicy_enabled()) {
+    // The feature policy check in Document::GetFullscreenError already accounts
+    // for the allow* attributes, so we're done.
+    return true;
+  }
+  return HasAllowFullscreenAttribute();
+}
+
 nsresult HTMLIFrameElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
                                          const nsAttrValue* aValue,
                                          const nsAttrValue* aOldValue,
@@ -174,6 +183,14 @@ nsresult HTMLIFrameElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
         // alreay been updated.
         mFrameLoader->ApplySandboxFlags(GetSandboxFlags());
       }
+    } else if (aName == nsGkAtoms::allowfullscreen ||
+               aName == nsGkAtoms::mozallowfullscreen) {
+      if (mFrameLoader) {
+        if (auto* bc = mFrameLoader->GetExtantBrowsingContext()) {
+          // This can go away once we remove the featurePolicy pref.
+          bc->SetFullscreenAllowedByOwner(AllowFullscreen());
+        }
+      }
     }
 
     if (StaticPrefs::dom_security_featurePolicy_enabled()) {
@@ -181,6 +198,7 @@ nsresult HTMLIFrameElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
           aName == nsGkAtoms::srcdoc || aName == nsGkAtoms::sandbox) {
         RefreshFeaturePolicy(true /* parse the feature policy attribute */);
       } else if (aName == nsGkAtoms::allowfullscreen ||
+                 aName == nsGkAtoms::mozallowfullscreen ||
                  aName == nsGkAtoms::allowpaymentrequest) {
         RefreshFeaturePolicy(false /* parse the feature policy attribute */);
       }
@@ -228,6 +246,42 @@ mozilla::dom::FeaturePolicy* HTMLIFrameElement::FeaturePolicy() const {
   return mFeaturePolicy;
 }
 
+void HTMLIFrameElement::MaybeStoreCrossOriginFeaturePolicy() {
+  if (!mFrameLoader) {
+    return;
+  }
+
+  // If the browsingContext is not ready (because docshell is dead), don't try
+  // to create one.
+  if (!mFrameLoader->IsRemoteFrame() && !mFrameLoader->GetExistingDocShell()) {
+    return;
+  }
+
+  RefPtr<BrowsingContext> browsingContext = mFrameLoader->GetBrowsingContext();
+
+  if (!browsingContext || !browsingContext->IsContentSubframe()) {
+    return;
+  }
+
+  // If we are in subframe cross origin, store the featurePolicy to
+  // browsingContext
+  nsPIDOMWindowOuter* topWindow = browsingContext->Top()->GetDOMWindow();
+  if (NS_WARN_IF(!topWindow)) {
+    return;
+  }
+
+  Document* topLevelDocument = topWindow->GetExtantDoc();
+  if (NS_WARN_IF(!topLevelDocument)) {
+    return;
+  }
+
+  if (!NS_SUCCEEDED(nsContentUtils::CheckSameOrigin(topLevelDocument, this))) {
+    return;
+  }
+
+  browsingContext->SetFeaturePolicy(mFeaturePolicy);
+}
+
 already_AddRefed<nsIPrincipal>
 HTMLIFrameElement::GetFeaturePolicyDefaultOrigin() const {
   nsCOMPtr<nsIPrincipal> principal;
@@ -269,17 +323,18 @@ void HTMLIFrameElement::RefreshFeaturePolicy(bool aParseAllowAttribute) {
       mFeaturePolicy->SetDeclaredPolicy(OwnerDoc(), allow, NodePrincipal(),
                                         origin);
     }
-
-    mFeaturePolicy->InheritPolicy(OwnerDoc()->FeaturePolicy());
   }
 
   if (AllowPaymentRequest()) {
-    mFeaturePolicy->MaybeSetAllowedPolicy(NS_LITERAL_STRING("payment"));
+    mFeaturePolicy->MaybeSetAllowedPolicy(u"payment"_ns);
   }
 
-  if (AllowFullscreen()) {
-    mFeaturePolicy->MaybeSetAllowedPolicy(NS_LITERAL_STRING("fullscreen"));
+  if (HasAllowFullscreenAttribute()) {
+    mFeaturePolicy->MaybeSetAllowedPolicy(u"fullscreen"_ns);
   }
+
+  mFeaturePolicy->InheritPolicy(OwnerDoc()->FeaturePolicy());
+  MaybeStoreCrossOriginFeaturePolicy();
 }
 
 }  // namespace dom

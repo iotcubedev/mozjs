@@ -12,6 +12,7 @@
 
 #include "mozIDOMWindow.h"
 #include "nsArray.h"
+#include "nsComponentManagerUtils.h"
 #include "nsEmbedCID.h"
 #include "nsHashPropertyBag.h"
 #include "nsIDialogParamBlock.h"
@@ -30,9 +31,9 @@
 
 #define PIPSTRING_BUNDLE_URL "chrome://pippki/locale/pippki.properties"
 
-nsNSSDialogs::nsNSSDialogs() {}
+nsNSSDialogs::nsNSSDialogs() = default;
 
-nsNSSDialogs::~nsNSSDialogs() {}
+nsNSSDialogs::~nsNSSDialogs() = default;
 
 NS_IMPL_ISUPPORTS(nsNSSDialogs, nsITokenPasswordDialogs, nsICertificateDialogs,
                   nsIClientAuthDialogs, nsITokenDialogs)
@@ -78,7 +79,7 @@ nsNSSDialogs::SetPassword(nsIInterfaceRequestor* ctx, nsIPK11Token* token,
   }
 
   rv = nsNSSDialogHelper::openDialog(
-      parent, "chrome://pippki/content/changepassword.xul", block);
+      parent, "chrome://pippki/content/changepassword.xhtml", block);
 
   if (NS_FAILED(rv)) return rv;
 
@@ -121,13 +122,12 @@ nsNSSDialogs::ConfirmDownloadCACert(nsIInterfaceRequestor* ctx,
   // Get the parent window for the dialog
   nsCOMPtr<mozIDOMWindowProxy> parent = do_GetInterface(ctx);
   rv = nsNSSDialogHelper::openDialog(
-      parent, "chrome://pippki/content/downloadcert.xul", argArray);
+      parent, "chrome://pippki/content/downloadcert.xhtml", argArray);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("importConfirmed"),
-                                  importConfirmed);
+  rv = retVals->GetPropertyAsBool(u"importConfirmed"_ns, importConfirmed);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -138,14 +138,12 @@ nsNSSDialogs::ConfirmDownloadCACert(nsIInterfaceRequestor* ctx,
   }
 
   bool trustForSSL = false;
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("trustForSSL"),
-                                  &trustForSSL);
+  rv = retVals->GetPropertyAsBool(u"trustForSSL"_ns, &trustForSSL);
   if (NS_FAILED(rv)) {
     return rv;
   }
   bool trustForEmail = false;
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("trustForEmail"),
-                                  &trustForEmail);
+  rv = retVals->GetPropertyAsBool(u"trustForEmail"_ns, &trustForEmail);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -228,25 +226,23 @@ nsNSSDialogs::ChooseCertificate(const nsACString& hostname, int32_t port,
   }
 
   rv = nsNSSDialogHelper::openDialog(
-      nullptr, "chrome://pippki/content/clientauthask.xul", argArray);
+      nullptr, "chrome://pippki/content/clientauthask.xhtml", argArray);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("rememberSelection"),
+  rv = retVals->GetPropertyAsBool(u"rememberSelection"_ns,
                                   rememberClientAuthCertificate);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("certChosen"),
-                                  certificateChosen);
+  rv = retVals->GetPropertyAsBool(u"certChosen"_ns, certificateChosen);
   if (NS_FAILED(rv)) {
     return rv;
   }
   if (*certificateChosen) {
-    rv = retVals->GetPropertyAsUint32(NS_LITERAL_STRING("selectedIndex"),
-                                      selectedIndex);
+    rv = retVals->GetPropertyAsUint32(u"selectedIndex"_ns, selectedIndex);
     if (NS_FAILED(rv)) {
       return rv;
     }
@@ -266,13 +262,12 @@ nsNSSDialogs::SetPKCS12FilePassword(nsIInterfaceRequestor* ctx,
   nsCOMPtr<mozIDOMWindowProxy> parent = do_GetInterface(ctx);
   nsCOMPtr<nsIWritablePropertyBag2> retVals = new nsHashPropertyBag();
   nsresult rv = nsNSSDialogHelper::openDialog(
-      parent, "chrome://pippki/content/setp12password.xul", retVals);
+      parent, "chrome://pippki/content/setp12password.xhtml", retVals);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  rv = retVals->GetPropertyAsBool(NS_LITERAL_STRING("confirmedPassword"),
-                                  confirmedPassword);
+  rv = retVals->GetPropertyAsBool(u"confirmedPassword"_ns, confirmedPassword);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -281,7 +276,7 @@ nsNSSDialogs::SetPKCS12FilePassword(nsIInterfaceRequestor* ctx,
     return NS_OK;
   }
 
-  return retVals->GetPropertyAsAString(NS_LITERAL_STRING("password"), password);
+  return retVals->GetPropertyAsAString(u"password"_ns, password);
 }
 
 NS_IMETHODIMP
@@ -343,7 +338,7 @@ nsNSSDialogs::DisplayProtectedAuth(nsIInterfaceRequestor* aCtx,
 
   nsCOMPtr<mozIDOMWindowProxy> newWindow;
   rv = windowWatcher->OpenWindow(
-      parent, "chrome://pippki/content/protectedAuth.xul", "_blank",
+      parent, "chrome://pippki/content/protectedAuth.xhtml", "_blank",
       "centerscreen,chrome,modal,titlebar,close=no", runnable,
       getter_AddRefs(newWindow));
 

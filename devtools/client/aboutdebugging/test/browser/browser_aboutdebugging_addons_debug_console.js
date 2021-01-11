@@ -10,16 +10,13 @@ Services.scriptloader.loadSubScript(CHROME_URL_ROOT + "helper-addons.js", this);
 const { PromiseTestUtils } = ChromeUtils.import(
   "resource://testing-common/PromiseTestUtils.jsm"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/File closed/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/File closed/);
 
 // Avoid test timeouts that can occur while waiting for the "addon-console-works" message.
 requestLongerTimeout(2);
 
 const ADDON_ID = "test-devtools-webextension@mozilla.org";
 const ADDON_NAME = "test-devtools-webextension";
-
-// This is a migration from:
-// https://searchfox.org/mozilla-central/source/devtools/client/aboutdebugging/test/browser_addons_debug_webextension.js
 
 /**
  * This test file ensures that the webextension addon developer toolbox:
@@ -68,7 +65,7 @@ add_task(async function testWebExtensionsToolboxWebConsole() {
   await removeTab(tab);
 });
 
-function toolboxTestScript(toolbox, devtoolsTab) {
+async function toolboxTestScript(toolbox, devtoolsTab) {
   function findMessages(hud, text, selector = ".message") {
     const messages = hud.ui.outputNode.querySelectorAll(selector);
     const elements = Array.prototype.filter.call(messages, el =>
@@ -77,24 +74,16 @@ function toolboxTestScript(toolbox, devtoolsTab) {
     return elements;
   }
 
-  async function waitFor(condition) {
-    while (!condition()) {
-      await new Promise(done => toolbox.win.setTimeout(done, 1000));
-    }
-  }
+  const webconsole = await toolbox.selectTool("webconsole");
+  const { hud } = webconsole;
+  const onMessage = waitUntil(() => {
+    return findMessages(hud, "Background page function called").length > 0;
+  });
+  hud.ui.wrapper.dispatchEvaluateExpression("myWebExtensionAddonFunction()");
+  await onMessage;
 
-  toolbox
-    .selectTool("webconsole")
-    .then(async console => {
-      const { hud } = console;
-      const onMessage = waitFor(() => {
-        return findMessages(hud, "Background page function called").length > 0;
-      });
-      hud.ui.wrapper.dispatchEvaluateExpression(
-        "myWebExtensionAddonFunction()"
-      );
-      await onMessage;
-      await removeTab(devtoolsTab);
-    })
-    .catch(e => dump("Exception from browser toolbox process: " + e + "\n"));
+  info("Wait for all pending requests to settle on the DevToolsClient");
+  await toolbox.target.client.waitForRequestsToSettle();
+
+  await removeTab(devtoolsTab);
 }

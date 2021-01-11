@@ -13,6 +13,7 @@
 #define BASE_THREADING_SCOPED_BLOCKING_CALL_H
 
 #include "base/base_export.h"
+#include "base/location.h"
 
 namespace base {
 
@@ -26,7 +27,7 @@ enum class BlockingType {
 
 class BASE_EXPORT ScopedBlockingCall {
  public:
-  ScopedBlockingCall(BlockingType blocking_type) {};
+  ScopedBlockingCall(const Location& from_here, BlockingType blocking_type) {};
   ~ScopedBlockingCall() {};
 };
 
@@ -34,7 +35,8 @@ namespace internal {
 
 class BASE_EXPORT ScopedBlockingCallWithBaseSyncPrimitives {
  public:
-  ScopedBlockingCallWithBaseSyncPrimitives(BlockingType blocking_type) {};
+  ScopedBlockingCallWithBaseSyncPrimitives(const Location& from_here,
+                                           BlockingType blocking_type) {}
   ~ScopedBlockingCallWithBaseSyncPrimitives() {};
 };
 

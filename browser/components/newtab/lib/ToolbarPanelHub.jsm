@@ -10,7 +10,16 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Services: "resource://gre/modules/Services.jsm",
   EveryWindow: "resource:///modules/EveryWindow.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
+  Preferences: "resource://gre/modules/Preferences.jsm",
+  SpecialMessageActions:
+    "resource://messaging-system/lib/SpecialMessageActions.jsm",
+  RemoteL10n: "resource://activity-stream/lib/RemoteL10n.jsm",
 });
+ChromeUtils.defineModuleGetter(
+  this,
+  "PanelMultiView",
+  "resource:///modules/PanelMultiView.jsm"
+);
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "TrackingDBService",
@@ -18,15 +27,23 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsITrackingDBService"
 );
 
+const idToTextMap = new Map([
+  [Ci.nsITrackingDBService.TRACKERS_ID, "trackerCount"],
+  [Ci.nsITrackingDBService.TRACKING_COOKIES_ID, "cookieCount"],
+  [Ci.nsITrackingDBService.CRYPTOMINERS_ID, "cryptominerCount"],
+  [Ci.nsITrackingDBService.FINGERPRINTERS_ID, "fingerprinterCount"],
+  [Ci.nsITrackingDBService.SOCIAL_ID, "socialCount"],
+]);
+
 const WHATSNEW_ENABLED_PREF = "browser.messaging-system.whatsNewPanel.enabled";
 const PROTECTIONS_PANEL_INFOMSG_PREF =
   "browser.protections_panel.infoMessage.seen";
 
 const TOOLBAR_BUTTON_ID = "whats-new-menu-button";
 const APPMENU_BUTTON_ID = "appMenu-whatsnew-button";
-const PANEL_HEADER_SELECTOR = "#PanelUI-whatsNew-title > label";
 
 const BUTTON_STRING_ID = "cfr-whatsnew-button";
+const WHATS_NEW_PANEL_SELECTOR = "PanelUI-whatsNew-message-container";
 
 class _ToolbarPanelHub {
   constructor() {
@@ -39,23 +56,18 @@ class _ToolbarPanelHub {
       this
     );
 
-    this.state = null;
+    this.state = {};
   }
 
-  async init(waitForInitialized, { getMessages, dispatch, handleUserAction }) {
+  async init(waitForInitialized, { getMessages, dispatch }) {
     this._getMessages = getMessages;
     this._dispatch = dispatch;
-    this._handleUserAction = handleUserAction;
     // Wait for ASRouter messages to become available in order to know
     // if we can show the What's New panel
     await waitForInitialized;
-    if (this.whatsNewPanelEnabled) {
-      // Enable the application menu button so that the user can access
-      // the panel outside of the toolbar button
-      this.enableAppmenuButton();
-    }
-    // Listen for pref changes that could turn off the feature
-    Services.prefs.addObserver(WHATSNEW_ENABLED_PREF, this);
+    // Enable the application menu button so that the user can access
+    // the panel outside of the toolbar button
+    await this.enableAppmenuButton();
 
     this.state = {
       protectionPanelMessageSeen: Services.prefs.getBoolPref(
@@ -68,17 +80,6 @@ class _ToolbarPanelHub {
   uninit() {
     EveryWindow.unregisterCallback(TOOLBAR_BUTTON_ID);
     EveryWindow.unregisterCallback(APPMENU_BUTTON_ID);
-    Services.prefs.removeObserver(WHATSNEW_ENABLED_PREF, this);
-  }
-
-  observe(aSubject, aTopic, aPrefName) {
-    switch (aPrefName) {
-      case WHATSNEW_ENABLED_PREF:
-        if (!this.whatsNewPanelEnabled) {
-          this.uninit();
-        }
-        break;
-    }
   }
 
   get messages() {
@@ -89,14 +90,23 @@ class _ToolbarPanelHub {
     });
   }
 
-  get whatsNewPanelEnabled() {
-    return Services.prefs.getBoolPref(WHATSNEW_ENABLED_PREF, false);
+  toggleWhatsNewPref(event) {
+    Preferences.set(WHATSNEW_ENABLED_PREF, event.target.checked);
   }
 
   maybeInsertFTL(win) {
     win.MozXULElement.insertFTLIfNeeded("browser/newtab/asrouter.ftl");
     win.MozXULElement.insertFTLIfNeeded("browser/branding/brandings.ftl");
     win.MozXULElement.insertFTLIfNeeded("browser/branding/sync-brand.ftl");
+  }
+
+  maybeLoadCustomElement(win) {
+    if (!win.customElements.get("remote-text")) {
+      Services.scriptloader.loadSubScript(
+        "resource://activity-stream/data/custom-elements/paragraph.js",
+        win
+      );
+    }
   }
 
   // Turns on the Appmenu (hamburger menu) button for all open windows and future windows.
@@ -108,6 +118,12 @@ class _ToolbarPanelHub {
         this._hideAppmenuButton
       );
     }
+  }
+
+  // Removes the button from the Appmenu.
+  // Only used in tests.
+  disableAppmenuButton() {
+    EveryWindow.unregisterCallback(APPMENU_BUTTON_ID);
   }
 
   // Turns on the Toolbar button for all open windows and future windows.
@@ -154,18 +170,23 @@ class _ToolbarPanelHub {
   }
 
   // Render what's new messages into the panel.
-  async renderMessages(win, doc, containerId) {
-    const messages = (await this.messages).sort(this._sortWhatsNewMessages);
-    const container = doc.getElementById(containerId);
+  async renderMessages(win, doc, containerId, options = {}) {
+    // Set the checked status of the footer checkbox
+    let value = Preferences.get(WHATSNEW_ENABLED_PREF);
+    let checkbox = win.document.getElementById("panelMenu-toggleWhatsNew");
+
+    checkbox.checked = value;
+
+    this.maybeLoadCustomElement(win);
+    const messages =
+      (options.force && options.messages) ||
+      (await this.messages).sort(this._sortWhatsNewMessages);
+    const container = PanelMultiView.getViewNode(doc, containerId);
 
     if (messages) {
       // Targeting attribute state might have changed making new messages
       // available and old messages invalid, we need to refresh
-      for (const prevMessageEl of container.querySelectorAll(
-        ".whatsNew-message"
-      )) {
-        container.removeChild(prevMessageEl);
-      }
+      this.removeMessages(win, containerId);
       let previousDate = 0;
       // Get and store any variable part of the message content
       this.state.contentArguments = await this._contentArguments();
@@ -197,35 +218,69 @@ class _ToolbarPanelHub {
     });
   }
 
-  /**
-   * Attach click event listener defined in message payload
-   */
-  _attachClickListener(win, element, message) {
-    element.addEventListener("click", () => {
-      this._handleUserAction({
-        target: win,
-        data: {
-          type: message.content.cta_type,
-          data: {
-            args: message.content.cta_url,
-            where: "tabshifted",
-          },
-        },
-      });
+  removeMessages(win, containerId) {
+    const doc = win.document;
+    const messageNodes = PanelMultiView.getViewNode(
+      doc,
+      containerId
+    ).querySelectorAll(".whatsNew-message");
+    for (const messageNode of messageNodes) {
+      messageNode.remove();
+    }
+  }
 
-      this.sendUserEventTelemetry(win, "CLICK", message);
+  /**
+   * Dispatch the action defined in the message and user telemetry event.
+   */
+  _dispatchUserAction(win, message) {
+    let url;
+    try {
+      // Set platform specific path variables for SUMO articles
+      url = Services.urlFormatter.formatURL(message.content.cta_url);
+    } catch (e) {
+      Cu.reportError(e);
+      url = message.content.cta_url;
+    }
+    SpecialMessageActions.handleAction(
+      {
+        type: message.content.cta_type,
+        data: {
+          args: url,
+          where: message.content.cta_where || "tabshifted",
+        },
+      },
+      win.browser
+    );
+
+    this.sendUserEventTelemetry(win, "CLICK", message);
+  }
+
+  /**
+   * Attach event listener to dispatch message defined action.
+   */
+  _attachCommandListener(win, element, message) {
+    // Add event listener for `mouseup` not to overlap with the
+    // `mousedown` & `click` events dispatched from PanelMultiView.jsm
+    // https://searchfox.org/mozilla-central/rev/7531325c8660cfa61bf71725f83501028178cbb9/browser/components/customizableui/PanelMultiView.jsm#1830-1837
+    element.addEventListener("mouseup", () => {
+      this._dispatchUserAction(win, message);
+    });
+    element.addEventListener("keyup", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        this._dispatchUserAction(win, message);
+      }
     });
   }
 
   _createMessageElements(win, doc, message, previousDate) {
     const { content } = message;
-    const messageEl = this._createElement(doc, "div");
+    const messageEl = RemoteL10n.createElement(doc, "div");
     messageEl.classList.add("whatsNew-message");
 
     // Only render date if it is different from the one rendered before.
     if (content.published_date !== previousDate) {
       messageEl.appendChild(
-        this._createElement(doc, "p", {
+        RemoteL10n.createElement(doc, "p", {
           classList: "whatsNew-message-date",
           content: new Date(content.published_date).toLocaleDateString(
             "default",
@@ -239,35 +294,37 @@ class _ToolbarPanelHub {
       );
     }
 
-    const wrapperEl = this._createElement(doc, "button");
-    // istanbul ignore next
-    wrapperEl.doCommand = () => {};
+    const wrapperEl = RemoteL10n.createElement(doc, "button");
+    wrapperEl.doCommand = () => this._dispatchUserAction(win, message);
     wrapperEl.classList.add("whatsNew-message-body");
     messageEl.appendChild(wrapperEl);
 
     if (content.icon_url) {
       wrapperEl.classList.add("has-icon");
-      const iconEl = this._createElement(doc, "img");
+      const iconEl = RemoteL10n.createElement(doc, "img");
       iconEl.src = content.icon_url;
       iconEl.classList.add("whatsNew-message-icon");
-      this._setTextAttribute(doc, iconEl, "alt", content.icon_alt);
+      if (content.icon_alt && content.icon_alt.string_id) {
+        doc.l10n.setAttributes(iconEl, content.icon_alt.string_id);
+      } else {
+        iconEl.setAttribute("alt", content.icon_alt);
+      }
       wrapperEl.appendChild(iconEl);
     }
 
     wrapperEl.appendChild(this._createMessageContent(win, doc, content));
 
     if (content.link_text) {
-      const anchorEl = this._createElement(doc, "a", {
+      const anchorEl = RemoteL10n.createElement(doc, "a", {
         classList: "text-link",
         content: content.link_text,
       });
-      // istanbul ignore next
-      anchorEl.doCommand = () => {};
+      anchorEl.doCommand = () => this._dispatchUserAction(win, message);
       wrapperEl.appendChild(anchorEl);
     }
 
     // Attach event listener on entire message container
-    this._attachClickListener(win, messageEl, message);
+    this._attachCommandListener(win, messageEl, message);
 
     return messageEl;
   }
@@ -279,81 +336,85 @@ class _ToolbarPanelHub {
     const wrapperEl = new win.DocumentFragment();
 
     wrapperEl.appendChild(
-      this._createElement(doc, "h2", {
+      RemoteL10n.createElement(doc, "h2", {
         classList: "whatsNew-message-title",
         content: content.title,
+        attributes: this.state.contentArguments,
       })
     );
 
     switch (content.layout) {
       case "tracking-protections":
         wrapperEl.appendChild(
-          this._createElement(doc, "h4", {
+          RemoteL10n.createElement(doc, "h4", {
             classList: "whatsNew-message-subtitle",
             content: content.subtitle,
+            attributes: this.state.contentArguments,
           })
         );
         wrapperEl.appendChild(
-          this._createElement(doc, "h2", {
+          RemoteL10n.createElement(doc, "h2", {
             classList: "whatsNew-message-title-large",
-            content: this.state.contentArguments.blockedCount,
+            content: this.state.contentArguments[
+              content.layout_title_content_variable
+            ],
+            attributes: this.state.contentArguments,
           })
         );
         break;
     }
 
     wrapperEl.appendChild(
-      this._createElement(doc, "p", { content: content.body })
+      RemoteL10n.createElement(doc, "p", {
+        content: content.body,
+        classList: "whatsNew-message-content",
+        attributes: this.state.contentArguments,
+      })
     );
 
     return wrapperEl;
   }
 
   _createHeroElement(win, doc, message) {
-    const messageEl = this._createElement(doc, "div");
+    this.maybeLoadCustomElement(win);
+
+    const messageEl = RemoteL10n.createElement(doc, "div");
     messageEl.setAttribute("id", "protections-popup-message");
     messageEl.classList.add("whatsNew-hero-message");
-    const wrapperEl = this._createElement(doc, "div");
+    const wrapperEl = RemoteL10n.createElement(doc, "div");
     wrapperEl.classList.add("whatsNew-message-body");
     messageEl.appendChild(wrapperEl);
 
     wrapperEl.appendChild(
-      this._createElement(doc, "h2", {
+      RemoteL10n.createElement(doc, "h2", {
         classList: "whatsNew-message-title",
         content: message.content.title,
       })
     );
     wrapperEl.appendChild(
-      this._createElement(doc, "p", { content: message.content.body })
+      RemoteL10n.createElement(doc, "p", {
+        classList: "protections-popup-content",
+        content: message.content.body,
+      })
     );
 
     if (message.content.link_text) {
-      let linkEl = this._createElement(doc, "a", {
+      let linkEl = RemoteL10n.createElement(doc, "a", {
         classList: "text-link",
         content: message.content.link_text,
       });
+      linkEl.disabled = true;
       wrapperEl.appendChild(linkEl);
-      this._attachClickListener(win, linkEl, message);
+      this._attachCommandListener(win, linkEl, message);
     } else {
-      this._attachClickListener(win, wrapperEl, message);
+      this._attachCommandListener(win, wrapperEl, message);
     }
 
     return messageEl;
   }
 
-  _createElement(doc, elem, options = {}) {
-    const node = doc.createElementNS("http://www.w3.org/1999/xhtml", elem);
-    if (options.classList) {
-      node.classList.add(options.classList);
-    }
-    if (options.content) {
-      this._setString(doc, node, options.content);
-    }
-
-    return node;
-  }
-
   async _contentArguments() {
+    const { defaultEngine } = Services.search;
     // Between now and 6 weeks ago
     const dateTo = new Date();
     const dateFrom = new Date(dateTo.getTime() - 42 * 24 * 60 * 60 * 1000);
@@ -361,53 +422,41 @@ class _ToolbarPanelHub {
       dateFrom,
       dateTo
     );
-    // Count all events in the past 6 weeks
-    const totalEvents = eventsByDate.reduce(
-      (acc, day) => acc + day.getResultByName("count"),
-      0
-    );
+    // Make sure we set all types of possible values to 0 because they might
+    // be referenced by fluent strings
+    let totalEvents = { blockedCount: 0 };
+    for (let blockedType of idToTextMap.values()) {
+      totalEvents[blockedType] = 0;
+    }
+    // Count all events in the past 6 weeks. Returns an object with:
+    // `blockedCount` total number of blocked resources
+    // {tracker|cookie|social...} breakdown by event type as defined by `idToTextMap`
+    totalEvents = eventsByDate.reduce((acc, day) => {
+      const type = day.getResultByName("type");
+      const count = day.getResultByName("count");
+      acc[idToTextMap.get(type)] = (acc[idToTextMap.get(type)] || 0) + count;
+      acc.blockedCount += count;
+      return acc;
+    }, totalEvents);
     return {
       // Keys need to match variable names used in asrouter.ftl
       // `earliestDate` will be either 6 weeks ago or when tracking recording
       // started. Whichever is more recent.
-      earliestDate: new Date(
-        Math.max(
-          new Date(await TrackingDBService.getEarliestRecordedDate()),
-          dateFrom
-        )
-      ).getTime(),
-      blockedCount: totalEvents.toLocaleString(),
+      earliestDate: Math.max(
+        new Date(await TrackingDBService.getEarliestRecordedDate()),
+        dateFrom
+      ),
+      ...totalEvents,
+      // Passing in `undefined` as string for the Fluent variable name
+      // in order to match and select the message that does not require
+      // the variable.
+      searchEngineName: defaultEngine ? defaultEngine.name : "undefined",
     };
   }
 
-  // If `string_id` is present it means we are relying on fluent for translations.
-  // Otherwise, we have a vanilla string.
-  _setString(doc, el, stringObj) {
-    if (stringObj.string_id) {
-      doc.l10n.setAttributes(
-        el,
-        stringObj.string_id,
-        // Pass all available arguments to Fluent
-        this.state.contentArguments
-      );
-    } else {
-      el.textContent = stringObj;
-    }
-  }
-
-  // If `string_id` is present it means we are relying on fluent for translations.
-  // Otherwise, we have a vanilla string.
-  _setTextAttribute(doc, el, attr, stringObj) {
-    if (stringObj.string_id) {
-      doc.l10n.setAttributes(el, stringObj.string_id);
-    } else {
-      el.setAttribute(attr, stringObj);
-    }
-  }
-
-  _showAppmenuButton(win) {
+  async _showAppmenuButton(win) {
     this.maybeInsertFTL(win);
-    this._showElement(
+    await this._showElement(
       win.browser.ownerDocument,
       APPMENU_BUTTON_ID,
       BUTTON_STRING_ID
@@ -421,14 +470,7 @@ class _ToolbarPanelHub {
   _showToolbarButton(win) {
     const document = win.browser.ownerDocument;
     this.maybeInsertFTL(win);
-    this._showElement(document, TOOLBAR_BUTTON_ID, BUTTON_STRING_ID);
-    // The toolbar dropdown panel uses this extra header element that is hidden
-    // in the appmenu subview version of the panel. We only need to set it
-    // when showing the toolbar button.
-    document.l10n.setAttributes(
-      document.querySelector(PANEL_HEADER_SELECTOR),
-      "cfr-whatsnew-panel-header"
-    );
+    return this._showElement(document, TOOLBAR_BUTTON_ID, BUTTON_STRING_ID);
   }
 
   _hideToolbarButton(win) {
@@ -448,7 +490,7 @@ class _ToolbarPanelHub {
   _sendTelemetry(ping) {
     this._dispatch({
       type: "TOOLBAR_PANEL_TELEMETRY",
-      data: { action: "cfr_user_event", source: "CFR", ...ping },
+      data: { action: "whats-new-panel_user_event", ...ping },
     });
   }
 
@@ -464,7 +506,7 @@ class _ToolbarPanelHub {
         message_id: message.id,
         bucket_id: message.id,
         event,
-        value: options.value,
+        event_context: options.value,
       });
     }
   }
@@ -483,9 +525,13 @@ class _ToolbarPanelHub {
     const infoButton = doc.getElementById("protections-popup-info-button");
     const panelContainer = doc.getElementById("protections-popup");
     const toggleMessage = () => {
+      const learnMoreLink = doc.querySelector(
+        "#messaging-system-message-container .text-link"
+      );
       container.toggleAttribute("disabled");
       infoButton.toggleAttribute("checked");
       panelContainer.toggleAttribute("infoMessageShowing");
+      learnMoreLink.disabled = !learnMoreLink.disabled;
     };
     if (!container.childElementCount) {
       const message = await this._getMessages({
@@ -496,7 +542,7 @@ class _ToolbarPanelHub {
         const messageEl = this._createHeroElement(win, doc, message);
         container.appendChild(messageEl);
         infoButton.addEventListener("click", toggleMessage);
-        this.sendUserEventTelemetry(win, "IMPRESSION", message.id);
+        this.sendUserEventTelemetry(win, "IMPRESSION", message);
       }
     }
     // Message is collapsed by default. If it was never shown before we want
@@ -527,6 +573,23 @@ class _ToolbarPanelHub {
       {
         once: true,
       }
+    );
+  }
+
+  /**
+   * @param {object} browser MessageChannel target argument as a response to a user action
+   * @param {object[]} messages Messages selected from devtools page
+   */
+  forceShowMessage(browser, messages) {
+    const win = browser.browser.ownerGlobal;
+    const doc = browser.browser.ownerDocument;
+    this.removeMessages(win, WHATS_NEW_PANEL_SELECTOR);
+    this.renderMessages(win, doc, WHATS_NEW_PANEL_SELECTOR, {
+      force: true,
+      messages: Array.isArray(messages) ? messages : [messages],
+    });
+    win.PanelUI.panel.addEventListener("popuphidden", event =>
+      this.removeMessages(event.target.ownerGlobal, WHATS_NEW_PANEL_SELECTOR)
     );
   }
 }

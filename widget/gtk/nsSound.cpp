@@ -15,7 +15,6 @@
 
 #include "HeadlessSound.h"
 #include "nsIURL.h"
-#include "nsIFileURL.h"
 #include "nsNetUtil.h"
 #include "nsIChannel.h"
 #include "nsCOMPtr.h"
@@ -145,7 +144,7 @@ NS_IMPL_ISUPPORTS(nsSound, nsISound, nsIStreamLoaderObserver)
 ////////////////////////////////////////////////////////////////////////
 nsSound::nsSound() { mInited = false; }
 
-nsSound::~nsSound() {}
+nsSound::~nsSound() = default;
 
 NS_IMETHODIMP
 nsSound::Init() {
@@ -161,6 +160,14 @@ nsSound::Init() {
       ca_context_create = (ca_context_create_fn)PR_FindFunctionSymbol(
           libcanberra, "ca_context_create");
       if (!ca_context_create) {
+#ifdef MOZ_TSAN
+        // With TSan, we cannot unload libcanberra once we have loaded it
+        // because TSan does not support unloading libraries that are matched
+        // from its suppression list. Hence we just keep the library loaded in
+        // TSan builds.
+        libcanberra = nullptr;
+        return NS_OK;
+#endif
         PR_UnloadLibrary(libcanberra);
         libcanberra = nullptr;
       } else {
@@ -189,10 +196,12 @@ nsSound::Init() {
 
 /* static */
 void nsSound::Shutdown() {
+#ifndef MOZ_TSAN
   if (libcanberra) {
     PR_UnloadLibrary(libcanberra);
     libcanberra = nullptr;
   }
+#endif
 }
 
 namespace mozilla {
@@ -334,11 +343,12 @@ NS_IMETHODIMP nsSound::Play(nsIURL* aURL) {
     g_free(path);
   } else {
     nsCOMPtr<nsIStreamLoader> loader;
-    rv = NS_NewStreamLoader(getter_AddRefs(loader), aURL,
-                            this,  // aObserver
-                            nsContentUtils::GetSystemPrincipal(),
-                            nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                            nsIContentPolicy::TYPE_OTHER);
+    rv = NS_NewStreamLoader(
+        getter_AddRefs(loader), aURL,
+        this,  // aObserver
+        nsContentUtils::GetSystemPrincipal(),
+        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+        nsIContentPolicy::TYPE_OTHER);
   }
 
   return rv;

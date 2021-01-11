@@ -7,10 +7,13 @@
 #ifndef nsCertOverrideService_h
 #define nsCertOverrideService_h
 
+#include <utility>
+
 #include "mozilla/HashFunctions.h"
-#include "mozilla/Move.h"
 #include "mozilla/Mutex.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/TypedEnumBits.h"
+#include "nsIAsyncShutdown.h"
 #include "nsICertOverrideService.h"
 #include "nsIFile.h"
 #include "nsIObserver.h"
@@ -30,19 +33,6 @@ class nsCertOverride {
 
   nsCertOverride()
       : mPort(-1), mIsTemporary(false), mOverrideBits(OverrideBits::None) {}
-
-  nsCertOverride(const nsCertOverride& other) { this->operator=(other); }
-
-  nsCertOverride& operator=(const nsCertOverride& other) {
-    mAsciiHost = other.mAsciiHost;
-    mPort = other.mPort;
-    mIsTemporary = other.mIsTemporary;
-    mFingerprint = other.mFingerprint;
-    mOverrideBits = other.mOverrideBits;
-    mDBKey = other.mDBKey;
-    mCert = other.mCert;
-    return *this;
-  }
 
   nsCString mAsciiHost;
   int32_t mPort;
@@ -73,7 +63,7 @@ class nsCertOverrideEntry final : public PLDHashEntryHdr {
         mSettings(std::move(toMove.mSettings)),
         mHostWithPort(std::move(toMove.mHostWithPort)) {}
 
-  ~nsCertOverrideEntry() {}
+  ~nsCertOverrideEntry() = default;
 
   KeyType GetKey() const { return HostWithPortPtr(); }
 
@@ -102,11 +92,13 @@ class nsCertOverrideEntry final : public PLDHashEntryHdr {
 
 class nsCertOverrideService final : public nsICertOverrideService,
                                     public nsIObserver,
-                                    public nsSupportsWeakReference {
+                                    public nsSupportsWeakReference,
+                                    public nsIAsyncShutdownBlocker {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICERTOVERRIDESERVICE
   NS_DECL_NSIOBSERVER
+  NS_DECL_NSIASYNCSHUTDOWNBLOCKER
 
   nsCertOverrideService();
 
@@ -128,9 +120,14 @@ class nsCertOverrideService final : public nsICertOverrideService,
   static void GetHostWithPort(const nsACString& aHostName, int32_t aPort,
                               nsACString& _retval);
 
- protected:
+  void AssertOnTaskQueue() const {
+    MOZ_ASSERT(mWriterTaskQueue->IsOnCurrentThread());
+  }
+
+ private:
   ~nsCertOverrideService();
 
+  bool mDisableAllSecurityCheck;
   mozilla::Mutex mMutex;
   nsCOMPtr<nsIFile> mSettingsFile;
   nsTHashtable<nsCertOverrideEntry> mSettingsTable;
@@ -147,6 +144,8 @@ class nsCertOverrideService final : public nsICertOverrideService,
                           nsCertOverride::OverrideBits ob,
                           const nsACString& dbKey,
                           const mozilla::MutexAutoLock& aProofOfLock);
+
+  RefPtr<TaskQueue> mWriterTaskQueue;
 };
 
 #define NS_CERTOVERRIDE_CID                          \

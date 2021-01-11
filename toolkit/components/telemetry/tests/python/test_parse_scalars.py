@@ -6,6 +6,7 @@ import yaml
 import mozunit
 import sys
 import unittest
+import os
 from os import path
 
 TELEMETRY_ROOT_PATH = path.abspath(path.join(path.dirname(__file__), path.pardir, path.pardir))
@@ -27,6 +28,15 @@ def load_scalar(scalar):
 
 
 class TestParser(unittest.TestCase):
+    def setUp(self):
+        def mockexit(x):
+            raise SystemExit(x)
+        self.oldexit = os._exit
+        os._exit = mockexit
+
+    def tearDown(self):
+        os._exit = self.oldexit
+
     def test_valid_email_address(self):
         SAMPLE_SCALAR_VALID_ADDRESSES = """
 description: A nice one-line description.
@@ -236,6 +246,28 @@ kind: uint
 notification_emails:
   - test01@mozilla.com
 products: []
+bug_numbers:
+  - 12345
+"""
+
+        scalar = load_scalar(SAMPLE_SCALAR)
+        parse_scalars.ScalarType("CATEGORY",
+                                 "PROVE",
+                                 scalar,
+                                 strict_type_checks=True)
+        self.assertRaises(SystemExit, ParserError.exit_func)
+
+    def test_gv_streaming_keyed(self):
+        SAMPLE_SCALAR = """
+description: A nice one-line description.
+expires: never
+record_in_processes:
+  - 'main'
+kind: uint
+notification_emails:
+  - test01@mozilla.com
+products: ['geckoview_streaming']
+keyed: true
 bug_numbers:
   - 12345
 """

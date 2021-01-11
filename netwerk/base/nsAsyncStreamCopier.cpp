@@ -35,7 +35,7 @@ class AsyncApplyBufferingPolicyEvent final : public Runnable {
   explicit AsyncApplyBufferingPolicyEvent(nsAsyncStreamCopier* aCopier)
       : mozilla::Runnable("AsyncApplyBufferingPolicyEvent"),
         mCopier(aCopier),
-        mTarget(GetCurrentThreadEventTarget()) {}
+        mTarget(GetCurrentEventTarget()) {}
 
   NS_IMETHOD Run() override {
     nsresult rv = mCopier->ApplyBufferingPolicy();
@@ -201,6 +201,16 @@ nsAsyncStreamCopier::GetLoadFlags(nsLoadFlags* aLoadFlags) {
 
 NS_IMETHODIMP
 nsAsyncStreamCopier::SetLoadFlags(nsLoadFlags aLoadFlags) { return NS_OK; }
+
+NS_IMETHODIMP
+nsAsyncStreamCopier::GetTRRMode(nsIRequest::TRRMode* aTRRMode) {
+  return nsIAsyncStreamCopier::GetTRRModeImpl(aTRRMode);
+}
+
+NS_IMETHODIMP
+nsAsyncStreamCopier::SetTRRMode(nsIRequest::TRRMode aTRRMode) {
+  return nsIAsyncStreamCopier::SetTRRModeImpl(aTRRMode);
+}
 
 NS_IMETHODIMP
 nsAsyncStreamCopier::GetLoadGroup(nsILoadGroup** aLoadGroup) {

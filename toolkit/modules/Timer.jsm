@@ -26,8 +26,8 @@ var gTimerTable = new Map(); // int -> nsITimer or idleCallback
 
 // Don't generate this for every timer.
 var setTimeout_timerCallbackQI = ChromeUtils.generateQI([
-  Ci.nsITimerCallback,
-  Ci.nsINamed,
+  "nsITimerCallback",
+  "nsINamed",
 ]);
 
 function _setTimeoutOrIsInterval(
@@ -106,12 +106,14 @@ function setIntervalWithTarget(aCallback, aMilliseconds, aTarget, ...aArgs) {
   );
 }
 
-var clearInterval = (this.clearTimeout = function clearTimeout(aId) {
+function clear(aId) {
   if (gTimerTable.has(aId)) {
     gTimerTable.get(aId).cancel();
     gTimerTable.delete(aId);
   }
-});
+}
+var clearInterval = clear;
+var clearTimeout = clear;
 
 function requestIdleCallback(aCallback, aOptions) {
   if (typeof aCallback !== "function") {

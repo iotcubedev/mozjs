@@ -65,10 +65,11 @@ function amManager() {
 
   Services.mm.loadFrameScript(CHILD_SCRIPT, true, true);
   Services.mm.addMessageListener(MSG_INSTALL_ENABLED, this);
-  Services.mm.addMessageListener(MSG_INSTALL_ADDON, this);
   Services.mm.addMessageListener(MSG_PROMISE_REQUEST, this);
   Services.mm.addMessageListener(MSG_INSTALL_CLEANUP, this);
   Services.mm.addMessageListener(MSG_ADDON_EVENT_REQ, this);
+
+  Services.ppmm.addMessageListener(MSG_INSTALL_ADDON, this);
 
   Services.obs.addObserver(this, "message-manager-close");
   Services.obs.addObserver(this, "message-manager-disconnect");
@@ -105,6 +106,7 @@ amManager.prototype = {
 
     let telemetryInfo = {
       source: AddonManager.getInstallSourceFromHost(aPayload.sourceHost),
+      sourceURL: aPayload.sourceURL,
     };
 
     if ("method" in aPayload) {
@@ -219,9 +221,11 @@ amManager.prototype = {
         return AddonManager.isInstallEnabled(payload.mimetype);
 
       case MSG_INSTALL_ADDON: {
+        let browser = payload.browsingContext.top.embedderElement;
+
         let callback = null;
         if (payload.callbackID != -1) {
-          let mm = aMessage.target.messageManager;
+          let mm = browser.messageManager;
           callback = {
             onInstallEnded(url, status) {
               mm.sendAsyncMessage(MSG_INSTALL_CALLBACK, {
@@ -233,7 +237,7 @@ amManager.prototype = {
           };
         }
 
-        return this.installAddonFromWebpage(payload, aMessage.target, callback);
+        return this.installAddonFromWebpage(payload, browser, callback);
       }
 
       case MSG_PROMISE_REQUEST: {
@@ -336,9 +340,9 @@ amManager.prototype = {
     },
   },
   QueryInterface: ChromeUtils.generateQI([
-    Ci.amIAddonManager,
-    Ci.nsITimerCallback,
-    Ci.nsIObserver,
+    "amIAddonManager",
+    "nsITimerCallback",
+    "nsIObserver",
   ]),
 };
 
@@ -395,9 +399,9 @@ BlocklistService.prototype = {
 
   classID: Components.ID("{66354bc9-7ed1-4692-ae1d-8da97d6b205e}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsIBlocklistService,
-    Ci.nsITimerCallback,
+    "nsIObserver",
+    "nsIBlocklistService",
+    "nsITimerCallback",
   ]),
 };
 

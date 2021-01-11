@@ -35,7 +35,9 @@ function promiseTabLoadEvent(tab, url) {
   return loaded;
 }
 
-var gInvalidFormPopup = document.getElementById("invalid-form-popup");
+var gInvalidFormPopup = gBrowser.selectedBrowser.browsingContext.currentWindowGlobal
+  .getActor("FormValidation")
+  ._getAndMaybeCreatePanel(document);
 ok(
   gInvalidFormPopup,
   "The browser should have a popup to show when a form is invalid"
@@ -56,7 +58,7 @@ function checkPopupHide() {
 }
 
 var gObserver = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIFormSubmitObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIFormSubmitObserver"]),
 
   notifyInvalidSubmit(aFormElement, aInvalidElements) {},
 };
@@ -94,19 +96,19 @@ async function openNewTab(uri, background) {
 }
 
 async function clickChildElement(browser) {
-  await ContentTask.spawn(browser, {}, async function() {
+  await SpecialPowers.spawn(browser, [], async function() {
     content.document.getElementById("s").click();
   });
 }
 
 async function blurChildElement(browser) {
-  await ContentTask.spawn(browser, {}, async function() {
+  await SpecialPowers.spawn(browser, [], async function() {
     content.document.getElementById("i").blur();
   });
 }
 
 async function checkChildFocus(browser, message) {
-  await ContentTask.spawn(browser, [message, testId], async function(args) {
+  await SpecialPowers.spawn(browser, [[message, testId]], async function(args) {
     let [msg, id] = args;
     var focused =
       content.document.activeElement == content.document.getElementById("i");

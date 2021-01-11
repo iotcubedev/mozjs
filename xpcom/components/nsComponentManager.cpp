@@ -21,14 +21,11 @@
 #include "nsCategoryManagerUtils.h"
 #include "nsLayoutModule.h"
 #include "mozilla/MemoryReporting.h"
-#include "nsIConsoleService.h"
 #include "nsIObserverService.h"
-#include "nsISimpleEnumerator.h"
 #include "nsIStringEnumerator.h"
 #include "nsXPCOM.h"
 #include "nsXPCOMPrivate.h"
 #include "nsISupportsPrimitives.h"
-#include "nsIClassInfo.h"
 #include "nsLocalFile.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
@@ -48,8 +45,6 @@
 #include "nsSupportsPrimitives.h"
 #include "nsArray.h"
 #include "nsIMutableArray.h"
-#include "nsArrayEnumerator.h"
-#include "nsStringEnumerator.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/ScopeExit.h"
@@ -249,8 +244,8 @@ class MOZ_STACK_CLASS EntryWrapper final {
   nsCString ModuleDescription() {
     MATCH(nsCString,
           return entry->mModule ? entry->mModule->Description()
-                                : NS_LITERAL_CSTRING("<unknown module>"),
-          return NS_LITERAL_CSTRING("<unknown module>"));
+                                : "<unknown module>"_ns,
+          return "<unknown module>"_ns);
   }
 
  private:
@@ -360,9 +355,6 @@ extern const mozilla::Module kLayoutModule;
 extern const mozilla::Module kKeyValueModule;
 extern const mozilla::Module kXREModule;
 extern const mozilla::Module kEmbeddingModule;
-#if defined(MOZ_WIDGET_ANDROID)
-extern const mozilla::Module kBrowserModule;
-#endif
 
 static nsTArray<const mozilla::Module*>* sExtraStaticModules;
 
@@ -403,6 +395,8 @@ nsresult nsComponentManagerImpl::Init() {
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_SOCKET_PROCESS);
     gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_RDD_PROCESS)] =
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_RDD_PROCESS);
+    gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_GPU_AND_MAIN_PROCESS)] =
+        ProcessSelectorMatches(ProcessSelector::ALLOW_IN_GPU_AND_MAIN_PROCESS);
     gProcessMatchTable[size_t(ProcessSelector::ALLOW_IN_GPU_AND_VR_PROCESS)] =
         ProcessSelectorMatches(ProcessSelector::ALLOW_IN_GPU_AND_VR_PROCESS);
     gProcessMatchTable[size_t(
@@ -448,9 +442,6 @@ nsresult nsComponentManagerImpl::Init() {
   RegisterModule(&kKeyValueModule);
   RegisterModule(&kXREModule);
   RegisterModule(&kEmbeddingModule);
-#if defined(MOZ_WIDGET_ANDROID)
-  RegisterModule(&kBrowserModule);
-#endif
 
   for (uint32_t i = 0; i < sExtraStaticModules->Length(); ++i) {
     RegisterModule((*sExtraStaticModules)[i]);
@@ -487,6 +478,12 @@ nsresult nsComponentManagerImpl::Init() {
       break;
   }
 
+  // HACK: Bug 1653908 - We spawn the pref service here on the main thread
+  // before any other thread is launched. This is done to work around a race
+  // we don't fully understand yet.
+  nsCOMPtr<nsIPrefService> prefService =
+      do_GetService(NS_PREFSERVICE_CONTRACTID);
+
   if (loadChromeManifests) {
     // This needs to be called very early, before anything in nsLayoutModule is
     // used, and before any calls are made into the JS engine.
@@ -507,8 +504,7 @@ nsresult nsComponentManagerImpl::Init() {
     if (greOmnijar) {
       cl->location.Init(greOmnijar, "chrome.manifest");
     } else {
-      nsCOMPtr<nsIFile> lf =
-          CloneAndAppend(greDir, NS_LITERAL_CSTRING("chrome.manifest"));
+      nsCOMPtr<nsIFile> lf = CloneAndAppend(greDir, "chrome.manifest"_ns);
       cl->location.Init(lf);
     }
 
@@ -524,8 +520,7 @@ nsresult nsComponentManagerImpl::Init() {
       if (!equals) {
         cl = sModuleLocations->AppendElement();
         cl->type = NS_APP_LOCATION;
-        nsCOMPtr<nsIFile> lf =
-            CloneAndAppend(appDir, NS_LITERAL_CSTRING("chrome.manifest"));
+        nsCOMPtr<nsIFile> lf = CloneAndAppend(appDir, "chrome.manifest"_ns);
         cl->location.Init(lf);
       }
     }
@@ -1138,10 +1133,8 @@ nsComponentManagerImpl::CreateInstance(const nsCID& aClass,
 #ifdef SHOW_CI_ON_EXISTING_SERVICE
   if (entry->ServiceInstance()) {
     nsAutoCString message;
-    message =
-        NS_LITERAL_CSTRING("You are calling CreateInstance \"") +
-        AutoIDString(aClass) +
-        NS_LITERAL_CSTRING("\" when a service for this CID already exists!");
+    message = "You are calling CreateInstance \""_ns + AutoIDString(aClass) +
+              "\" when a service for this CID already exists!"_ns;
     NS_ERROR(message.get());
   }
 #endif
@@ -1221,9 +1214,9 @@ nsComponentManagerImpl::CreateInstanceByContractID(const char* aContractID,
   if (entry->ServiceInstance()) {
     nsAutoCString message;
     message =
-        NS_LITERAL_CSTRING("You are calling CreateInstance \"") +
+        "You are calling CreateInstance \""_ns +
         nsDependentCString(aContractID) +
-        NS_LITERAL_CSTRING(
+        nsLiteralCString(
             "\" when a service for this CID already exists! "
             "Add it to abusedContracts to track down the service consumer.");
     NS_ERROR(message.get());
@@ -1455,10 +1448,6 @@ nsresult nsComponentManagerImpl::GetService(ModuleID aId, const nsIID& aIID,
 
   MutexLock lock(mLock);
 
-  if (!entry.Active()) {
-    return NS_ERROR_FACTORY_NOT_REGISTERED;
-  }
-
   Maybe<EntryWrapper> wrapper;
   if (entry.Overridable()) {
     // If we expect this service to be overridden by test code, we need to look
@@ -1467,6 +1456,8 @@ nsresult nsComponentManagerImpl::GetService(ModuleID aId, const nsIID& aIID,
     if (!wrapper) {
       return NS_ERROR_FACTORY_NOT_REGISTERED;
     }
+  } else if (!entry.Active()) {
+    return NS_ERROR_FACTORY_NOT_REGISTERED;
   } else {
     wrapper.emplace(&entry);
   }
@@ -1603,7 +1594,7 @@ nsComponentManagerImpl::RegisterFactory(const nsCID& aClass, const char* aName,
     return NS_ERROR_FACTORY_NOT_REGISTERED;
   }
 
-  nsAutoPtr<nsFactoryEntry> f(new nsFactoryEntry(aClass, aFactory));
+  auto f = MakeUnique<nsFactoryEntry>(aClass, aFactory);
 
   SafeMutexAutoLock lock(mLock);
   if (auto entry = mFactories.LookupForAdd(f->mCIDEntry->cid)) {
@@ -1615,12 +1606,12 @@ nsComponentManagerImpl::RegisterFactory(const nsCID& aClass, const char* aName,
     }
     if (aContractID) {
       nsDependentCString contractID(aContractID);
-      mContractIDs.Put(contractID, f);
+      mContractIDs.Put(contractID, f.get());
       // We allow dynamically-registered contract IDs to override static
       // entries, so invalidate any static entry for this contract ID.
       StaticComponents::InvalidateContractID(contractID);
     }
-    entry.OrInsert([&f]() { return f.forget(); });
+    entry.OrInsert([&f]() { return f.release(); });
   }
 
   return NS_OK;
@@ -1702,48 +1693,20 @@ nsComponentManagerImpl::IsContractIDRegistered(const char* aClass,
 }
 
 NS_IMETHODIMP
-nsComponentManagerImpl::EnumerateCIDs(nsISimpleEnumerator** aEnumerator) {
-  nsCOMArray<nsISupports> array;
-  auto appendEntry = [&](const nsID& aCID) {
-    nsCOMPtr<nsISupportsID> wrapper = new nsSupportsID();
-    wrapper->SetData(&aCID);
-    array.AppendObject(wrapper);
-  };
+nsComponentManagerImpl::GetContractIDs(nsTArray<nsCString>& aResult) {
+  aResult.Clear();
 
-  for (auto iter = mFactories.Iter(); !iter.Done(); iter.Next()) {
-    appendEntry(*iter.Key());
-  }
-  for (const auto& module : gStaticModules) {
-    if (module.Active()) {
-      appendEntry(module.CID());
-    }
-  }
-
-  return NS_NewArrayEnumerator(aEnumerator, array);
-}
-
-NS_IMETHODIMP
-nsComponentManagerImpl::EnumerateContractIDs(
-    nsISimpleEnumerator** aEnumerator) {
-  auto* array = new nsTArray<nsCString>;
   for (auto iter = mContractIDs.Iter(); !iter.Done(); iter.Next()) {
-    const nsACString& contract = iter.Key();
-    array->AppendElement(contract);
+    aResult.AppendElement(iter.Key());
   }
 
   for (const auto& entry : gContractEntries) {
     if (!entry.Invalid()) {
-      array->AppendElement(entry.ContractID());
+      aResult.AppendElement(entry.ContractID());
     }
   }
 
-  nsCOMPtr<nsIUTF8StringEnumerator> e;
-  nsresult rv = NS_NewAdoptingUTF8StringEnumerator(getter_AddRefs(e), array);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  return CallQueryInterface(e, aEnumerator);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -1963,8 +1926,7 @@ nsComponentManagerImpl::AddBootstrappedManifestLocation(nsIFile* aLocation) {
     return XRE_AddJarManifestLocation(NS_BOOTSTRAPPED_LOCATION, aLocation);
   }
 
-  nsCOMPtr<nsIFile> manifest =
-      CloneAndAppend(aLocation, NS_LITERAL_CSTRING("chrome.manifest"));
+  nsCOMPtr<nsIFile> manifest = CloneAndAppend(aLocation, "chrome.manifest"_ns);
   return XRE_AddManifestLocation(NS_BOOTSTRAPPED_LOCATION, manifest);
 }
 
@@ -1972,8 +1934,7 @@ NS_IMETHODIMP
 nsComponentManagerImpl::RemoveBootstrappedManifestLocation(nsIFile* aLocation) {
   NS_ENSURE_ARG_POINTER(aLocation);
 
-  nsCOMPtr<nsIChromeRegistry> cr =
-      mozilla::services::GetChromeRegistryService();
+  nsCOMPtr<nsIChromeRegistry> cr = mozilla::services::GetChromeRegistry();
   if (!cr) {
     return NS_ERROR_FAILURE;
   }
@@ -1990,8 +1951,7 @@ nsComponentManagerImpl::RemoveBootstrappedManifestLocation(nsIFile* aLocation) {
   if (Substring(path, path.Length() - 4).EqualsLiteral(".xpi")) {
     elem.location.Init(aLocation, "chrome.manifest");
   } else {
-    nsCOMPtr<nsIFile> lf =
-        CloneAndAppend(aLocation, NS_LITERAL_CSTRING("chrome.manifest"));
+    nsCOMPtr<nsIFile> lf = CloneAndAppend(aLocation, "chrome.manifest"_ns);
     elem.location.Init(lf);
   }
 

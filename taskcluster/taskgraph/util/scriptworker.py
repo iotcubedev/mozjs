@@ -57,10 +57,11 @@ SIGNING_SCOPE_ALIAS_TO_PROJECT = [[
     'all-release-branches', set([
         'mozilla-beta',
         'mozilla-release',
-        'mozilla-esr60',
         'mozilla-esr68',
+        'mozilla-esr78',
         'comm-beta',
-        'comm-esr60',
+        'comm-esr68',
+        'comm-esr78',
     ])
 ]]
 
@@ -95,11 +96,11 @@ BEETMOVER_SCOPE_ALIAS_TO_PROJECT = [[
     'all-release-branches', set([
         'mozilla-beta',
         'mozilla-release',
-        'mozilla-esr60',
         'mozilla-esr68',
+        'mozilla-esr78',
         'comm-beta',
-        'comm-esr60',
         'comm-esr68',
+        'comm-esr78',
     ])
 ]]
 
@@ -141,16 +142,16 @@ BALROG_SCOPE_ALIAS_TO_PROJECT = [[
 ], [
     'release', set([
         'mozilla-release',
-        'comm-esr60',
         'comm-esr68',
-    ])
-], [
-    'esr60', set([
-        'mozilla-esr60',
+        'comm-esr78',
     ])
 ], [
     'esr68', set([
         'mozilla-esr68',
+    ])
+], [
+    'esr78', set([
+        'mozilla-esr78',
     ])
 ]]
 
@@ -161,32 +162,9 @@ BALROG_SERVER_SCOPES = {
     'aurora': 'balrog:server:aurora',
     'beta': 'balrog:server:beta',
     'release': 'balrog:server:release',
-    'esr60': 'balrog:server:esr',
     'esr68': 'balrog:server:esr',
+    'esr78': 'balrog:server:esr',
     'default': 'balrog:server:dep',
-}
-
-
-PUSH_APK_SCOPE_ALIAS_TO_PROJECT = [[
-    'central', set([
-        'mozilla-central',
-    ])
-], [
-    'beta', set([
-        'mozilla-beta',
-    ])
-], [
-    'release', set([
-        'mozilla-release',
-    ])
-]]
-
-
-PUSH_APK_SCOPES = {
-    'central': 'googleplay:aurora',
-    'beta': 'googleplay:beta',
-    'release': 'googleplay:release',
-    'default': 'googleplay:dep',
 }
 
 
@@ -326,12 +304,6 @@ get_balrog_server_scope = functools.partial(
     alias_to_scope_map=BALROG_SERVER_SCOPES,
 )
 
-get_push_apk_scope = functools.partial(
-    get_scope_from_project,
-    alias_to_project_map=PUSH_APK_SCOPE_ALIAS_TO_PROJECT,
-    alias_to_scope_map=PUSH_APK_SCOPES,
-)
-
 cached_load_yaml = memoize(load_yaml)
 
 
@@ -366,46 +338,21 @@ def get_release_config(config):
         if release_config['partial_versions'] == "{}":
             del release_config['partial_versions']
 
-    release_config['version'] = str(config.params['version'])
-    release_config['appVersion'] = str(config.params['app_version'])
+    release_config['version'] = config.params['version']
+    release_config['appVersion'] = config.params['app_version']
 
-    release_config['next_version'] = str(config.params['next_version'])
+    release_config['next_version'] = config.params['next_version']
     release_config['build_number'] = config.params['build_number']
     return release_config
 
 
-def get_signing_cert_scope_per_platform(build_platform, is_nightly, config):
+def get_signing_cert_scope_per_platform(build_platform, is_shippable, config):
     if 'devedition' in build_platform:
         return get_devedition_signing_cert_scope(config)
-    elif is_nightly or build_platform in ('firefox-source', 'fennec-source', 'thunderbird-source'):
+    elif is_shippable:
         return get_signing_cert_scope(config)
     else:
         return add_scope_prefix(config, 'signing:cert:dep-signing')
-
-
-def get_worker_type_for_scope(config, scope):
-    """Get the scriptworker type that will accept the given scope.
-
-    Args:
-        config (TransformConfig): The configuration for the kind being transformed.
-        scope (string): The scope being used.
-
-    Returns:
-        string: The worker-type to use.
-    """
-    for worker_type, scopes in config.graph_config['scriptworker']['worker-types'].items():
-        if scope in scopes:
-            return worker_type
-    raise RuntimeError(
-        "Unsupported scriptworker scope {scope}. (supported scopes: {available_scopes})".format(
-            scope=scope,
-            available_scopes=sorted(
-                scope
-                for scopes in config.graph_config['scriptworker']['worker-types'].values()
-                for scope in scopes
-            ),
-        )
-    )
 
 
 # generate_beetmover_upstream_artifacts {{{1
@@ -502,6 +449,7 @@ def generate_beetmover_upstream_artifacts(
             "locale": locale,
         })
 
+    upstream_artifacts.sort(key=lambda u: u['paths'])
     return upstream_artifacts
 
 
@@ -548,7 +496,7 @@ def generate_beetmover_artifact_map(config, job, **kwargs):
 
     resolve_keyed_by(map_config, 's3_bucket_paths', job['label'], platform=platform)
 
-    for locale, dep in itertools.product(locales, dependencies):
+    for locale, dep in sorted(itertools.product(locales, dependencies)):
         paths = dict()
         for filename in map_config['mapping']:
             # Relevancy checks
@@ -784,4 +732,5 @@ def generate_beetmover_partials_artifact_map(config, job, partials_info, **kwarg
             'paths': paths,
         })
 
+    artifacts.sort(key=lambda a: sorted(a['paths'].items()))
     return artifacts

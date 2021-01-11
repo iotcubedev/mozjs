@@ -15,8 +15,7 @@ namespace dom {
 SerializedStackHolder::SerializedStackHolder()
     : mHolder(StructuredCloneHolder::CloningSupported,
               StructuredCloneHolder::TransferringNotSupported,
-              StructuredCloneHolder::StructuredCloneScope::
-                  SameProcessDifferentThread) {}
+              StructuredCloneHolder::StructuredCloneScope::SameProcess) {}
 
 void SerializedStackHolder::WriteStack(JSContext* aCx,
                                        JS::HandleObject aStack) {
@@ -27,9 +26,9 @@ void SerializedStackHolder::WriteStack(JSContext* aCx,
   JS_ClearPendingException(aCx);
 }
 
-void SerializedStackHolder::SerializeMainThreadStack(JSContext* aCx,
-                                                     JS::HandleObject aStack) {
-  MOZ_ASSERT(NS_IsMainThread());
+void SerializedStackHolder::SerializeMainThreadOrWorkletStack(
+    JSContext* aCx, JS::HandleObject aStack) {
+  MOZ_ASSERT(!IsCurrentThreadRunningWorker());
   WriteStack(aCx, aStack);
 }
 
@@ -59,7 +58,7 @@ void SerializedStackHolder::SerializeCurrentStack(JSContext* aCx) {
 
   if (stack) {
     if (NS_IsMainThread()) {
-      SerializeMainThreadStack(aCx, stack);
+      SerializeMainThreadOrWorkletStack(aCx, stack);
     } else {
       WorkerPrivate* currentWorker = GetCurrentThreadWorkerPrivate();
       SerializeWorkerStack(aCx, currentWorker, stack);
@@ -73,19 +72,24 @@ JSObject* SerializedStackHolder::ReadStack(JSContext* aCx) {
     return nullptr;
   }
 
-  Maybe<nsJSPrincipals::AutoSetActiveWorkerPrincipal> set;
-  if (mWorkerRef) {
-    set.emplace(mWorkerRef->Private()->GetPrincipal());
+  JS::RootedValue stackValue(aCx);
+
+  {
+    Maybe<nsJSPrincipals::AutoSetActiveWorkerPrincipal> set;
+    if (mWorkerRef) {
+      set.emplace(mWorkerRef->Private()->GetPrincipal());
+    }
+
+    mHolder.Read(xpc::CurrentNativeGlobal(aCx), aCx, &stackValue,
+                 IgnoreErrors());
   }
 
-  JS::RootedValue stackValue(aCx);
-  mHolder.Read(xpc::CurrentNativeGlobal(aCx), aCx, &stackValue, IgnoreErrors());
   return stackValue.isObject() ? &stackValue.toObject() : nullptr;
 }
 
 UniquePtr<SerializedStackHolder> GetCurrentStackForNetMonitor(JSContext* aCx) {
   MOZ_ASSERT_IF(!NS_IsMainThread(),
-                GetCurrentThreadWorkerPrivate()->IsWatchedByDevtools());
+                GetCurrentThreadWorkerPrivate()->IsWatchedByDevTools());
 
   UniquePtr<SerializedStackHolder> stack = MakeUnique<SerializedStackHolder>();
   stack->SerializeCurrentStack(aCx);

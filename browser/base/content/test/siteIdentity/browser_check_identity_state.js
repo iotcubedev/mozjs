@@ -25,6 +25,19 @@ function getConnectionState() {
   return document.getElementById("identity-popup").getAttribute("connection");
 }
 
+function getSecurityConnectionBG() {
+  // Get the background image of the security connection.
+  document.getElementById("identity-box").click();
+  gIdentityHandler.refreshIdentityPopup();
+  return gBrowser.ownerGlobal
+    .getComputedStyle(
+      document
+        .getElementById("identity-popup-mainView")
+        .getElementsByClassName("identity-popup-security-connection")[0]
+    )
+    .getPropertyValue("background-image");
+}
+
 function getReaderModeURL() {
   // Gets the reader mode URL from "identity-popup mainView panel header span"
   document.getElementById("identity-box").click();
@@ -48,7 +61,7 @@ async function webpageTest(secureCheck) {
   }
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   if (secureCheck) {
@@ -83,7 +96,7 @@ async function webpageTestTextWarning(secureCheck) {
   }
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   if (secureCheck) {
@@ -108,7 +121,10 @@ add_task(async function test_webpage_text_warning() {
 
 async function webpageTestTextWarningCombined(secureCheck) {
   await SpecialPowers.pushPrefEnv({
-    set: [[INSECURE_TEXT_PREF, secureCheck], [INSECURE_ICON_PREF, secureCheck]],
+    set: [
+      [INSECURE_TEXT_PREF, secureCheck],
+      [INSECURE_ICON_PREF, secureCheck],
+    ],
   });
   let oldTab = await loadNewTab("about:robots");
 
@@ -164,7 +180,7 @@ async function blankPageTest(secureCheck) {
     "valid",
     "pageproxystate should be valid"
   );
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   is(
@@ -191,7 +207,7 @@ async function secureTest(secureCheck) {
   is(getIdentityMode(), "verifiedDomain", "Identity should be verified");
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   is(getIdentityMode(), "verifiedDomain", "Identity should be verified");
@@ -205,6 +221,23 @@ async function secureTest(secureCheck) {
 add_task(async function test_secure_enabled() {
   await secureTest(true);
   await secureTest(false);
+});
+
+async function viewSourceTest() {
+  let sourceTab = await loadNewTab("view-source:https://example.com/" + DUMMY);
+
+  gBrowser.selectedTab = sourceTab;
+  is(
+    getIdentityMode(),
+    "verifiedDomain",
+    "Identity should be verified while viewing source"
+  );
+
+  gBrowser.removeTab(sourceTab);
+}
+
+add_task(async function test_viewSource() {
+  await viewSourceTest();
 });
 
 async function insecureTest(secureCheck) {
@@ -224,7 +257,7 @@ async function insecureTest(secureCheck) {
   }
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   if (secureCheck) {
@@ -257,7 +290,7 @@ async function addonsTest(secureCheck) {
   is(getIdentityMode(), "chromeUI", "Identity should be chrome");
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   is(getIdentityMode(), "chromeUI", "Identity should be chrome");
@@ -282,7 +315,7 @@ async function fileTest(secureCheck) {
   is(getConnectionState(), "file", "Connection should be file");
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   is(getConnectionState(), "file", "Connection should be file");
@@ -308,7 +341,11 @@ async function resourceUriTest(secureCheck) {
   is(getConnectionState(), "file", "Connection should be file");
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(
+    getIdentityMode(),
+    "localResource",
+    "Identity should be a local a resource"
+  );
 
   gBrowser.selectedTab = newTab;
   is(getConnectionState(), "file", "Connection should be file");
@@ -333,15 +370,31 @@ async function noCertErrorTest(secureCheck) {
   let promise = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
   BrowserTestUtils.loadURI(gBrowser, "https://nocert.example.com/");
   await promise;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
-  is(getConnectionState(), "not-secure", "Connection should be file");
+  is(
+    getIdentityMode(),
+    "certErrorPage",
+    "Identity should be the cert error page."
+  );
+  is(
+    getConnectionState(),
+    "cert-error-page",
+    "Connection should be the cert error page."
+  );
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
-  is(getConnectionState(), "not-secure", "Connection should be file");
+  is(
+    getIdentityMode(),
+    "certErrorPage",
+    "Identity should be the cert error page."
+  );
+  is(
+    getConnectionState(),
+    "cert-error-page",
+    "Connection should be the cert error page."
+  );
 
   gBrowser.removeTab(newTab);
   gBrowser.removeTab(oldTab);
@@ -354,16 +407,59 @@ add_task(async function test_about_net_error_uri() {
   await noCertErrorTest(false);
 });
 
+add_task(async function httpsOnlyErrorTest() {
+  let oldTab = await loadNewTab("about:robots");
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.security.https_only_mode", true]],
+  });
+  let newTab = BrowserTestUtils.addTab(gBrowser);
+  gBrowser.selectedTab = newTab;
+
+  let promise = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
+  BrowserTestUtils.loadURI(gBrowser, "http://nocert.example.com/");
+  await promise;
+  is(
+    getIdentityMode(),
+    "httpsOnlyErrorPage",
+    "Identity should be the https-only mode error page."
+  );
+  is(
+    getConnectionState(),
+    "https-only-error-page",
+    "Connection should be the https-only mode error page."
+  );
+
+  gBrowser.selectedTab = oldTab;
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
+
+  gBrowser.selectedTab = newTab;
+  is(
+    getIdentityMode(),
+    "httpsOnlyErrorPage",
+    "Identity should be the https-only mode error page."
+  );
+  is(
+    getConnectionState(),
+    "https-only-error-page",
+    "Connection should be the https-only mode page."
+  );
+
+  gBrowser.removeTab(newTab);
+  gBrowser.removeTab(oldTab);
+
+  await SpecialPowers.popPrefEnv();
+});
+
 async function noCertErrorFromNavigationTest(secureCheck) {
   await SpecialPowers.pushPrefEnv({ set: [[INSECURE_ICON_PREF, secureCheck]] });
   let newTab = await loadNewTab("http://example.com/" + DUMMY);
 
   let promise = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  await ContentTask.spawn(gBrowser.selectedBrowser, {}, function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     content.document.getElementById("no-cert").click();
   });
   await promise;
-  await ContentTask.spawn(gBrowser.selectedBrowser, {}, function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     is(
       content.window.location.href,
       "https://nocert.example.com/",
@@ -376,8 +472,16 @@ async function noCertErrorFromNavigationTest(secureCheck) {
     true,
     "Should be an about:certerror"
   );
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
-  is(getConnectionState(), "not-secure", "Connection should be file");
+  is(
+    getIdentityMode(),
+    "certErrorPage",
+    "Identity should be the cert error page."
+  );
+  is(
+    getConnectionState(),
+    "cert-error-page",
+    "Connection should be the cert error page."
+  );
 
   gBrowser.removeTab(newTab);
 
@@ -389,6 +493,64 @@ add_task(async function test_about_net_error_uri_from_navigation_tab() {
   await noCertErrorFromNavigationTest(false);
 });
 
+async function aboutBlockedTest(secureCheck) {
+  let url = "http://www.itisatrap.org/firefox/its-an-attack.html";
+  let oldTab = await loadNewTab("about:robots");
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      [INSECURE_ICON_PREF, secureCheck],
+      ["urlclassifier.blockedTable", "moztest-block-simple"],
+    ],
+  });
+  let newTab = BrowserTestUtils.addTab(gBrowser);
+  gBrowser.selectedTab = newTab;
+
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+
+  await BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    false,
+    url,
+    true
+  );
+
+  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown.");
+  is(getConnectionState(), "not-secure", "Connection should be not secure.");
+
+  gBrowser.selectedTab = oldTab;
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
+
+  gBrowser.selectedTab = newTab;
+  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown.");
+  is(getConnectionState(), "not-secure", "Connection should be not secure.");
+
+  gBrowser.removeTab(newTab);
+  gBrowser.removeTab(oldTab);
+
+  await SpecialPowers.popPrefEnv();
+}
+
+add_task(async function test_about_blocked() {
+  await aboutBlockedTest(true);
+  await aboutBlockedTest(false);
+});
+
+add_task(async function noCertErrorSecurityConnectionBGTest() {
+  let tab = BrowserTestUtils.addTab(gBrowser);
+  gBrowser.selectedTab = tab;
+  let promise = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
+  BrowserTestUtils.loadURI(gBrowser, "https://nocert.example.com/");
+  await promise;
+
+  is(
+    getSecurityConnectionBG(),
+    `url("chrome://browser/skin/connection-mixed-passive-loaded.svg")`,
+    "Security connection should show a warning lock icon."
+  );
+
+  BrowserTestUtils.removeTab(tab);
+});
+
 async function aboutUriTest(secureCheck) {
   let oldTab = await loadNewTab("about:robots");
   await SpecialPowers.pushPrefEnv({ set: [[INSECURE_ICON_PREF, secureCheck]] });
@@ -398,7 +560,7 @@ async function aboutUriTest(secureCheck) {
   is(getConnectionState(), "file", "Connection should be file");
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   is(getConnectionState(), "file", "Connection should be file");
@@ -449,7 +611,7 @@ async function dataUriTest(secureCheck) {
   }
 
   gBrowser.selectedTab = oldTab;
-  is(getIdentityMode(), "unknownIdentity", "Identity should be unknown");
+  is(getIdentityMode(), "localResource", "Identity should be localResource");
 
   gBrowser.selectedTab = newTab;
   if (secureCheck) {
@@ -501,8 +663,8 @@ async function pbModeTest(prefs, secureCheck) {
   privateWin.gBrowser.selectedTab = oldTab;
   is(
     getIdentityMode(privateWin),
-    "unknownIdentity",
-    "Identity should be unknown"
+    "localResource",
+    "Identity should be localResource"
   );
 
   privateWin.gBrowser.selectedTab = newTab;
@@ -526,10 +688,19 @@ async function pbModeTest(prefs, secureCheck) {
 }
 
 add_task(async function test_pb_mode() {
-  let prefs = [[INSECURE_ICON_PREF, true], [INSECURE_PBMODE_ICON_PREF, true]];
+  let prefs = [
+    [INSECURE_ICON_PREF, true],
+    [INSECURE_PBMODE_ICON_PREF, true],
+  ];
   await pbModeTest(prefs, true);
-  prefs = [[INSECURE_ICON_PREF, false], [INSECURE_PBMODE_ICON_PREF, true]];
+  prefs = [
+    [INSECURE_ICON_PREF, false],
+    [INSECURE_PBMODE_ICON_PREF, true],
+  ];
   await pbModeTest(prefs, true);
-  prefs = [[INSECURE_ICON_PREF, false], [INSECURE_PBMODE_ICON_PREF, false]];
+  prefs = [
+    [INSECURE_ICON_PREF, false],
+    [INSECURE_PBMODE_ICON_PREF, false],
+  ];
   await pbModeTest(prefs, false);
 });

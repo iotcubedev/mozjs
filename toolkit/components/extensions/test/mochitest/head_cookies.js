@@ -131,7 +131,10 @@ async function testCookies(options) {
         false,
         options.expiry,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        options.url.startsWith("https")
+          ? Ci.nsICookie.SCHEME_HTTPS
+          : Ci.nsICookie.SCHEME_HTTP
       );
       // This will be modified by the background script.
       Services.cookies.add(
@@ -144,7 +147,10 @@ async function testCookies(options) {
         false,
         options.expiry,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        options.url.startsWith("https")
+          ? Ci.nsICookie.SCHEME_HTTPS
+          : Ci.nsICookie.SCHEME_HTTP
       );
       // This will be deleted by the background script.
       Services.cookies.add(
@@ -157,7 +163,10 @@ async function testCookies(options) {
         false,
         options.expiry,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        options.url.startsWith("https")
+          ? Ci.nsICookie.SCHEME_HTTPS
+          : Ci.nsICookie.SCHEME_HTTP
       );
       sendAsyncMessage("done");
     });
@@ -185,7 +194,10 @@ async function testCookies(options) {
         false,
         options.expiry,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        options.url.startsWith("https")
+          ? Ci.nsICookie.SCHEME_HTTPS
+          : Ci.nsICookie.SCHEME_HTTP
       );
       Services.cookies.add(
         domain,
@@ -197,9 +209,12 @@ async function testCookies(options) {
         false,
         options.expiry,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        options.url.startsWith("https")
+          ? Ci.nsICookie.SCHEME_HTTPS
+          : Ci.nsICookie.SCHEME_HTTP
       );
-      Services.cookies.remove(domain, "x", "/", false, {});
+      Services.cookies.remove(domain, "x", "/", {});
       sendAsyncMessage("done");
     });
   });
@@ -259,7 +274,7 @@ async function testCookies(options) {
       }
 
       for (let cookie of cookies) {
-        cookieSvc.remove(cookie.host, cookie.name, "/", false, {});
+        cookieSvc.remove(cookie.host, cookie.name, "/", {});
       }
       // Make sure we don't silently poison subsequent tests if something goes wrong.
       assert.equal(getCookies(options.domain).length, 0, "cookies cleared");

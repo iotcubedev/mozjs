@@ -6,16 +6,15 @@ from __future__ import absolute_import, print_function
 
 import contextlib
 import os
-import urllib
+
+from six.moves.urllib.parse import quote
 
 from marionette_driver import By, errors, expected, Wait
 from marionette_driver.keys import Keys
 from marionette_driver.marionette import Alert
 from marionette_harness import (
     MarionetteTestCase,
-    run_if_e10s,
     run_if_manage_instance,
-    skip_if_mobile,
     WindowManagerMixin,
 )
 
@@ -27,7 +26,7 @@ RED_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEX/TQBcNTh/AAA
 
 
 def inline(doc):
-    return "data:text/html;charset=utf-8,%s" % urllib.quote(doc)
+    return "data:text/html;charset=utf-8,%s" % quote(doc)
 
 
 def inline_image(data):
@@ -182,7 +181,6 @@ class TestNavigate(BaseNavigationTestCase):
             self.marionette.navigate(self.marionette.absolute_url("slow"))
         self.assertEqual(self.is_remote_tab, is_remote_before_timeout)
 
-    @run_if_e10s("Requires e10s mode enabled")
     def test_navigate_timeout_error_remoteness_change(self):
         self.assertTrue(self.is_remote_tab)
         self.marionette.navigate("about:robots")
@@ -191,9 +189,6 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.timeout.page_load = 0.5
         with self.assertRaises(errors.TimeoutException):
             self.marionette.navigate(self.marionette.absolute_url("slow"))
-
-        # Even with the page not finished loading the browser is remote
-        self.assertTrue(self.is_remote_tab)
 
     def test_navigate_to_same_image_document_twice(self):
         self.marionette.navigate(self.fixtures.where_is("black.png"))
@@ -258,14 +253,11 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.go_back()
         self.assertEqual(self.marionette.get_url(), self.test_page_push_state)
 
-    @skip_if_mobile("Test file is only located on host machine")
     def test_navigate_file_url(self):
         self.marionette.navigate(self.test_page_file_url)
         self.marionette.find_element(By.ID, "file-url")
         self.marionette.navigate(self.test_page_remote)
 
-    @run_if_e10s("Requires e10s mode enabled")
-    @skip_if_mobile("Test file is only located on host machine")
     def test_navigate_file_url_remoteness_change(self):
         self.marionette.navigate("about:robots")
         self.assertFalse(self.is_remote_tab)
@@ -283,7 +275,6 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.navigate("about:blank")
 
     @run_if_manage_instance("Only runnable if Marionette manages the instance")
-    @skip_if_mobile("Bug 1322993 - Missing temporary folder")
     def test_focus_after_navigation(self):
         self.marionette.restart()
 
@@ -299,7 +290,6 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.switch_to_window(self.new_tab)
         self.marionette.navigate(self.test_page_remote)
 
-    @skip_if_mobile("Interacting with chrome elements not available for Fennec")
     def test_type_to_non_remote_tab(self):
         self.marionette.navigate(self.test_page_not_remote)
         self.assertFalse(self.is_remote_tab)
@@ -315,8 +305,6 @@ class TestNavigate(BaseNavigationTestCase):
             message="'about:support' hasn't been loaded")
         self.assertFalse(self.is_remote_tab)
 
-    @skip_if_mobile("Interacting with chrome elements not available for Fennec")
-    @run_if_e10s("Requires e10s mode enabled")
     def test_type_to_remote_tab(self):
         self.assertTrue(self.is_remote_tab)
 
@@ -431,7 +419,6 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
-    @skip_if_mobile("Test file is only located on host machine")
     def test_file_url(self):
         test_pages = [
             {"url": self.test_page_remote},
@@ -512,7 +499,6 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
-    @run_if_e10s("Requires e10s mode enabled")
     def test_remoteness_change(self):
         test_pages = [
             {"url": "about:robots", "is_remote": False},
@@ -521,7 +507,6 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
-    @skip_if_mobile("Bug 1333209 - Process killed because of connection loss")
     def test_non_remote_about_pages(self):
         test_pages = [
             {"url": "about:preferences", "is_remote": False},
@@ -620,7 +605,6 @@ class TestRefresh(BaseNavigationTestCase):
         self.marionette.refresh()
         self.marionette.find_element(By.NAME, "third")
 
-    @skip_if_mobile("Test file is only located on host machine")
     def test_file_url(self):
         self.marionette.navigate(self.test_page_file_url)
         self.assertEqual(self.test_page_file_url, self.marionette.get_url())
@@ -794,7 +778,6 @@ class TestPageLoadStrategy(BaseNavigationTestCase):
         self.assertEqual("complete", self.ready_state)
         self.marionette.find_element(By.ID, "slow")
 
-    @run_if_e10s("Requires e10s mode enabled")
     def test_strategy_after_remoteness_change(self):
         """Bug 1378191 - Reset of capabilities after listener reload."""
         self.marionette.delete_session()

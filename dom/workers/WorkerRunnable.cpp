@@ -14,6 +14,7 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/dom/JSExecutionManager.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/Telemetry.h"
 
@@ -367,7 +368,6 @@ WorkerRunnable::Run() {
 
   MOZ_ASSERT(!jsapi->HasException());
   result = WorkerRun(cx, mWorkerPrivate);
-  MOZ_ASSERT_IF(result, !jsapi->HasException());
   jsapi->ReportException();
 
   // We can't even assert that this didn't create our global, since in the case
@@ -422,10 +422,9 @@ WorkerSyncRunnable::WorkerSyncRunnable(WorkerPrivate* aWorkerPrivate,
 }
 
 WorkerSyncRunnable::WorkerSyncRunnable(
-    WorkerPrivate* aWorkerPrivate,
-    already_AddRefed<nsIEventTarget>&& aSyncLoopTarget)
+    WorkerPrivate* aWorkerPrivate, nsCOMPtr<nsIEventTarget>&& aSyncLoopTarget)
     : WorkerRunnable(aWorkerPrivate, WorkerThreadUnchangedBusyCount),
-      mSyncLoopTarget(aSyncLoopTarget) {
+      mSyncLoopTarget(std::move(aSyncLoopTarget)) {
 #ifdef DEBUG
   if (mSyncLoopTarget) {
     mWorkerPrivate->AssertValidSyncLoop(mSyncLoopTarget);
@@ -433,7 +432,7 @@ WorkerSyncRunnable::WorkerSyncRunnable(
 #endif
 }
 
-WorkerSyncRunnable::~WorkerSyncRunnable() {}
+WorkerSyncRunnable::~WorkerSyncRunnable() = default;
 
 bool WorkerSyncRunnable::DispatchInternal() {
   if (mSyncLoopTarget) {
@@ -449,8 +448,8 @@ void MainThreadWorkerSyncRunnable::PostDispatch(WorkerPrivate* aWorkerPrivate,
                                                 bool aDispatchResult) {}
 
 MainThreadStopSyncLoopRunnable::MainThreadStopSyncLoopRunnable(
-    WorkerPrivate* aWorkerPrivate,
-    already_AddRefed<nsIEventTarget>&& aSyncLoopTarget, bool aResult)
+    WorkerPrivate* aWorkerPrivate, nsCOMPtr<nsIEventTarget>&& aSyncLoopTarget,
+    bool aResult)
     : WorkerSyncRunnable(aWorkerPrivate, std::move(aSyncLoopTarget)),
       mResult(aResult) {
   AssertIsOnMainThread();
@@ -576,7 +575,7 @@ WorkerMainThreadRunnable::Run() {
 
   RefPtr<MainThreadStopSyncLoopRunnable> response =
       new MainThreadStopSyncLoopRunnable(mWorkerPrivate,
-                                         mSyncLoopTarget.forget(), runResult);
+                                         std::move(mSyncLoopTarget), runResult);
 
   MOZ_ALWAYS_TRUE(response->Dispatch());
 
@@ -681,7 +680,7 @@ void WorkerProxyToMainThreadRunnable::PostDispatchOnMainThread() {
     }
 
    private:
-    ~ReleaseRunnable() {}
+    ~ReleaseRunnable() = default;
   };
 
   RefPtr<WorkerControlRunnable> runnable =

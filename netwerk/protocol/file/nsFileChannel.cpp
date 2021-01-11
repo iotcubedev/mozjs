@@ -18,7 +18,6 @@
 #include "nsIFileStreams.h"
 #include "nsFileProtocolHandler.h"
 #include "nsProxyRelease.h"
-#include "nsAutoPtr.h"
 #include "nsIContentPolicy.h"
 #include "nsContentUtils.h"
 
@@ -239,11 +238,6 @@ nsFileChannel::nsFileChannel(nsIURI* uri) : mUploadLength(0), mFileURI(uri) {}
 nsresult nsFileChannel::Init() {
   NS_ENSURE_STATE(mLoadInfo);
 
-  nsresult rv;
-
-  rv = nsBaseChannel::Init();
-  NS_ENSURE_SUCCESS(rv, rv);
-
   // If we have a link file, we should resolve its target right away.
   // This is to protect against a same origin attack where the same link file
   // can point to different resources right after the first resource is loaded.
@@ -345,7 +339,7 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     nsCOMPtr<nsIChannel> newChannel;
     rv = NS_NewChannel(getter_AddRefs(newChannel), newURI,
                        nsContentUtils::GetSystemPrincipal(),
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER);
 
     if (NS_FAILED(rv)) return rv;
@@ -374,7 +368,7 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     if (!uploadStream || !uploadStream->IsInitialized()) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
-    stream = uploadStream.forget();
+    stream = std::move(uploadStream);
 
     mContentLength = 0;
 
@@ -383,7 +377,7 @@ nsresult nsFileChannel::OpenContentStream(bool async, nsIInputStream** result,
     // sniffer code in nsBaseChannel.
     // However, don't override explicitly set types.
     if (!HasContentTypeHint())
-      SetContentType(NS_LITERAL_CSTRING(APPLICATION_OCTET_STREAM));
+      SetContentType(nsLiteralCString(APPLICATION_OCTET_STREAM));
   } else {
     nsAutoCString contentType;
     rv = MakeFileInputStream(file, stream, contentType, async);

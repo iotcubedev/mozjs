@@ -26,7 +26,6 @@
 #include "nsBoxLayoutState.h"
 #include "nsMenuBarListener.h"
 #include "nsString.h"
-#include "nsIServiceManager.h"
 #include "nsITheme.h"
 #include "nsUnicharUtils.h"
 #include "nsContentUtils.h"
@@ -191,7 +190,7 @@ void nsTextBoxFrame::UpdateAttributes(nsAtom* aAttribute, bool& aResize,
   aRedraw = false;
 
   if (aAttribute == nullptr || aAttribute == nsGkAtoms::crop) {
-    static Element::AttrValuesArray strings[] = {
+    static dom::Element::AttrValuesArray strings[] = {
         nsGkAtoms::left,  nsGkAtoms::start, nsGkAtoms::center,
         nsGkAtoms::right, nsGkAtoms::end,   nsGkAtoms::none,
         nullptr};
@@ -247,7 +246,7 @@ class nsDisplayXULTextBox final : public nsPaintedDisplayItem {
     MOZ_COUNT_CTOR(nsDisplayXULTextBox);
   }
 #ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayXULTextBox() { MOZ_COUNT_DTOR(nsDisplayXULTextBox); }
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayXULTextBox)
 #endif
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
@@ -329,7 +328,7 @@ bool nsDisplayXULTextBox::CreateWebRenderCommands(
 nsRect nsDisplayXULTextBox::GetBounds(nsDisplayListBuilder* aBuilder,
                                       bool* aSnap) const {
   *aSnap = false;
-  return mFrame->GetVisualOverflowRectRelativeToSelf() + ToReferenceFrame();
+  return mFrame->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
 }
 
 nsRect nsDisplayXULTextBox::GetComponentAlphaBounds(
@@ -371,11 +370,11 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
   uint8_t strikeStyle = 0;
 
   // Begin with no decorations
-  auto decorations = StyleTextDecorationLine_NONE;
+  auto decorations = StyleTextDecorationLine::NONE;
   // A mask of all possible line decorations.
-  auto decorMask = StyleTextDecorationLine_UNDERLINE |
-                   StyleTextDecorationLine_OVERLINE |
-                   StyleTextDecorationLine_LINE_THROUGH;
+  auto decorMask = StyleTextDecorationLine::UNDERLINE |
+                   StyleTextDecorationLine::OVERLINE |
+                   StyleTextDecorationLine::LINE_THROUGH;
 
   WritingMode wm = GetWritingMode();
   bool vertical = wm.IsVertical();
@@ -388,8 +387,8 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
     }
     const nsStyleTextReset* styleText = context->StyleTextReset();
 
-    if (decorMask &
-        styleText->mTextDecorationLine) {  // a decoration defined here
+    // a decoration defined here
+    if (decorMask & styleText->mTextDecorationLine) {
       nscolor color;
       if (aOverrideColor) {
         color = *aOverrideColor;
@@ -398,27 +397,26 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
       }
       uint8_t style = styleText->mTextDecorationStyle;
 
-      if (StyleTextDecorationLine_UNDERLINE & decorMask &
+      if (StyleTextDecorationLine::UNDERLINE & decorMask &
           styleText->mTextDecorationLine) {
         underColor = color;
         underStyle = style;
-        // TODO(emilio): Could add `operator~` or `remove()` to cbindgen.
-        decorMask.bits &= ~StyleTextDecorationLine_UNDERLINE.bits;
-        decorations |= StyleTextDecorationLine_UNDERLINE;
+        decorMask &= ~StyleTextDecorationLine::UNDERLINE;
+        decorations |= StyleTextDecorationLine::UNDERLINE;
       }
-      if (StyleTextDecorationLine_OVERLINE & decorMask &
+      if (StyleTextDecorationLine::OVERLINE & decorMask &
           styleText->mTextDecorationLine) {
         overColor = color;
         overStyle = style;
-        decorMask.bits &= ~StyleTextDecorationLine_OVERLINE.bits;
-        decorations |= StyleTextDecorationLine_OVERLINE;
+        decorMask &= ~StyleTextDecorationLine::OVERLINE;
+        decorations |= StyleTextDecorationLine::OVERLINE;
       }
-      if (StyleTextDecorationLine_LINE_THROUGH & decorMask &
+      if (StyleTextDecorationLine::LINE_THROUGH & decorMask &
           styleText->mTextDecorationLine) {
         strikeColor = color;
         strikeStyle = style;
-        decorMask.bits &= ~StyleTextDecorationLine_LINE_THROUGH.bits;
-        decorations |= StyleTextDecorationLine_LINE_THROUGH;
+        decorMask &= ~StyleTextDecorationLine::LINE_THROUGH;
+        decorations |= StyleTextDecorationLine::LINE_THROUGH;
       }
     }
   } while (decorMask && (f = nsLayoutUtils::GetParentOrPlaceholderFor(f)));
@@ -461,23 +459,23 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
   // (We don't apply this rule to the access-key underline because we only
   // find out where that is as a side effect of drawing the text, in the
   // general case -- see below.)
-  if (decorations &
-      (StyleTextDecorationLine_OVERLINE | StyleTextDecorationLine_UNDERLINE)) {
+  if (decorations & (StyleTextDecorationLine::OVERLINE |
+                     StyleTextDecorationLine::UNDERLINE)) {
     fontMet->GetUnderline(offset, size);
     params.lineSize.height = presContext->AppUnitsToGfxUnits(size);
-    if ((decorations & StyleTextDecorationLine_UNDERLINE) &&
+    if ((decorations & StyleTextDecorationLine::UNDERLINE) &&
         underStyle != NS_STYLE_TEXT_DECORATION_STYLE_NONE) {
       params.color = underColor;
       params.offset = presContext->AppUnitsToGfxUnits(offset);
-      params.decoration = StyleTextDecorationLine_UNDERLINE;
+      params.decoration = StyleTextDecorationLine::UNDERLINE;
       params.style = underStyle;
       nsCSSRendering::PaintDecorationLine(this, *drawTarget, params);
     }
-    if ((decorations & StyleTextDecorationLine_OVERLINE) &&
+    if ((decorations & StyleTextDecorationLine::OVERLINE) &&
         overStyle != NS_STYLE_TEXT_DECORATION_STYLE_NONE) {
       params.color = overColor;
       params.offset = params.ascent;
-      params.decoration = StyleTextDecorationLine_OVERLINE;
+      params.decoration = StyleTextDecorationLine::OVERLINE;
       params.style = overStyle;
       nsCSSRendering::PaintDecorationLine(this, *drawTarget, params);
     }
@@ -489,9 +487,10 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
 
   CalculateUnderline(refDrawTarget, *fontMet);
 
-  nscolor c = aOverrideColor ? *aOverrideColor : StyleText()->mColor.ToColor();
-  ColorPattern color(ToDeviceColor(c));
-  aRenderingContext.SetColor(Color::FromABGR(c));
+  DeviceColor color = ToDeviceColor(
+      aOverrideColor ? *aOverrideColor : StyleText()->mColor.ToColor());
+  ColorPattern colorPattern(color);
+  aRenderingContext.SetDeviceColor(color);
 
   nsresult rv = NS_ERROR_FAILURE;
 
@@ -542,18 +541,18 @@ void nsTextBoxFrame::DrawText(gfxContext& aRenderingContext,
              mAccessKeyInfo->mAccessWidth,
              mAccessKeyInfo->mAccessUnderlineSize);
     Rect devPxRect = NSRectToSnappedRect(r, appUnitsPerDevPixel, *drawTarget);
-    drawTarget->FillRect(devPxRect, color);
+    drawTarget->FillRect(devPxRect, colorPattern);
   }
 
   // Strikeout is drawn on top of the text, per
   // http://www.w3.org/TR/CSS21/zindex.html point 7.2.1.4.1.1.
-  if ((decorations & StyleTextDecorationLine_LINE_THROUGH) &&
+  if ((decorations & StyleTextDecorationLine::LINE_THROUGH) &&
       strikeStyle != NS_STYLE_TEXT_DECORATION_STYLE_NONE) {
     fontMet->GetStrikeout(offset, size);
     params.color = strikeColor;
     params.lineSize.height = presContext->AppUnitsToGfxUnits(size);
     params.offset = presContext->AppUnitsToGfxUnits(offset);
-    params.decoration = StyleTextDecorationLine_LINE_THROUGH;
+    params.decoration = StyleTextDecorationLine::LINE_THROUGH;
     params.style = strikeStyle;
     nsCSSRendering::PaintDecorationLine(this, *drawTarget, params);
   }
@@ -594,7 +593,7 @@ nscoord nsTextBoxFrame::CalculateTitleForWidth(gfxContext& aRenderingContext,
   if (titleWidth <= aWidth) {
     mCroppedTitle = mTitle;
     if (HasRTLChars(mTitle) ||
-        StyleVisibility()->mDirection == NS_STYLE_DIRECTION_RTL) {
+        StyleVisibility()->mDirection == StyleDirection::Rtl) {
       AddStateBits(NS_FRAME_IS_BIDI);
     }
     return titleWidth;  // fits, done.
@@ -769,7 +768,7 @@ nscoord nsTextBoxFrame::CalculateTitleForWidth(gfxContext& aRenderingContext,
                                                  aRenderingContext);
 }
 
-#define OLD_ELLIPSIS NS_LITERAL_STRING("...")
+#define OLD_ELLIPSIS u"..."_ns
 
 // the following block is to append the accesskey to mTitle if there is an
 // accesskey but the mTitle doesn't have the character
@@ -785,7 +784,7 @@ void nsTextBoxFrame::UpdateAccessTitle() {
   if (!menuAccessKey || mAccessKey.IsEmpty()) return;
 
   if (!AlwaysAppendAccessKey() &&
-      FindInReadable(mAccessKey, mTitle, nsCaseInsensitiveStringComparator()))
+      FindInReadable(mAccessKey, mTitle, nsCaseInsensitiveStringComparator))
     return;
 
   nsAutoString accessKeyLabel;
@@ -859,11 +858,11 @@ void nsTextBoxFrame::UpdateAccessIndex() {
           // didn't find it - perform a case-insensitive search
           start = originalStart;
           found = FindInReadable(mAccessKey, start, end,
-                                 nsCaseInsensitiveStringComparator());
+                                 nsCaseInsensitiveStringComparator);
         }
       } else {
         found = RFindInReadable(mAccessKey, start, end,
-                                nsCaseInsensitiveStringComparator());
+                                nsCaseInsensitiveStringComparator);
       }
 
       if (found)
@@ -926,7 +925,7 @@ nsTextBoxFrame::DoXULLayout(nsBoxLayoutState& aBoxLayoutState) {
 
   RefPtr<nsFontMetrics> fontMet =
       nsLayoutUtils::GetFontMetricsForFrame(this, 1.0f);
-  nsBoundingMetrics metrics = fontMet->GetInkBoundsForVisualOverflow(
+  nsBoundingMetrics metrics = fontMet->GetInkBoundsForInkOverflow(
       mCroppedTitle.get(), mCroppedTitle.Length(),
       aBoxLayoutState.GetRenderingContext()->GetDrawTarget());
 
@@ -942,7 +941,7 @@ nsTextBoxFrame::DoXULLayout(nsBoxLayoutState& aBoxLayoutState) {
 
   textRect = tr.GetPhysicalRect(wm, GetSize());
 
-  // Our scrollable overflow is our bounds; our visual overflow may
+  // Our scrollable overflow is our bounds; our ink overflow may
   // extend beyond that.
   nsRect visualBounds;
   visualBounds.UnionRect(scrollBounds, textRect);
@@ -950,7 +949,7 @@ nsTextBoxFrame::DoXULLayout(nsBoxLayoutState& aBoxLayoutState) {
 
   if (textStyle->HasTextShadow()) {
     // text-shadow extends our visual but not scrollable bounds
-    nsRect& vis = overflow.VisualOverflow();
+    nsRect& vis = overflow.InkOverflow();
     vis.UnionRect(vis,
                   nsLayoutUtils::GetTextShadowRectsUnion(mTextDrawRect, this));
   }
@@ -961,12 +960,12 @@ nsTextBoxFrame::DoXULLayout(nsBoxLayoutState& aBoxLayoutState) {
 
 nsRect nsTextBoxFrame::GetComponentAlphaBounds() const {
   if (StyleText()->HasTextShadow()) {
-    return GetVisualOverflowRectRelativeToSelf();
+    return InkOverflowRectRelativeToSelf();
   }
   return mTextDrawRect;
 }
 
-bool nsTextBoxFrame::ComputesOwnOverflowArea() { return true; }
+bool nsTextBoxFrame::XULComputesOwnOverflowArea() { return true; }
 
 /* virtual */
 void nsTextBoxFrame::MarkIntrinsicISizesDirty() {
@@ -992,7 +991,7 @@ void nsTextBoxFrame::CalcTextSize(nsBoxLayoutState& aBoxLayoutState) {
     if (rendContext) {
       GetTextSize(*rendContext, mTitle, size, mAscent);
       if (GetWritingMode().IsVertical()) {
-        Swap(size.width, size.height);
+        std::swap(size.width, size.height);
       }
       mTextSize = size;
       mNeedsRecalc = false;
@@ -1033,12 +1032,12 @@ void nsTextBoxFrame::CalcDrawRect(gfxContext& aRenderingContext) {
 
   // Align our text within the overall rect by checking our text-align property.
   const nsStyleText* textStyle = StyleText();
-  if (textStyle->mTextAlign == NS_STYLE_TEXT_ALIGN_CENTER) {
+  if (textStyle->mTextAlign == StyleTextAlign::Center) {
     textRect.IStart(wm) += (outerISize - textRect.ISize(wm)) / 2;
-  } else if (textStyle->mTextAlign == NS_STYLE_TEXT_ALIGN_END ||
-             (textStyle->mTextAlign == NS_STYLE_TEXT_ALIGN_LEFT &&
-              !wm.IsBidiLTR()) ||
-             (textStyle->mTextAlign == NS_STYLE_TEXT_ALIGN_RIGHT &&
+  } else if (textStyle->mTextAlign == StyleTextAlign::End ||
+             (textStyle->mTextAlign == StyleTextAlign::Left &&
+              wm.IsBidiRTL()) ||
+             (textStyle->mTextAlign == StyleTextAlign::Right &&
               wm.IsBidiLTR())) {
     textRect.IStart(wm) += (outerISize - textRect.ISize(wm));
   }
@@ -1055,7 +1054,7 @@ nsSize nsTextBoxFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) {
   nsSize size = mTextSize;
   DISPLAY_PREF_SIZE(this, size);
 
-  AddBorderAndPadding(size);
+  AddXULBorderAndPadding(size);
   bool widthSet, heightSet;
   nsIFrame::AddXULPrefSize(this, size, widthSet, heightSet);
 
@@ -1080,9 +1079,9 @@ nsSize nsTextBoxFrame::GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) {
     }
   }
 
-  AddBorderAndPadding(size);
+  AddXULBorderAndPadding(size);
   bool widthSet, heightSet;
-  nsIFrame::AddXULMinSize(aBoxLayoutState, this, size, widthSet, heightSet);
+  nsIFrame::AddXULMinSize(this, size, widthSet, heightSet);
 
   return size;
 }
@@ -1103,8 +1102,8 @@ nscoord nsTextBoxFrame::GetXULBoxAscent(nsBoxLayoutState& aBoxLayoutState) {
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsTextBoxFrame::GetFrameName(nsAString& aResult) const {
-  MakeFrameName(NS_LITERAL_STRING("TextBox"), aResult);
-  aResult += NS_LITERAL_STRING("[value=") + mTitle + NS_LITERAL_STRING("]");
+  MakeFrameName(u"TextBox"_ns, aResult);
+  aResult += u"[value="_ns + mTitle + u"]"_ns;
   return NS_OK;
 }
 #endif

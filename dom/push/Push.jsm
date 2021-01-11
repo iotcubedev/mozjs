@@ -46,9 +46,9 @@ Push.prototype = {
   classID: PUSH_CID,
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIDOMGlobalPropertyInitializer,
-    Ci.nsISupportsWeakReference,
-    Ci.nsIObserver,
+    "nsIDOMGlobalPropertyInitializer",
+    "nsISupportsWeakReference",
+    "nsIObserver",
   ]),
 
   init(win) {
@@ -70,7 +70,8 @@ Push.prototype = {
   askPermission() {
     console.debug("askPermission()");
 
-    let isHandlingUserInput = this._window.windowUtils.isHandlingUserInput;
+    let isHandlingUserInput = this._window.document
+      .hasValidTransientUserGestureActivation;
 
     return this.createPromise((resolve, reject) => {
       let permissionDenied = () => {
@@ -86,6 +87,7 @@ Push.prototype = {
         Services.prefs.getBoolPref("dom.push.testing.ignorePermission", false)
       ) {
         resolve();
+        return;
       }
 
       this._requestPermission(isHandlingUserInput, resolve, permissionDenied);
@@ -197,7 +199,7 @@ Push.prototype = {
     let type = {
       type: "desktop-notification",
       options: [],
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionType]),
+      QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionType"]),
     };
     let typeArray = Cc["@mozilla.org/array;1"].createInstance(
       Ci.nsIMutableArray
@@ -206,13 +208,10 @@ Push.prototype = {
 
     // create a nsIContentPermissionRequest
     let request = {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionRequest]),
+      QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionRequest"]),
       types: typeArray,
       principal: this._principal,
       isHandlingUserInput,
-      userHadInteractedWithDocument: this._window.document.userHasInteracted,
-      documentDOMContentLoadedTimestamp: this._window.performance.timing
-        .domContentLoadedEventEnd,
       topLevelPrincipal: this._topLevelPrincipal,
       allow: allowCallback,
       cancel: cancelCallback,
@@ -233,7 +232,7 @@ function PushSubscriptionCallback(pushManager, resolve, reject) {
 }
 
 PushSubscriptionCallback.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIPushSubscriptionCallback]),
+  QueryInterface: ChromeUtils.generateQI(["nsIPushSubscriptionCallback"]),
 
   onPushSubscription(ok, subscription) {
     let { pushManager } = this;

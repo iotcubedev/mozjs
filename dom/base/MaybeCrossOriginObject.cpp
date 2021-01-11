@@ -118,7 +118,7 @@ bool MaybeCrossOriginObjectMixins::CrossOriginPropertyFallback(
   }
 
   // Step 2.
-  return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("access"));
+  return ReportCrossOriginDenial(cx, id, "access"_ns);
 }
 
 /* static */
@@ -173,7 +173,7 @@ bool MaybeCrossOriginObjectMixins::CrossOriginGet(
   JS::Rooted<JSObject*> getter(cx);
   if (!desc.hasGetterObject() || !(getter = desc.getterObject())) {
     // Step 6.
-    return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("get"));
+    return ReportCrossOriginDenial(cx, id, "get"_ns);
   }
 
   // Step 7.
@@ -229,13 +229,13 @@ bool MaybeCrossOriginObjectMixins::CrossOriginSet(
   }
 
   // Step 4.
-  return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("set"));
+  return ReportCrossOriginDenial(cx, id, "set"_ns);
 }
 
 /* static */
 bool MaybeCrossOriginObjectMixins::EnsureHolder(
     JSContext* cx, JS::Handle<JSObject*> obj, size_t slot,
-    JSPropertySpec* attributes, JSFunctionSpec* methods,
+    const CrossOriginProperties& properties,
     JS::MutableHandle<JSObject*> holder) {
   MOZ_ASSERT(!IsPlatformObjectSameOrigin(cx, obj) || IsRemoteObjectProxy(obj),
              "Why are we calling this at all in same-origin cases?");
@@ -311,9 +311,14 @@ bool MaybeCrossOriginObjectMixins::EnsureHolder(
   // cross-compartment references to all the methods it holds, since those
   // methods need to be in our current Realm.  It seems better to allocate the
   // holder in our current Realm.
+  bool isChrome = xpc::AccessCheck::isChrome(js::GetContextRealm(cx));
   holder.set(JS_NewObjectWithGivenProto(cx, nullptr, nullptr));
-  if (!holder || !JS_DefineProperties(cx, holder, attributes) ||
-      !JS_DefineFunctions(cx, holder, methods)) {
+  if (!holder || !JS_DefineProperties(cx, holder, properties.mAttributes) ||
+      !JS_DefineFunctions(cx, holder, properties.mMethods) ||
+      (isChrome && properties.mChromeOnlyAttributes &&
+       !JS_DefineProperties(cx, holder, properties.mChromeOnlyAttributes)) ||
+      (isChrome && properties.mChromeOnlyMethods &&
+       !JS_DefineFunctions(cx, holder, properties.mChromeOnlyMethods))) {
     return false;
   }
 
@@ -427,7 +432,7 @@ bool MaybeCrossOriginObject<Base>::defineProperty(
     JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
     JS::Handle<JS::PropertyDescriptor> desc, JS::ObjectOpResult& result) const {
   if (!IsPlatformObjectSameOrigin(cx, proxy)) {
-    return ReportCrossOriginDenial(cx, id, NS_LITERAL_CSTRING("define"));
+    return ReportCrossOriginDenial(cx, id, "define"_ns);
   }
 
   // Enter the Realm of proxy and do the remaining work in there.
@@ -479,14 +484,26 @@ bool MaybeCrossOriginObject<Base>::hasInstance(JSContext* cx,
     return js::ReportIsNotFunction(cx, val);
   }
 
-  // Safe to enter the realm of "proxy" and do the normal thing of looking up
-  // @@hasInstance, etc.
-  JSAutoRealm ar(cx, proxy);
-  JS::Rooted<JS::Value> val(cx, v);
-  if (!MaybeWrapValue(cx, &val)) {
+  // We need to wrap `proxy` into our compartment or enter proxy's realm
+  // and wrap `v` into proxy's compartment because at this point `v` and `proxy`
+  // might no longer be same-compartment. One solution is to enter the realm of
+  // `proxy` and look up @@hasInstance there. However, that will lead to
+  // incorrect error reporting because the mechanism for reporting the "not a
+  // function" exception only works correctly if we are in the realm of the
+  // script that encountered the instanceof expression. Thus, we don't want to
+  // switch realms and will wrap `proxy` into our current compartment and lookup
+  // @@hasInstance. Note that accesses to get @@hasInstance on `proxy` after it
+  // is wrapped in the `cx` compartment will still work because `cx` and `proxy`
+  // are same-origin.
+  JS::Rooted<JSObject*> proxyWrap(cx, proxy);
+  if (!MaybeWrapObject(cx, &proxyWrap)) {
     return false;
   }
-  return JS::InstanceofOperator(cx, proxy, val, bp);
+  // We are not calling BaseProxyHandler::hasInstance here because it expects
+  // `proxy` to be passed as the object. However, `proxy`, as a
+  // MaybeCrossOriginObject, may not be in current cx->realm() and we may now
+  // have a cross-compartment wrapper for `proxy`.
+  return JS::InstanceofOperator(cx, proxyWrap, v, bp);
 }
 
 // Force instantiations of the out-of-line template methods we need.

@@ -160,11 +160,6 @@ class HostLayerManager : public LayerManager {
     }
   }
 
-  // Indicate that we need to composite even if nothing in our layers has
-  // changed, so that the widget can draw something different in its window
-  // overlay.
-  void SetWindowOverlayChanged() { mWindowOverlayChanged = true; }
-
   void SetPaintTime(const TimeDuration& aPaintTime) {
     mLastPaintTime = aPaintTime;
   }
@@ -174,6 +169,10 @@ class HostLayerManager : public LayerManager {
 
   void RecordPaintTimes(const PaintTiming& aTiming);
   void RecordUpdateTime(float aValue);
+
+  CompositionOpportunityId GetCompositionOpportunityId() const {
+    return mCompositionOpportunityId;
+  }
 
   TimeStamp GetCompositionTime() const { return mCompositionTime; }
   void SetCompositionTime(TimeStamp aTimeStamp) {
@@ -211,6 +210,8 @@ class HostLayerManager : public LayerManager {
    */
   void WriteCollectedFrames();
 
+  Maybe<CollectedFrames> GetCollectedFrames();
+
  protected:
   bool mDebugOverlayWantsNextFrame;
   nsTArray<ImageCompositeNotificationInfo> mImageCompositeNotifications;
@@ -221,13 +222,15 @@ class HostLayerManager : public LayerManager {
   UniquePtr<Diagnostics> mDiagnostics;
   uint64_t mCompositorBridgeID;
 
-  bool mWindowOverlayChanged;
   TimeDuration mLastPaintTime;
   TimeStamp mRenderStartTime;
   UniquePtr<CompositionRecorder> mCompositionRecorder = nullptr;
 
   // Render time for the current composition.
   TimeStamp mCompositionTime;
+
+  // CompositionOpportunityId of the current composition.
+  CompositionOpportunityId mCompositionOpportunityId;
 
   // When nonnull, during rendering, some compositable indicated that it will
   // change its rendering at this time. In order not to miss it, we composite
@@ -441,6 +444,13 @@ class LayerManagerComposite final : public HostLayerManager {
    */
   void RenderDebugOverlay(const gfx::IntRect& aBounds);
 
+  void DrawBorder(const gfx::IntRect& aOuter, int32_t aBorderWidth,
+                  const gfx::DeviceColor& aColor,
+                  const gfx::Matrix4x4& aTransform);
+  void DrawTranslationWarningOverlay(const gfx::IntRect& aBounds);
+
+  void UpdateDebugOverlayNativeLayers();
+
   RefPtr<CompositingRenderTarget> PushGroupForLayerEffects();
   void PopGroupForLayerEffects(RefPtr<CompositingRenderTarget> aPreviousTarget,
                                gfx::IntRect aClipRect, bool aGrayscaleEffect,
@@ -484,7 +494,11 @@ class LayerManagerComposite final : public HostLayerManager {
   CompositorScreenshotGrabber mProfilerScreenshotGrabber;
   RefPtr<TextRenderer> mTextRenderer;
   RefPtr<NativeLayerRoot> mNativeLayerRoot;
+  RefPtr<SurfacePoolHandle> mSurfacePoolHandle;
   std::deque<RefPtr<NativeLayer>> mNativeLayers;
+  RefPtr<NativeLayer> mGPUStatsLayer;
+  RefPtr<NativeLayer> mUnusedTransformWarningLayer;
+  RefPtr<NativeLayer> mDisabledApzWarningLayer;
 
 #ifdef USE_SKIA
   /**

@@ -16,45 +16,31 @@
 #include "GeckoProfiler.h"
 #include "TouchManager.h"
 #include "Units.h"
-#include "ZoomConstraintsClient.h"
-#include "gfxPoint.h"
+#include "Visibility.h"
 #include "mozilla/ArenaObjectID.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/EventForwards.h"
 #include "mozilla/FlushType.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Saturate.h"
 #include "mozilla/ScrollTypes.h"
-#include "mozilla/ServoStyleSet.h"
-#include "mozilla/ServoStyleConsts.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/StyleSheet.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
-#include "mozilla/dom/HTMLDocumentBinding.h"
 #include "mozilla/layers/FocusTarget.h"
-#include "nsChangeHint.h"
-#include "nsClassHashtable.h"
+#include "mozilla/layout/LayoutTelemetryTools.h"
 #include "nsColor.h"
 #include "nsCOMArray.h"
 #include "nsCoord.h"
 #include "nsDOMNavigationTiming.h"
 #include "nsFrameManager.h"
 #include "nsFrameState.h"
-#include "nsHashKeys.h"
 #include "nsIContent.h"
-#include "nsIImageLoadingContent.h"
 #include "nsIObserver.h"
 #include "nsISelectionController.h"
-#include "nsIWidget.h"
 #include "nsQueryFrame.h"
-#include "nsMargin.h"
 #include "nsPresArena.h"
 #include "nsPresContext.h"
 #include "nsRect.h"
-#include "nsRefPtrHashtable.h"
 #include "nsRefreshDriver.h"
-#include "nsRegionFwd.h"
 #include "nsStringFwd.h"
 #include "nsStubDocumentObserver.h"
 #include "nsTHashtable.h"
@@ -68,7 +54,6 @@ class MobileViewportManager;
 #ifdef ACCESSIBILITY
 class nsAccessibilityService;
 #endif
-class nsARefreshObserver;
 class nsAutoCauseReflowNotifier;
 class nsCanvasFrame;
 class nsCaret;
@@ -86,10 +71,8 @@ class nsIReflowCallback;
 class nsIScrollableFrame;
 class nsITimer;
 class nsPIDOMWindowOuter;
-class nsAPostRefreshObserver;
 class nsPresShellEventCB;
 class nsRange;
-class nsRefreshDriver;
 class nsRegion;
 class nsView;
 class nsViewManager;
@@ -99,13 +82,9 @@ struct RangePaintInfo;
 class ReflowCountMgr;
 #endif
 class WeakFrame;
-
-template <class E>
-class nsCOMArray;
+class ZoomConstraintsClient;
 
 struct nsCallbackEventRequest;
-struct nsPoint;
-struct nsRect;
 
 namespace mozilla {
 class AccessibleCaretEventHub;
@@ -121,7 +100,6 @@ class DocAccessible;
 #endif
 
 namespace dom {
-class Document;
 class Element;
 class Event;
 class HTMLSlotElement;
@@ -176,7 +154,7 @@ class PresShell final : public nsStubDocumentObserver,
   typedef nsTHashtable<nsPtrHashKey<nsIFrame>> VisibleFrames;
 
  public:
-  PresShell();
+  explicit PresShell(Document* aDocument);
 
   // nsISupports
   NS_DECL_ISUPPORTS
@@ -237,7 +215,7 @@ class PresShell final : public nsStubDocumentObserver,
   static nsAccessibilityService* GetAccessibilityService();
 #endif  // #ifdef ACCESSIBILITY
 
-  void Init(Document*, nsPresContext*, nsViewManager*);
+  void Init(nsPresContext*, nsViewManager*);
 
   /**
    * All callers are responsible for calling |Destroy| after calling
@@ -337,20 +315,39 @@ class PresShell final : public nsStubDocumentObserver,
    * is guaranteed to survive through arbitrary script execution.
    * Calling Initialize can execute arbitrary script.
    */
-  nsresult Initialize();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult Initialize();
 
   /**
    * Reflow the frame model into a new width and height.  The
    * coordinates for aWidth and aHeight must be in standard nscoord's.
    */
   MOZ_CAN_RUN_SCRIPT nsresult
-  ResizeReflow(nscoord aWidth, nscoord aHeight, nscoord aOldWidth = 0,
-               nscoord aOldHeight = 0,
-               ResizeReflowOptions aOptions = ResizeReflowOptions::NoOption);
-  MOZ_CAN_RUN_SCRIPT nsresult ResizeReflowIgnoreOverride(
-      nscoord aWidth, nscoord aHeight, nscoord aOldWidth, nscoord aOldHeight,
-      ResizeReflowOptions aOptions = ResizeReflowOptions::NoOption);
+  ResizeReflow(nscoord aWidth, nscoord aHeight,
+               ResizeReflowOptions = ResizeReflowOptions::NoOption);
+  MOZ_CAN_RUN_SCRIPT nsresult ResizeReflowIgnoreOverride(nscoord aWidth,
+                                                         nscoord aHeight,
+                                                         ResizeReflowOptions);
 
+  /**
+   * Add this pres shell to the refresh driver to be observed for resize
+   * event if applicable.
+   */
+  void AddResizeEventFlushObserverIfNeeded();
+
+  /**
+   * Returns true if the document hosted by this presShell is in a devtools
+   * Responsive Design Mode browsing context.
+   */
+  bool InRDMPane();
+
+ private:
+  /**
+   * This is what ResizeReflowIgnoreOverride does when not shrink-wrapping (that
+   * is, when ResizeReflowOptions::BSizeLimit is not specified).
+   */
+  void SimpleResizeReflow(nscoord aWidth, nscoord aHeight, ResizeReflowOptions);
+
+ public:
   /**
    * Returns true if this document has a potentially zoomable viewport,
    * allowing for its layout and visual viewports to diverge.
@@ -470,7 +467,7 @@ class PresShell final : public nsStubDocumentObserver,
 
   void CancelAllPendingReflows();
 
-  void NotifyCounterStylesAreDirty();
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void NotifyCounterStylesAreDirty();
 
   bool FrameIsAncestorOfDirtyRoot(nsIFrame* aFrame) const;
 
@@ -545,6 +542,12 @@ class PresShell final : public nsStubDocumentObserver,
 
   void ClearFrameRefs(nsIFrame* aFrame);
 
+  // Clears the selection of the older focused frame selection if any.
+  void FrameSelectionWillTakeFocus(nsFrameSelection&);
+
+  // Clears and repaint mFocusedFrameSelection if it matches the argument.
+  void FrameSelectionWillLoseFocus(nsFrameSelection&);
+
   /**
    * Get a reference rendering context. This is a context that should not
    * be rendered to, but is suitable for measuring text and performing
@@ -556,7 +559,8 @@ class PresShell final : public nsStubDocumentObserver,
    * Scrolls the view of the document so that the given area of a frame
    * is visible, if possible. Layout is not flushed before scrolling.
    *
-   * @param aRect relative to aFrame
+   * @param aRect Relative to aFrame. The rect edges will be respected even if
+   * the rect is empty.
    * @param aVertical see ScrollContentIntoView and ScrollAxis
    * @param aHorizontal see ScrollContentIntoView and ScrollAxis
    * @param aScrollFlags if SCROLL_FIRST_ANCESTOR_ONLY is set, only the
@@ -610,22 +614,10 @@ class PresShell final : public nsStubDocumentObserver,
   dom::Selection* GetCurrentSelection(SelectionType aSelectionType);
 
   /**
-   * Gets a selection controller for the focused content in the DOM window
-   * for mDocument.
-   *
-   * @param aFocusedContent     If there is focused content in the DOM window,
-   *                            the focused content will be returned.  This may
-   *                            be nullptr if it's not necessary.
-   * @return                    A selection controller for focused content.
-   *                            E.g., if an <input> element has focus, returns
-   *                            the independent selection controller of it.
-   *                            If the DOM window does not have focused content
-   *                            (similar to Document.activeElement), returns
-   *                            nullptr.
+   * Gets the last selection that took focus in this document. This is basically
+   * the frame selection that's visible to the user.
    */
-  already_AddRefed<nsISelectionController>
-  GetSelectionControllerForFocusedContent(
-      nsIContent** aFocusedContent = nullptr);
+  nsFrameSelection* GetLastFocusedFrameSelection();
 
   /**
    * Interface to dispatch events via the presshell
@@ -713,19 +705,9 @@ class PresShell final : public nsStubDocumentObserver,
   void UnsuppressPainting();
 
   /**
-   * Add an override style sheet for this presentation
-   */
-  nsresult AddOverrideStyleSheet(StyleSheet* aSheet);
-
-  /**
-   * Remove an override style sheet
-   */
-  nsresult RemoveOverrideStyleSheet(StyleSheet* aSheet);
-
-  /**
    * Reconstruct frames for all elements in the document
    */
-  void ReconstructFrames();
+  MOZ_CAN_RUN_SCRIPT void ReconstructFrames();
 
   /**
    * See if reflow verification is enabled. To enable reflow verification add
@@ -751,12 +733,13 @@ class PresShell final : public nsStubDocumentObserver,
   bool IsPaintingFrameCounts();
 #endif  // #ifdef MOZ_REFLOW_PERF
 
-#ifdef DEBUG
   // Debugging hooks
+#ifdef DEBUG
   void ListComputedStyles(FILE* out, int32_t aIndent = 0);
-
+#endif
+#if defined(DEBUG) || defined(MOZ_LAYOUT_DEBUGGER)
   void ListStyleSheets(FILE* out, int32_t aIndent = 0);
-#endif  // #ifdef DEBUG
+#endif
 
   /**
    * Stop all active elements (plugins and the caret) in this presentation and
@@ -818,6 +801,8 @@ class PresShell final : public nsStubDocumentObserver,
    * RenderDocumentFlags::IgnoreViewportScrolling is set or the document is in
    * ignore viewport scrolling mode
    * (PresShell::SetIgnoreViewportScrolling/IgnoringViewportScrolling).
+   *   set RenderDocumentFlags::UseHighQualityScaling to enable downscale on
+   *   decode for images.
    * @param aBackgroundColor a background color to render onto
    * @param aRenderedContext the gfxContext to render to. We render so that
    * one CSS pixel in the source document is rendered to one unit in the current
@@ -957,7 +942,6 @@ class PresShell final : public nsStubDocumentObserver,
    * of painting.  If we are ignoring, then layers aren't clipped to
    * the CSS viewport and scrollbars aren't drawn.
    */
-  void SetIgnoreViewportScrolling(bool aIgnore);
   bool IgnoringViewportScrolling() const {
     return !!(mRenderingStateFlags &
               RenderingStateFlags::IgnoringViewportScrolling);
@@ -977,12 +961,6 @@ class PresShell final : public nsStubDocumentObserver,
    * Returns true if the resolution has ever been changed by APZ.
    */
   bool IsResolutionUpdatedByApz() const { return mResolutionUpdatedByApz; }
-
-  /**
-   * Calculate the cumulative scale resolution from this document up to
-   * but not including the root document.
-   */
-  float GetCumulativeNonRootScaleResolution();
 
   /**
    * Used by session restore code to restore a resolution before the first
@@ -1158,7 +1136,7 @@ class PresShell final : public nsStubDocumentObserver,
    */
   bool HasHandledUserInput() const { return mHasHandledUserInput; }
 
-  void FireResizeEvent();
+  MOZ_CAN_RUN_SCRIPT void FireResizeEvent();
 
   void NativeAnonymousContentRemoved(nsIContent* aAnonContent);
 
@@ -1260,6 +1238,8 @@ class PresShell final : public nsStubDocumentObserver,
                                      SelectionRegion aRegion,
                                      int16_t aFlags) override;
   NS_IMETHOD RepaintSelection(RawSelectionType aRawSelectionType) override;
+  void SelectionWillTakeFocus() override;
+  void SelectionWillLoseFocus() override;
 
   /**
    * Set a "resolution" for the document, which if not 1.0 will
@@ -1283,7 +1263,6 @@ class PresShell final : public nsStubDocumentObserver,
 
   // Widget notificiations
   void WindowSizeMoveDone();
-  void SysColorChanged() { mPresContext->SysColorChanged(); }
   void ThemeChanged() { mPresContext->ThemeChanged(); }
   void BackingScaleFactorChanged() { mPresContext->UIResolutionChangedSync(); }
 
@@ -1322,11 +1301,10 @@ class PresShell final : public nsStubDocumentObserver,
    * by the frames.  Visual effects may not effect layout, only display.
    * Takes effect on next repaint, does not force a repaint itself.
    *
-   * @param aInEnable  if true, visual selection effects are enabled
-   *                   if false visual selection effects are disabled
+   * @param aFlags may be multiple of nsISelectionDisplay::DISPLAY_*.
    */
-  NS_IMETHOD SetSelectionFlags(int16_t aInEnable) override;
-  NS_IMETHOD GetSelectionFlags(int16_t* aOutEnable) override;
+  NS_IMETHOD SetSelectionFlags(int16_t aFlags) override;
+  NS_IMETHOD GetSelectionFlags(int16_t* aFlags) override;
 
   /**
    * Gets the current state of non text selection effects
@@ -1340,10 +1318,7 @@ class PresShell final : public nsStubDocumentObserver,
   NS_IMETHOD PhysicalMove(int16_t aDirection, int16_t aAmount,
                           bool aExtend) override;
   NS_IMETHOD CharacterMove(bool aForward, bool aExtend) override;
-  NS_IMETHOD CharacterExtendForDelete() override;
-  NS_IMETHOD CharacterExtendForBackspace() override;
   NS_IMETHOD WordMove(bool aForward, bool aExtend) override;
-  NS_IMETHOD WordExtendForDelete(bool aForward) override;
   NS_IMETHOD LineMove(bool aForward, bool aExtend) override;
   NS_IMETHOD IntraLineMove(bool aForward, bool aExtend) override;
   MOZ_CAN_RUN_SCRIPT
@@ -1466,6 +1441,8 @@ class PresShell final : public nsStubDocumentObserver,
    */
   void MarkFixedFramesForReflow(IntrinsicDirty aIntrinsicDirty);
 
+  void MaybeReflowForInflationScreenSizeChange();
+
   // This function handles all the work after VisualViewportSize is set
   // or reset.
   void CompleteChangeToVisualViewportSize();
@@ -1493,6 +1470,18 @@ class PresShell final : public nsStubDocumentObserver,
   }
 
   nsPoint GetVisualViewportOffsetRelativeToLayoutViewport() const;
+
+  // Returns state of the dynamic toolbar.
+  DynamicToolbarState GetDynamicToolbarState() const {
+    if (!mPresContext) {
+      return DynamicToolbarState::None;
+    }
+
+    return mPresContext->GetDynamicToolbarState();
+  }
+  // Returns the visual viewport size during the dynamic toolbar is being
+  // shown/hidden.
+  nsSize GetVisualViewportSizeUpdatedByDynamicToolbar() const;
 
   /* Enable/disable author style level. Disabling author style disables the
    * entire author level of the cascade, including the HTML preshint level.
@@ -1670,7 +1659,8 @@ class PresShell final : public nsStubDocumentObserver,
     PresShell::SetCapturingContent(nullptr, CaptureFlags::None);
   }
 
-  // Called at the end of nsLayoutUtils::PaintFrame().
+  // Called at the end of nsLayoutUtils::PaintFrame() if we were painting to
+  // the widget.
   // This is used to clear any pending visual scroll updates that have been
   // acknowledged, to make sure they don't stick around for the next paint.
   void EndPaint();
@@ -1736,7 +1726,7 @@ class PresShell final : public nsStubDocumentObserver,
   friend class ::nsAutoCauseReflowNotifier;
 
   void WillCauseReflow();
-  void DidCauseReflow();
+  MOZ_CAN_RUN_SCRIPT void DidCauseReflow();
 
   void CancelPostedReflowCallbacks();
   void FlushPendingScrollAnchorAdjustments();
@@ -1802,7 +1792,6 @@ class PresShell final : public nsStubDocumentObserver,
   void AddUserSheet(StyleSheet*);
   void AddAgentSheet(StyleSheet*);
   void AddAuthorSheet(StyleSheet*);
-  void RemoveSheet(StyleOrigin, StyleSheet*);
   void RemovePreferenceStyles();
 
   /**
@@ -1886,7 +1875,7 @@ class PresShell final : public nsStubDocumentObserver,
 
   class DelayedEvent {
    public:
-    virtual ~DelayedEvent() {}
+    virtual ~DelayedEvent() = default;
     virtual void Dispatch() {}
     virtual bool IsKeyPressEvent() { return false; }
   };
@@ -1916,6 +1905,7 @@ class PresShell final : public nsStubDocumentObserver,
   // Check if aEvent is a mouse event and record the mouse location for later
   // synth mouse moves.
   void RecordMouseLocation(WidgetGUIEvent* aEvent);
+  inline bool MouseLocationWasSetBySynthesizedMouseEventForTests() const;
   class nsSynthMouseMoveEvent final : public nsARefreshObserver {
    public:
     nsSynthMouseMoveEvent(PresShell* aPresShell, bool aFromScroll)
@@ -1966,7 +1956,7 @@ class PresShell final : public nsStubDocumentObserver,
     explicit EventHandler(PresShell& aPresShell)
         : mPresShell(aPresShell), mCurrentEventInfoSetter(nullptr) {}
     explicit EventHandler(RefPtr<PresShell>&& aPresShell)
-        : mPresShell(aPresShell.forget()), mCurrentEventInfoSetter(nullptr) {}
+        : mPresShell(std::move(aPresShell)), mCurrentEventInfoSetter(nullptr) {}
 
     /**
      * HandleEvent() may dispatch aGUIEvent.  This may redirect the event to
@@ -2033,7 +2023,7 @@ class PresShell final : public nsStubDocumentObserver,
    private:
     static bool InZombieDocument(nsIContent* aContent);
     static nsIFrame* GetNearestFrameContainingPresShell(PresShell* aPresShell);
-    static already_AddRefed<nsIURI> GetDocumentURIToCompareWithBlacklist(
+    static nsIPrincipal* GetDocumentPrincipalToCompareWithBlacklist(
         PresShell& aPresShell);
 
     /**
@@ -2062,15 +2052,10 @@ class PresShell final : public nsStubDocumentObserver,
     struct MOZ_STACK_CLASS EventTargetData final {
       EventTargetData() = delete;
       EventTargetData(const EventTargetData& aOther) = delete;
-      EventTargetData(PresShell* aPresShell, nsIFrame* aFrameToHandleEvent)
-          : mPresShell(aPresShell), mFrame(aFrameToHandleEvent) {}
-
-      void SetPresShellAndFrame(PresShell* aPresShell,
-                                nsIFrame* aFrameToHandleEvent) {
-        mPresShell = aPresShell;
-        mFrame = aFrameToHandleEvent;
-        mContent = nullptr;
+      explicit EventTargetData(nsIFrame* aFrameToHandleEvent) {
+        SetFrameAndComputePresShell(aFrameToHandleEvent);
       }
+
       void SetFrameAndComputePresShell(nsIFrame* aFrameToHandleEvent);
       void SetFrameAndComputePresShellAndContent(nsIFrame* aFrameToHandleEvent,
                                                  WidgetGUIEvent* aGUIEvent);
@@ -2121,7 +2106,7 @@ class PresShell final : public nsStubDocumentObserver,
       void UpdateTouchEventTarget(WidgetGUIEvent* aGUIEvent);
 
       RefPtr<PresShell> mPresShell;
-      nsIFrame* mFrame;
+      nsIFrame* mFrame = nullptr;
       nsCOMPtr<nsIContent> mContent;
       nsCOMPtr<nsIContent> mOverrideClickTarget;
     };
@@ -2279,13 +2264,16 @@ class PresShell final : public nsStubDocumentObserver,
      * MaybeHandleEventWithAccessibleCaret() may handle aGUIEvent with
      * AccessibleCaretEventHub if it's necessary.
      *
+     * @param aFrameForPresShell The frame for PresShell. See explanation of
+     *                           HandleEvent() for the details.
      * @param aGUIEvent         Event may be handled by AccessibleCaretEventHub.
      * @param aEventStatus      [in/out] EventStatus of aGUIEvent.
      * @return                  true if AccessibleCaretEventHub handled the
      *                          event and caller shouldn't keep handling it.
      */
     MOZ_CAN_RUN_SCRIPT
-    bool MaybeHandleEventWithAccessibleCaret(WidgetGUIEvent* aGUIEvent,
+    bool MaybeHandleEventWithAccessibleCaret(nsIFrame* aFrameForPresShell,
+                                             WidgetGUIEvent* aGUIEvent,
                                              nsEventStatus* aEventStatus);
 
     /**
@@ -2737,7 +2725,7 @@ class PresShell final : public nsStubDocumentObserver,
     static StaticRefPtr<dom::Element> sLastKeyDownEventTargetElement;
   };
 
-  PresShell* GetRootPresShell();
+  PresShell* GetRootPresShell() const;
 
   nscolor GetDefaultBackgroundColorToDraw();
 
@@ -2771,9 +2759,6 @@ class PresShell final : public nsStubDocumentObserver,
   // that we last did an approximate frame visibility update.
   VisibleFrames mApproximatelyVisibleFrames;
 
-  nsresult SetResolutionImpl(float aResolution, bool aScaleToResolution,
-                             nsAtom* aOrigin);
-
 #ifdef DEBUG
   MOZ_CAN_RUN_SCRIPT_BOUNDARY bool VerifyIncrementalReflow();
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void DoVerifyReflow();
@@ -2788,15 +2773,10 @@ class PresShell final : public nsStubDocumentObserver,
   nsIFrame* mDrawEventTargetFrame = nullptr;
 #endif  // #ifdef DEBUG
 
-  enum class FlushKind : uint8_t { Style, Layout, Count };
-
-  // Send the current number of flush requests for aFlushType to telemetry and
-  // reset the count.
-  void PingReqsPerFlushTelemetry(FlushKind aFlushKind);
-
-  // Send the current non-zero number of style and layout flushes to telemetry
-  // and reset the count.
-  void PingFlushPerTickTelemetry(FlushType aFlushType);
+  // Send, and reset, the current per tick telemetry. This includes:
+  // * non-zero number of style and layout flushes
+  // * non-zero ms duration spent in style and reflow since the last tick.
+  void PingPerTickTelemetry(FlushType aFlushType);
 
  private:
   // IMPORTANT: The ownership implicit in the following member variables
@@ -2805,13 +2785,20 @@ class PresShell final : public nsStubDocumentObserver,
 
   // These are the same Document and PresContext owned by the DocViewer.
   // we must share ownership.
-  RefPtr<Document> mDocument;
-  RefPtr<nsPresContext> mPresContext;
+  // mDocument and mPresContext should've never been cleared nor swapped with
+  // another instance while PresShell instance is alive so that it's safe to
+  // call their can-run- script methods without local RefPtr variables.
+  RefPtr<Document> const mDocument;
+  RefPtr<nsPresContext> const mPresContext;
   // The document's style set owns it but we maintain a ref, may be null.
   RefPtr<StyleSheet> mPrefStyleSheet;
   UniquePtr<nsCSSFrameConstructor> mFrameConstructor;
   nsViewManager* mViewManager;  // [WEAK] docViewer owns it so I don't have to
   RefPtr<nsFrameSelection> mSelection;
+  // The frame selection that last took focus on this shell, which we need to
+  // hide if we focus another selection. May or may not be the same as
+  // `mSelection`.
+  RefPtr<nsFrameSelection> mFocusedFrameSelection;
   RefPtr<nsCaret> mCaret;
   RefPtr<nsCaret> mOriginalCaret;
   RefPtr<AccessibleCaretEventHub> mAccessibleCaretEventHub;
@@ -2947,10 +2934,10 @@ class PresShell final : public nsStubDocumentObserver,
   // the mouse pointer may have changed without the mouse moving (eg scrolling,
   // change to the document contents).
   // It is set only on a presshell for a root document, this value represents
-  // the last observed location of the mouse relative to that root document. It
-  // is set to (NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE) if the mouse isn't
-  // over our window or there is no last observed mouse location for some
-  // reason.
+  // the last observed location of the mouse relative to that root document,
+  // in visual coordinates. It is set to (NS_UNCONSTRAINEDSIZE,
+  // NS_UNCONSTRAINEDSIZE) if the mouse isn't over our window or there is no
+  // last observed mouse location for some reason.
   nsPoint mMouseLocation;
   // This is an APZ state variable that tracks the target guid for the last
   // mouse event that was processed (corresponding to mMouseLocation). This is
@@ -3001,6 +2988,7 @@ class PresShell final : public nsStubDocumentObserver,
   uint32_t mFontSizeInflationMinTwips;
   uint32_t mFontSizeInflationLineThreshold;
 
+  // Can be multiple of nsISelectionDisplay::DISPLAY_*.
   int16_t mSelectionFlags;
 
   // This is used to protect ourselves from triggering reflow while in the
@@ -3141,6 +3129,10 @@ class PresShell final : public nsStubDocumentObserver,
   // Whether mForceUseLegacyNonPrimaryDispatch is initialised.
   bool mInitializedWithClickEventDispatchingBlacklist : 1;
 
+  // Set to true if mMouseLocation is set by a mouse event which is synthesized
+  // for tests.
+  bool mMouseLocationWasSetBySynthesizedMouseEventForTests : 1;
+
   struct CapturingContentInfo final {
     CapturingContentInfo()
         : mAllowed(false),
@@ -3161,8 +3153,7 @@ class PresShell final : public nsStubDocumentObserver,
 
   static bool sProcessInteractable;
 
-  EnumeratedArray<FlushKind, FlushKind::Count, SaturateUint8> mReqsPerFlush;
-  EnumeratedArray<FlushKind, FlushKind::Count, SaturateUint8> mFlushesPerTick;
+  layout_telemetry::Data mLayoutTelemetry;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(PresShell, NS_PRESSHELL_IID)

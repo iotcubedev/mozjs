@@ -7,22 +7,21 @@ Transform the repackage signing task into an actual task description.
 
 from __future__ import absolute_import, print_function, unicode_literals
 
+from six import text_type
 from taskgraph.loader.single_dep import schema
 from taskgraph.transforms.base import TransformSequence
 from taskgraph.util.attributes import copy_attributes_from_dependent_job
 from taskgraph.util.scriptworker import (
     get_signing_cert_scope_per_platform,
-    get_worker_type_for_scope,
 )
 from taskgraph.util.treeherder import inherit_treeherder_from_dep
 from taskgraph.transforms.task import task_description_schema
-from voluptuous import Required, Optional
+from voluptuous import Optional
 
 transforms = TransformSequence()
 
 signing_description_schema = schema.extend({
-    Required('depname', default='repackage'): basestring,
-    Optional('label'): basestring,
+    Optional('label'): text_type,
     Optional('extra'): object,
     Optional('shipping-product'): task_description_schema['shipping-product'],
     Optional('shipping-phase'): task_description_schema['shipping-phase'],
@@ -60,7 +59,7 @@ def make_signing_description(config, jobs):
 
         if 'win' in build_platform:
             # job['primary-dependency'].task['payload']['command']
-            formats = ['sha2signcode']
+            formats = ['autograph_authenticode']
         else:
             formats = ['autograph_gpg']
 
@@ -82,7 +81,7 @@ def make_signing_description(config, jobs):
         task = {
             'label': job['label'],
             'description': description,
-            'worker-type': get_worker_type_for_scope(config, signing_cert_scope),
+            'worker-type': 'linux-signing',
             'worker': {'implementation': 'scriptworker-signing',
                        'upstream-artifacts': upstream_artifacts,
                        'max-run-time': 3600},

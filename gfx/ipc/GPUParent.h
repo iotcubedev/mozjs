@@ -31,7 +31,7 @@ class GPUParent final : public PGPUParent {
   static void GetGPUProcessName(nsACString& aStr);
 
   bool Init(base::ProcessId aParentPid, const char* aParentBuildID,
-            MessageLoop* aIOLoop, IPC::Channel* aChannel);
+            MessageLoop* aIOLoop, UniquePtr<IPC::Channel> aChannel);
   void NotifyDeviceReset();
 
   already_AddRefed<PAPZInputBridgeParent> AllocPAPZInputBridgeParent(
@@ -46,6 +46,8 @@ class GPUParent final : public PGPUParent {
       Endpoint<PVsyncBridgeParent>&& aVsyncEndpoint);
   mozilla::ipc::IPCResult RecvInitImageBridge(
       Endpoint<PImageBridgeParent>&& aEndpoint);
+  mozilla::ipc::IPCResult RecvInitVideoBridge(
+      Endpoint<PVideoBridgeParent>&& aEndpoint);
   mozilla::ipc::IPCResult RecvInitVRManager(
       Endpoint<PVRManagerParent>&& aEndpoint);
   mozilla::ipc::IPCResult RecvInitVR(Endpoint<PVRGPUChild>&& aVRGPUChild);
@@ -81,6 +83,11 @@ class GPUParent final : public PGPUParent {
       const uint64_t& aMask);
   mozilla::ipc::IPCResult RecvCollectPerfStatsJSON(
       CollectPerfStatsJSONResolver&& aResolver);
+
+#if defined(MOZ_SANDBOX) && defined(MOZ_DEBUG) && defined(ENABLE_TESTS)
+  mozilla::ipc::IPCResult RecvInitSandboxTesting(
+      Endpoint<PSandboxTestingChild>&& aEndpoint);
+#endif
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
 

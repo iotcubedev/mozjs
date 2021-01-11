@@ -298,27 +298,6 @@ this.uicontrol = (function() {
     },
   };
 
-  stateHandlers.onboarding = {
-    start() {
-      if (typeof slides === "undefined") {
-        throw new Error("Attempted to set state to onboarding without loading slides");
-      }
-      sendEvent("internal", "unhide-onboarding-frame");
-      catcher.watchPromise(slides.display({
-        onEnd: this.slidesOnEnd.bind(this),
-      }));
-    },
-
-    slidesOnEnd() {
-      callBackground("hasSeenOnboarding");
-      setState("crosshairs");
-    },
-
-    end() {
-      slides.remove();
-    },
-  };
-
   stateHandlers.crosshairs = {
 
     cachedEl: null,
@@ -478,6 +457,7 @@ this.uicontrol = (function() {
         exc.unloadTime = unloadTime;
         exc.nowTime = Date.now();
         exc.noPopup = true;
+        exc.noReport = true;
         throw exc;
       }
       if (ui.isHeader(event.target)) {
@@ -782,9 +762,6 @@ this.uicontrol = (function() {
    * Selection communication
    */
 
-   // If the slides module is loaded then we're supposed to onboard
-  const shouldOnboard = typeof slides !== "undefined";
-
   exports.activate = function() {
     if (!document.body) {
       callBackground("abortStartShot");
@@ -800,11 +777,7 @@ this.uicontrol = (function() {
       return;
     }
     addHandlers();
-    if (shouldOnboard) {
-      setState("onboarding");
-    } else {
-      setState("crosshairs");
-    }
+    setState("crosshairs");
   };
 
   function isFrameset() {

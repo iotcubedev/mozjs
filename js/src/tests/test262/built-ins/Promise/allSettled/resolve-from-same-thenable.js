@@ -1,4 +1,3 @@
-// |reftest| skip-if(release_or_beta) -- Promise.allSettled is not released yet
 // Copyright (C) 2019 Leo Balter. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -72,11 +71,11 @@ var p3 = {
   }
 };
 
-assert.sameValue(callCount, 0, 'callCount before call to all()');
+assert.sameValue(callCount, 0, 'callCount before call to allSettled()');
 
 Promise.allSettled.call(Constructor, [p1, p2, p3]);
 
-assert.sameValue(callCount, 0, 'callCount after call to all()');
+assert.sameValue(callCount, 0, 'callCount after call to allSettled()');
 
 p1OnFulfilled('p1-fulfill');
 p1OnFulfilled('p1-fulfill-unexpected-1');

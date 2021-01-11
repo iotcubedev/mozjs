@@ -1,6 +1,6 @@
 use crate::cdsl::settings::{PredicateNode, SettingGroup, SettingGroupBuilder};
 
-pub fn define(shared: &SettingGroup) -> SettingGroup {
+pub(crate) fn define(shared: &SettingGroup) -> SettingGroup {
     let mut settings = SettingGroupBuilder::new("x86");
 
     // CPUID.01H:ECX
@@ -8,8 +8,24 @@ pub fn define(shared: &SettingGroup) -> SettingGroup {
     let has_ssse3 = settings.add_bool("has_ssse3", "SSSE3: CPUID.01H:ECX.SSSE3[bit 9]", false);
     let has_sse41 = settings.add_bool("has_sse41", "SSE4.1: CPUID.01H:ECX.SSE4_1[bit 19]", false);
     let has_sse42 = settings.add_bool("has_sse42", "SSE4.2: CPUID.01H:ECX.SSE4_2[bit 20]", false);
+    let has_avx = settings.add_bool("has_avx", "AVX: CPUID.01H:ECX.AVX[bit 28]", false);
+    let has_avx2 = settings.add_bool("has_avx2", "AVX2: CPUID.07H:EBX.AVX2[bit 5]", false);
+    let has_avx512dq = settings.add_bool(
+        "has_avx512dq",
+        "AVX512DQ: CPUID.07H:EBX.AVX512DQ[bit 17]",
+        false,
+    );
+    let has_avx512vl = settings.add_bool(
+        "has_avx512vl",
+        "AVX512VL: CPUID.07H:EBX.AVX512VL[bit 31]",
+        false,
+    );
+    let has_avx512f = settings.add_bool(
+        "has_avx512f",
+        "AVX512F: CPUID.07H:EBX.AVX512F[bit 16]",
+        false,
+    );
     let has_popcnt = settings.add_bool("has_popcnt", "POPCNT: CPUID.01H:ECX.POPCNT[bit 23]", false);
-    settings.add_bool("has_avx", "AVX: CPUID.01H:ECX.AVX[bit 28]", false);
 
     // CPUID.(EAX=07H, ECX=0H):EBX
     let has_bmi1 = settings.add_bool(
@@ -49,6 +65,21 @@ pub fn define(shared: &SettingGroup) -> SettingGroup {
         predicate!(shared_enable_simd && has_sse41 && has_sse42),
     );
 
+    settings.add_predicate("use_avx_simd", predicate!(shared_enable_simd && has_avx));
+    settings.add_predicate("use_avx2_simd", predicate!(shared_enable_simd && has_avx2));
+    settings.add_predicate(
+        "use_avx512dq_simd",
+        predicate!(shared_enable_simd && has_avx512dq),
+    );
+    settings.add_predicate(
+        "use_avx512vl_simd",
+        predicate!(shared_enable_simd && has_avx512vl),
+    );
+    settings.add_predicate(
+        "use_avx512f_simd",
+        predicate!(shared_enable_simd && has_avx512f),
+    );
+
     settings.add_predicate("use_popcnt", predicate!(has_popcnt && has_sse42));
     settings.add_predicate("use_bmi1", predicate!(has_bmi1));
     settings.add_predicate("use_lzcnt", predicate!(has_lzcnt));
@@ -59,16 +90,16 @@ pub fn define(shared: &SettingGroup) -> SettingGroup {
     // back in the shared SettingGroup, and use it in x86 instruction predicates.
 
     let is_pic = shared.get_bool("is_pic");
-    let allones_funcaddrs = shared.get_bool("allones_funcaddrs");
+    let emit_all_ones_funcaddrs = shared.get_bool("emit_all_ones_funcaddrs");
     settings.add_predicate("is_pic", predicate!(is_pic));
     settings.add_predicate("not_is_pic", predicate!(!is_pic));
     settings.add_predicate(
         "all_ones_funcaddrs_and_not_is_pic",
-        predicate!(allones_funcaddrs && !is_pic),
+        predicate!(emit_all_ones_funcaddrs && !is_pic),
     );
     settings.add_predicate(
         "not_all_ones_funcaddrs_and_not_is_pic",
-        predicate!(!allones_funcaddrs && !is_pic),
+        predicate!(!emit_all_ones_funcaddrs && !is_pic),
     );
 
     // Presets corresponding to x86 CPUs.

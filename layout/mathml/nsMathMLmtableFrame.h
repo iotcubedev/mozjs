@@ -117,11 +117,11 @@ class nsMathMLmtableFrame final : public nsTableFrame {
   nscoord GetRowSpacing(int32_t aStartRowIndex, int32_t aEndRowIndex) override;
 
   void SetColSpacingArray(const nsTArray<nscoord>& aColSpacing) {
-    mColSpacing = aColSpacing;
+    mColSpacing = aColSpacing.Clone();
   }
 
   void SetRowSpacingArray(const nsTArray<nscoord>& aRowSpacing) {
-    mRowSpacing = aRowSpacing;
+    mRowSpacing = aRowSpacing.Clone();
   }
 
   void SetFrameSpacing(nscoord aSpacingX, nscoord aSpacingY) {
@@ -272,8 +272,7 @@ class nsMathMLmtdInnerFrame final : public nsBlockFrame, public nsMathMLFrame {
                       nsReflowStatus& aStatus) override;
 
   virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsBlockFrame::IsFrameOfType(
-        aFlags & ~(nsIFrame::eMathML | nsIFrame::eExcludesIgnorableWhitespace));
+    return nsBlockFrame::IsFrameOfType(aFlags & ~nsIFrame::eMathML);
   }
 
   virtual const nsStyleText* StyleTextForLineLayout() override;
@@ -286,7 +285,7 @@ class nsMathMLmtdInnerFrame final : public nsBlockFrame, public nsMathMLFrame {
  protected:
   explicit nsMathMLmtdInnerFrame(ComputedStyle* aStyle,
                                  nsPresContext* aPresContext);
-  virtual ~nsMathMLmtdInnerFrame() {}
+  virtual ~nsMathMLmtdInnerFrame() = default;
 
   mozilla::UniquePtr<nsStyleText> mUniqueStyleText;
 

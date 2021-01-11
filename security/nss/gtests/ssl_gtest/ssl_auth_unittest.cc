@@ -214,8 +214,7 @@ TEST_F(TlsConnectStreamTls13, PostHandshakeAuth) {
       MakeTlsFilter<TlsCertificateRequestContextRecorder>(
           client_, kTlsHandshakeCertificate);
   client_->SetupClientAuth();
-  EXPECT_EQ(SECSuccess, SSL_OptionSet(client_->ssl_fd(),
-                                      SSL_ENABLE_POST_HANDSHAKE_AUTH, PR_TRUE));
+  client_->SetOption(SSL_ENABLE_POST_HANDSHAKE_AUTH, PR_TRUE);
   size_t called = 0;
   server_->SetAuthCertificateCallback(
       [&called](TlsAgent*, PRBool, PRBool) -> SECStatus {
@@ -246,6 +245,47 @@ TEST_F(TlsConnectStreamTls13, PostHandshakeAuth) {
   EXPECT_EQ(0, memcmp(capture_cert_req->buffer().data(),
                       capture_certificate->buffer().data(),
                       capture_cert_req->buffer().len()));
+  ScopedCERTCertificate cert1(SSL_PeerCertificate(server_->ssl_fd()));
+  ASSERT_NE(nullptr, cert1.get());
+  ScopedCERTCertificate cert2(SSL_LocalCertificate(client_->ssl_fd()));
+  ASSERT_NE(nullptr, cert2.get());
+  EXPECT_TRUE(SECITEM_ItemsAreEqual(&cert1->derCert, &cert2->derCert));
+}
+
+TEST_F(TlsConnectStreamTls13, PostHandshakeAuthAfterResumption) {
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  ConfigureVersion(SSL_LIBRARY_VERSION_TLS_1_3);
+  Connect();
+
+  SendReceive();  // Need to read so that we absorb the session tickets.
+  CheckKeys();
+
+  // Resume the connection.
+  Reset();
+
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  ConfigureVersion(SSL_LIBRARY_VERSION_TLS_1_3);
+  ExpectResumption(RESUME_TICKET);
+
+  client_->SetupClientAuth();
+  client_->SetOption(SSL_ENABLE_POST_HANDSHAKE_AUTH, PR_TRUE);
+  Connect();
+  SendReceive();
+
+  size_t called = 0;
+  server_->SetAuthCertificateCallback(
+      [&called](TlsAgent*, PRBool, PRBool) -> SECStatus {
+        called++;
+        return SECSuccess;
+      });
+  EXPECT_EQ(SECSuccess, SSL_SendCertificateRequest(server_->ssl_fd()))
+      << "Unexpected error: " << PORT_ErrorToName(PORT_GetError());
+  server_->SendData(50);
+  client_->ReadBytes(50);
+  client_->SendData(50);
+  server_->ReadBytes(50);
+  EXPECT_EQ(1U, called);
+
   ScopedCERTCertificate cert1(SSL_PeerCertificate(server_->ssl_fd()));
   ASSERT_NE(nullptr, cert1.get());
   ScopedCERTCertificate cert2(SSL_LocalCertificate(client_->ssl_fd()));
@@ -783,6 +823,7 @@ TEST_P(TlsConnectTls13, ClientAuthPkcs1SignatureScheme) {
                  1024);
 }
 
+// Client should refuse to connect without a usable signature scheme.
 TEST_P(TlsConnectTls13, ClientAuthPkcs1SignatureSchemeOnly) {
   static const SSLSignatureScheme kSignatureScheme[] = {
       ssl_sig_rsa_pkcs1_sha256};
@@ -790,7 +831,21 @@ TEST_P(TlsConnectTls13, ClientAuthPkcs1SignatureSchemeOnly) {
   Reset(TlsAgent::kServerRsa, "rsa");
   client_->SetSignatureSchemes(kSignatureScheme,
                                PR_ARRAY_SIZE(kSignatureScheme));
-  server_->SetSignatureSchemes(kSignatureScheme,
+  client_->SetupClientAuth();
+  client_->StartConnect();
+  client_->Handshake();
+  EXPECT_EQ(TlsAgent::STATE_ERROR, client_->state());
+  client_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+}
+
+// Though the client has a usable signature scheme, when a certificate is
+// requested, it can't produce one.
+TEST_P(TlsConnectTls13, ClientAuthPkcs1AndEcdsaScheme) {
+  static const SSLSignatureScheme kSignatureScheme[] = {
+      ssl_sig_rsa_pkcs1_sha256, ssl_sig_ecdsa_secp256r1_sha256};
+
+  Reset(TlsAgent::kServerRsa, "rsa");
+  client_->SetSignatureSchemes(kSignatureScheme,
                                PR_ARRAY_SIZE(kSignatureScheme));
   client_->SetupClientAuth();
   server_->RequestClientAuth(true);
@@ -1431,6 +1486,150 @@ TEST_F(TlsAgentStreamTestServer, ConfigureCertRsaPss) {
   // Configuring for only rsa_pss should work.
   EXPECT_TRUE(agent_->ConfigServerCert(TlsAgent::kServerRsaPss, false,
                                        &ServerCertDataRsaPss));
+}
+
+// A server should refuse to even start a handshake with
+// misconfigured certificate and signature scheme.
+TEST_P(TlsConnectTls12Plus, MisconfiguredCertScheme) {
+  Reset(TlsAgent::kServerDsa);
+  static const SSLSignatureScheme kScheme[] = {ssl_sig_ecdsa_secp256r1_sha256};
+  server_->SetSignatureSchemes(kScheme, PR_ARRAY_SIZE(kScheme));
+  ConnectExpectAlert(server_, kTlsAlertHandshakeFailure);
+  if (version_ < SSL_LIBRARY_VERSION_TLS_1_3) {
+    // TLS 1.2 disables cipher suites, which leads to a different error.
+    server_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+  } else {
+    server_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+  }
+  client_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+}
+
+// In TLS 1.2, disabling an EC group causes ECDSA to be invalid.
+TEST_P(TlsConnectTls12, Tls12CertDisabledGroup) {
+  Reset(TlsAgent::kServerEcdsa256);
+  static const std::vector<SSLNamedGroup> k25519 = {ssl_grp_ec_curve25519};
+  server_->ConfigNamedGroups(k25519);
+  ConnectExpectAlert(server_, kTlsAlertHandshakeFailure);
+  server_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+  client_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+}
+
+// In TLS 1.3, ECDSA configuration only depends on the signature scheme.
+TEST_P(TlsConnectTls13, Tls13CertDisabledGroup) {
+  Reset(TlsAgent::kServerEcdsa256);
+  static const std::vector<SSLNamedGroup> k25519 = {ssl_grp_ec_curve25519};
+  server_->ConfigNamedGroups(k25519);
+  Connect();
+}
+
+// A client should refuse to even start a handshake with only DSA.
+TEST_P(TlsConnectTls13, Tls13DsaOnlyClient) {
+  static const SSLSignatureScheme kDsa[] = {ssl_sig_dsa_sha256};
+  client_->SetSignatureSchemes(kDsa, PR_ARRAY_SIZE(kDsa));
+  client_->StartConnect();
+  client_->Handshake();
+  EXPECT_EQ(TlsAgent::STATE_ERROR, client_->state());
+  client_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+}
+
+TEST_P(TlsConnectTls13, Tls13DsaOnlyServer) {
+  Reset(TlsAgent::kServerDsa);
+  static const SSLSignatureScheme kDsa[] = {ssl_sig_dsa_sha256};
+  server_->SetSignatureSchemes(kDsa, PR_ARRAY_SIZE(kDsa));
+  ConnectExpectAlert(server_, kTlsAlertHandshakeFailure);
+  server_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+  client_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+}
+
+TEST_P(TlsConnectTls13, Tls13Pkcs1OnlyClient) {
+  static const SSLSignatureScheme kPkcs1[] = {ssl_sig_rsa_pkcs1_sha256};
+  client_->SetSignatureSchemes(kPkcs1, PR_ARRAY_SIZE(kPkcs1));
+  client_->StartConnect();
+  client_->Handshake();
+  EXPECT_EQ(TlsAgent::STATE_ERROR, client_->state());
+  client_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+}
+
+TEST_P(TlsConnectTls13, Tls13Pkcs1OnlyServer) {
+  static const SSLSignatureScheme kPkcs1[] = {ssl_sig_rsa_pkcs1_sha256};
+  server_->SetSignatureSchemes(kPkcs1, PR_ARRAY_SIZE(kPkcs1));
+  ConnectExpectAlert(server_, kTlsAlertHandshakeFailure);
+  server_->CheckErrorCode(SSL_ERROR_NO_SUPPORTED_SIGNATURE_ALGORITHM);
+  client_->CheckErrorCode(SSL_ERROR_NO_CYPHER_OVERLAP);
+}
+
+TEST_P(TlsConnectTls13, Tls13DsaIsNotAdvertisedClient) {
+  EnsureTlsSetup();
+  static const SSLSignatureScheme kSchemes[] = {ssl_sig_dsa_sha256,
+                                                ssl_sig_rsa_pss_rsae_sha256};
+  client_->SetSignatureSchemes(kSchemes, PR_ARRAY_SIZE(kSchemes));
+  auto capture =
+      MakeTlsFilter<TlsExtensionCapture>(client_, ssl_signature_algorithms_xtn);
+  Connect();
+  // We should only have the one signature algorithm advertised.
+  static const uint8_t kExpectedExt[] = {0, 2, ssl_sig_rsa_pss_rsae_sha256 >> 8,
+                                         ssl_sig_rsa_pss_rsae_sha256 & 0xff};
+  ASSERT_EQ(DataBuffer(kExpectedExt, sizeof(kExpectedExt)),
+            capture->extension());
+}
+
+TEST_P(TlsConnectTls13, Tls13DsaIsNotAdvertisedServer) {
+  EnsureTlsSetup();
+  static const SSLSignatureScheme kSchemes[] = {ssl_sig_dsa_sha256,
+                                                ssl_sig_rsa_pss_rsae_sha256};
+  server_->SetSignatureSchemes(kSchemes, PR_ARRAY_SIZE(kSchemes));
+  auto capture = MakeTlsFilter<TlsExtensionCapture>(
+      server_, ssl_signature_algorithms_xtn, true);
+  capture->SetHandshakeTypes({kTlsHandshakeCertificateRequest});
+  capture->EnableDecryption();
+  server_->RequestClientAuth(false);  // So we get a CertificateRequest.
+  Connect();
+  // We should only have the one signature algorithm advertised.
+  static const uint8_t kExpectedExt[] = {0, 2, ssl_sig_rsa_pss_rsae_sha256 >> 8,
+                                         ssl_sig_rsa_pss_rsae_sha256 & 0xff};
+  ASSERT_EQ(DataBuffer(kExpectedExt, sizeof(kExpectedExt)),
+            capture->extension());
+}
+
+TEST_P(TlsConnectTls13, Tls13RsaPkcs1IsAdvertisedClient) {
+  EnsureTlsSetup();
+  static const SSLSignatureScheme kSchemes[] = {ssl_sig_rsa_pkcs1_sha256,
+                                                ssl_sig_rsa_pss_rsae_sha256};
+  client_->SetSignatureSchemes(kSchemes, PR_ARRAY_SIZE(kSchemes));
+  auto capture =
+      MakeTlsFilter<TlsExtensionCapture>(client_, ssl_signature_algorithms_xtn);
+  Connect();
+  // We should only have the one signature algorithm advertised.
+  static const uint8_t kExpectedExt[] = {0,
+                                         4,
+                                         ssl_sig_rsa_pss_rsae_sha256 >> 8,
+                                         ssl_sig_rsa_pss_rsae_sha256 & 0xff,
+                                         ssl_sig_rsa_pkcs1_sha256 >> 8,
+                                         ssl_sig_rsa_pkcs1_sha256 & 0xff};
+  ASSERT_EQ(DataBuffer(kExpectedExt, sizeof(kExpectedExt)),
+            capture->extension());
+}
+
+TEST_P(TlsConnectTls13, Tls13RsaPkcs1IsAdvertisedServer) {
+  EnsureTlsSetup();
+  static const SSLSignatureScheme kSchemes[] = {ssl_sig_rsa_pkcs1_sha256,
+                                                ssl_sig_rsa_pss_rsae_sha256};
+  server_->SetSignatureSchemes(kSchemes, PR_ARRAY_SIZE(kSchemes));
+  auto capture = MakeTlsFilter<TlsExtensionCapture>(
+      server_, ssl_signature_algorithms_xtn, true);
+  capture->SetHandshakeTypes({kTlsHandshakeCertificateRequest});
+  capture->EnableDecryption();
+  server_->RequestClientAuth(false);  // So we get a CertificateRequest.
+  Connect();
+  // We should only have the one signature algorithm advertised.
+  static const uint8_t kExpectedExt[] = {0,
+                                         4,
+                                         ssl_sig_rsa_pss_rsae_sha256 >> 8,
+                                         ssl_sig_rsa_pss_rsae_sha256 & 0xff,
+                                         ssl_sig_rsa_pkcs1_sha256 >> 8,
+                                         ssl_sig_rsa_pkcs1_sha256 & 0xff};
+  ASSERT_EQ(DataBuffer(kExpectedExt, sizeof(kExpectedExt)),
+            capture->extension());
 }
 
 // variant, version, certificate, auth type, signature scheme

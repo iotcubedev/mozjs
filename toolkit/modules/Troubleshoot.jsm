@@ -11,9 +11,17 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
 );
+const { E10SUtils } = ChromeUtils.import(
+  "resource://gre/modules/E10SUtils.jsm"
+);
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+
+const { FeatureGate } = ChromeUtils.import(
+  "resource://featuregates/FeatureGate.jsm"
+);
+
 XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser"]);
 
 // We use a preferences whitelist to make sure we only show preferences that
@@ -24,6 +32,7 @@ const PREFS_WHITELIST = [
   "accessibility.",
   "apz.",
   "browser.cache.",
+  "browser.contentblocking.category",
   "browser.display.",
   "browser.download.folderList",
   "browser.download.hide_plugins_without_extensions",
@@ -42,12 +51,14 @@ const PREFS_WHITELIST = [
   "browser.search.log",
   "browser.search.openintab",
   "browser.search.param",
+  "browser.search.region",
   "browser.search.searchEnginesURL",
   "browser.search.suggest.enabled",
   "browser.search.update",
   "browser.search.useDBForOrder",
   "browser.sessionstore.",
   "browser.startup.homepage",
+  "browser.startup.page",
   "browser.tabs.",
   "browser.urlbar.",
   "browser.zoom.",
@@ -55,6 +66,7 @@ const PREFS_WHITELIST = [
   "extensions.checkCompatibility",
   "extensions.formautofill.",
   "extensions.lastAppVersion",
+  "fission.autostart",
   "font.",
   "general.autoScroll",
   "general.useragent.",
@@ -77,6 +89,7 @@ const PREFS_WHITELIST = [
   "plugins.",
   "print.",
   "privacy.",
+  "remote.enabled",
   "security.",
   "services.sync.declinedEngines",
   "services.sync.lastPing",
@@ -96,6 +109,7 @@ const PREFS_WHITELIST = [
 
 // The blacklist, unlike the whitelist, is a list of regular expressions.
 const PREFS_BLACKLIST = [
+  /^browser[.]fixup[.]domainwhitelist[.]/,
   /^media[.]webrtc[.]debug[.]aec_log_dir/,
   /^media[.]webrtc[.]debug[.]log_file/,
   /^network[.]proxy[.]/,
@@ -114,7 +128,12 @@ PREFS_GETTERS[Ci.nsIPrefBranch.PREF_INT] = (prefs, name) =>
 PREFS_GETTERS[Ci.nsIPrefBranch.PREF_BOOL] = (prefs, name) =>
   prefs.getBoolPref(name);
 
-const kURLDecorationPref = "privacy.restrict3rdpartystorage.url_decorations";
+// List of unimportant locked prefs (won't be shown on the troubleshooting
+// session)
+const PREFS_UNIMPORTANT_LOCKED = [
+  "dom.postMessage.sharedArrayBuffer.bypassCOOP_COEP.insecure.enabled",
+  "privacy.restrict3rdpartystorage.url_decorations",
+];
 
 // Return the preferences filtered by PREFS_BLACKLIST and PREFS_WHITELIST lists
 // and also by the custom 'filter'-ing function.
@@ -182,9 +201,14 @@ var dataProviders = {
       osVersion:
         Services.sysinfo.getProperty("name") +
         " " +
-        Services.sysinfo.getProperty("version"),
+        Services.sysinfo.getProperty("version") +
+        " " +
+        Services.sysinfo.getProperty("build"),
       version: AppConstants.MOZ_APP_VERSION_DISPLAY,
       buildID: Services.appinfo.appBuildID,
+      distributionID: Services.prefs
+        .getDefaultBranch("")
+        .getCharPref("distribution.id", ""),
       userAgent: Cc["@mozilla.org/network/protocol;1?name=http"].getService(
         Ci.nsIHttpProtocolHandler
       ).userAgent,
@@ -244,33 +268,41 @@ var dataProviders = {
       .trim();
     data.keyLocationServiceGoogleFound =
       keyLocationServiceGoogle != "no-google-location-service-api-key" &&
-      keyLocationServiceGoogle.length > 0;
+      !!keyLocationServiceGoogle.length;
 
     const keySafebrowsingGoogle = Services.urlFormatter
       .formatURL("%GOOGLE_SAFEBROWSING_API_KEY%")
       .trim();
     data.keySafebrowsingGoogleFound =
       keySafebrowsingGoogle != "no-google-safebrowsing-api-key" &&
-      keySafebrowsingGoogle.length > 0;
+      !!keySafebrowsingGoogle.length;
 
     const keyMozilla = Services.urlFormatter
       .formatURL("%MOZILLA_API_KEY%")
       .trim();
     data.keyMozillaFound =
-      keyMozilla != "no-mozilla-api-key" && keyMozilla.length > 0;
+      keyMozilla != "no-mozilla-api-key" && !!keyMozilla.length;
 
     done(data);
   },
 
-  extensions: async function extensions(done) {
-    let extensions = await AddonManager.getAddonsByTypes(["extension"]);
-    extensions = extensions.filter(e => !e.isSystem);
-    extensions.sort(function(a, b) {
+  addons: async function addons(done) {
+    let addons = await AddonManager.getAddonsByTypes([
+      "extension",
+      "locale",
+      "dictionary",
+    ]);
+    addons = addons.filter(e => !e.isSystem);
+    addons.sort(function(a, b) {
       if (a.isActive != b.isActive) {
         return b.isActive ? 1 : -1;
       }
 
-      // In some unfortunate cases addon names can be null.
+      if (a.type != b.type) {
+        return a.type.localeCompare(b.type);
+      }
+
+      // In some unfortunate cases add-on names can be null.
       let aname = a.name || "";
       let bname = b.name || "";
       let lc = aname.localeCompare(bname);
@@ -282,9 +314,9 @@ var dataProviders = {
       }
       return 0;
     });
-    let props = ["name", "version", "isActive", "id"];
+    let props = ["name", "type", "version", "isActive", "id"];
     done(
-      extensions.map(function(ext) {
+      addons.map(function(ext) {
         return props.reduce(function(extData, prop) {
           extData[prop] = ext[prop];
           return extData;
@@ -359,6 +391,8 @@ var dataProviders = {
         continue;
       }
 
+      remoteType = E10SUtils.remoteTypePrefix(remoteType);
+
       if (remoteTypes[remoteType]) {
         remoteTypes[remoteType]++;
       } else {
@@ -373,6 +407,10 @@ var dataProviders = {
       }
     } catch (e) {}
 
+    if (Services.io.socketProcessLaunched) {
+      remoteTypes.socket = 1;
+    }
+
     let data = {
       remoteTypes,
       maxWebContentProcesses: Services.appinfo.maxWebProcessCount,
@@ -381,16 +419,33 @@ var dataProviders = {
     done(data);
   },
 
+  async experimentalFeatures(done) {
+    if (AppConstants.platform == "android") {
+      done();
+      return;
+    }
+    let gates = await FeatureGate.all();
+    done(
+      gates.map(gate => {
+        return [
+          gate.title,
+          gate.preference,
+          Services.prefs.getBoolPref(gate.preference),
+        ];
+      })
+    );
+  },
+
   modifiedPreferences: function modifiedPreferences(done) {
     done(getPrefList(name => Services.prefs.prefHasUserValue(name)));
   },
 
   lockedPreferences: function lockedPreferences(done) {
-    // The URL Decoration pref isn't an important locked pref, so there is no
-    // good reason to report it.
     done(
       getPrefList(
-        name => name != kURLDecorationPref && Services.prefs.prefIsLocked(name)
+        name =>
+          !PREFS_UNIMPORTANT_LOCKED.includes(name) &&
+          Services.prefs.prefIsLocked(name)
       )
     );
   },
@@ -523,6 +578,7 @@ var dataProviders = {
       OffMainThreadPaintWorkerCount: "offMainThreadPaintWorkerCount",
       TargetFrameRate: "targetFrameRate",
       windowProtocol: null,
+      desktopEnvironment: null,
     };
 
     for (let prop in gfxInfoProps) {
@@ -673,17 +729,6 @@ var dataProviders = {
     done(data);
   },
 
-  javaScript: function javaScript(done) {
-    let data = {};
-    let winEnumer = Services.ww.getWindowEnumerator();
-    if (winEnumer.hasMoreElements()) {
-      data.incrementalGCEnabled = winEnumer
-        .getNext()
-        .windowUtils.isIncrementalGCEnabled();
-    }
-    done(data);
-  },
-
   accessibility: function accessibility(done) {
     let data = {};
     data.isActive = Services.appinfo.accessibilityEnabled;
@@ -696,6 +741,18 @@ var dataProviders = {
     data.handlerUsed = Services.appinfo.accessibleHandlerUsed;
     data.instantiator = Services.appinfo.accessibilityInstantiator;
     done(data);
+  },
+
+  startupCache: function startupCache(done) {
+    const startupInfo = Cc["@mozilla.org/startupcacheinfo;1"].getService(
+      Ci.nsIStartupCacheInfo
+    );
+    done({
+      DiskCachePath: startupInfo.DiskCachePath,
+      IgnoreDiskCache: startupInfo.IgnoreDiskCache,
+      FoundDiskCacheOnInit: startupInfo.FoundDiskCacheOnInit,
+      WroteToDiskCache: startupInfo.WroteToDiskCache,
+    });
   },
 
   libraryVersions: function libraryVersions(done) {
@@ -762,7 +819,7 @@ if (AppConstants.MOZ_CRASHREPORTER) {
 if (AppConstants.MOZ_SANDBOX) {
   dataProviders.sandbox = function sandbox(done) {
     let data = {};
-    if (AppConstants.platform == "linux") {
+    if (AppConstants.unixstyle == "linux") {
       const keys = [
         "hasSeccompBPF",
         "hasSeccompTSync",
@@ -807,5 +864,19 @@ if (AppConstants.MOZ_SANDBOX) {
     }
 
     done(data);
+  };
+}
+
+if (AppConstants.ENABLE_REMOTE_AGENT) {
+  dataProviders.remoteAgent = function remoteAgent(done) {
+    const { RemoteAgent } = ChromeUtils.import(
+      "chrome://remote/content/RemoteAgent.jsm"
+    );
+    const { listening, scheme, host, port } = RemoteAgent;
+    let url = "";
+    if (listening) {
+      url = `${scheme}://${host}:${port}/`;
+    }
+    done({ listening, url });
   };
 }

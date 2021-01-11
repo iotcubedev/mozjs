@@ -17,6 +17,7 @@
 #include <errno.h>
 #include "nsISupports.h"
 #include "nsCOMPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
@@ -27,13 +28,11 @@
 #include "DataChannelProtocol.h"
 #include "DataChannelListener.h"
 #include "mozilla/net/NeckoTargetHolder.h"
+#include "DataChannelLog.h"
+
 #ifdef SCTP_DTLS_SUPPORTED
 #  include "mtransport/sigslot.h"
 #  include "mtransport/transportlayer.h"  // For TransportLayer::State
-#endif
-
-#ifndef DATACHANNEL_LOG
-#  define DATACHANNEL_LOG(args)
 #endif
 
 #ifndef EALREADY
@@ -52,6 +51,9 @@ class DataChannel;
 class DataChannelOnMessageAvailable;
 class MediaPacket;
 class MediaTransportHandler;
+namespace dom {
+struct RTCStatsCollection;
+};
 
 // For sending outgoing messages.
 // This class only holds a reference to the data and the info structure but does
@@ -113,6 +115,10 @@ class DataChannelConnection final : public net::NeckoTargetHolder
                                     public sigslot::has_slots<>
 #endif
 {
+  friend class DataChannel;
+  friend class DataChannelOnMessageAvailable;
+  friend class DataChannelConnectRunnable;
+
   virtual ~DataChannelConnection();
 
  public:
@@ -124,11 +130,8 @@ class DataChannelConnection final : public net::NeckoTargetHolder
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DataChannelConnection)
 
-  class DataConnectionListener
-      : public SupportsWeakPtr<DataConnectionListener> {
+  class DataConnectionListener : public SupportsWeakPtr {
    public:
-    MOZ_DECLARE_WEAKREFERENCE_TYPENAME(
-        DataChannelConnection::DataConnectionListener)
     virtual ~DataConnectionListener() = default;
 
     // Called when a new DataChannel has been opened by the other side.
@@ -138,7 +141,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
   // Create a new DataChannel Connection
   // Must be called on Main thread
   static Maybe<RefPtr<DataChannelConnection>> Create(
-      DataConnectionListener* aListener, nsIEventTarget* aTarget,
+      DataConnectionListener* aListener, nsISerialEventTarget* aTarget,
       MediaTransportHandler* aHandler, const uint16_t aLocalPort,
       const uint16_t aNumStreams, const Maybe<uint64_t>& aMaxMessageSize);
 
@@ -150,6 +153,8 @@ class DataChannelConnection final : public net::NeckoTargetHolder
   void SetMaxMessageSize(bool aMaxMessageSizeSet, uint64_t aMaxMessageSize);
   uint64_t GetMaxMessageSize();
 
+  void AppendStatsToReport(const UniquePtr<dom::RTCStatsCollection>& aReport,
+                           const DOMHighResTimeStamp aTimestamp) const;
 #ifdef ALLOW_DIRECT_SCTP_LISTEN_CONNECT
   // These block; they require something to decide on listener/connector
   // (though you can do simultaneous Connect()).  Do not call these from
@@ -159,8 +164,9 @@ class DataChannelConnection final : public net::NeckoTargetHolder
 #endif
 
 #ifdef SCTP_DTLS_SUPPORTED
-  bool ConnectToTransport(const std::string& aTransportId, bool aClient,
-                          uint16_t localport, uint16_t remoteport);
+  bool ConnectToTransport(const std::string& aTransportId, const bool aClient,
+                          const uint16_t aLocalPort,
+                          const uint16_t aRemotePort);
   void TransportStateChange(const std::string& aTransportId,
                             TransportLayer::State aState);
   void CompleteConnect();
@@ -173,8 +179,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
     PARTIAL_RELIABLE_TIMED = 2
   } Type;
 
-  MOZ_MUST_USE
-  already_AddRefed<DataChannel> Open(
+  [[nodiscard]] already_AddRefed<DataChannel> Open(
       const nsACString& label, const nsACString& protocol, Type type,
       bool inOrder, uint32_t prValue, DataChannelListener* aListener,
       nsISupports* aContext, bool aExternalNegotiated, uint16_t aStream);
@@ -205,12 +210,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
 
   // Find out state
   enum { CONNECTING = 0U, OPEN = 1U, CLOSING = 2U, CLOSED = 3U };
-  uint16_t GetReadyState() {
-    MutexAutoLock lock(mLock);
-    return mState;
-  }
 
-  friend class DataChannel;
   Mutex mLock;
 
   void ReadBlob(already_AddRefed<DataChannelConnection> aThis, uint16_t aStream,
@@ -218,28 +218,39 @@ class DataChannelConnection final : public net::NeckoTargetHolder
 
   bool SendDeferredMessages();
 
+#ifdef SCTP_DTLS_SUPPORTED
+  int SctpDtlsOutput(void* addr, void* buffer, size_t length, uint8_t tos,
+                     uint8_t set_df);
+#endif
+
  protected:
-  friend class DataChannelOnMessageAvailable;
   // Avoid cycles with PeerConnectionImpl
   // Use from main thread only as WeakPtr is not threadsafe
   WeakPtr<DataConnectionListener> mListener;
 
  private:
-  friend class DataChannelConnectRunnable;
-
   DataChannelConnection(DataConnectionListener* aListener,
-                        nsIEventTarget* aTarget,
+                        nsISerialEventTarget* aTarget,
                         MediaTransportHandler* aHandler);
 
   bool Init(const uint16_t aLocalPort, const uint16_t aNumStreams,
             const Maybe<uint64_t>& aMaxMessageSize);
 
+  // Caller must hold mLock
+  uint16_t GetReadyState() const {
+    mLock.AssertCurrentThreadOwns();
+
+    return mState;
+  }
+
+  // Caller must hold mLock
+  void SetReadyState(const uint16_t aState);
+
 #ifdef SCTP_DTLS_SUPPORTED
   static void DTLSConnectThread(void* data);
   void SendPacket(std::unique_ptr<MediaPacket>&& packet);
-  void SctpDtlsInput(const std::string& aTransportId, MediaPacket& packet);
-  static int SctpDtlsOutput(void* addr, void* buffer, size_t length,
-                            uint8_t tos, uint8_t set_df);
+  void SctpDtlsInput(const std::string& aTransportId,
+                     const MediaPacket& packet);
 #endif
   DataChannel* FindChannelByStream(uint16_t stream);
   uint16_t FindFreeStream();
@@ -252,10 +263,10 @@ class DataChannelConnection final : public net::NeckoTargetHolder
                              const nsACString& protocol, uint16_t stream,
                              bool unordered, uint16_t prPolicy,
                              uint32_t prValue);
-  bool SendBufferedMessages(nsTArray<nsAutoPtr<BufferedOutgoingMsg>>& buffer,
+  bool SendBufferedMessages(nsTArray<UniquePtr<BufferedOutgoingMsg>>& buffer,
                             size_t* aWritten);
   int SendMsgInternal(OutgoingMsg& msg, size_t* aWritten);
-  int SendMsgInternalOrBuffer(nsTArray<nsAutoPtr<BufferedOutgoingMsg>>& buffer,
+  int SendMsgInternalOrBuffer(nsTArray<UniquePtr<BufferedOutgoingMsg>>& buffer,
                               OutgoingMsg& msg, bool& buffered,
                               size_t* aWritten);
   int SendDataMsgInternalOrBuffer(DataChannel& channel, const uint8_t* data,
@@ -299,7 +310,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
   void HandleNotification(const union sctp_notification* notif, size_t n);
 
 #ifdef SCTP_DTLS_SUPPORTED
-  bool IsSTSThread() {
+  bool IsSTSThread() const {
     bool on = false;
     if (mSTS) {
       mSTS->IsOnCurrentThread(&on);
@@ -317,7 +328,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
     typedef AutoTArray<RefPtr<DataChannel>, 16> ChannelArray;
     ChannelArray GetAll() const {
       MutexAutoLock lock(mMutex);
-      return mChannels;
+      return mChannels.Clone();
     }
     RefPtr<DataChannel> GetNextChannel(uint16_t aCurrentId) const;
 
@@ -346,14 +357,14 @@ class DataChannelConnection final : public net::NeckoTargetHolder
   Channels mChannels;
   // STS only
   uint32_t mCurrentStream = 0;
-  nsDeque mPending;  // Holds addref'ed DataChannel's -- careful!
+  nsDeque<DataChannel> mPending;  // Holds addref'ed DataChannel's -- careful!
   // STS and main
   size_t mNegotiatedIdLimit = 0;  // GUARDED_BY(mConnection->mLock)
   uint8_t mPendingType = PENDING_NONE;
   // holds data that's come in before a channel is open
-  nsTArray<nsAutoPtr<QueuedDataMessage>> mQueuedData;
+  nsTArray<UniquePtr<QueuedDataMessage>> mQueuedData;
   // holds outgoing control messages
-  nsTArray<nsAutoPtr<BufferedOutgoingMsg>>
+  nsTArray<UniquePtr<BufferedOutgoingMsg>>
       mBufferedControl;  // GUARDED_BY(mConnection->mLock)
 
   // Streams pending reset. Accessed from main and STS.
@@ -383,6 +394,7 @@ class DataChannelConnection final : public net::NeckoTargetHolder
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
   bool mShutdown;
 #endif
+  uintptr_t mId = 0;
 };
 
 #define ENSURE_DATACONNECTION \
@@ -394,6 +406,9 @@ class DataChannelConnection final : public net::NeckoTargetHolder
   } while (0)
 
 class DataChannel {
+  friend class DataChannelOnMessageAvailable;
+  friend class DataChannelConnection;
+
  public:
   enum { CONNECTING = 0U, OPEN = 1U, CLOSING = 2U, CLOSED = 3U };
 
@@ -417,7 +432,8 @@ class DataChannel {
         mIsRecvBinary(false),
         mBufferedThreshold(0),  // default from spec
         mBufferedAmount(0),
-        mMainThreadEventTarget(connection->GetNeckoTarget()) {
+        mMainThreadEventTarget(connection->GetNeckoTarget()),
+        mStatsLock("netwer::sctp::DataChannel::mStatsLock") {
     NS_ASSERTION(mConnection, "NULL connection");
   }
 
@@ -443,7 +459,8 @@ class DataChannel {
   void SetListener(DataChannelListener* aListener, nsISupports* aContext);
 
   // Helper for send methods that converts POSIX error codes to an ErrorResult.
-  static void SendErrnoToErrorResult(int error, ErrorResult& aRv);
+  static void SendErrnoToErrorResult(int error, size_t aMessageSize,
+                                     ErrorResult& aRv);
 
   // Send a string
   void SendMsg(const nsACString& aMsg, ErrorResult& aRv);
@@ -482,10 +499,13 @@ class DataChannel {
   void AnnounceClosed();
 
   // Find out state
-  uint16_t GetReadyState() {
+  uint16_t GetReadyState() const {
     MOZ_ASSERT(NS_IsMainThread());
     return mReadyState;
   }
+
+  // Set ready state
+  void SetReadyState(const uint16_t aState);
 
   void GetLabel(nsAString& aLabel) { CopyUTF8toUTF16(mLabel, aLabel); }
   void GetProtocol(nsAString& aProtocol) {
@@ -495,17 +515,24 @@ class DataChannel {
 
   void SendOrQueue(DataChannelOnMessageAvailable* aMessage);
 
+  struct TrafficCounters {
+    uint32_t mMessagesSent = 0;
+    uint64_t mBytesSent = 0;
+    uint32_t mMessagesReceived = 0;
+    uint64_t mBytesReceived = 0;
+  };
+
+  TrafficCounters GetTrafficCounters() const;
+
  protected:
   // These are both mainthread only
   DataChannelListener* mListener;
   nsCOMPtr<nsISupports> mContext;
 
  private:
-  friend class DataChannelOnMessageAvailable;
-  friend class DataChannelConnection;
-
   nsresult AddDataToBinaryMsg(const char* data, uint32_t size);
   bool EnsureValidStream(ErrorResult& aRv);
+  void WithTrafficCounters(const std::function<void(TrafficCounters&)>&);
 
   RefPtr<DataChannelConnection> mConnection;
   nsCString mLabel;
@@ -525,9 +552,11 @@ class DataChannel {
   // spec requires us to queue a task for this.
   size_t mBufferedAmount;
   nsCString mRecvBuffer;
-  nsTArray<nsAutoPtr<BufferedOutgoingMsg>>
+  nsTArray<UniquePtr<BufferedOutgoingMsg>>
       mBufferedData;  // GUARDED_BY(mConnection->mLock)
-  nsCOMPtr<nsIEventTarget> mMainThreadEventTarget;
+  nsCOMPtr<nsISerialEventTarget> mMainThreadEventTarget;
+  mutable Mutex mStatsLock;  // protects mTrafficCounters
+  TrafficCounters mTrafficCounters;
 };
 
 // used to dispatch notifications of incoming data to the main thread
@@ -586,8 +615,8 @@ class DataChannelOnMessageAvailable : public Runnable {
       case ON_DATA_STRING:
       case ON_DATA_BINARY:
         if (!mChannel->mListener) {
-          DATACHANNEL_LOG((
-              "DataChannelOnMessageAvailable (%d) with null Listener!", mType));
+          DC_ERROR(("DataChannelOnMessageAvailable (%d) with null Listener!",
+                    mType));
           return NS_OK;
         }
 
@@ -611,8 +640,8 @@ class DataChannelOnMessageAvailable : public Runnable {
         break;
       case ON_CHANNEL_CREATED:
         if (!mConnection->mListener) {
-          DATACHANNEL_LOG((
-              "DataChannelOnMessageAvailable (%d) with null Listener!", mType));
+          DC_ERROR(("DataChannelOnMessageAvailable (%d) with null Listener!",
+                    mType));
           return NS_OK;
         }
 

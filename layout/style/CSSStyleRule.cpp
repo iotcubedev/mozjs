@@ -6,9 +6,12 @@
 
 #include "mozilla/dom/CSSStyleRule.h"
 
+#include "mozilla/CSSEnabledState.h"
 #include "mozilla/DeclarationBlock.h"
+#include "mozilla/PseudoStyleType.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/dom/CSSStyleRuleBinding.h"
+#include "nsCSSPseudoElements.h"
 
 #include "mozAutoDocUpdate.h"
 
@@ -67,7 +70,7 @@ nsresult CSSStyleRuleDeclaration::SetCSSDeclaration(
       mDecls->SetOwningRule(nullptr);
       RefPtr<DeclarationBlock> decls = aDecl;
       Servo_StyleRule_SetStyle(rule->Raw(), decls->Raw());
-      mDecls = decls.forget();
+      mDecls = std::move(decls);
       mDecls->SetOwningRule(rule);
     }
     sheet->RuleChanged(rule);
@@ -112,6 +115,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(CSSStyleRule)
   //
   // Note that this has to happen before unlinking css::Rule.
   tmp->UnlinkDeclarationWrapper(tmp->mDecls);
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(css::Rule)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(CSSStyleRule, css::Rule)
@@ -201,6 +205,7 @@ nsresult CSSStyleRule::GetSpecificity(uint32_t aSelectorIndex,
 nsresult CSSStyleRule::SelectorMatchesElement(Element* aElement,
                                               uint32_t aSelectorIndex,
                                               const nsAString& aPseudo,
+                                              bool aRelevantLinkVisited,
                                               bool* aMatches) {
   PseudoStyleType pseudoType = PseudoStyleType::NotPseudo;
   if (!aPseudo.IsEmpty()) {
@@ -215,7 +220,7 @@ nsresult CSSStyleRule::SelectorMatchesElement(Element* aElement,
   }
 
   *aMatches = Servo_StyleRule_SelectorMatchesElement(
-      mRawRule, aElement, aSelectorIndex, pseudoType);
+      mRawRule, aElement, aSelectorIndex, pseudoType, aRelevantLinkVisited);
 
   return NS_OK;
 }

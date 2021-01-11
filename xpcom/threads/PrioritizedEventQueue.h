@@ -8,16 +8,57 @@
 #define mozilla_PrioritizedEventQueue_h
 
 #include "mozilla/AbstractEventQueue.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/EventQueue.h"
+#include "mozilla/IdlePeriodState.h"
+#include "mozilla/TaskController.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/TypeTraits.h"
 #include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
-#include "nsIIdlePeriod.h"
 
+class nsIIdlePeriod;
 class nsIRunnable;
 
 namespace mozilla {
+namespace ipc {
+class IdleSchedulerChild;
+}
+
+class InputTaskManager : public TaskManager {
+ public:
+  InputTaskManager() : mInputQueueState(STATE_DISABLED) {}
+  int32_t GetPriorityModifierForEventLoopTurn(
+      const MutexAutoLock& aProofOfLock) final;
+  void WillRunTask() final;
+  void DidRunTask() final;
+
+  enum InputEventQueueState {
+    STATE_DISABLED,
+    STATE_FLUSHING,
+    STATE_SUSPEND,
+    STATE_ENABLED
+  };
+
+  void EnableInputEventPrioritization();
+  void FlushInputEventPrioritization();
+  void SuspendInputEventPrioritization();
+  void ResumeInputEventPrioritization();
+
+  InputEventQueueState State() { return mInputQueueState; }
+
+  void SetState(InputEventQueueState aState) { mInputQueueState = aState; }
+
+  TimeStamp InputHandlingStartTime() { return mInputHandlingStartTime; }
+
+  void SetInputHandlingStartTime(TimeStamp aStartTime) {
+    mInputHandlingStartTime = aStartTime;
+  }
+
+ private:
+  TimeStamp mInputHandlingStartTime;
+  Atomic<InputEventQueueState> mInputQueueState;
+  AutoTArray<TimeStamp, 4> mStartTimes;
+};
 
 // This AbstractEventQueue implementation has one queue for each
 // EventQueuePriority. The type of queue used for each priority is determined by
@@ -40,22 +81,24 @@ class PrioritizedEventQueue final : public AbstractEventQueue {
  public:
   static const bool SupportsPrioritization = true;
 
-  explicit PrioritizedEventQueue(already_AddRefed<nsIIdlePeriod> aIdlePeriod)
-      : mHighQueue(MakeUnique<EventQueue>(EventQueuePriority::High)),
-        mInputQueue(MakeUnique<EventQueue>(EventQueuePriority::Input)),
-        mMediumHighQueue(
-            MakeUnique<EventQueue>(EventQueuePriority::MediumHigh)),
-        mNormalQueue(MakeUnique<EventQueue>(EventQueuePriority::Normal)),
-        mDeferredTimersQueue(
-            MakeUnique<EventQueue>(EventQueuePriority::DeferredTimers)),
-        mIdleQueue(MakeUnique<EventQueue>(EventQueuePriority::Idle)),
-        mIdlePeriod(aIdlePeriod) {}
+  explicit PrioritizedEventQueue(already_AddRefed<nsIIdlePeriod>&& aIdlePeriod);
+
+  virtual ~PrioritizedEventQueue();
 
   void PutEvent(already_AddRefed<nsIRunnable>&& aEvent,
-                EventQueuePriority aPriority,
-                const MutexAutoLock& aProofOfLock) final;
+                EventQueuePriority aPriority, const MutexAutoLock& aProofOfLock,
+                mozilla::TimeDuration* aDelay = nullptr) final;
+  // See PrioritizedEventQueue.cpp for explanation of
+  // aHypotheticalInputEventDelay
   already_AddRefed<nsIRunnable> GetEvent(
-      EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock) final;
+      EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock,
+      TimeDuration* aHypotheticalInputEventDelay = nullptr) final;
+  // *aIsIdleEvent will be set to true when we are returning a non-null runnable
+  // which came from one of our idle queues, and will be false otherwise.
+  already_AddRefed<nsIRunnable> GetEvent(
+      EventQueuePriority* aPriority, const MutexAutoLock& aProofOfLock,
+      TimeDuration* aHypotheticalInputEventDelay, bool* aIsIdleEvent);
+  void DidRunEvent(const MutexAutoLock& aProofOfLock);
 
   bool IsEmpty(const MutexAutoLock& aProofOfLock) final;
   size_t Count(const MutexAutoLock& aProofOfLock) const final;
@@ -68,19 +111,23 @@ class PrioritizedEventQueue final : public AbstractEventQueue {
   // least as long as the queue.
   void SetMutexRef(Mutex& aMutex) { mMutex = &aMutex; }
 
-#ifndef RELEASE_OR_BETA
-  // nsThread.cpp sends telemetry containing the most recently computed idle
-  // deadline. We store a reference to a field in nsThread where this deadline
-  // will be stored so that it can be fetched quickly for telemetry.
-  void SetNextIdleDeadlineRef(TimeStamp& aDeadline) {
-    mNextIdleDeadline = &aDeadline;
+  void EnableInputEventPrioritization(const MutexAutoLock& aProofOfLock) final {
+    mInputTaskManager->EnableInputEventPrioritization();
   }
-#endif
+  void FlushInputEventPrioritization(const MutexAutoLock& aProofOfLock) final {
+    mInputTaskManager->FlushInputEventPrioritization();
+  }
+  void SuspendInputEventPrioritization(
+      const MutexAutoLock& aProofOfLock) final {
+    mInputTaskManager->SuspendInputEventPrioritization();
+  }
+  void ResumeInputEventPrioritization(const MutexAutoLock& aProofOfLock) final {
+    mInputTaskManager->ResumeInputEventPrioritization();
+  }
 
-  void EnableInputEventPrioritization(const MutexAutoLock& aProofOfLock) final;
-  void FlushInputEventPrioritization(const MutexAutoLock& aProofOfLock) final;
-  void SuspendInputEventPrioritization(const MutexAutoLock& aProofOfLock) final;
-  void ResumeInputEventPrioritization(const MutexAutoLock& aProofOfLock) final;
+  IdlePeriodState* GetIdlePeriodState() { return &mIdleTaskManager->State(); }
+
+  bool HasIdleRunnables(const MutexAutoLock& aProofOfLock) const;
 
   size_t SizeOfExcludingThis(
       mozilla::MallocSizeOf aMallocSizeOf) const override {
@@ -93,9 +140,7 @@ class PrioritizedEventQueue final : public AbstractEventQueue {
     n += mDeferredTimersQueue->SizeOfIncludingThis(aMallocSizeOf);
     n += mIdleQueue->SizeOfIncludingThis(aMallocSizeOf);
 
-    if (mIdlePeriod) {
-      n += aMallocSizeOf(mIdlePeriod);
-    }
+    n += mIdleTaskManager->State().SizeOfExcludingThis(aMallocSizeOf);
 
     return n;
   }
@@ -104,13 +149,15 @@ class PrioritizedEventQueue final : public AbstractEventQueue {
   EventQueuePriority SelectQueue(bool aUpdateState,
                                  const MutexAutoLock& aProofOfLock);
 
-  // Returns a null TimeStamp if we're not in the idle period.
-  mozilla::TimeStamp GetIdleDeadline();
+  void IndirectlyQueueRunnable(already_AddRefed<nsIRunnable>&& aEvent,
+                               EventQueuePriority aPriority,
+                               const MutexAutoLock& aProofOfLock,
+                               mozilla::TimeDuration* aDelay);
 
   UniquePtr<EventQueue> mHighQueue;
-  UniquePtr<EventQueue> mInputQueue;
+  UniquePtr<EventQueueSized<32>> mInputQueue;
   UniquePtr<EventQueue> mMediumHighQueue;
-  UniquePtr<EventQueue> mNormalQueue;
+  UniquePtr<EventQueueSized<64>> mNormalQueue;
   UniquePtr<EventQueue> mDeferredTimersQueue;
   UniquePtr<EventQueue> mIdleQueue;
 
@@ -118,38 +165,11 @@ class PrioritizedEventQueue final : public AbstractEventQueue {
   // a pointer to it here.
   Mutex* mMutex = nullptr;
 
-#ifndef RELEASE_OR_BETA
-  // Pointer to a place where the most recently computed idle deadline is
-  // stored.
-  TimeStamp* mNextIdleDeadline = nullptr;
-#endif
+  TimeDuration mLastEventDelay;
+  TimeStamp mLastEventStart;
 
-  // Try to process one high priority runnable after each normal
-  // priority runnable. This gives the processing model HTML spec has for
-  // 'Update the rendering' in the case only vsync messages are in the
-  // secondary queue and prevents starving the normal queue.
-  bool mProcessHighPriorityQueue = false;
-
-  // mIdlePeriod keeps track of the current idle period. If at any
-  // time the main event queue is empty, calling
-  // mIdlePeriod->GetIdlePeriodHint() will give an estimate of when
-  // the current idle period will end.
-  nsCOMPtr<nsIIdlePeriod> mIdlePeriod;
-
-  // Set to true if HasPendingEvents() has been called and returned true because
-  // of a pending idle event.  This is used to remember to return that idle
-  // event from GetIdleEvent() to ensure that HasPendingEvents() never lies.
-  bool mHasPendingEventsPromisedIdleEvent = false;
-
-  TimeStamp mInputHandlingStartTime;
-
-  enum InputEventQueueState {
-    STATE_DISABLED,
-    STATE_FLUSHING,
-    STATE_SUSPEND,
-    STATE_ENABLED
-  };
-  InputEventQueueState mInputQueueState = STATE_DISABLED;
+  RefPtr<InputTaskManager> mInputTaskManager;
+  RefPtr<IdleTaskManager> mIdleTaskManager;
 };
 
 }  // namespace mozilla

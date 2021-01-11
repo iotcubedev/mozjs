@@ -19,7 +19,6 @@
 #include "nsIClassInfoImpl.h"
 #include "nsNetCID.h"
 #include "nsError.h"
-#include "nsIScriptSecurityManager.h"
 #include "ContentPrincipal.h"
 #include "nsScriptSecurityManager.h"
 #include "pratom.h"
@@ -56,6 +55,7 @@ already_AddRefed<NullPrincipal> NullPrincipal::CreateWithInheritedAttributes(
   RefPtr<NullPrincipal> nullPrin = new NullPrincipal();
   nsresult rv = nullPrin->Init(aOriginAttributes, aIsFirstParty);
   MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
+
   return nullPrin.forget();
 }
 
@@ -86,8 +86,7 @@ nsresult NullPrincipal::Init(const OriginAttributes& aOriginAttributes,
 
     mURI = aURI;
   } else {
-    mURI = NullPrincipalURI::Create();
-    NS_ENSURE_TRUE(mURI, NS_ERROR_NOT_AVAILABLE);
+    mURI = new NullPrincipalURI();
   }
 
   nsAutoCString originNoSuffix;
@@ -100,9 +99,19 @@ nsresult NullPrincipal::Init(const OriginAttributes& aOriginAttributes,
 }
 
 nsresult NullPrincipal::Init(const OriginAttributes& aOriginAttributes,
-                             bool aIsFirstParty) {
-  mURI = NullPrincipalURI::Create();
-  NS_ENSURE_TRUE(mURI, NS_ERROR_NOT_AVAILABLE);
+                             bool aIsFirstParty, nsIURI* aURI) {
+  if (aURI) {
+    nsAutoCString scheme;
+    nsresult rv = aURI->GetScheme(scheme);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    NS_ENSURE_TRUE(scheme.EqualsLiteral(NS_NULLPRINCIPAL_SCHEME),
+                   NS_ERROR_NOT_AVAILABLE);
+
+    mURI = aURI;
+  } else {
+    mURI = new NullPrincipalURI();
+  }
 
   nsAutoCString originNoSuffix;
   DebugOnly<nsresult> rv = mURI->GetSpec(originNoSuffix);
@@ -139,6 +148,11 @@ NS_IMETHODIMP
 NullPrincipal::GetURI(nsIURI** aURI) {
   nsCOMPtr<nsIURI> uri = mURI;
   uri.forget(aURI);
+  return NS_OK;
+}
+NS_IMETHODIMP
+NullPrincipal::GetIsOriginPotentiallyTrustworthy(bool* aResult) {
+  *aResult = false;
   return NS_OK;
 }
 
@@ -223,7 +237,7 @@ nsresult NullPrincipal::PopulateJSONObject(Json::Value& aObject) {
   nsresult rv = mURI->GetSpec(principalURI);
   NS_ENSURE_SUCCESS(rv, rv);
   MOZ_ASSERT(principalURI.Length() ==
-                 NS_LITERAL_CSTRING(NS_NULLPRINCIPAL_SCHEME ":").Length() +
+                 nsLiteralCString(NS_NULLPRINCIPAL_SCHEME ":").Length() +
                      NSID_LENGTH - 1,
              "Length of the URI should be: (scheme, uuid, - nullptr)");
   aObject[std::to_string(eSpec)] = principalURI.get();

@@ -5,7 +5,7 @@
 use crate::glyph_rasterizer::{FontInstance, GlyphFormat, GlyphKey, GlyphRasterizer};
 use crate::internal_types::FastHashMap;
 use crate::render_backend::{FrameId, FrameStamp};
-use crate::render_task::RenderTaskCache;
+use crate::render_task_cache::RenderTaskCache;
 use crate::resource_cache::ResourceClassCache;
 use std::sync::Arc;
 use crate::texture_cache::{EvictionNotice, TextureCache};
@@ -39,17 +39,18 @@ impl GlyphCacheEntry {
             GlyphCacheEntry::Cached(ref glyph) => {
                 texture_cache.get_allocated_size(&glyph.texture_cache_handle)
             }
-            GlyphCacheEntry::Pending => Some(0),
-            // If the cache only has blank glyphs left, just get rid of it.
-            GlyphCacheEntry::Blank => None,
+            GlyphCacheEntry::Pending | GlyphCacheEntry::Blank => Some(0),
         }
     }
 
-    fn mark_unused(&self, texture_cache: &mut TextureCache) {
+    fn is_recently_used(&self, texture_cache: &mut TextureCache) -> bool {
         if let GlyphCacheEntry::Cached(ref glyph) = *self {
-            texture_cache.mark_unused(&glyph.texture_cache_handle);
+            texture_cache.is_recently_used(&glyph.texture_cache_handle, 1)
+        } else {
+            false
         }
-    }}
+    }
+}
 
 #[allow(dead_code)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
@@ -78,27 +79,31 @@ impl GlyphKeyCache {
         &self.user_data.eviction_notice
     }
 
-    fn clear_glyphs(&mut self, texture_cache: &mut TextureCache) {
-        for (_, entry) in self.iter() {
-            entry.mark_unused(texture_cache);
-        }
+    fn is_recently_used(&self, current_frame: FrameId) -> bool {
+        self.user_data.last_frame_used + 1 >= current_frame
+    }
+
+    fn clear_glyphs(&mut self) -> usize {
+        let pruned = self.user_data.bytes_used;
         self.clear();
         self.user_data.bytes_used = 0;
+        pruned
     }
 
     fn prune_glyphs(
         &mut self,
+        skip_recent: bool,
         excess_bytes_used: usize,
         texture_cache: &mut TextureCache,
         render_task_cache: &RenderTaskCache,
     ) -> usize {
         let mut pruned = 0;
         self.retain(|_, entry| {
-            if pruned <= excess_bytes_used {
+            if pruned <= excess_bytes_used &&
+               (!skip_recent || !entry.is_recently_used(texture_cache)) {
                 match entry.get_allocated_size(texture_cache, render_task_cache) {
                     Some(size) => {
                         pruned += size;
-                        entry.mark_unused(texture_cache);
                         false
                     }
                     None => true,
@@ -180,7 +185,7 @@ impl GlyphCache {
         self.glyph_key_caches = FastHashMap::default();
     }
 
-    pub fn clear_fonts<F>(&mut self, texture_cache: &mut TextureCache, key_fun: F)
+    pub fn clear_fonts<F>(&mut self, key_fun: F)
     where
         for<'r> F: Fn(&'r &FontInstance) -> bool,
     {
@@ -190,7 +195,7 @@ impl GlyphCache {
                 return true;
             }
 
-            cache.clear_glyphs(texture_cache);
+            cache.clear_glyphs();
             false
         })
     }
@@ -243,15 +248,20 @@ impl GlyphCache {
             if self.bytes_used < self.max_bytes_used {
                 break;
             }
+            let recent = cache.is_recently_used(self.current_frame);
             let excess = self.bytes_used - self.max_bytes_used;
-            if excess >= cache.user_data.bytes_used {
+            if !recent && excess >= cache.user_data.bytes_used {
                 // If the excess is greater than the cache's size, just clear the whole thing.
-                cache.clear_glyphs(texture_cache);
-                self.bytes_used -= cache.user_data.bytes_used;
+                self.bytes_used -= cache.clear_glyphs();
             } else {
-                // Otherwise, just clear as little of the cache as needs to remove the excess
+                // Otherwise, just clear as little of the cache as needed to remove the excess
                 // and avoid rematerialization costs.
-                self.bytes_used -= cache.prune_glyphs(excess, texture_cache, render_task_cache);
+                self.bytes_used -= cache.prune_glyphs(
+                    recent,
+                    excess,
+                    texture_cache,
+                    render_task_cache,
+                );
             }
         }
     }
@@ -263,6 +273,7 @@ impl GlyphCache {
         render_task_cache: &RenderTaskCache,
         glyph_rasterizer: &mut GlyphRasterizer,
     ) {
+        profile_scope!("begin_frame");
         self.current_frame = stamp.frame_id();
         self.clear_evicted(texture_cache, render_task_cache);
         self.prune_excess_usage(texture_cache, render_task_cache);

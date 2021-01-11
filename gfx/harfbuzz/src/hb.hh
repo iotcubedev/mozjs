@@ -176,11 +176,11 @@
 
 #include <limits.h>
 #include <math.h>
+#include <float.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
 #include <assert.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -242,7 +242,7 @@ extern "C" void  hb_free_impl(void *ptr);
 #define HB_CONST_FUNC
 #define HB_PRINTF_FUNC(format_idx, arg_idx)
 #endif
-#if defined(__GNUC__) && (__GNUC__ >= 4)
+#if defined(__GNUC__) && (__GNUC__ >= 4) || (__clang__)
 #define HB_UNUSED	__attribute__((unused))
 #elif defined(_MSC_VER) /* https://github.com/harfbuzz/harfbuzz/issues/635 */
 #define HB_UNUSED __pragma(warning(suppress: 4100 4101))
@@ -318,6 +318,18 @@ extern "C" void  hb_free_impl(void *ptr);
 #  define HB_FALLTHROUGH /* FALLTHROUGH */
 #endif
 
+/* A tag to enforce use of return value for a function */
+#if __cplusplus >= 201703L
+#  define HB_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__) || defined(__clang__)
+#  define HB_NODISCARD __attribute__((warn_unused_result))
+#elif defined(_MSC_VER)
+#  define HB_NODISCARD _Check_return_
+#else
+#  define HB_NODISCARD
+#endif
+#define hb_success_t HB_NODISCARD bool
+
 /* https://github.com/harfbuzz/harfbuzz/issues/1852 */
 #if defined(__clang__) && !(defined(_AIX) && (defined(__IBMCPP__) || defined(__ibmxl__)))
 /* Disable certain sanitizer errors. */
@@ -355,7 +367,7 @@ extern "C" void  hb_free_impl(void *ptr);
 #    endif
 #    if _WIN32_WCE < 0x800
 #      define HB_NO_SETLOCALE
-static int errno = 0; /* Use something better? */
+#      define HB_NO_ERRNO
 #    endif
 #  elif defined(WINAPI_FAMILY) && (WINAPI_FAMILY==WINAPI_FAMILY_PC_APP || WINAPI_FAMILY==WINAPI_FAMILY_PHONE_APP)
 #    ifndef HB_NO_GETENV
@@ -369,6 +381,14 @@ static int errno = 0; /* Use something better? */
 
 #ifdef HB_NO_GETENV
 #define getenv(Name) nullptr
+#endif
+
+#ifndef HB_NO_ERRNO
+#  include <errno.h>
+#else
+static int HB_UNUSED _hb_errno = 0;
+#  undef errno
+#  define errno _hb_errno
 #endif
 
 #if defined(HAVE_ATEXIT) && !defined(HB_USE_ATEXIT)
@@ -475,7 +495,18 @@ static_assert ((sizeof (hb_var_int_t) == 4), "");
 
 
 /* Size signifying variable-sized array */
-#define VAR 1
+#ifndef HB_VAR_ARRAY
+#define HB_VAR_ARRAY 1
+#endif
+
+static inline double
+_hb_roundf (float x)
+{
+  return x >= 0 ? floor ((double) x + .5) : ceil ((double) x - .5);
+}
+#ifndef HAVE_ROUNDF
+#define roundf(x) _hb_roundf(x)
+#endif
 
 /* Endian swap, used in Windows related backends */
 static inline uint16_t hb_uint16_swap (const uint16_t v)
@@ -526,7 +557,7 @@ struct BEInt<Type, 2>
 #endif
 #endif
     return (v[0] <<  8)
-         + (v[1]      );
+	 + (v[1]      );
   }
   private: uint8_t v[2];
 };
@@ -544,8 +575,8 @@ struct BEInt<Type, 3>
   operator Type () const
   {
     return (v[0] << 16)
-         + (v[1] <<  8)
-         + (v[2]      );
+	 + (v[1] <<  8)
+	 + (v[2]      );
   }
   private: uint8_t v[3];
 };
@@ -564,9 +595,9 @@ struct BEInt<Type, 4>
   operator Type () const
   {
     return (v[0] << 24)
-         + (v[1] << 16)
-         + (v[2] <<  8)
-         + (v[3]      );
+	 + (v[1] << 16)
+	 + (v[2] <<  8)
+	 + (v[3]      );
   }
   private: uint8_t v[4];
 };
@@ -585,9 +616,10 @@ struct BEInt<Type, 4>
  * them directly.*/
 #include "hb-meta.hh"
 #include "hb-mutex.hh"
+#include "hb-number.hh"
 #include "hb-atomic.hh"	// Requires: hb-meta
 #include "hb-null.hh"	// Requires: hb-meta
-#include "hb-algs.hh"	// Requires: hb-meta hb-null
+#include "hb-algs.hh"	// Requires: hb-meta hb-null hb-number
 #include "hb-iter.hh"	// Requires: hb-algs hb-meta
 #include "hb-debug.hh"	// Requires: hb-algs hb-atomic
 #include "hb-array.hh"	// Requires: hb-algs hb-iter hb-null

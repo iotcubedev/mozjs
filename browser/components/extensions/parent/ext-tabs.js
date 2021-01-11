@@ -13,6 +13,11 @@ ChromeUtils.defineModuleGetter(
 );
 ChromeUtils.defineModuleGetter(
   this,
+  "DownloadPaths",
+  "resource://gre/modules/DownloadPaths.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
   "ExtensionControlledPopup",
   "resource:///modules/ExtensionControlledPopup.jsm"
 );
@@ -46,13 +51,6 @@ XPCOMUtils.defineLazyGetter(this, "strBundle", function() {
 var { ExtensionError } = ExtensionUtils;
 
 const TABHIDE_PREFNAME = "extensions.webextensions.tabhide.enabled";
-const MULTISELECT_PREFNAME = "browser.tabs.multiselect";
-XPCOMUtils.defineLazyPreferenceGetter(
-  this,
-  "gMultiSelectEnabled",
-  MULTISELECT_PREFNAME,
-  false
-);
 
 const TAB_HIDE_CONFIRMED_TYPE = "tabHideNotification";
 
@@ -214,14 +212,6 @@ class TabsUpdateFilterEventManager extends EventManager {
         // Default is to listen for all events.
         needsModified = filter.properties.some(p => allAttrs.has(p));
         filter.properties = new Set(filter.properties);
-        // TODO Bug 1465520 remove warning when ready.
-        if (filter.properties.has("isarticle")) {
-          extension.logger.warn(
-            "The isarticle filter name is deprecated, use isArticle."
-          );
-          filter.properties.delete("isarticle");
-          filter.properties.add("isArticle");
-        }
       } else {
         filter.properties = allProperties;
       }
@@ -270,7 +260,7 @@ class TabsUpdateFilterEventManager extends EventManager {
         return true;
       }
 
-      let fireForTab = (tab, changed) => {
+      let fireForTab = (tab, changed, nativeTab) => {
         // Tab may be null if private and not_allowed.
         if (!tab || !matchFilters(tab, changed)) {
           return;
@@ -278,11 +268,21 @@ class TabsUpdateFilterEventManager extends EventManager {
 
         let changeInfo = sanitize(extension, changed);
         if (changeInfo) {
-          fire.async(tab.id, changeInfo, tab.convert());
+          tabTracker.maybeWaitForTabOpen(nativeTab).then(() => {
+            if (!nativeTab.parentNode) {
+              // If the tab is already be destroyed, do nothing.
+              return;
+            }
+            fire.async(tab.id, changeInfo, tab.convert());
+          });
         }
       };
 
       let listener = event => {
+        // Ignore any events prior to TabOpen
+        if (event.originalTarget.initializingTab) {
+          return;
+        }
         if (!context.canAccessWindow(event.originalTarget.ownerGlobal)) {
           return;
         }
@@ -345,7 +345,7 @@ class TabsUpdateFilterEventManager extends EventManager {
           changeInfo[prop] = tab[prop];
         }
 
-        fireForTab(tab, changeInfo);
+        fireForTab(tab, changeInfo, event.originalTarget);
       };
 
       let statusListener = ({ browser, status, url }) => {
@@ -361,7 +361,7 @@ class TabsUpdateFilterEventManager extends EventManager {
             changed.url = url;
           }
 
-          fireForTab(tabManager.wrapTab(tabElem), changed);
+          fireForTab(tabManager.wrapTab(tabElem), changed, tabElem);
         }
       };
 
@@ -371,7 +371,7 @@ class TabsUpdateFilterEventManager extends EventManager {
 
         if (nativeTab && context.canAccessWindow(nativeTab.ownerGlobal)) {
           let tab = tabManager.getWrapper(nativeTab);
-          fireForTab(tab, { isArticle: message.data.isArticle });
+          fireForTab(tab, { isArticle: message.data.isArticle }, nativeTab);
         }
       };
 
@@ -426,8 +426,8 @@ class TabsUpdateFilterEventManager extends EventManager {
     if (
       filter &&
       filter.urls &&
-      (!extension.hasPermission("tabs") &&
-        !extension.hasPermission("activeTab"))
+      !extension.hasPermission("tabs") &&
+      !extension.hasPermission("activeTab")
     ) {
       Cu.reportError(
         'Url filtering in tabs.onUpdated requires "tabs" or "activeTab" permission.'
@@ -779,7 +779,7 @@ this.tabs = class extends ExtensionAPI {
             if (active) {
               window.gBrowser.selectedTab = nativeTab;
               if (!createProperties.url) {
-                window.focusAndSelectUrlBar();
+                window.gURLBar.select();
               }
             }
 
@@ -835,19 +835,10 @@ this.tabs = class extends ExtensionAPI {
             nativeTab.linkedBrowser.loadURI(url, options);
           }
 
-          if (updateProperties.active !== null) {
-            if (updateProperties.active) {
-              tabbrowser.selectedTab = nativeTab;
-            } else {
-              // Not sure what to do here? Which tab should we select?
-            }
+          if (updateProperties.active) {
+            tabbrowser.selectedTab = nativeTab;
           }
           if (updateProperties.highlighted !== null) {
-            if (!gMultiSelectEnabled) {
-              throw new ExtensionError(
-                `updateProperties.highlight is currently experimental and must be enabled with the ${MULTISELECT_PREFNAME} preference.`
-              );
-            }
             if (updateProperties.highlighted) {
               if (!nativeTab.selected && !nativeTab.multiselected) {
                 tabbrowser.addToMultiSelectedTabs(nativeTab, {
@@ -921,6 +912,12 @@ this.tabs = class extends ExtensionAPI {
           nativeTab.linkedBrowser.reloadWithFlags(flags);
         },
 
+        async warmup(tabId) {
+          let nativeTab = tabTracker.getTab(tabId);
+          let tabbrowser = nativeTab.ownerGlobal.gBrowser;
+          tabbrowser.warmupTab(nativeTab);
+        },
+
         async get(tabId) {
           return tabManager.get(tabId).convert();
         },
@@ -942,18 +939,6 @@ this.tabs = class extends ExtensionAPI {
               });
             }
           }
-
-          queryInfo = Object.assign({}, queryInfo);
-
-          if (queryInfo.url !== null) {
-            queryInfo.url = new MatchPatternSet([].concat(queryInfo.url), {
-              restrictSchemes: false,
-            });
-          }
-          if (queryInfo.title !== null) {
-            queryInfo.title = new MatchGlob(queryInfo.title);
-          }
-
           return Array.from(tabManager.query(queryInfo, context), tab =>
             tab.convert()
           );
@@ -1097,34 +1082,26 @@ this.tabs = class extends ExtensionAPI {
           return tabsMoved.map(nativeTab => tabManager.convert(nativeTab));
         },
 
-        duplicate(tabId) {
+        duplicate(tabId, duplicateProperties) {
+          const { active, index } = duplicateProperties || {};
+          const inBackground = active === undefined ? false : !active;
+
           // Schema requires tab id.
           let nativeTab = getTabOrActive(tabId);
 
           let gBrowser = nativeTab.ownerGlobal.gBrowser;
-          let newTab = gBrowser.duplicateTab(nativeTab);
+          let newTab = gBrowser.duplicateTab(nativeTab, true, {
+            inBackground,
+            index,
+          });
 
           tabListener.blockTabUntilRestored(newTab);
-
           return new Promise(resolve => {
-            // We need to use SSTabRestoring because any attributes set before
-            // are ignored. SSTabRestored is too late and results in a jump in
-            // the UI. See http://bit.ly/session-store-api for more information.
+            // Use SSTabRestoring to ensure that the tab's URL is ready before
+            // resolving the promise.
             newTab.addEventListener(
               "SSTabRestoring",
-              function() {
-                // As the tab is restoring, move it to the correct position.
-
-                // Pinned tabs that are duplicated are inserted
-                // after the existing pinned tab and pinned.
-                if (nativeTab.pinned) {
-                  gBrowser.pinTab(newTab);
-                }
-                gBrowser.moveTabTo(newTab, nativeTab._tPos + 1);
-
-                gBrowser.selectedTab = newTab;
-                resolve(tabManager.convert(newTab));
-              },
+              () => resolve(tabManager.convert(newTab)),
               { once: true }
             );
           });
@@ -1151,9 +1128,7 @@ this.tabs = class extends ExtensionAPI {
             FullZoom.setZoom(zoom, nativeTab.linkedBrowser);
           } else {
             return Promise.reject({
-              message: `Zoom value ${zoom} out of range (must be between ${
-                ZoomManager.MIN
-              } and ${ZoomManager.MAX})`,
+              message: `Zoom value ${zoom} out of range (must be between ${ZoomManager.MIN} and ${ZoomManager.MAX})`,
             });
           }
 
@@ -1281,11 +1256,7 @@ this.tabs = class extends ExtensionAPI {
         print() {
           let activeTab = getTabOrActive(null);
           let { PrintUtils } = activeTab.ownerGlobal;
-
-          PrintUtils.printWindow(
-            activeTab.linkedBrowser.outerWindowID,
-            activeTab.linkedBrowser
-          );
+          PrintUtils.printWindow(activeTab.linkedBrowser.browsingContext);
         },
 
         printPreview() {
@@ -1326,10 +1297,29 @@ this.tabs = class extends ExtensionAPI {
             return Promise.reject({ message: "Not supported on Mac OS X" });
           }
 
+          let filename;
+          if (
+            pageSettings.toFileName !== null &&
+            pageSettings.toFileName != ""
+          ) {
+            filename = pageSettings.toFileName;
+          } else if (activeTab.linkedBrowser.contentTitle != "") {
+            filename = activeTab.linkedBrowser.contentTitle;
+          } else {
+            let url = new URL(activeTab.linkedBrowser.currentURI.spec);
+            let path = decodeURIComponent(url.pathname);
+            path = path.replace(/\/$/, "");
+            filename = path.split("/").pop();
+            if (filename == "") {
+              filename = url.hostname;
+            }
+          }
+          filename = DownloadPaths.sanitize(filename);
+
           picker.init(activeTab.ownerGlobal, title, Ci.nsIFilePicker.modeSave);
           picker.appendFilter("PDF", "*.pdf");
           picker.defaultExtension = "pdf";
-          picker.defaultString = activeTab.linkedBrowser.contentTitle + ".pdf";
+          picker.defaultString = filename;
 
           return new Promise(resolve => {
             picker.open(function(retval) {
@@ -1436,46 +1426,12 @@ this.tabs = class extends ExtensionAPI {
                   printSettings.footerStrRight = pageSettings.footerRight;
                 }
 
-                let printProgressListener = {
-                  onLocationChange(webProgress, request, location, flags) {},
-                  onProgressChange(
-                    webProgress,
-                    request,
-                    curSelfProgress,
-                    maxSelfProgress,
-                    curTotalProgress,
-                    maxTotalProgress
-                  ) {},
-                  onSecurityChange(webProgress, request, state) {},
-                  onContentBlockingEvent(webProgress, request, event) {},
-                  onStateChange(webProgress, request, flags, status) {
-                    if (
-                      flags & Ci.nsIWebProgressListener.STATE_STOP &&
-                      flags & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT
-                    ) {
-                      resolve(retval == 0 ? "saved" : "replaced");
-                    }
-                  },
-                  onStatusChange: function(
-                    webProgress,
-                    request,
-                    status,
-                    message
-                  ) {
-                    if (status != 0) {
-                      resolve(retval == 0 ? "not_saved" : "not_replaced");
-                    }
-                  },
-                  QueryInterface: ChromeUtils.generateQI([
-                    Ci.nsIWebProgressListener,
-                  ]),
-                };
-
-                activeTab.linkedBrowser.print(
-                  activeTab.linkedBrowser.outerWindowID,
-                  printSettings,
-                  printProgressListener
-                );
+                activeTab.linkedBrowser
+                  .print(activeTab.linkedBrowser.outerWindowID, printSettings)
+                  .then(() => resolve(retval == 0 ? "saved" : "replaced"))
+                  .catch(() =>
+                    resolve(retval == 0 ? "not_saved" : "not_replaced")
+                  );
               } else {
                 // Cancel clicked (retval == 1)
                 resolve("canceled");
@@ -1492,8 +1448,11 @@ this.tabs = class extends ExtensionAPI {
             );
           }
           let nativeTab = getTabOrActive(tabId);
-          nativeTab.linkedBrowser.messageManager.sendAsyncMessage(
-            "Reader:ToggleReaderMode"
+
+          nativeTab.linkedBrowser.sendMessageToActor(
+            "Reader:ToggleReaderMode",
+            {},
+            "AboutReader"
           );
         },
 
@@ -1592,7 +1551,7 @@ this.tabs = class extends ExtensionAPI {
               }
             }
           }
-          if (hidden.length > 0) {
+          if (hidden.length) {
             let win = Services.wm.getMostRecentWindow("navigator:browser");
             tabHidePopup.open(win, extension.id);
           }
@@ -1600,11 +1559,6 @@ this.tabs = class extends ExtensionAPI {
         },
 
         highlight(highlightInfo) {
-          if (!gMultiSelectEnabled) {
-            throw new ExtensionError(
-              `tabs.highlight is currently experimental and must be enabled with the ${MULTISELECT_PREFNAME} preference.`
-            );
-          }
           let { windowId, tabs, populate } = highlightInfo;
           if (windowId == null) {
             windowId = Window.WINDOW_ID_CURRENT;
@@ -1616,7 +1570,7 @@ this.tabs = class extends ExtensionAPI {
 
           if (!Array.isArray(tabs)) {
             tabs = [tabs];
-          } else if (tabs.length == 0) {
+          } else if (!tabs.length) {
             throw new ExtensionError("No highlighted tab.");
           }
           window.gBrowser.selectedTabs = tabs.map(tabIndex => {
@@ -1627,6 +1581,16 @@ this.tabs = class extends ExtensionAPI {
             return tab;
           });
           return windowManager.convert(window, { populate });
+        },
+
+        goForward(tabId) {
+          let nativeTab = getTabOrActive(tabId);
+          nativeTab.linkedBrowser.goForward();
+        },
+
+        goBack(tabId) {
+          let nativeTab = getTabOrActive(tabId);
+          nativeTab.linkedBrowser.goBack();
         },
       },
     };

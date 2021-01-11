@@ -8,7 +8,9 @@
 #define MOZILLA_DOMPOINT_H_
 
 #include "js/StructuredClone.h"
+#include "DOMMatrix.h"
 #include "nsWrapperCache.h"
+#include "nsIGlobalObject.h"
 #include "nsISupports.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/Attributes.h"
@@ -22,6 +24,7 @@ namespace mozilla {
 namespace dom {
 
 class GlobalObject;
+class DOMPoint;
 struct DOMPointInit;
 struct DOMMatrixInit;
 
@@ -34,8 +37,7 @@ class DOMPointReadOnly : public nsWrapperCache {
   static already_AddRefed<DOMPointReadOnly> FromPoint(
       const GlobalObject& aGlobal, const DOMPointInit& aParams);
   static already_AddRefed<DOMPointReadOnly> Constructor(
-      const GlobalObject& aGlobal, double aX, double aY, double aZ, double aW,
-      ErrorResult& aRV);
+      const GlobalObject& aGlobal, double aX, double aY, double aZ, double aW);
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMPointReadOnly)
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(DOMPointReadOnly)
@@ -60,7 +62,7 @@ class DOMPointReadOnly : public nsWrapperCache {
       JSStructuredCloneReader* aReader);
 
  protected:
-  virtual ~DOMPointReadOnly() {}
+  virtual ~DOMPointReadOnly() = default;
 
   // Shared implementation of ReadStructuredClone for DOMPoint and
   // DOMPointReadOnly.
@@ -80,7 +82,7 @@ class DOMPoint final : public DOMPointReadOnly {
                                               const DOMPointInit& aParams);
   static already_AddRefed<DOMPoint> Constructor(const GlobalObject& aGlobal,
                                                 double aX, double aY, double aZ,
-                                                double aW, ErrorResult& aRV);
+                                                double aW);
 
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;

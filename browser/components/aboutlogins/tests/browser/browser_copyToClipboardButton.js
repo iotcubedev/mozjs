@@ -1,6 +1,8 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
+ChromeUtils.import("resource://testing-common/OSKeyStoreTestUtils.jsm", this);
+
 add_task(async function test() {
   await SpecialPowers.pushPrefEnv({
     set: [["dom.events.testing.asyncClipboard", true]],
@@ -16,7 +18,7 @@ add_task(async function test() {
         origin: "https://www.example.com",
       };
 
-      await ContentTask.spawn(browser, TEST_LOGIN, async function(login) {
+      await SpecialPowers.spawn(browser, [TEST_LOGIN], async function(login) {
         let loginItem = Cu.waiveXrays(
           content.document.querySelector("login-item")
         );
@@ -36,10 +38,12 @@ add_task(async function test() {
         );
       });
 
-      for (let testCase of [
-        [TEST_LOGIN.username, ".copy-username-button"],
-        [TEST_LOGIN.password, ".copy-password-button"],
-      ]) {
+      let testCases = [[TEST_LOGIN.username, ".copy-username-button"]];
+      if (OSKeyStoreTestUtils.canTestOSKeyStoreLogin()) {
+        testCases[1] = [TEST_LOGIN.password, ".copy-password-button"];
+      }
+
+      for (let testCase of testCases) {
         let testObj = {
           expectedValue: testCase[0],
           copyButtonSelector: testCase[1],
@@ -47,10 +51,17 @@ add_task(async function test() {
         info(
           "waiting for " + testObj.expectedValue + " to be placed on clipboard"
         );
+        let reauthObserved = true;
+        if (testObj.copyButtonSelector.includes("password")) {
+          reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
+        }
+
         await SimpleTest.promiseClipboardChange(
           testObj.expectedValue,
           async () => {
-            await ContentTask.spawn(browser, testObj, async function(aTestObj) {
+            await SpecialPowers.spawn(browser, [testObj], async function(
+              aTestObj
+            ) {
               let loginItem = content.document.querySelector("login-item");
               let copyButton = loginItem.shadowRoot.querySelector(
                 aTestObj.copyButtonSelector
@@ -60,9 +71,10 @@ add_task(async function test() {
             });
           }
         );
+        await reauthObserved;
         ok(true, testObj.expectedValue + " is on clipboard now");
 
-        await ContentTask.spawn(browser, testObj, async function(aTestObj) {
+        await SpecialPowers.spawn(browser, [testObj], async function(aTestObj) {
           let loginItem = Cu.waiveXrays(
             content.document.querySelector("login-item")
           );
@@ -85,7 +97,7 @@ add_task(async function test() {
       // button, which is the last button that is clicked in the above testcase.
       // Since another Copy button isn't clicked, the state won't get cleared
       // instantly. This test covers the built-in timeout of the visual display.
-      await ContentTask.spawn(browser, null, async () => {
+      await SpecialPowers.spawn(browser, [], async () => {
         let copyButton = Cu.waiveXrays(
           content.document.querySelector("login-item")
         )._copyPasswordButton;

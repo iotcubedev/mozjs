@@ -74,7 +74,8 @@ class MOZ_NON_PARAM InlineCharBuffer {
     }
 
     MOZ_ASSERT(!heapStorage, "heap storage already allocated");
-    heapStorage = cx->make_pod_array<CharT>(length + 1, js::StringBufferArena);
+    heapStorage =
+        cx->make_pod_arena_array<CharT>(js::StringBufferArena, length);
     return !!heapStorage;
   }
 
@@ -87,7 +88,7 @@ class MOZ_NON_PARAM InlineCharBuffer {
 
     if (!heapStorage) {
       heapStorage =
-          cx->make_pod_array<CharT>(newLength + 1, js::StringBufferArena);
+          cx->make_pod_arena_array<CharT>(js::StringBufferArena, newLength);
       if (!heapStorage) {
         return false;
       }
@@ -98,8 +99,8 @@ class MOZ_NON_PARAM InlineCharBuffer {
     }
 
     CharT* oldChars = heapStorage.release();
-    CharT* newChars = cx->pod_realloc(oldChars, oldLength + 1, newLength + 1,
-                                      js::StringBufferArena);
+    CharT* newChars = cx->pod_arena_realloc(js::StringBufferArena, oldChars,
+                                            oldLength, newLength);
     if (!newChars) {
       js_free(oldChars);
       return false;
@@ -109,7 +110,9 @@ class MOZ_NON_PARAM InlineCharBuffer {
     return true;
   }
 
-  JSString* toStringDontDeflate(JSContext* cx, size_t length) {
+  JSString* toStringDontDeflate(
+      JSContext* cx, size_t length,
+      js::gc::InitialHeap heap = js::gc::DefaultHeap) {
     MOZ_ASSERT(length == lastRequestedLength);
 
     if (JSInlineString::lengthFits<CharT>(length)) {
@@ -122,17 +125,18 @@ class MOZ_NON_PARAM InlineCharBuffer {
       }
 
       mozilla::Range<const CharT> range(inlineStorage, length);
-      return NewInlineString<CanGC>(cx, range);
+      return NewInlineString<CanGC>(cx, range, heap);
     }
 
     MOZ_ASSERT(heapStorage,
                "heap storage was not allocated for non-inline string");
 
-    heapStorage.get()[length] = '\0';  // Null-terminate
-    return NewStringDontDeflate<CanGC>(cx, std::move(heapStorage), length);
+    return NewStringDontDeflate<CanGC>(cx, std::move(heapStorage), length,
+                                       heap);
   }
 
-  JSString* toString(JSContext* cx, size_t length) {
+  JSString* toString(JSContext* cx, size_t length,
+                     js::gc::InitialHeap heap = js::gc::DefaultHeap) {
     MOZ_ASSERT(length == lastRequestedLength);
 
     if (JSInlineString::lengthFits<CharT>(length)) {
@@ -140,14 +144,13 @@ class MOZ_NON_PARAM InlineCharBuffer {
           !heapStorage,
           "expected only inline storage when length fits in inline string");
 
-      return NewStringCopyN<CanGC>(cx, inlineStorage, length);
+      return NewStringCopyN<CanGC>(cx, inlineStorage, length, heap);
     }
 
     MOZ_ASSERT(heapStorage,
                "heap storage was not allocated for non-inline string");
 
-    heapStorage.get()[length] = '\0';  // Null-terminate
-    return NewString<CanGC>(cx, std::move(heapStorage), length);
+    return NewString<CanGC>(cx, std::move(heapStorage), length, heap);
   }
 };
 

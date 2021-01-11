@@ -11,7 +11,6 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsIFile.h"
-#include "nsIFileStreams.h"
 #include "nsISupports.h"
 #include "nsCOMPtr.h"
 #include "nsClassHashtable.h"
@@ -46,7 +45,7 @@ class TableUpdate {
   }
 
  protected:
-  virtual ~TableUpdate() {}
+  virtual ~TableUpdate() = default;
 
  private:
   virtual int Tag() const = 0;

@@ -20,18 +20,23 @@ const {
   node: { nodeIsPrimitive, nodeIsFunction, nodeIsObject },
 } = utils;
 
+import ExceptionPopup from "./ExceptionPopup";
+
 import actions from "../../../actions";
-import { getThreadContext, getPreview } from "../../../selectors";
+import { getThreadContext } from "../../../selectors";
 import Popover from "../../shared/Popover";
 import PreviewFunction from "../../shared/PreviewFunction";
 
-import { createObjectClient } from "../../../client/firefox";
-
 import "./Popup.css";
 
-import type { ThreadContext } from "../../../types";
+import type { ThreadContext, Exception } from "../../../types";
 import type { Preview } from "../../../reducers/types";
 
+type OwnProps = {|
+  editor: any,
+  preview: Preview,
+  editorRef: ?HTMLDivElement,
+|};
 type Props = {
   cx: ThreadContext,
   preview: Preview,
@@ -50,6 +55,7 @@ export class Popup extends Component<Props> {
   marker: any;
   pos: any;
   popover: ?React$ElementRef<typeof Popover>;
+  isExceptionStactraceOpen: ?boolean;
 
   constructor(props: Props) {
     super(props);
@@ -64,7 +70,7 @@ export class Popup extends Component<Props> {
   }
 
   addHighlightToToken() {
-    const target = this.props.preview.target;
+    const { target } = this.props.preview;
     if (target) {
       target.classList.add("preview-token");
       addHighlightToTargetSiblings(target, this.props);
@@ -72,7 +78,7 @@ export class Popup extends Component<Props> {
   }
 
   removeHighlightFromToken() {
-    const target = this.props.preview.target;
+    const { target } = this.props.preview;
     if (target) {
       target.classList.remove("preview-token");
       removeHighlightForTargetSiblings(target);
@@ -98,19 +104,26 @@ export class Popup extends Component<Props> {
     const {
       cx,
       selectSourceURL,
-      preview: { result },
+      preview: { resultGrip },
     } = this.props;
+
+    if (!resultGrip) {
+      return null;
+    }
+
+    const { location } = resultGrip;
 
     return (
       <div
         className="preview-popup"
         onClick={() =>
-          selectSourceURL(cx, result.location.url, {
-            line: result.location.line,
+          location &&
+          selectSourceURL(cx, location.url, {
+            line: location.line,
           })
         }
       >
-        <PreviewFunction func={result} />
+        <PreviewFunction func={resultGrip} />
       </div>
     );
   }
@@ -124,6 +137,14 @@ export class Popup extends Component<Props> {
       unHighlightDomElement,
     } = this.props;
 
+    if (properties.length == 0) {
+      return (
+        <div className="preview-popup">
+          <span className="label">{L10N.getStr("preview.noProperties")}</span>
+        </div>
+      );
+    }
+
     return (
       <div
         className="preview-popup"
@@ -135,7 +156,6 @@ export class Popup extends Component<Props> {
           disableWrap={true}
           focusable={false}
           openLink={openLink}
-          createObjectClient={grip => createObjectClient(grip)}
           onDOMNodeClick={grip => openElementInInspector(grip)}
           onInspectIconClick={grip => openElementInInspector(grip)}
           onDOMNodeMouseOver={grip => highlightDomElement(grip)}
@@ -148,16 +168,25 @@ export class Popup extends Component<Props> {
   renderSimplePreview() {
     const {
       openLink,
-      preview: { result },
+      preview: { resultGrip },
     } = this.props;
     return (
       <div className="preview-popup">
         {Rep({
-          object: result,
+          object: resultGrip,
           mode: MODE.LONG,
           openLink,
         })}
       </div>
+    );
+  }
+
+  renderExceptionPreview(exception: Exception) {
+    return (
+      <ExceptionPopup
+        exception={exception}
+        mouseout={this.onMouseOutException}
+      />
     );
   }
 
@@ -167,7 +196,7 @@ export class Popup extends Component<Props> {
     // these falsy simple typed value because we want to
     // do `renderSimplePreview` on these values below.
     const {
-      preview: { root },
+      preview: { root, exception },
     } = this.props;
 
     if (nodeIsFunction(root)) {
@@ -178,14 +207,24 @@ export class Popup extends Component<Props> {
       return <div>{this.renderObjectPreview()}</div>;
     }
 
+    if (exception) {
+      return this.renderExceptionPreview(exception);
+    }
+
     return this.renderSimplePreview();
   }
 
   getPreviewType() {
     const {
-      preview: { root },
+      preview: { root, properties, exception },
     } = this.props;
-    if (nodeIsPrimitive(root) || nodeIsFunction(root)) {
+    if (
+      exception ||
+      nodeIsPrimitive(root) ||
+      nodeIsFunction(root) ||
+      !Array.isArray(properties) ||
+      properties.length === 0
+    ) {
       return "tooltip";
     }
 
@@ -194,27 +233,52 @@ export class Popup extends Component<Props> {
 
   onMouseOut = () => {
     const { clearPreview, cx } = this.props;
+
     clearPreview(cx);
+  };
+
+  onMouseOutException = (
+    shouldClearOnMouseout: ?boolean,
+    isExceptionStactraceOpen: ?boolean
+  ) => {
+    // onMouseOutException can be called:
+    // a. when the mouse leaves Popover element
+    // b. when the mouse leaves ExceptionPopup element
+    // We want to prevent closing the popup when the stacktrace
+    // is expanded and the mouse leaves either the Popover element
+    // or the ExceptionPopup element.
+    const { clearPreview, cx } = this.props;
+
+    if (shouldClearOnMouseout) {
+      this.isExceptionStactraceOpen = isExceptionStactraceOpen;
+    }
+
+    if (!this.isExceptionStactraceOpen) {
+      clearPreview(cx);
+    }
   };
 
   render() {
     const {
-      preview: { cursorPos, result },
+      preview: { cursorPos, resultGrip, exception },
       editorRef,
     } = this.props;
-    const type = this.getPreviewType();
 
-    if (typeof result == "undefined" || result.optimizedOut) {
+    if (
+      !exception &&
+      (typeof resultGrip == "undefined" || resultGrip?.optimizedOut)
+    ) {
       return null;
     }
 
+    const type = this.getPreviewType();
     return (
       <Popover
         targetPosition={cursorPos}
         type={type}
         editorRef={editorRef}
         target={this.props.preview.target}
-        mouseout={this.onMouseOut}
+        mouseout={exception ? this.onMouseOutException : this.onMouseOut}
       >
         {this.renderPreview()}
       </Popover>
@@ -222,10 +286,12 @@ export class Popup extends Component<Props> {
   }
 }
 
-function addHighlightToTargetSiblings(target: Element, props: Object) {
-  // Look at target's pervious and next token siblings.
-  // If they are the same token type, and are also found in the preview expression,
-  // add the highlight class to them as well.
+export function addHighlightToTargetSiblings(target: Element, props: Object) {
+  // This function searches for related tokens that should also be highlighted when previewed.
+  // Here is the process:
+  // It conducts a search on the target's next siblings and then another search for the previous siblings.
+  // If a sibling is not an element node (nodeType === 1), the highlight is not added and the search is short-circuited.
+  // If the element sibling is the same token type as the target, and is also found in the preview expression, the highlight class is added.
 
   const tokenType = target.classList.item(0);
   const previewExpression = props.preview.expression;
@@ -235,28 +301,46 @@ function addHighlightToTargetSiblings(target: Element, props: Object) {
     previewExpression &&
     target.innerHTML !== previewExpression
   ) {
-    let nextSibling = target.nextElementSibling;
+    let nextSibling = target.nextSibling;
+    let nextElementSibling = target.nextElementSibling;
+
+    // Note: Declaring previous/next ELEMENT siblings as well because
+    // properties like innerHTML can't be checked on nextSibling
+    // without creating a flow error even if the node is an element type.
     while (
       nextSibling &&
-      nextSibling.className.includes(tokenType) &&
-      previewExpression.includes(nextSibling.innerHTML)
+      nextElementSibling &&
+      nextSibling.nodeType === 1 &&
+      nextElementSibling.className.includes(tokenType) &&
+      previewExpression.includes(nextElementSibling.innerHTML)
     ) {
-      nextSibling.classList.add("preview-token");
-      nextSibling = nextSibling.nextElementSibling;
+      // All checks passed, add highlight and continue the search.
+      nextElementSibling.classList.add("preview-token");
+
+      nextSibling = nextSibling.nextSibling;
+      nextElementSibling = nextElementSibling.nextElementSibling;
     }
-    let previousSibling = target.previousElementSibling;
+
+    let previousSibling = target.previousSibling;
+    let previousElementSibling = target.previousElementSibling;
+
     while (
       previousSibling &&
-      previousSibling.className.includes(tokenType) &&
-      previewExpression.includes(previousSibling.innerHTML)
+      previousElementSibling &&
+      previousSibling.nodeType === 1 &&
+      previousElementSibling.className.includes(tokenType) &&
+      previewExpression.includes(previousElementSibling.innerHTML)
     ) {
-      previousSibling.classList.add("preview-token");
-      previousSibling = previousSibling.previousElementSibling;
+      // All checks passed, add highlight and continue the search.
+      previousElementSibling.classList.add("preview-token");
+
+      previousSibling = previousSibling.previousSibling;
+      previousElementSibling = previousElementSibling.previousElementSibling;
     }
   }
 }
 
-function removeHighlightForTargetSiblings(target: Element) {
+export function removeHighlightForTargetSiblings(target: Element) {
   // Look at target's previous and next token siblings.
   // If they also have the highlight class 'preview-token',
   // remove that class.
@@ -277,7 +361,6 @@ function removeHighlightForTargetSiblings(target: Element) {
 
 const mapStateToProps = state => ({
   cx: getThreadContext(state),
-  preview: getPreview(state),
 });
 
 const {
@@ -300,7 +383,7 @@ const mapDispatchToProps = {
   clearPreview,
 };
 
-export default connect(
+export default connect<Props, OwnProps, _, _, _, _>(
   mapStateToProps,
   mapDispatchToProps
 )(Popup);

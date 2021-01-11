@@ -11,8 +11,8 @@
 
 #include "GLLibraryLoader.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/ThreadLocal.h"
-#include "nsIFile.h"
 #include "GeckoProfiler.h"
 
 #include <bitset>
@@ -24,7 +24,14 @@
 #  define EGL_DEFAULT_DISPLAY ((EGLNativeDisplayType)0)
 #endif
 
+extern "C" {
+struct AHardwareBuffer;
+}
+
 class nsIGfxInfo;
+
+template <typename T>
+class nsCOMPtr;
 
 namespace angle {
 class Platform;
@@ -46,7 +53,7 @@ void AfterEGLCall(const char* funcName);
 
 class GLLibraryEGL final {
  protected:
-  ~GLLibraryEGL() {}
+  ~GLLibraryEGL() = default;
 
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(GLLibraryEGL)
@@ -72,6 +79,7 @@ class GLLibraryEGL final {
     KHR_fence_sync,
     ANDROID_native_fence_sync,
     EGL_ANDROID_image_crop,
+    ANDROID_get_native_client_buffer,
     ANGLE_platform_angle,
     ANGLE_platform_angle_d3d,
     ANGLE_d3d_share_handle_client_buffer,
@@ -86,6 +94,9 @@ class GLLibraryEGL final {
     KHR_surfaceless_context,
     KHR_create_context_no_error,
     MOZ_create_context_provoking_vertex_dont_care,
+    EXT_swap_buffers_with_damage,
+    KHR_swap_buffers_with_damage,
+    EXT_buffer_age,
     Extensions_Max
   };
 
@@ -350,6 +361,16 @@ class GLLibraryEGL final {
 
           EGLBoolean fReleaseDeviceANGLE(EGLDeviceEXT device)
               WRAP(fReleaseDeviceANGLE(device))
+
+      // EGL_EXT_swap_buffers_with_damage / EGL_KHR_swap_buffers_with_damage
+      EGLBoolean fSwapBuffersWithDamage(EGLDisplay dpy, EGLSurface surface,
+                                        const EGLint* rects, EGLint n_rects)
+          WRAP(fSwapBuffersWithDamage(dpy, surface, rects, n_rects))
+
+      // ANDROID_get_native_client_buffer
+      EGLClientBuffer
+      fGetNativeClientBufferANDROID(const struct AHardwareBuffer* buffer)
+          WRAP(fGetNativeClientBufferANDROID(buffer))
 #undef WRAP
 #undef VOID_WRAP
 #undef PROFILE_CALL
@@ -374,21 +395,21 @@ class GLLibraryEGL final {
     return mIsWARP;
   }
 
-  bool HasKHRImageBase() {
+  bool HasKHRImageBase() const {
     return IsExtensionSupported(KHR_image) ||
            IsExtensionSupported(KHR_image_base);
   }
 
-  bool HasKHRImagePixmap() {
+  bool HasKHRImagePixmap() const {
     return IsExtensionSupported(KHR_image) ||
            IsExtensionSupported(KHR_image_pixmap);
   }
 
-  bool HasKHRImageTexture2D() {
+  bool HasKHRImageTexture2D() const {
     return IsExtensionSupported(KHR_gl_texture_2D_image);
   }
 
-  bool HasANGLESurfaceD3DTexture2DShareHandle() {
+  bool HasANGLESurfaceD3DTexture2DShareHandle() const {
     return IsExtensionSupported(ANGLE_surface_d3d_texture_2d_share_handle);
   }
 
@@ -521,7 +542,13 @@ class GLLibraryEGL final {
                                                  void* native_device,
                                                  const EGLAttrib* attrib_list);
     EGLBoolean(GLAPIENTRY* fReleaseDeviceANGLE)(EGLDeviceEXT device);
-
+    // EGL_EXT_swap_buffers_with_damage / EGL_KHR_swap_buffers_with_damage
+    EGLBoolean(GLAPIENTRY* fSwapBuffersWithDamage)(EGLDisplay dpy,
+                                                   EGLSurface surface,
+                                                   const EGLint* rects,
+                                                   EGLint n_rects);
+    EGLClientBuffer(GLAPIENTRY* fGetNativeClientBufferANDROID)(
+        const struct AHardwareBuffer* buffer);
   } mSymbols = {};
 
  private:

@@ -245,12 +245,9 @@ gImageView.onPageMediaSort = function(columnname) {
 var gImageHash = {};
 
 // localized strings (will be filled in when the document is loaded)
-// this isn't all of them, these are just the ones that would otherwise have been loaded inside a loop
-var gStrings = {};
-var gBundle;
-
-const PERMISSION_CONTRACTID = "@mozilla.org/permissionmanager;1";
-const PREFERENCES_CONTRACTID = "@mozilla.org/preferences-service;1";
+const MEDIA_STRINGS = {};
+let SIZE_UNKNOWN = "";
+let ALT_NOT_SET = "";
 
 // a number of services I'll need later
 // the cache services
@@ -267,7 +264,6 @@ var loadContextInfo = Services.loadContextInfo.fromLoadContext(
 var diskStorage = cacheService.diskCacheStorage(loadContextInfo, false);
 
 const nsICookiePermission = Ci.nsICookiePermission;
-const nsIPermissionManager = Ci.nsIPermissionManager;
 
 const nsICertificateDialogs = Ci.nsICertificateDialogs;
 const CERTIFICATEDIALOGS_CONTRACTID = "@mozilla.org/nsCertificateDialogs;1";
@@ -285,42 +281,6 @@ function getClipboardHelper() {
 }
 const gClipboardHelper = getClipboardHelper();
 
-// namespaces, don't need all of these yet...
-const XLinkNS = "http://www.w3.org/1999/xlink";
-const XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-const XMLNS = "http://www.w3.org/XML/1998/namespace";
-const XHTMLNS = "http://www.w3.org/1999/xhtml";
-const XHTML2NS = "http://www.w3.org/2002/06/xhtml2";
-
-const XHTMLNSre = "^http://www.w3.org/1999/xhtml$";
-const XHTML2NSre = "^http://www.w3.org/2002/06/xhtml2$";
-const XHTMLre = RegExp(XHTMLNSre + "|" + XHTML2NSre, "");
-
-/* Overlays register functions here.
- * These arrays are used to hold callbacks that Page Info will call at
- * various stages. Use them by simply appending a function to them.
- * For example, add a function to onLoadRegistry by invoking
- *   "onLoadRegistry.push(XXXLoadFunc);"
- * The XXXLoadFunc should be unique to the overlay module, and will be
- * invoked as "XXXLoadFunc();"
- */
-
-// These functions are called to build the data displayed in the Page Info window.
-var onLoadRegistry = [];
-
-// These functions are called to remove old data still displayed in
-// the window when the document whose information is displayed
-// changes. For example, at this time, the list of images of the Media
-// tab is cleared.
-var onResetRegistry = [];
-
-// These functions are called once when all the elements in all of the target
-// document (and all of its subframes, if any) have been processed
-var onFinished = [];
-
-// These functions are called once when the Page Info window is closed.
-var onUnloadRegistry = [];
-
 /* Called when PageInfo window is loaded.  Arguments are:
  *  window.arguments[0] - (optional) an object consisting of
  *                         - doc: (optional) document to use for source. if not provided,
@@ -328,113 +288,117 @@ var onUnloadRegistry = [];
  *                         - initialTab: (optional) id of the inital tab to display
  */
 async function onLoadPageInfo() {
-  gStrings.unknown = await document.l10n.formatValue("image-size-unknown");
-  gStrings.notSet = await document.l10n.formatValue("not-set-alternative-text");
-  gStrings.mediaImg = await document.l10n.formatValue("media-img");
-  gStrings.mediaBGImg = await document.l10n.formatValue("media-bg-img");
-  gStrings.mediaBorderImg = await document.l10n.formatValue("media-border-img");
-  gStrings.mediaListImg = await document.l10n.formatValue("media-list-img");
-  gStrings.mediaCursor = await document.l10n.formatValue("media-cursor");
-  gStrings.mediaObject = await document.l10n.formatValue("media-object");
-  gStrings.mediaEmbed = await document.l10n.formatValue("media-embed");
-  gStrings.mediaLink = await document.l10n.formatValue("media-link");
-  gStrings.mediaInput = await document.l10n.formatValue("media-input");
-  gStrings.mediaVideo = await document.l10n.formatValue("media-video");
-  gStrings.mediaAudio = await document.l10n.formatValue("media-audio");
+  [
+    SIZE_UNKNOWN,
+    ALT_NOT_SET,
+    MEDIA_STRINGS.img,
+    MEDIA_STRINGS["bg-img"],
+    MEDIA_STRINGS["border-img"],
+    MEDIA_STRINGS["list-img"],
+    MEDIA_STRINGS.cursor,
+    MEDIA_STRINGS.object,
+    MEDIA_STRINGS.embed,
+    MEDIA_STRINGS.link,
+    MEDIA_STRINGS.input,
+    MEDIA_STRINGS.video,
+    MEDIA_STRINGS.audio,
+  ] = await document.l10n.formatValues([
+    "image-size-unknown",
+    "not-set-alternative-text",
+    "media-img",
+    "media-bg-img",
+    "media-border-img",
+    "media-list-img",
+    "media-cursor",
+    "media-object",
+    "media-embed",
+    "media-link",
+    "media-input",
+    "media-video",
+    "media-audio",
+  ]);
 
-  var args =
+  const args =
     "arguments" in window &&
     window.arguments.length >= 1 &&
     window.arguments[0];
 
-  // init media view
-  var imageTree = document.getElementById("imagetree");
-  imageTree.view = gImageView;
+  // Init media view
+  document.getElementById("imagetree").view = gImageView;
 
-  /* Select the requested tab, if the name is specified */
-  loadTab(args);
-  Services.obs.notifyObservers(window, "page-info-dialog-loaded");
+  // Select the requested tab, if the name is specified
+  await loadTab(args);
+
+  // Emit init event for tests
+  window.dispatchEvent(new Event("page-info-init"));
 }
 
-function loadPageInfo(frameOuterWindowID, imageElement, browser) {
+async function loadPageInfo(browsingContext, imageElement, browser) {
   browser = browser || window.opener.gBrowser.selectedBrowser;
-  let mm = browser.messageManager;
+  browsingContext = browsingContext || browser.browsingContext;
 
-  let imageInfo = imageElement;
+  let actor = browsingContext.currentWindowGlobal.getActor("PageInfo");
 
-  // Look for pageInfoListener in content.js. Sends message to listener with arguments.
-  mm.sendAsyncMessage("PageInfo:getData", {
-    strings: gStrings,
-    frameOuterWindowID,
-  });
+  let result = await actor.sendQuery("PageInfo:getData");
+  await onNonMediaPageInfoLoad(browser, result, imageElement);
 
-  let pageInfoData;
+  // Here, we are walking the frame tree via BrowsingContexts to collect all of the
+  // media information for each frame
+  let contextsToVisit = [browsingContext];
+  while (contextsToVisit.length) {
+    let currContext = contextsToVisit.pop();
+    let global = currContext.currentWindowGlobal;
 
-  // Get initial pageInfoData needed to display the general, permission and security tabs.
-  mm.addMessageListener("PageInfo:data", async function onmessage(message) {
-    mm.removeMessageListener("PageInfo:data", onmessage);
-    pageInfoData = message.data;
-    let docInfo = pageInfoData.docInfo;
-    let windowInfo = pageInfoData.windowInfo;
-    let uri = Services.io.newURI(docInfo.documentURIObject.spec);
-    let principal = docInfo.principal;
-    gDocInfo = docInfo;
-
-    gImageElement = imageInfo;
-    var titleFormat = windowInfo.isTopWindow
-      ? "page-info-page"
-      : "page-info-frame";
-    document.l10n.setAttributes(document.documentElement, titleFormat, {
-      website: docInfo.location,
-    });
-
-    document
-      .getElementById("main-window")
-      .setAttribute("relatedUrl", docInfo.location);
-
-    await makeGeneralTab(pageInfoData.metaViewRows, docInfo);
-    if (
-      uri.spec.startsWith("about:neterror") ||
-      uri.spec.startsWith("about:certerror")
-    ) {
-      uri = browser.currentURI;
-      principal = Services.scriptSecurityManager.createContentPrincipal(
-        uri,
-        browser.contentPrincipal.originAttributes
-      );
-    }
-    onLoadPermission(uri, principal);
-    securityOnLoad(uri, windowInfo);
-  });
-
-  // Get the media elements from content script to setup the media tab.
-  mm.addMessageListener("PageInfo:mediaData", function onmessage(message) {
-    // Page info window was closed.
-    if (window.closed) {
-      mm.removeMessageListener("PageInfo:mediaData", onmessage);
-      return;
+    if (!global) {
+      continue;
     }
 
-    // The page info media fetching has been completed.
-    if (message.data.isComplete) {
-      mm.removeMessageListener("PageInfo:mediaData", onmessage);
-      onFinished.forEach(function(func) {
-        func(pageInfoData);
-      });
-      return;
-    }
-
-    for (let item of message.data.mediaItems) {
+    let subframeActor = global.getActor("PageInfo");
+    let mediaResult = await subframeActor.sendQuery("PageInfo:getMediaData");
+    for (let item of mediaResult.mediaItems) {
       addImage(item);
     }
-
     selectImage();
+    contextsToVisit.push(...currContext.children);
+  }
+}
+
+/**
+ * onNonMediaPageInfoLoad is responsible for populating the page info
+ * UI other than the media tab. This includes general, permissions, and security.
+ */
+async function onNonMediaPageInfoLoad(browser, pageInfoData, imageInfo) {
+  const { docInfo, windowInfo } = pageInfoData;
+  let uri = Services.io.newURI(docInfo.documentURIObject.spec);
+  let principal = docInfo.principal;
+  gDocInfo = docInfo;
+
+  gImageElement = imageInfo;
+  var titleFormat = windowInfo.isTopWindow
+    ? "page-info-page"
+    : "page-info-frame";
+  document.l10n.setAttributes(document.documentElement, titleFormat, {
+    website: docInfo.location,
   });
 
-  /* Call registered overlay init functions */
-  onLoadRegistry.forEach(function(func) {
-    func();
-  });
+  document
+    .getElementById("main-window")
+    .setAttribute("relatedUrl", docInfo.location);
+
+  await makeGeneralTab(pageInfoData.metaViewRows, docInfo);
+  if (
+    uri.spec.startsWith("about:neterror") ||
+    uri.spec.startsWith("about:certerror") ||
+    uri.spec.startsWith("about:httpsonlyerror")
+  ) {
+    uri = browser.currentURI;
+    principal = Services.scriptSecurityManager.createContentPrincipal(
+      uri,
+      browser.contentPrincipal.originAttributes
+    );
+  }
+  onLoadPermission(uri, principal);
+  securityOnLoad(uri, windowInfo);
 }
 
 function resetPageInfo(args) {
@@ -444,31 +408,13 @@ function resetPageInfo(args) {
   /* Reset Media tab */
   var mediaTab = document.getElementById("mediaTab");
   if (!mediaTab.hidden) {
-    Services.obs.removeObserver(imagePermissionObserver, "perm-changed");
     mediaTab.hidden = true;
   }
   gImageView.clear();
   gImageHash = {};
 
-  /* Call registered overlay reset functions */
-  onResetRegistry.forEach(function(func) {
-    func();
-  });
-
   /* Rebuild the data */
   loadTab(args);
-}
-
-function onUnloadPageInfo() {
-  // Remove the observer, only if there is at least 1 image.
-  if (!document.getElementById("mediaTab").hidden) {
-    Services.obs.removeObserver(imagePermissionObserver, "perm-changed");
-  }
-
-  /* Call registered overlay unload functions */
-  onUnloadRegistry.forEach(function(func) {
-    func();
-  });
 }
 
 function doHelpButton() {
@@ -490,17 +436,17 @@ function showTab(id) {
   deck.selectedPanel = pagel;
 }
 
-function loadTab(args) {
+async function loadTab(args) {
   // If the "View Image Info" context menu item was used, the related image
   // element is provided as an argument. This can't be a background image.
-  let imageElement = args && args.imageElement;
-  let frameOuterWindowID = args && args.frameOuterWindowID;
-  let browser = args && args.browser;
+  let imageElement = args?.imageElement;
+  let browsingContext = args?.browsingContext;
+  let browser = args?.browser;
 
   /* Load the page info */
-  loadPageInfo(frameOuterWindowID, imageElement, browser);
+  await loadPageInfo(browsingContext, imageElement, browser);
 
-  var initialTab = (args && args.initialTab) || "generalTab";
+  var initialTab = args?.initialTab || "generalTab";
   var radioGroup = document.getElementById("viewGroup");
   initialTab =
     document.getElementById(initialTab) ||
@@ -551,8 +497,7 @@ async function makeGeneralTab(metaViewRows, docInfo) {
   document.l10n.setAttributes(document.getElementById("modetext"), mode);
 
   // find out the mime type
-  var mimeType = docInfo.contentType;
-  setItemValue("typetext", mimeType);
+  setItemValue("typetext", docInfo.contentType);
 
   // get the document characterset
   var encoding = docInfo.characterSet;
@@ -570,8 +515,7 @@ async function makeGeneralTab(metaViewRows, docInfo) {
       { tags: length }
     );
 
-    var metaTree = document.getElementById("metatree");
-    metaTree.view = gMetaView;
+    document.getElementById("metatree").view = gMetaView;
 
     // Add the metaViewRows onto the general tab's meta info tree.
     gMetaView.addRows(metaViewRows);
@@ -588,7 +532,6 @@ async function makeGeneralTab(metaViewRows, docInfo) {
   // get cache info
   var cacheKey = url.replace(/#.*$/, "");
   openCacheEntry(cacheKey, function(cacheEntry) {
-    var sizeText;
     if (cacheEntry) {
       var pageSize = cacheEntry.dataSize;
       var kbSize = formatNumber(Math.round((pageSize / 1024) * 100) / 100);
@@ -598,15 +541,18 @@ async function makeGeneralTab(metaViewRows, docInfo) {
         { kb: kbSize, bytes: formatNumber(pageSize) }
       );
     } else {
-      setItemValue("sizetext", sizeText);
+      setItemValue("sizetext", null);
     }
   });
 }
 
-async function addImage(imageViewRow) {
-  let [url, type, alt, elem, isBg] = imageViewRow;
+async function addImage({ url, type, alt, altNotProvided, element, isBg }) {
   if (!url) {
     return;
+  }
+
+  if (altNotProvided) {
+    alt = ALT_NOT_SET;
   }
 
   if (!gImageHash.hasOwnProperty(url)) {
@@ -617,7 +563,7 @@ async function addImage(imageViewRow) {
   }
   if (!gImageHash[url][type].hasOwnProperty(alt)) {
     gImageHash[url][type][alt] = gImageView.data.length;
-    var row = [url, type, gStrings.unknown, alt, 1, elem, isBg];
+    var row = [url, MEDIA_STRINGS[type], SIZE_UNKNOWN, alt, 1, element, isBg];
     gImageView.addRow(row);
 
     // Fill in cache data asynchronously
@@ -639,10 +585,8 @@ async function addImage(imageViewRow) {
       }
     });
 
-    // Add the observer, only once.
     if (gImageView.data.length == 1) {
       document.getElementById("mediaTab").hidden = false;
-      Services.obs.addObserver(imagePermissionObserver, "perm-changed");
     }
   } else {
     var i = gImageHash[url][type][alt];
@@ -654,21 +598,16 @@ async function addImage(imageViewRow) {
       !gImageView.data[i][COL_IMAGE_BG] &&
       gImageElement &&
       url == gImageElement.currentSrc &&
-      gImageElement.width == elem.width &&
-      gImageElement.height == elem.height &&
-      gImageElement.imageText == elem.imageText
+      gImageElement.width == element.width &&
+      gImageElement.height == element.height &&
+      gImageElement.imageText == element.imageText
     ) {
-      gImageView.data[i][COL_IMAGE_NODE] = elem;
+      gImageView.data[i][COL_IMAGE_NODE] = element;
     }
   }
 }
 
 // Link Stuff
-function openURL(target) {
-  var url = target.parentNode.childNodes[2].value;
-  window.open(url, "_blank", "chrome");
-}
-
 function onBeginLinkDrag(event, urlField, descField) {
   if (event.originalTarget.localName != "treechildren") {
     return;
@@ -719,8 +658,7 @@ function getSelectedRow(tree) {
 }
 
 async function selectSaveFolder(aCallback) {
-  const nsIFile = Ci.nsIFile;
-  const nsIFilePicker = Ci.nsIFilePicker;
+  const { nsIFile, nsIFilePicker } = Ci;
   let titleText = await document.l10n.formatValue("media-select-folder");
   let fp = Cc["@mozilla.org/filepicker;1"].createInstance(nsIFilePicker);
   let fpCallback = function fpCallback_done(aResult) {
@@ -855,28 +793,6 @@ function saveMedia() {
   }
 }
 
-function onBlockImage() {
-  var permissionManager = Cc[PERMISSION_CONTRACTID].getService(
-    nsIPermissionManager
-  );
-
-  var checkbox = document.getElementById("blockImage");
-  var uri = Services.io.newURI(document.getElementById("imageurltext").value);
-  let principal = Services.scriptSecurityManager.createContentPrincipal(
-    uri,
-    gDocInfo.principal.originAttributes
-  );
-  if (checkbox.checked) {
-    permissionManager.addFromPrincipal(
-      principal,
-      "image",
-      nsIPermissionManager.DENY_ACTION
-    );
-  } else {
-    permissionManager.removeFromPrincipal(principal, "image");
-  }
-}
-
 function onImageSelect() {
   var previewBox = document.getElementById("mediaPreviewBox");
   var mediaSaveBox = document.getElementById("mediaSaveBox");
@@ -935,6 +851,7 @@ function makePreview(row) {
     var mimeType = item.mimeType || this.getContentTypeFromHeaders(cacheEntry);
     var numFrames = item.numFrames;
 
+    let element = document.getElementById("imagetypetext");
     var imageType;
     if (mimeType) {
       // We found the type, try to display it nicely
@@ -942,25 +859,24 @@ function makePreview(row) {
       if (imageMimeType) {
         imageType = imageMimeType[1].toUpperCase();
         if (numFrames > 1) {
-          document.l10n.setAttributes(
-            document.getElementById("imagetypetext"),
-            "media-animated-image-type",
-            { type: imageType, frames: numFrames }
-          );
+          document.l10n.setAttributes(element, "media-animated-image-type", {
+            type: imageType,
+            frames: numFrames,
+          });
         } else {
-          document.l10n.setAttributes(
-            document.getElementById("imagetypetext"),
-            "media-image-type",
-            { type: imageType }
-          );
+          document.l10n.setAttributes(element, "media-image-type", {
+            type: imageType,
+          });
         }
       } else {
         // the MIME type doesn't begin with image/, display the raw type
-        setItemValue("imagetypetext", mimeType);
+        element.setAttribute("value", mimeType);
+        element.removeAttribute("data-l10n-id");
       }
     } else {
       // We couldn't find the type, fall back to the value in the treeview
-      setItemValue("imagetypetext", gImageView.data[row][COL_IMAGE_TYPE]);
+      element.setAttribute("value", gImageView.data[row][COL_IMAGE_TYPE]);
+      element.removeAttribute("data-l10n-id");
     }
 
     var imageContainer = document.getElementById("theimagecontainer");
@@ -1055,10 +971,7 @@ function makePreview(row) {
     } else {
       // Handle the case where newImage is not used for width & height
       if (item.HTMLVideoElement && isProtocolAllowed) {
-        newImage = document.createElementNS(
-          "http://www.w3.org/1999/xhtml",
-          "video"
-        );
+        newImage = document.createElement("video");
         newImage.id = "thepreviewimage";
         newImage.setAttribute("triggeringprincipal", triggeringPrinStr);
         newImage.src = url;
@@ -1094,65 +1007,10 @@ function makePreview(row) {
       }
     }
 
-    makeBlockImage(url);
-
     imageContainer.removeChild(oldImage);
     imageContainer.appendChild(newImage);
   });
 }
-
-function makeBlockImage(url) {
-  var permissionManager = Cc[PERMISSION_CONTRACTID].getService(
-    nsIPermissionManager
-  );
-
-  var checkbox = document.getElementById("blockImage");
-  var imagePref = Services.prefs.getIntPref("permissions.default.image");
-  if (!/^https?:/.test(url) || imagePref == 2) {
-    // We can't block the images from this host because either is is not
-    // for http(s) or we don't load images at all
-    checkbox.hidden = true;
-  } else {
-    var uri = Services.io.newURI(url);
-    if (uri.host) {
-      checkbox.hidden = false;
-      document.l10n.setAttributes(checkbox, "media-block-image", {
-        website: uri.host,
-      });
-      let principal = Services.scriptSecurityManager.createContentPrincipal(
-        uri,
-        gDocInfo.principal.originAttributes
-      );
-      let perm = permissionManager.testPermissionFromPrincipal(
-        principal,
-        "image"
-      );
-      checkbox.checked = perm == nsIPermissionManager.DENY_ACTION;
-    } else {
-      checkbox.hidden = true;
-    }
-  }
-}
-
-var imagePermissionObserver = {
-  observe(aSubject, aTopic, aData) {
-    if (document.getElementById("mediaPreviewBox").collapsed) {
-      return;
-    }
-
-    if (aTopic == "perm-changed") {
-      var permission = aSubject.QueryInterface(Ci.nsIPermission);
-      if (permission.type == "image") {
-        var imageTree = document.getElementById("imagetree");
-        var row = getSelectedRow(imageTree);
-        var url = gImageView.data[row][COL_IMAGE_ADDRESS];
-        if (permission.matchesURI(Services.io.newURI(url), true)) {
-          makeBlockImage(url);
-        }
-      }
-    }
-  },
-};
 
 function getContentTypeFromHeaders(cacheEntryDescriptor) {
   if (!cacheEntryDescriptor) {
@@ -1166,11 +1024,9 @@ function getContentTypeFromHeaders(cacheEntryDescriptor) {
 
 function setItemValue(id, value) {
   var item = document.getElementById(id);
+  item.closest("tr").hidden = !value;
   if (value) {
-    item.parentNode.collapsed = false;
     item.value = value;
-  } else {
-    item.parentNode.collapsed = true;
   }
 }
 

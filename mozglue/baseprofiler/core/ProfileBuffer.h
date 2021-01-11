@@ -7,44 +7,40 @@
 #define MOZ_PROFILE_BUFFER_H
 
 #include "ProfileBufferEntry.h"
-#include "ProfilerMarker.h"
 
 #include "mozilla/Maybe.h"
 #include "mozilla/PowerOfTwo.h"
+#include "mozilla/ProfileBufferChunkManagerSingle.h"
+#include "mozilla/ProfileChunkedBuffer.h"
 
 namespace mozilla {
 namespace baseprofiler {
 
-// A fixed-capacity circular buffer.
+// Class storing most profiling data in a ProfileChunkedBuffer.
+//
 // This class is used as a queue of entries which, after construction, never
 // allocates. This makes it safe to use in the profiler's "critical section".
-// Entries are appended at the end. Once the queue capacity has been reached,
-// adding a new entry will evict an old entry from the start of the queue.
-// Positions in the queue are represented as 64-bit unsigned integers which
-// only increase and never wrap around.
-// mRangeStart and mRangeEnd describe the range in that uint64_t space which is
-// covered by the queue contents.
-// Internally, the buffer uses a fixed-size storage and applies a modulo
-// operation when accessing entries in that storage buffer. "Evicting" an entry
-// really just means that an existing entry in the storage buffer gets
-// overwritten and that mRangeStart gets incremented.
 class ProfileBuffer final {
  public:
   // ProfileBuffer constructor
-  // @param aCapacity The capacity of the buffer.
-  explicit ProfileBuffer(PowerOfTwo32 aCapacity);
+  // @param aBuffer The in-session ProfileChunkedBuffer to use as buffer
+  // manager.
+  explicit ProfileBuffer(ProfileChunkedBuffer& aBuffer);
 
   ~ProfileBuffer();
 
+  bool IsThreadSafe() const { return mEntries.IsThreadSafe(); }
+
   // Add |aEntry| to the buffer, ignoring what kind of entry it is.
-  void AddEntry(const ProfileBufferEntry& aEntry);
+  // Returns the position of the entry.
+  uint64_t AddEntry(const ProfileBufferEntry& aEntry);
 
   // Add to the buffer a sample start (ThreadId) entry for aThreadId.
   // Returns the position of the entry.
   uint64_t AddThreadIdEntry(int aThreadId);
 
   void CollectCodeLocation(const char* aLabel, const char* aStr,
-                           uint32_t aFrameFlags,
+                           uint32_t aFrameFlags, uint64_t aInnerWindowID,
                            const Maybe<uint32_t>& aLineNumber,
                            const Maybe<uint32_t>& aColumnNumber,
                            const Maybe<ProfilingCategoryPair>& aCategoryPair);
@@ -82,16 +78,7 @@ class ProfileBuffer final {
 
   void DiscardSamplesBeforeTime(double aTime);
 
-  void AddStoredMarker(ProfilerMarker* aStoredMarker);
-
-  // The following method is not signal safe!
-  void DeleteExpiredStoredMarkers();
-
-  // Access an entry in the buffer.
-  ProfileBufferEntry& GetEntry(uint64_t aPosition) const {
-    return mEntries[aPosition & mEntryIndexMask];
-  }
-
+  size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const;
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
 
   void CollectOverheadStats(TimeDuration aSamplingTime, TimeDuration aLocking,
@@ -101,38 +88,53 @@ class ProfileBuffer final {
   ProfilerBufferInfo GetProfilerBufferInfo() const;
 
  private:
-  // The storage that backs our buffer. Holds capacity entries.
-  // All accesses to entries in mEntries need to go through GetEntry(), which
-  // translates the given buffer position from the near-infinite uint64_t space
-  // into the entry storage space.
-  UniquePtr<ProfileBufferEntry[]> mEntries;
+  // Add |aEntry| to the provider ProfileChunkedBuffer.
+  // `static` because it may be used to add an entry to a `ProfileChunkedBuffer`
+  // that is not attached to a `ProfileBuffer`.
+  static ProfileBufferBlockIndex AddEntry(
+      ProfileChunkedBuffer& aProfileChunkedBuffer,
+      const ProfileBufferEntry& aEntry);
 
-  // A mask such that pos & mEntryIndexMask == pos % capacity.
-  PowerOfTwoMask32 mEntryIndexMask;
+  // Add a sample start (ThreadId) entry for aThreadId to the provided
+  // ProfileChunkedBuffer. Returns the position of the entry.
+  // `static` because it may be used to add an entry to a `ProfileChunkedBuffer`
+  // that is not attached to a `ProfileBuffer`.
+  static ProfileBufferBlockIndex AddThreadIdEntry(
+      ProfileChunkedBuffer& aProfileChunkedBuffer, int aThreadId);
+
+  // The storage in which this ProfileBuffer stores its entries.
+  ProfileChunkedBuffer& mEntries;
 
  public:
-  // mRangeStart and mRangeEnd are uint64_t values that strictly advance and
-  // never wrap around. mRangeEnd is always greater than or equal to
-  // mRangeStart, but never gets more than capacity steps ahead of
-  // mRangeStart, because we can only store a fixed number of entries in the
-  // buffer. Once the entire buffer is in use, adding a new entry will evict an
-  // entry from the front of the buffer (and increase mRangeStart).
-  // In other words, the following conditions hold true at all times:
-  //  (1) mRangeStart <= mRangeEnd
-  //  (2) mRangeEnd - mRangeStart <= capacity
+  // `BufferRangeStart()` and `BufferRangeEnd()` return `uint64_t` values
+  // corresponding to the first entry and past the last entry stored in
+  // `mEntries`.
   //
-  // If there are no live entries, then mRangeStart == mRangeEnd.
-  // Otherwise, mRangeStart is the first live entry and mRangeEnd is one past
-  // the last live entry, and also the position at which the next entry will be
-  // added.
-  // (mRangeEnd - mRangeStart) always gives the number of live entries.
-  uint64_t mRangeStart;
-  uint64_t mRangeEnd;
-
-  // Markers that marker entries in the buffer might refer to.
-  ProfilerMarkerLinkedList mStoredMarkers;
+  // The returned values are not guaranteed to be stable, because other threads
+  // may also be accessing the buffer concurrently. But they will always
+  // increase, and can therefore give an indication of how far these values have
+  // *at least* reached. In particular:
+  // - Entries whose index is strictly less that `BufferRangeStart()` have been
+  //   discarded by now, so any related data may also be safely discarded.
+  // - It is safe to try and read entries at any index strictly less than
+  //   `BufferRangeEnd()` -- but note that these reads may fail by the time you
+  //   request them, as old entries get overwritten by new ones.
+  uint64_t BufferRangeStart() const { return mEntries.GetState().mRangeStart; }
+  uint64_t BufferRangeEnd() const { return mEntries.GetState().mRangeEnd; }
 
  private:
+  // 65536 bytes should be plenty for a single backtrace.
+  static constexpr auto WorkerBufferBytes = MakePowerOfTwo32<65536>();
+
+  // Single pre-allocated chunk (to avoid spurious mallocs), used when:
+  // - Duplicating sleeping stacks.
+  // - Adding JIT info.
+  // - Streaming stacks to JSON.
+  // Mutable because it's accessed from non-multithreaded const methods.
+  mutable ProfileBufferChunkManagerSingle mWorkerChunkManager{
+      ProfileBufferChunk::Create(ProfileBufferChunk::SizeofChunkMetadata() +
+                                 WorkerBufferBytes.Value())};
+
   // Time from launch (ns) when first sampling was recorded.
   double mFirstSamplingTimeNs = 0.0;
   // Time from launch (ns) when last sampling was recorded.
@@ -159,15 +161,16 @@ class ProfileBuffer final {
  */
 class ProfileBufferCollector final : public ProfilerStackCollector {
  public:
-  ProfileBufferCollector(ProfileBuffer& aBuf, uint32_t aFeatures,
-                         uint64_t aSamplePos)
-      : mBuf(aBuf), mSamplePositionInBuffer(aSamplePos), mFeatures(aFeatures) {}
+  ProfileBufferCollector(ProfileBuffer& aBuf, uint64_t aSamplePos)
+      : mBuf(aBuf), mSamplePositionInBuffer(aSamplePos) {}
 
   Maybe<uint64_t> SamplePositionInBuffer() override {
     return Some(mSamplePositionInBuffer);
   }
 
-  Maybe<uint64_t> BufferRangeStart() override { return Some(mBuf.mRangeStart); }
+  Maybe<uint64_t> BufferRangeStart() override {
+    return Some(mBuf.BufferRangeStart());
+  }
 
   virtual void CollectNativeLeafAddr(void* aAddr) override;
   virtual void CollectProfilingStackFrame(
@@ -176,7 +179,6 @@ class ProfileBufferCollector final : public ProfilerStackCollector {
  private:
   ProfileBuffer& mBuf;
   uint64_t mSamplePositionInBuffer;
-  uint32_t mFeatures;
 };
 
 }  // namespace baseprofiler

@@ -16,18 +16,9 @@
 #include "nsGlobalWindow.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
-#include "nsILoadContext.h"
-#include "nsIDocShell.h"
 #include "nsIMutableArray.h"
 #include "nsIScriptError.h"
-#include "nsISensitiveInfoHiddenURI.h"
-
-static_assert(nsIScriptError::errorFlag == JSREPORT_ERROR &&
-                  nsIScriptError::warningFlag == JSREPORT_WARNING &&
-                  nsIScriptError::exceptionFlag == JSREPORT_EXCEPTION &&
-                  nsIScriptError::strictFlag == JSREPORT_STRICT &&
-                  nsIScriptError::infoFlag == JSREPORT_USER_1,
-              "flags should be consistent");
+#include "mozilla/BasePrincipal.h"
 
 nsScriptErrorBase::nsScriptErrorBase()
     : mMessage(),
@@ -43,12 +34,13 @@ nsScriptErrorBase::nsScriptErrorBase()
       mOuterWindowID(0),
       mInnerWindowID(0),
       mTimeStamp(0),
-      mTimeWarpTarget(0),
       mInitializedOnMainThread(false),
       mIsFromPrivateWindow(false),
-      mIsFromChromeContext(false) {}
+      mIsFromChromeContext(false),
+      mIsPromiseRejection(false),
+      mIsForwardedFromContentProcess(false) {}
 
-nsScriptErrorBase::~nsScriptErrorBase() {}
+nsScriptErrorBase::~nsScriptErrorBase() = default;
 
 void nsScriptErrorBase::AddNote(nsIScriptErrorNote* note) {
   mNotes.AppendObject(note);
@@ -162,6 +154,23 @@ NS_IMETHODIMP
 nsScriptErrorBase::GetCategory(char** result) {
   *result = ToNewCString(mCategory);
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::GetHasException(bool* aHasException) {
+  *aHasException = false;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::GetException(JS::MutableHandleValue aException) {
+  aException.setUndefined();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::SetException(JS::HandleValue aStack) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -342,7 +351,8 @@ nsScriptErrorBase::ToString(nsACString& /*UTF8*/ aResult) {
   static const char error[] = "JavaScript Error";
   static const char warning[] = "JavaScript Warning";
 
-  const char* severity = !(mFlags & JSREPORT_WARNING) ? error : warning;
+  const char* severity =
+      !(mFlags & nsIScriptError::warningFlag) ? error : warning;
 
   return ToStringHelper(severity, mMessage, mSourceName, &mSourceLine,
                         mLineNumber, mColumnNumber, aResult);
@@ -389,18 +399,6 @@ nsScriptErrorBase::GetIsFromPrivateWindow(bool* aIsFromPrivateWindow) {
 }
 
 NS_IMETHODIMP
-nsScriptErrorBase::SetTimeWarpTarget(uint64_t aTarget) {
-  mTimeWarpTarget = aTarget;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsScriptErrorBase::GetTimeWarpTarget(uint64_t* aTarget) {
-  *aTarget = mTimeWarpTarget;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 nsScriptErrorBase::GetIsFromChromeContext(bool* aIsFromChromeContext) {
   NS_WARNING_ASSERTION(NS_IsMainThread() || mInitializedOnMainThread,
                        "This can't be safely determined off the main thread, "
@@ -409,6 +407,32 @@ nsScriptErrorBase::GetIsFromChromeContext(bool* aIsFromChromeContext) {
     InitializeOnMainThread();
   }
   *aIsFromChromeContext = mIsFromChromeContext;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::GetIsPromiseRejection(bool* aIsPromiseRejection) {
+  *aIsPromiseRejection = mIsPromiseRejection;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::InitIsPromiseRejection(bool aIsPromiseRejection) {
+  mIsPromiseRejection = aIsPromiseRejection;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::GetIsForwardedFromContentProcess(
+    bool* aIsForwardedFromContentProcess) {
+  *aIsForwardedFromContentProcess = mIsForwardedFromContentProcess;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsScriptErrorBase::SetIsForwardedFromContentProcess(
+    bool aIsForwardedFromContentProcess) {
+  mIsForwardedFromContentProcess = aIsForwardedFromContentProcess;
   return NS_OK;
 }
 
@@ -431,15 +455,14 @@ bool nsScriptErrorBase::ComputeIsFromPrivateWindow(
   // Never mark exceptions from chrome windows as having come from private
   // windows, since we always want them to be reported.
   nsIPrincipal* winPrincipal = aWindow->GetPrincipal();
-  return aWindow->IsPrivateBrowsing() &&
-         !nsContentUtils::IsSystemPrincipal(winPrincipal);
+  return aWindow->IsPrivateBrowsing() && !winPrincipal->IsSystemPrincipal();
 }
 
 /* static */
 bool nsScriptErrorBase::ComputeIsFromChromeContext(
     nsGlobalWindowInner* aWindow) {
   nsIPrincipal* winPrincipal = aWindow->GetPrincipal();
-  return nsContentUtils::IsSystemPrincipal(winPrincipal);
+  return winPrincipal->IsSystemPrincipal();
 }
 
 NS_IMPL_ISUPPORTS(nsScriptError, nsIConsoleMessage, nsIScriptError)
@@ -451,7 +474,7 @@ nsScriptErrorNote::nsScriptErrorNote()
       mLineNumber(0),
       mColumnNumber(0) {}
 
-nsScriptErrorNote::~nsScriptErrorNote() {}
+nsScriptErrorNote::~nsScriptErrorNote() = default;
 
 void nsScriptErrorNote::Init(const nsAString& message,
                              const nsAString& sourceName, uint32_t sourceId,

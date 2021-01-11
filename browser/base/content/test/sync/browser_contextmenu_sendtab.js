@@ -38,14 +38,36 @@ function updateTabContextMenu(tab = gBrowser.selectedTab) {
 
 add_task(async function setup() {
   await promiseSyncReady();
+  await Services.search.init();
   // gSync.init() is called in a requestIdleCallback. Force its initialization.
   gSync.init();
+  sinon
+    .stub(Weave.Service.clientsEngine, "getClientByFxaDeviceId")
+    .callsFake(fxaDeviceId => {
+      let target = fxaDevices.find(c => c.id == fxaDeviceId);
+      return target ? target.clientRecord : null;
+    });
   sinon.stub(Weave.Service.clientsEngine, "getClientType").returns("desktop");
   await BrowserTestUtils.openNewForegroundTab(gBrowser, "about:mozilla");
   registerCleanupFunction(() => {
     gBrowser.removeCurrentTab();
   });
   is(gBrowser.visibleTabs.length, 2, "there are two visible tabs");
+});
+
+add_task(async function test_sendTabToDevice_callsFlushLogFile() {
+  const sandbox = setupSendTabMocks({ fxaDevices });
+  updateTabContextMenu(testTab);
+  await openTabContextMenu("context_sendTabToDevice");
+  let promiseObserved = promiseObserver("service:log-manager:flush-log-file");
+  document
+    .getElementById("context_sendTabToDevicePopupMenu")
+    .querySelector("menuitem")
+    .click();
+
+  await promiseObserved;
+  await hideTabContextMenu();
+  sandbox.restore();
 });
 
 add_task(async function test_tab_contextmenu() {
@@ -57,7 +79,7 @@ add_task(async function test_tab_contextmenu() {
     .withExactArgs(
       "about:mozilla",
       [fxaDevices[1]],
-      "The Book of Mozilla, 11:14"
+      "The Book of Mozilla, 6:27"
     );
 
   updateTabContextMenu(testTab);
@@ -177,9 +199,9 @@ add_task(async function test_tab_contextmenu_sync_not_ready_other_state() {
 });
 
 add_task(async function test_tab_contextmenu_fxa_disabled() {
-  const getter = sinon.stub(gSync, "SYNC_ENABLED").get(() => false);
-  // Simulate onSyncDisabled() being called on window open.
-  gSync.onSyncDisabled();
+  const getter = sinon.stub(gSync, "FXA_ENABLED").get(() => false);
+  // Simulate onFxaDisabled() being called on window open.
+  gSync.onFxaDisabled();
 
   updateTabContextMenu(testTab);
   is(
@@ -195,6 +217,7 @@ add_task(async function test_tab_contextmenu_fxa_disabled() {
 });
 
 add_task(async function teardown() {
+  Weave.Service.clientsEngine.getClientByFxaDeviceId.restore();
   Weave.Service.clientsEngine.getClientType.restore();
 });
 
@@ -231,4 +254,14 @@ async function hideTabContextMenu() {
   );
   contextMenu.hidePopup();
   await awaitPopupHidden;
+}
+
+function promiseObserver(topic) {
+  return new Promise(resolve => {
+    let obs = (aSubject, aTopic, aData) => {
+      Services.obs.removeObserver(obs, aTopic);
+      resolve(aSubject);
+    };
+    Services.obs.addObserver(obs, topic);
+  });
 }

@@ -20,8 +20,8 @@ class DateTimePickerChild extends JSWindowActorChild {
    * On init, just listen for the event to open the picker, once the picker is
    * opened, we'll listen for update and close events.
    */
-  constructor(dispatcher) {
-    super(dispatcher);
+  constructor() {
+    super();
 
     this._inputElement = null;
   }
@@ -176,8 +176,7 @@ class DateTimePickerChild extends JSWindowActorChild {
           detail: {
             // Pass partial value if it's available, otherwise pass input
             // element's value.
-            value:
-              Object.keys(value).length > 0 ? value : this._inputElement.value,
+            value: Object.keys(value).length ? value : this._inputElement.value,
             min: this._inputElement.getMinimum(),
             max: this._inputElement.getMaximum(),
             step: this._inputElement.getStep(),

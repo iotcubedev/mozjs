@@ -27,10 +27,8 @@ static void WrapAndRecordSourceSurfaceUserDataFunc(void* aUserData) {
   WrapAndRecordSourceSurfaceUserData* userData =
       static_cast<WrapAndRecordSourceSurfaceUserData*>(aUserData);
 
-  userData->recorder->RemoveSourceSurface((SourceSurface*)userData->refPtr);
-  userData->recorder->RemoveStoredObject(userData->refPtr);
-  userData->recorder->RecordEvent(
-      RecordedSourceSurfaceDestruction(ReferencePtr(userData->refPtr)));
+  userData->recorder->RecordSourceSurfaceDestruction(
+      static_cast<SourceSurface*>(userData->refPtr));
 
   delete userData;
 }
@@ -92,7 +90,7 @@ class SourceSurfaceWrapAndRecord : public SourceSurface {
         RecordedSourceSurfaceDestruction(ReferencePtr(this)));
   }
 
-  SurfaceType GetType() const override { return SurfaceType::RECORDING; }
+  SurfaceType GetType() const override { return SurfaceType::WRAP_AND_RECORD; }
   IntSize GetSize() const override { return mFinalSurface->GetSize(); }
   SurfaceFormat GetFormat() const override {
     return mFinalSurface->GetFormat();
@@ -128,7 +126,7 @@ class GradientStopsWrapAndRecord : public GradientStops {
 };
 
 static SourceSurface* GetSourceSurface(SourceSurface* aSurface) {
-  if (aSurface->GetType() != SurfaceType::RECORDING) {
+  if (aSurface->GetType() != SurfaceType::WRAP_AND_RECORD) {
     return aSurface;
   }
 
@@ -202,7 +200,7 @@ class FilterNodeWrapAndRecord : public FilterNode {
   FORWARD_SET_ATTRIBUTE(const Matrix&, MATRIX);
   FORWARD_SET_ATTRIBUTE(const Matrix5x4&, MATRIX5X4);
   FORWARD_SET_ATTRIBUTE(const Point3D&, POINT3D);
-  FORWARD_SET_ATTRIBUTE(const Color&, COLOR);
+  FORWARD_SET_ATTRIBUTE(const DeviceColor&, COLOR);
 
 #undef FORWARD_SET_ATTRIBUTE
 
@@ -258,8 +256,17 @@ struct AdjustedPattern final {
             radGradPat->mMatrix);
         return mPattern;
       }
+      case PatternType::CONIC_GRADIENT: {
+        ConicGradientPattern* conGradPat =
+            static_cast<ConicGradientPattern*>(mOrigPattern);
+        mPattern = new (mConGradPat) ConicGradientPattern(
+            conGradPat->mCenter, conGradPat->mAngle, conGradPat->mStartOffset,
+            conGradPat->mEndOffset, GetGradientStops(conGradPat->mStops),
+            conGradPat->mMatrix);
+        return mPattern;
+      }
       default:
-        return new (mColPat) ColorPattern(Color());
+        return new (mColPat) ColorPattern(DeviceColor());
     }
 
     return mPattern;
@@ -269,6 +276,7 @@ struct AdjustedPattern final {
     char mColPat[sizeof(ColorPattern)];
     char mLinGradPat[sizeof(LinearGradientPattern)];
     char mRadGradPat[sizeof(RadialGradientPattern)];
+    char mConGradPat[sizeof(ConicGradientPattern)];
     char mSurfPat[sizeof(SurfacePattern)];
   };
 
@@ -346,6 +354,7 @@ void DrawTargetWrapAndRecord::Fill(const Path* aPath, const Pattern& aPattern,
 
 struct WrapAndRecordFontUserData {
   void* refPtr;
+  void* unscaledFont;
   RefPtr<DrawEventRecorderPrivate> recorder;
 };
 
@@ -356,6 +365,7 @@ static void WrapAndRecordFontUserDataDestroyFunc(void* aUserData) {
   userData->recorder->RecordEvent(
       RecordedScaledFontDestruction(ReferencePtr(userData->refPtr)));
   userData->recorder->RemoveScaledFont((ScaledFont*)userData->refPtr);
+  userData->recorder->DecrementUnscaledFontRefCount(userData->unscaledFont);
   delete userData;
 }
 
@@ -368,7 +378,7 @@ void DrawTargetWrapAndRecord::FillGlyphs(ScaledFont* aFont,
   UserDataKey* userDataKey = reinterpret_cast<UserDataKey*>(mRecorder.get());
   if (!aFont->GetUserData(userDataKey)) {
     UnscaledFont* unscaledFont = aFont->GetUnscaledFont();
-    if (!mRecorder->HasStoredObject(unscaledFont)) {
+    if (mRecorder->IncrementUnscaledFontRefCount(unscaledFont) == 0) {
       RecordedFontData fontData(unscaledFont);
       RecordedFontDetails fontDetails;
       if (fontData.GetFontDetails(fontDetails)) {
@@ -391,13 +401,13 @@ void DrawTargetWrapAndRecord::FillGlyphs(ScaledFont* aFont,
                           "serialise UnscaledFont";
         }
       }
-      mRecorder->AddStoredObject(unscaledFont);
     }
 
     mRecorder->RecordEvent(RecordedScaledFontCreation(aFont, unscaledFont));
 
     WrapAndRecordFontUserData* userData = new WrapAndRecordFontUserData;
     userData->refPtr = aFont;
+    userData->unscaledFont = unscaledFont;
     userData->recorder = mRecorder;
     aFont->AddUserData(userDataKey, userData,
                        &WrapAndRecordFontUserDataDestroyFunc);
@@ -483,7 +493,7 @@ void DrawTargetWrapAndRecord::DrawSurface(
 }
 
 void DrawTargetWrapAndRecord::DrawSurfaceWithShadow(
-    SourceSurface* aSurface, const Point& aDest, const Color& aColor,
+    SourceSurface* aSurface, const Point& aDest, const DeviceColor& aColor,
     const Point& aOffset, Float aSigma, CompositionOp aOp) {
   EnsureSurfaceStored(mRecorder, aSurface, "DrawSurfaceWithShadow");
 
@@ -644,7 +654,8 @@ RefPtr<DrawTarget> DrawTargetWrapAndRecord::CreateClippedDrawTarget(
       mFinalDT->CreateClippedDrawTarget(aBounds, aFormat);
   similarDT = new DrawTargetWrapAndRecord(this->mRecorder, innerDT);
   mRecorder->RecordEvent(
-      RecordedCreateClippedDrawTarget(similarDT.get(), aBounds, aFormat));
+      RecordedCreateClippedDrawTarget(this, similarDT.get(), aBounds, aFormat));
+  similarDT->SetTransform(mTransform);
   return similarDT;
 }
 
@@ -715,6 +726,11 @@ void DrawTargetWrapAndRecord::EnsurePatternDependenciesStored(
     case PatternType::RADIAL_GRADIENT: {
       MOZ_ASSERT(mRecorder->HasStoredObject(
           static_cast<const RadialGradientPattern*>(&aPattern)->mStops));
+      return;
+    }
+    case PatternType::CONIC_GRADIENT: {
+      MOZ_ASSERT(mRecorder->HasStoredObject(
+          static_cast<const ConicGradientPattern*>(&aPattern)->mStops));
       return;
     }
     case PatternType::SURFACE: {

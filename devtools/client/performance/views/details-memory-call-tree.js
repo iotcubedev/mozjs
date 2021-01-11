@@ -6,10 +6,16 @@
 
 const { extend } = require("devtools/shared/extend");
 
-const EVENTS = require("../events");
-const { ThreadNode } = require("../modules/logic/tree-model");
-const { CallView } = require("../modules/widgets/tree-view");
-const { DetailsSubview } = require("./details-abstract-subview");
+const EVENTS = require("devtools/client/performance/events");
+const {
+  ThreadNode,
+} = require("devtools/client/performance/modules/logic/tree-model");
+const {
+  CallView,
+} = require("devtools/client/performance/modules/widgets/tree-view");
+const {
+  DetailsSubview,
+} = require("devtools/client/performance/views/details-abstract-subview");
 
 const RecordingUtils = require("devtools/shared/performance/recording-utils");
 const EventEmitter = require("devtools/shared/event-emitter");
@@ -63,15 +69,15 @@ const MemoryCallTreeView = extend(DetailsSubview, {
    */
   _onLink: function(treeItem) {
     const { url, line, column } = treeItem.frame.getInfo();
-    PerformanceController.toolbox
-      .viewSourceInDebugger(url, line, column)
-      .then(success => {
+    PerformanceController.viewSourceInDebugger(url, line, column).then(
+      success => {
         if (success) {
           this.emit(EVENTS.SOURCE_SHOWN_IN_JS_DEBUGGER);
         } else {
           this.emit(EVENTS.SOURCE_NOT_FOUND_IN_JS_DEBUGGER);
         }
-      });
+      }
+    );
   },
 
   /**

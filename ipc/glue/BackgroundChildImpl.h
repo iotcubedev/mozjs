@@ -8,9 +8,10 @@
 #define mozilla_ipc_backgroundchildimpl_h__
 
 #include "mozilla/Attributes.h"
+#include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/UniquePtr.h"
 #include "nsRefPtrHashtable.h"
-#include "nsAutoPtr.h"
 
 namespace mozilla {
 namespace dom {
@@ -28,7 +29,8 @@ namespace ipc {
 
 // Instances of this class should never be created directly. This class is meant
 // to be inherited in BackgroundImpl.
-class BackgroundChildImpl : public PBackgroundChild {
+class BackgroundChildImpl : public PBackgroundChild,
+                            public ChildToParentStreamActorManager {
  public:
   class ThreadLocal;
 
@@ -38,6 +40,11 @@ class BackgroundChildImpl : public PBackgroundChild {
   // process of being created). Otherwise this function returns null.
   // This functions is implemented in BackgroundImpl.cpp.
   static ThreadLocal* GetThreadLocalForCurrentThread();
+
+  PChildToParentStreamChild* SendPChildToParentStreamConstructor(
+      PChildToParentStreamChild* aActor) override;
+  PFileDescriptorSetChild* SendPFileDescriptorSetConstructor(
+      const FileDescriptor& aFD) override;
 
  protected:
   BackgroundChildImpl();
@@ -53,12 +60,6 @@ class BackgroundChildImpl : public PBackgroundChild {
   virtual bool DeallocPBackgroundTestChild(
       PBackgroundTestChild* aActor) override;
 
-  virtual PBackgroundIDBFactoryChild* AllocPBackgroundIDBFactoryChild(
-      const LoggingInfo& aLoggingInfo) override;
-
-  virtual bool DeallocPBackgroundIDBFactoryChild(
-      PBackgroundIDBFactoryChild* aActor) override;
-
   virtual PBackgroundIndexedDBUtilsChild* AllocPBackgroundIndexedDBUtilsChild()
       override;
 
@@ -66,6 +67,7 @@ class BackgroundChildImpl : public PBackgroundChild {
       PBackgroundIndexedDBUtilsChild* aActor) override;
 
   virtual PBackgroundSDBConnectionChild* AllocPBackgroundSDBConnectionChild(
+      const PersistenceType& aPersistenceType,
       const PrincipalInfo& aPrincipalInfo) override;
 
   virtual bool DeallocPBackgroundSDBConnectionChild(
@@ -110,15 +112,9 @@ class BackgroundChildImpl : public PBackgroundChild {
   virtual bool DeallocPBackgroundStorageChild(
       PBackgroundStorageChild* aActor) override;
 
-  virtual PPendingIPCBlobChild* AllocPPendingIPCBlobChild(
-      const IPCBlob& aBlob) override;
-
-  virtual bool DeallocPPendingIPCBlobChild(
-      PPendingIPCBlobChild* aActor) override;
-
-  virtual already_AddRefed<PIPCBlobInputStreamChild>
-  AllocPIPCBlobInputStreamChild(const nsID& aID,
-                                const uint64_t& aSize) override;
+  virtual already_AddRefed<PRemoteLazyInputStreamChild>
+  AllocPRemoteLazyInputStreamChild(const nsID& aID,
+                                   const uint64_t& aSize) override;
 
   virtual PTemporaryIPCBlobChild* AllocPTemporaryIPCBlobChild() override;
 
@@ -204,11 +200,8 @@ class BackgroundChildImpl : public PBackgroundChild {
 
   virtual bool DeallocPCacheChild(dom::cache::PCacheChild* aActor) override;
 
-  virtual dom::cache::PCacheStreamControlChild* AllocPCacheStreamControlChild()
-      override;
-
-  virtual bool DeallocPCacheStreamControlChild(
-      dom::cache::PCacheStreamControlChild* aActor) override;
+  virtual already_AddRefed<dom::cache::PCacheStreamControlChild>
+  AllocPCacheStreamControlChild() override;
 
   virtual PMessagePortChild* AllocPMessagePortChild(
       const nsID& aUUID, const nsID& aDestinationUUID,
@@ -291,17 +284,18 @@ class BackgroundChildImpl : public PBackgroundChild {
 };
 
 class BackgroundChildImpl::ThreadLocal final {
-  friend class nsAutoPtr<ThreadLocal>;
+  friend class mozilla::DefaultDelete<ThreadLocal>;
 
  public:
-  nsAutoPtr<mozilla::dom::indexedDB::ThreadLocal> mIndexedDBThreadLocal;
+  mozilla::UniquePtr<mozilla::dom::indexedDB::ThreadLocal>
+      mIndexedDBThreadLocal;
   mozilla::dom::IDBFileHandle* mCurrentFileHandle;
 
  public:
   ThreadLocal();
 
  private:
-  // Only destroyed by nsAutoPtr<ThreadLocal>.
+  // Only destroyed by UniquePtr<ThreadLocal>.
   ~ThreadLocal();
 };
 

@@ -9,13 +9,19 @@ const { extend } = require("devtools/shared/extend");
 const React = require("devtools/client/shared/vendor/react");
 const ReactDOM = require("devtools/client/shared/vendor/react-dom");
 
-const EVENTS = require("../events");
-const { CallView } = require("../modules/widgets/tree-view");
-const { ThreadNode } = require("../modules/logic/tree-model");
-const { DetailsSubview } = require("./details-abstract-subview");
+const EVENTS = require("devtools/client/performance/events");
+const {
+  CallView,
+} = require("devtools/client/performance/modules/widgets/tree-view");
+const {
+  ThreadNode,
+} = require("devtools/client/performance/modules/logic/tree-model");
+const {
+  DetailsSubview,
+} = require("devtools/client/performance/views/details-abstract-subview");
 
 const JITOptimizationsView = React.createFactory(
-  require("../components/JITOptimizations")
+  require("devtools/client/performance/components/JITOptimizations")
 );
 
 const EventEmitter = require("devtools/shared/event-emitter");
@@ -124,16 +130,16 @@ const JsCallTreeView = extend(DetailsSubview, {
     const optimizations = JITOptimizationsView({
       frameData,
       optimizationSites,
-      onViewSourceInDebugger: (url, line, column) => {
-        PerformanceController.toolbox
-          .viewSourceInDebugger(url, line, column)
-          .then(success => {
+      onViewSourceInDebugger: ({ url, line, column }) => {
+        PerformanceController.viewSourceInDebugger(url, line, column).then(
+          success => {
             if (success) {
               this.emit(EVENTS.SOURCE_SHOWN_IN_JS_DEBUGGER);
             } else {
               this.emit(EVENTS.SOURCE_NOT_FOUND_IN_JS_DEBUGGER);
             }
-          });
+          }
+        );
       },
     });
 
@@ -147,15 +153,15 @@ const JsCallTreeView = extend(DetailsSubview, {
    */
   _onLink: function(treeItem) {
     const { url, line, column } = treeItem.frame.getInfo();
-    PerformanceController.toolbox
-      .viewSourceInDebugger(url, line, column)
-      .then(success => {
+    PerformanceController.viewSourceInDebugger(url, line, column).then(
+      success => {
         if (success) {
           this.emit(EVENTS.SOURCE_SHOWN_IN_JS_DEBUGGER);
         } else {
           this.emit(EVENTS.SOURCE_NOT_FOUND_IN_JS_DEBUGGER);
         }
-      });
+      }
+    );
   },
 
   /**

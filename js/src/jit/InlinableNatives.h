@@ -7,6 +7,10 @@
 #ifndef jit_InlinableNatives_h
 #define jit_InlinableNatives_h
 
+#include <stdint.h>  // For uint16_t
+
+#include "jspubtd.h"  // For JSClass
+
 #define INLINABLE_NATIVE_LIST(_)                   \
   _(Array)                                         \
   _(ArrayIsArray)                                  \
@@ -29,9 +33,31 @@
                                                    \
   _(Boolean)                                       \
                                                    \
+  _(DataViewGetInt8)                               \
+  _(DataViewGetUint8)                              \
+  _(DataViewGetInt16)                              \
+  _(DataViewGetUint16)                             \
+  _(DataViewGetInt32)                              \
+  _(DataViewGetUint32)                             \
+  _(DataViewGetFloat32)                            \
+  _(DataViewGetFloat64)                            \
+  _(DataViewGetBigInt64)                           \
+  _(DataViewGetBigUint64)                          \
+  _(DataViewSetInt8)                               \
+  _(DataViewSetUint8)                              \
+  _(DataViewSetInt16)                              \
+  _(DataViewSetUint16)                             \
+  _(DataViewSetInt32)                              \
+  _(DataViewSetUint32)                             \
+  _(DataViewSetFloat32)                            \
+  _(DataViewSetFloat64)                            \
+  _(DataViewSetBigInt64)                           \
+  _(DataViewSetBigUint64)                          \
+                                                   \
   _(IntlGuardToCollator)                           \
   _(IntlGuardToDateTimeFormat)                     \
-  _(IntlGuardToLocale)                             \
+  _(IntlGuardToDisplayNames)                       \
+  _(IntlGuardToListFormat)                         \
   _(IntlGuardToNumberFormat)                       \
   _(IntlGuardToPluralRules)                        \
   _(IntlGuardToRelativeTimeFormat)                 \
@@ -78,6 +104,7 @@
   _(RegExpSearcher)                                \
   _(RegExpTester)                                  \
   _(IsRegExpObject)                                \
+  _(IsPossiblyWrappedRegExpObject)                 \
   _(RegExpPrototypeOptimizable)                    \
   _(RegExpInstanceOptimizable)                     \
   _(GetFirstDollarIndex)                           \
@@ -115,18 +142,23 @@
   _(IntrinsicIsObject)                             \
   _(IntrinsicIsCrossRealmArrayConstructor)         \
   _(IntrinsicToInteger)                            \
-  _(IntrinsicToString)                             \
+  _(IntrinsicToLength)                             \
   _(IntrinsicIsConstructing)                       \
   _(IntrinsicSubstringKernel)                      \
   _(IntrinsicObjectHasPrototype)                   \
   _(IntrinsicFinishBoundFunctionInit)              \
   _(IntrinsicIsPackedArray)                        \
                                                    \
+  _(IntrinsicIsSuspendedGenerator)                 \
+                                                   \
   _(IntrinsicGuardToArrayIterator)                 \
   _(IntrinsicGuardToMapIterator)                   \
   _(IntrinsicGuardToSetIterator)                   \
   _(IntrinsicGuardToStringIterator)                \
   _(IntrinsicGuardToRegExpStringIterator)          \
+  _(IntrinsicGuardToWrapForValidIterator)          \
+  _(IntrinsicGuardToIteratorHelper)                \
+  _(IntrinsicGuardToAsyncIteratorHelper)           \
                                                    \
   _(IntrinsicGuardToMapObject)                     \
   _(IntrinsicGetNextMapEntryForIterator)           \
@@ -152,15 +184,7 @@
   _(IntrinsicTypedArrayLength)                     \
   _(IntrinsicPossiblyWrappedTypedArrayLength)      \
   _(IntrinsicTypedArrayByteOffset)                 \
-  _(IntrinsicTypedArrayElementShift)               \
-                                                   \
-  _(IntrinsicObjectIsTypedObject)                  \
-  _(IntrinsicObjectIsTransparentTypedObject)       \
-  _(IntrinsicObjectIsOpaqueTypedObject)            \
-  _(IntrinsicObjectIsTypeDescr)                    \
-  _(IntrinsicTypeDescrIsSimpleType)                \
-  _(IntrinsicTypeDescrIsArrayType)                 \
-  _(IntrinsicSetTypedObjectOffset)
+  _(IntrinsicTypedArrayElementShift)
 
 struct JSJitInfo;
 
@@ -177,6 +201,10 @@ enum class InlinableNative : uint16_t {
 #define ADD_NATIVE(native) extern const JSJitInfo JitInfo_##native;
 INLINABLE_NATIVE_LIST(ADD_NATIVE)
 #undef ADD_NATIVE
+
+const JSClass* InlinableNativeGuardToClass(InlinableNative native);
+
+bool CanInlineNativeCrossRealm(InlinableNative native);
 
 }  // namespace jit
 }  // namespace js

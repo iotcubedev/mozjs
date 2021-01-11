@@ -6,7 +6,6 @@
 
 #include "nsHTMLDocument.h"
 
-#include "nsIContentPolicy.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_intl.h"
@@ -17,10 +16,9 @@
 #include "nsPrintfCString.h"
 #include "nsReadableUtils.h"
 #include "nsUnicharUtils.h"
-#include "nsIContentSecurityPolicy.h"
 #include "nsGlobalWindowInner.h"
-#include "nsIDocumentLoader.h"
 #include "nsIHTMLContentSink.h"
+#include "nsIProtocolHandler.h"
 #include "nsIXMLContentSink.h"
 #include "nsHTMLParts.h"
 #include "nsHTMLStyleSheet.h"
@@ -30,54 +28,37 @@
 #include "nsDOMString.h"
 #include "nsIStreamListener.h"
 #include "nsIURI.h"
-#include "nsIURIMutator.h"
-#include "nsIIOService.h"
 #include "nsNetUtil.h"
 #include "nsIContentViewer.h"
 #include "nsDocShell.h"
 #include "nsDocShellLoadTypes.h"
-#include "nsIWebNavigation.h"
-#include "nsIBaseWindow.h"
 #include "nsIScriptContext.h"
-#include "nsIXPConnect.h"
 #include "nsContentList.h"
 #include "nsError.h"
 #include "nsIPrincipal.h"
 #include "nsJSPrincipals.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsAttrName.h"
-#include "nsNodeUtils.h"
 
 #include "nsNetCID.h"
-#include "nsIServiceManager.h"
-#include "nsIConsoleService.h"
-#include "nsIComponentManager.h"
 #include "nsParserCIID.h"
 #include "mozilla/parser/PrototypeDocumentParser.h"
 #include "mozilla/dom/PrototypeDocumentContentSink.h"
 #include "nsNameSpaceManager.h"
 #include "nsGenericHTMLElement.h"
 #include "mozilla/css/Loader.h"
-#include "nsIHttpChannel.h"
-#include "nsIFile.h"
 #include "nsFrameSelection.h"
 
 #include "nsContentUtils.h"
 #include "nsJSUtils.h"
 #include "DocumentInlines.h"
-#include "nsIDocumentEncoder.h"  //for outputting selection
 #include "nsICachingChannel.h"
 #include "nsIContentViewer.h"
 #include "nsIScriptElement.h"
-#include "nsIScriptError.h"
-#include "nsIMutableArray.h"
 #include "nsArrayUtils.h"
-#include "nsIEffectiveTLDService.h"
 
 // AHMED 12-2
 #include "nsBidiUtils.h"
 
-#include "mozilla/dom/FallbackEncoding.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/IdentifierMapEntry.h"
@@ -94,19 +75,15 @@
 #include "nsHtml5TreeOpExecutor.h"
 #include "nsHtml5Parser.h"
 #include "nsSandboxFlags.h"
-#include "nsIImageDocument.h"
 #include "mozilla/dom/HTMLBodyElement.h"
 #include "mozilla/dom/HTMLDocumentBinding.h"
 #include "mozilla/dom/nsCSPContext.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/dom/ShadowIncludingTreeIterator.h"
 #include "nsCharsetSource.h"
-#include "nsIStringBundle.h"
 #include "nsFocusManager.h"
 #include "nsIFrame.h"
 #include "nsIContent.h"
-#include "nsIStructuredCloneContainer.h"
-#include "nsLayoutStylesheetCache.h"
 #include "mozilla/StyleSheet.h"
 #include "mozilla/StyleSheetInlines.h"
 #include "mozilla/Unused.h"
@@ -156,7 +133,7 @@ nsHTMLDocument::nsHTMLDocument()
   mCompatMode = eCompatibility_NavQuirks;
 }
 
-nsHTMLDocument::~nsHTMLDocument() {}
+nsHTMLDocument::~nsHTMLDocument() = default;
 
 JSObject* nsHTMLDocument::WrapNode(JSContext* aCx,
                                    JS::Handle<JSObject*> aGivenProto) {
@@ -184,10 +161,10 @@ void nsHTMLDocument::Reset(nsIChannel* aChannel, nsILoadGroup* aLoadGroup) {
 
 void nsHTMLDocument::ResetToURI(nsIURI* aURI, nsILoadGroup* aLoadGroup,
                                 nsIPrincipal* aPrincipal,
-                                nsIPrincipal* aStoragePrincipal) {
+                                nsIPrincipal* aPartitionedPrincipal) {
   mLoadFlags = nsIRequest::LOAD_NORMAL;
 
-  Document::ResetToURI(aURI, aLoadGroup, aPrincipal, aStoragePrincipal);
+  Document::ResetToURI(aURI, aLoadGroup, aPrincipal, aPartitionedPrincipal);
 
   mImages = nullptr;
   mApplets = nullptr;
@@ -236,18 +213,6 @@ void nsHTMLDocument::TryUserForcedCharset(nsIContentViewer* aCv,
     return;
   }
 
-  const Encoding* forceCharsetFromDocShell = nullptr;
-  if (aCv) {
-    // XXX mailnews-only
-    forceCharsetFromDocShell = aCv->GetForceCharset();
-  }
-
-  if (forceCharsetFromDocShell && IsAsciiCompatible(forceCharsetFromDocShell)) {
-    aEncoding = WrapNotNull(forceCharsetFromDocShell);
-    aCharsetSource = kCharsetFromUserForced;
-    return;
-  }
-
   if (aDocShell) {
     // This is the Character Encoding menu code path in Firefox
     auto encoding = nsDocShell::Cast(aDocShell)->GetForcedCharset();
@@ -258,7 +223,7 @@ void nsHTMLDocument::TryUserForcedCharset(nsIContentViewer* aCv,
       }
       aEncoding = WrapNotNull(encoding);
       aCharsetSource = kCharsetFromUserForced;
-      aDocShell->SetForcedCharset(NS_LITERAL_CSTRING(""));
+      aDocShell->SetCharset(EmptyCString());
     }
   }
 }
@@ -298,7 +263,7 @@ void nsHTMLDocument::TryParentCharset(nsIDocShell* aDocShell,
   if (!aDocShell) {
     return;
   }
-  if (aCharsetSource >= kCharsetFromParentForced) {
+  if (aCharsetSource >= kCharsetFromUserForced) {
     return;
   }
 
@@ -310,15 +275,15 @@ void nsHTMLDocument::TryParentCharset(nsIDocShell* aDocShell,
   if (!parentCharset) {
     return;
   }
-  if (kCharsetFromParentForced == parentSource ||
-      kCharsetFromUserForced == parentSource) {
+  if (kCharsetFromUserForced == parentSource ||
+      kCharsetFromUserForcedAutoDetection == parentSource) {
     if (WillIgnoreCharsetOverride() ||
         !IsAsciiCompatible(aEncoding) ||  // if channel said UTF-16
         !IsAsciiCompatible(parentCharset)) {
       return;
     }
     aEncoding = WrapNotNull(parentCharset);
-    aCharsetSource = kCharsetFromParentForced;
+    aCharsetSource = kCharsetFromUserForced;
     return;
   }
 
@@ -336,73 +301,6 @@ void nsHTMLDocument::TryParentCharset(nsIDocShell* aDocShell,
     aEncoding = WrapNotNull(parentCharset);
     aCharsetSource = kCharsetFromParentFrame;
   }
-}
-
-void nsHTMLDocument::TryTLD(int32_t& aCharsetSource,
-                            NotNull<const Encoding*>& aEncoding) {
-  if (aCharsetSource >= kCharsetFromTopLevelDomain) {
-    return;
-  }
-  if (!StaticPrefs::intl_charset_fallback_tld()) {
-    return;
-  }
-  if (!mDocumentURI) {
-    return;
-  }
-  nsAutoCString host;
-  mDocumentURI->GetAsciiHost(host);
-  if (host.IsEmpty()) {
-    return;
-  }
-  // First let's see if the host is DNS-absolute and ends with a dot and
-  // get rid of that one.
-  if (host.Last() == '.') {
-    host.SetLength(host.Length() - 1);
-    if (host.IsEmpty()) {
-      return;
-    }
-  }
-  // If we still have a dot, the host is weird, so let's continue only
-  // if we have something other than a dot now.
-  if (host.Last() == '.') {
-    return;
-  }
-  int32_t index = host.RFindChar('.');
-  if (index == kNotFound) {
-    // We have an intranet host, Gecko-internal URL or an IPv6 address.
-    return;
-  }
-  // Since the string didn't end with a dot and we found a dot,
-  // there is at least one character between the dot and the end of
-  // the string, so taking the substring below is safe.
-  nsAutoCString tld;
-  ToLowerCase(Substring(host, index + 1, host.Length() - (index + 1)), tld);
-  // Reject generic TLDs and country TLDs that need more research
-  if (!FallbackEncoding::IsParticipatingTopLevelDomain(tld)) {
-    return;
-  }
-  // Check if we have an IPv4 address
-  bool seenNonDigit = false;
-  for (size_t i = 0; i < tld.Length(); ++i) {
-    char c = tld.CharAt(i);
-    if (c < '0' || c > '9') {
-      seenNonDigit = true;
-      break;
-    }
-  }
-  if (!seenNonDigit) {
-    return;
-  }
-  aCharsetSource = kCharsetFromTopLevelDomain;
-  aEncoding = FallbackEncoding::FromTopLevelDomain(tld);
-}
-
-void nsHTMLDocument::TryFallback(int32_t& aCharsetSource,
-                                 NotNull<const Encoding*>& aEncoding) {
-  if (kCharsetFromFallback <= aCharsetSource) return;
-
-  aCharsetSource = kCharsetFromFallback;
-  aEncoding = FallbackEncoding::FromLocale();
 }
 
 // Using a prototype document is only allowed with chrome privilege.
@@ -448,9 +346,7 @@ nsresult nsHTMLDocument::StartDocumentLoad(const char* aCommand,
 
   bool html = contentType.EqualsLiteral(TEXT_HTML);
   bool xhtml = !html && (contentType.EqualsLiteral(APPLICATION_XHTML_XML) ||
-                         contentType.EqualsLiteral(APPLICATION_WAPXHTML_XML) ||
-                         contentType.EqualsLiteral(APPLICATION_CACHED_XUL) ||
-                         contentType.EqualsLiteral(TEXT_XUL));
+                         contentType.EqualsLiteral(APPLICATION_WAPXHTML_XML));
   mIsPlainText =
       !html && !xhtml && nsContentUtils::IsPlainTextType(contentType);
   if (!(html || xhtml || mIsPlainText || viewSource)) {
@@ -489,9 +385,6 @@ nsresult nsHTMLDocument::StartDocumentLoad(const char* aCommand,
   if (NS_FAILED(rv)) {
     return rv;
   }
-
-  // Store the security info for future use.
-  aChannel->GetSecurityInfo(getter_AddRefs(mSecurityInfo));
 
   nsCOMPtr<nsIURI> uri;
   rv = aChannel->GetURI(getter_AddRefs(uri));
@@ -552,7 +445,7 @@ nsresult nsHTMLDocument::StartDocumentLoad(const char* aCommand,
     docShell->GetContentViewer(getter_AddRefs(cv));
   }
   if (!cv) {
-    cv = parentContentViewer.forget();
+    cv = std::move(parentContentViewer);
   }
 
   nsAutoCString urlSpec;
@@ -581,6 +474,8 @@ nsresult nsHTMLDocument::StartDocumentLoad(const char* aCommand,
     NS_ASSERTION(docShell, "Unexpected null value");
 
     charsetSource = kCharsetUninitialized;
+    // Used for .in and .lk TLDs. .jp is handled in the parser.
+    encoding = WINDOWS_1252_ENCODING;
 
     // The following will try to get the character encoding from various
     // sources. Each Try* function will return early if the source is already
@@ -600,15 +495,12 @@ nsresult nsHTMLDocument::StartDocumentLoad(const char* aCommand,
 
     TryUserForcedCharset(cv, docShell, charsetSource, encoding);
 
-    TryHintCharset(cv, charsetSource, encoding);  // XXX mailnews-only
+    TryHintCharset(cv, charsetSource, encoding);  // For encoding reload
     TryParentCharset(docShell, charsetSource, encoding);
 
     if (cachingChan && !urlSpec.IsEmpty()) {
       TryCacheCharset(cachingChan, charsetSource, encoding);
     }
-
-    TryTLD(charsetSource, encoding);
-    TryFallback(charsetSource, encoding);
   }
 
   SetDocumentCharacterSetSource(charsetSource);

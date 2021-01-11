@@ -30,7 +30,7 @@ add_task(async function() {
 
 async function testEditProperty(inspector, ruleView) {
   const idRule = getRuleViewRuleEditor(ruleView, 1).rule;
-  const prop = idRule.textProps[0];
+  const prop = getTextProperty(ruleView, 1, { "background-color": "blue" });
 
   let editor = await focusEditableField(ruleView, prop.editor.nameSpan);
   let input = editor.input;
@@ -90,11 +90,7 @@ async function testEditProperty(inspector, ruleView) {
   }
   await onBlur;
 
-  const newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  const newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "red", "border-color should have been set.");
 
   ruleView.styleDocument.activeElement.blur();
@@ -111,27 +107,21 @@ async function testEditProperty(inspector, ruleView) {
 }
 
 async function testDisableProperty(inspector, ruleView) {
-  const idRule = getRuleViewRuleEditor(ruleView, 1).rule;
-  const prop = idRule.textProps[0];
+  const prop = getTextProperty(ruleView, 1, {
+    "border-color": "red",
+    color: "red",
+  });
 
   info("Disabling a property");
   await togglePropStatus(ruleView, prop);
 
-  let newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  let newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "", "Border-color should have been unset.");
 
   info("Enabling the property again");
   await togglePropStatus(ruleView, prop);
 
-  newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "border-color",
-  });
+  newValue = await getRulePropertyValue(0, 0, "border-color");
   is(newValue, "red", "Border-color should have been reset.");
 }
 

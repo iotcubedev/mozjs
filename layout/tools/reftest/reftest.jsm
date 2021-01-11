@@ -18,20 +18,15 @@ Cu.import("resource://reftest/manifest.jsm", this);
 Cu.import("resource://reftest/StructuredLog.jsm", this);
 Cu.import("resource://reftest/PerTestCoverageUtils.jsm", this);
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import('resource://gre/modules/XPCOMUtils.jsm');
+
+const { E10SUtils } = ChromeUtils.import(
+  "resource://gre/modules/E10SUtils.jsm"
+);
 
 XPCOMUtils.defineLazyGetter(this, "OS", function() {
     const { OS } = Cu.import("resource://gre/modules/osfile.jsm");
     return OS;
-});
-
-XPCOMUtils.defineLazyGetter(this, "PDFJS", function() {
-    const { require } = Cu.import("resource://gre/modules/commonjs/toolkit/require.js", {});
-    return {
-        main: require('resource://pdf.js/build/pdf.js'),
-        worker: require('resource://pdf.js/build/pdf.worker.js')
-    };
 });
 
 function HasUnexpectedResult()
@@ -170,6 +165,7 @@ function OnRefTestLoad(win)
     var prefs = Cc["@mozilla.org/preferences-service;1"].
                 getService(Ci.nsIPrefBranch);
     g.browserIsRemote = prefs.getBoolPref("browser.tabs.remote.autostart", false);
+    g.browserIsFission = prefs.getBoolPref("fission.autostart", false);
 
     g.browserIsIframe = prefs.getBoolPref("reftest.browser.iframe.enabled", false);
 
@@ -202,6 +198,10 @@ function OnRefTestLoad(win)
         doc.firstChild.remove();
       }
       doc.appendChild(g.browser);
+      // TODO Bug 1156817: reftests don't have most of GeckoView infra so we
+      // can't register this actor
+      ChromeUtils.unregisterWindowActor("LoadURIDelegate");
+      ChromeUtils.unregisterWindowActor("WebBrowserChrome");
     } else {
       document.getElementById("reftest-window").appendChild(g.browser);
     }
@@ -220,7 +220,7 @@ function OnRefTestLoad(win)
     g.browserMessageManager = g.browser.frameLoader.messageManager;
     // The content script waits for the initial onload, then notifies
     // us.
-    RegisterMessageListenersAndLoadContentScript();
+    RegisterMessageListenersAndLoadContentScript(false);
 }
 
 function InitAndStartRefTests()
@@ -236,6 +236,13 @@ function InitAndStartRefTests()
     try {
       prefs.setBoolPref("android.widget_paints_background", false);
     } catch (e) {}
+    
+    // If fission is enabled, then also put data: URIs in the default web process,
+    // since most reftests run in the file process, and this will make data:
+    // <iframe>s OOP.
+    if (g.browserIsFission) {
+      prefs.setBoolPref("browser.tabs.remote.dataUriInDefaultWebProcess", true);
+    }
 
     /* set the g.loadTimeout */
     try {
@@ -275,21 +282,21 @@ function InitAndStartRefTests()
     } catch(e) {}
 
     try {
+        g.isCoverageBuild = prefs.getBoolPref("reftest.isCoverageBuild");
+    } catch(e) {}
+
+    try {
         g.compareRetainedDisplayLists = prefs.getBoolPref("reftest.compareRetainedDisplayLists");
     } catch (e) {}
 
-#ifdef MOZ_ENABLE_SKIA_PDF
     try {
-        // We have to disable printing via parent or else silent print operations
-        // (the type that we use here) would be treated as non-silent -- in other
-        // words, a print dialog would appear for each print operation, which
-        // would interrupt the test run.
-        // See http://searchfox.org/mozilla-central/rev/bd39b6170f04afeefc751a23bb04e18bbd10352b/layout/printing/nsPrintEngine.cpp#617
-        prefs.setBoolPref("print.print_via_parent", false);
+        // We have to set print.always_print_silent or a print dialog would
+        // appear for each print operation, which would interrupt the test run.
+        prefs.setBoolPref("print.always_print_silent", true);
     } catch (e) {
         /* uh oh, print reftests may not work... */
+        logger.warning("Failed to set silent printing pref, EXCEPTION: " + e);
     }
-#endif
 
     g.windowUtils = g.containingWindow.windowUtils;
     if (!g.windowUtils || !g.windowUtils.compareCanvases)
@@ -405,8 +412,10 @@ function ReadTests() {
             manifestURLs.sort(function(a,b) {return a.length - b.length})
             manifestURLs.forEach(function(manifestURL) {
                 logger.info("Reading manifest " + manifestURL);
-                var filter = manifests[manifestURL] ? new RegExp(manifests[manifestURL]) : null;
-                ReadTopManifest(manifestURL, [globalFilter, filter, false]);
+                var manifestInfo = manifests[manifestURL];
+                var filter = manifestInfo[0] ? new RegExp(manifestInfo[0]) : null;
+                var manifestID = manifestInfo[1];
+                ReadTopManifest(manifestURL, [globalFilter, filter, false], manifestID);
             });
 
             if (dumpTests) {
@@ -432,6 +441,7 @@ function ReadTests() {
     } catch(e) {
         ++g.testResults.Exception;
         logger.error("EXCEPTION: " + e);
+        DoneTests();
     }
 }
 
@@ -479,7 +489,7 @@ function StartTests()
         // tURLs is a temporary array containing all active tests
         var tURLs = new Array();
         for (var i = 0; i < g.urls.length; ++i) {
-            if (g.urls[i].expected == EXPECTED_DEATH)
+            if (g.urls[i].skip)
                 continue;
 
             if (g.urls[i].needsFocus && !Focus())
@@ -513,8 +523,12 @@ function StartTests()
         }
 
         if (g.manageSuite && !g.suiteStarted) {
-            var ids = g.urls.map(function(obj) {
-                return obj.identifier;
+            var ids = {};
+            g.urls.forEach(function(test) {
+                if (!(test.manifestID in ids)) {
+                    ids[test.manifestID] = [];
+                }
+                ids[test.manifestID].push(test.identifier);
             });
             var suite = prefs.getStringPref('reftest.suite', 'reftest');
             logger.suiteStart(ids, suite, {"skipped": g.urls.length - numActiveTests});
@@ -579,7 +593,7 @@ function BuildUseCounts()
     g.uriUseCounts = {};
     for (var i = 0; i < g.urls.length; ++i) {
         var url = g.urls[i];
-        if (url.expected != EXPECTED_DEATH &&
+        if (!url.skip &&
             (url.type == TYPE_REFTEST_EQUAL ||
              url.type == TYPE_REFTEST_NOTEQUAL)) {
             if (url.prefSettings1.length == 0) {
@@ -624,7 +638,7 @@ function StartCurrentTest()
     while (g.urls.length > 0) {
         var test = g.urls[0];
         logger.testStart(test.identifier);
-        if (test.expected == EXPECTED_DEATH) {
+        if (test.skip) {
             ++g.testResults.Skip;
             logger.testEnd(test.identifier, "SKIP");
             g.urls.shift();
@@ -665,7 +679,41 @@ function StartCurrentTest()
     }
 }
 
-function StartCurrentURI(aURLTargetType)
+// A simplified version of the function with the same name in tabbrowser.js.
+function updateBrowserRemotenessByURL(aBrowser, aURL) {
+  let remoteType = E10SUtils.getRemoteTypeForURI(
+    aURL,
+    aBrowser.ownerGlobal.docShell.nsILoadContext.useRemoteTabs,
+    aBrowser.ownerGlobal.docShell.nsILoadContext.useRemoteSubframes,
+    aBrowser.remoteType,
+    aBrowser.currentURI
+  );
+  // Things get confused if we switch to not-remote
+  // for chrome:// URIs, so lets not for now.
+  if (remoteType == E10SUtils.NOT_REMOTE &&
+      g.browserIsRemote) {
+    remoteType = aBrowser.remoteType;
+  }
+  if (aBrowser.remoteType != remoteType) {
+    if (remoteType == E10SUtils.NOT_REMOTE) {
+      aBrowser.removeAttribute("remote");
+      aBrowser.removeAttribute("remoteType");
+    } else {
+      aBrowser.setAttribute("remote", "true");
+      aBrowser.setAttribute("remoteType", remoteType);
+    }
+    aBrowser.changeRemoteness({ remoteType });
+    aBrowser.construct();
+
+    g.browserMessageManager = aBrowser.frameLoader.messageManager;
+    RegisterMessageListenersAndLoadContentScript(true);
+    return new Promise(resolve => { g.resolveContentReady = resolve;  });
+  }
+
+  return Promise.resolve();
+}
+
+async function StartCurrentURI(aURLTargetType)
 {
     const isStartingRef = (aURLTargetType == URL_TARGET_TYPE_REFERENCE);
 
@@ -763,6 +811,8 @@ function StartCurrentURI(aURLTargetType)
         gDumpFn("REFTEST TEST-LOAD | " + g.currentURL + " | " + currentTest + " / " + g.totalTests +
                 " (" + Math.floor(100 * (currentTest / g.totalTests)) + "%)\n");
         TestBuffer("START " + g.currentURL);
+        await updateBrowserRemotenessByURL(g.browser, g.currentURL);
+
         var type = g.urls[0].type
         if (TYPE_SCRIPT == type) {
             SendLoadScriptTest(g.currentURL, g.loadTimeout);
@@ -792,6 +842,10 @@ function DoneTests()
         }
 
         function onStopped() {
+            if (g.logFile) {
+                g.logFile.close();
+                g.logFile = null;
+            }
             let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"].getService(Ci.nsIAppStartup);
             appStartup.quit(Ci.nsIAppStartup.eForceQuit);
         }
@@ -1384,6 +1438,13 @@ function DoAssertionCheck(numAsserts)
         var minAsserts = g.urls[0].minAsserts;
         var maxAsserts = g.urls[0].maxAsserts;
 
+        if (numAsserts < minAsserts) {
+            ++g.testResults.AssertionUnexpectedFixed;
+        } else if (numAsserts > maxAsserts) {
+            ++g.testResults.AssertionUnexpected;
+        } else if (numAsserts != 0) {
+            ++g.testResults.AssertionKnown;
+        }
         logger.assertionCount(g.urls[0].identifier, numAsserts, minAsserts, maxAsserts);
     }
 
@@ -1424,7 +1485,7 @@ function RestoreChangedPreferences()
     }
 }
 
-function RegisterMessageListenersAndLoadContentScript()
+function RegisterMessageListenersAndLoadContentScript(aReload)
 {
     g.browserMessageManager.addMessageListener(
         "reftest:AssertionCount",
@@ -1475,6 +1536,10 @@ function RegisterMessageListenersAndLoadContentScript()
         function (m) { RecvScriptResults(m.json.runtimeMs, m.json.error, m.json.results); }
     );
     g.browserMessageManager.addMessageListener(
+        "reftest:StartPrint",
+        function (m) { RecvStartPrint(m.json.isPrintSelection, m.json.printRange); }
+    );
+    g.browserMessageManager.addMessageListener(
         "reftest:PrintResult",
         function (m) { RecvPrintResult(m.json.runtimeMs, m.json.status, m.json.fileName); }
     );
@@ -1496,6 +1561,24 @@ function RegisterMessageListenersAndLoadContentScript()
     );
 
     g.browserMessageManager.loadFrameScript("resource://reftest/reftest-content.js", true, true);
+
+    if (aReload) {
+        return;
+    }
+
+    ChromeUtils.registerWindowActor("ReftestFission", {
+        parent: {
+          moduleURI: "resource://reftest/ReftestFissionParent.jsm",
+        },
+        child: {
+          moduleURI: "resource://reftest/ReftestFissionChild.jsm",
+          events: {
+            MozAfterPaint: {},
+          },
+        },
+        allFrames: true,
+        includeChrome: true,
+    });
 }
 
 function RecvAssertionCount(count)
@@ -1505,8 +1588,13 @@ function RecvAssertionCount(count)
 
 function RecvContentReady(info)
 {
-    g.contentGfxInfo = info.gfx;
-    InitAndStartRefTests();
+    if (g.resolveContentReady) {
+      g.resolveContentReady();
+      g.resolveContentReady = null;
+    } else {
+      g.contentGfxInfo = info.gfx;
+      InitAndStartRefTests();
+    }
     return { remote: g.browserIsRemote };
 }
 
@@ -1559,6 +1647,9 @@ function RecvLog(type, msg)
         TestBuffer(msg);
     } else if (type == "warning") {
         logger.warning(msg);
+    } else if (type == "error") {
+        logger.error("REFTEST TEST-UNEXPECTED-FAIL | " + g.currentURL + " | " + msg + "\n");
+        ++g.testResults.Exception;
     } else {
         logger.error("REFTEST TEST-UNEXPECTED-FAIL | " + g.currentURL + " | unknown log type " + type + "\n");
         ++g.testResults.Exception;
@@ -1568,6 +1659,41 @@ function RecvLog(type, msg)
 function RecvScriptResults(runtimeMs, error, results)
 {
     RecordResult(runtimeMs, error, results);
+}
+
+function RecvStartPrint(isPrintSelection, printRange)
+{
+    let fileName =`reftest-print-${Date.now()}-`;
+    crypto.getRandomValues(new Uint8Array(4)).forEach(x => fileName += x.toString(16));
+    fileName += ".pdf"
+    let file = Services.dirsvc.get("TmpD", Ci.nsIFile);
+    file.append(fileName);
+
+    let PSSVC = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(Ci.nsIPrintSettingsService);
+    let ps = PSSVC.newPrintSettings;
+    ps.printSilent = true;
+    ps.showPrintProgress = false;
+    ps.printBGImages = true;
+    ps.printBGColors = true;
+    ps.printToFile = true;
+    ps.toFileName = file.path;
+    ps.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
+    if (isPrintSelection) {
+        ps.printRange = Ci.nsIPrintSettings.kRangeSelection;
+    } else if (printRange) {
+        ps.printRange = Ci.nsIPrintSettings.kRangeSpecifiedPageRange;
+        let range = printRange.split('-');
+        ps.startPageRange = +range[0] || 1;
+        ps.endPageRange = +range[1] || 1;
+    }
+
+    var prefs = Cc["@mozilla.org/preferences-service;1"].
+                getService(Ci.nsIPrefBranch);
+    ps.printInColor = prefs.getBoolPref("print.print_in_color", true);
+
+    g.browser.print(g.browser.outerWindowID, ps)
+        .then(() => SendPrintDone(Cr.NS_OK, file.path))
+        .catch(exception => SendPrintDone(exception.code, file.path));
 }
 
 function RecvPrintResult(runtimeMs, status, fileName)
@@ -1596,16 +1722,26 @@ function RecvUpdateWholeCanvasForInvalidation()
 
 function OnProcessCrashed(subject, topic, data)
 {
-    var id;
-    subject = subject.QueryInterface(Ci.nsIPropertyBag2);
+    let id;
+    let additionalDumps;
+    let propbag = subject.QueryInterface(Ci.nsIPropertyBag2);
+
     if (topic == "plugin-crashed") {
-        id = subject.get("pluginDumpID");
+        id = propbag.get("pluginDumpID");
+        additionalDumps = propbag.getPropertyAsACString("additionalMinidumps");
     } else if (topic == "ipc:content-shutdown") {
-        id = subject.get("dumpID");
+        id = propbag.get("dumpID");
     }
+
     if (id) {
         g.expectedCrashDumpFiles.push(id + ".dmp");
         g.expectedCrashDumpFiles.push(id + ".extra");
+    }
+
+    if (additionalDumps && additionalDumps.length != 0) {
+      for (const name of additionalDumps.split(',')) {
+        g.expectedCrashDumpFiles.push(id + "-" + name + ".dmp");
+      }
     }
 }
 
@@ -1653,31 +1789,49 @@ function SendResetRenderingState()
     g.browserMessageManager.sendAsyncMessage("reftest:ResetRenderingState");
 }
 
+function SendPrintDone(status, fileName)
+{
+    g.browserMessageManager.sendAsyncMessage("reftest:PrintDone", { status, fileName });
+}
+
+var pdfjsHasLoaded;
+
+function pdfjsHasLoadedPromise() {
+  if (pdfjsHasLoaded === undefined) {
+    pdfjsHasLoaded = new Promise((resolve, reject) => {
+      let doc = g.containingWindow.document;
+      const script = doc.createElement("script");
+      script.src = "resource://pdf.js/build/pdf.js";
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("PDF.js script load failed."));
+      doc.documentElement.appendChild(script);
+    });
+  }
+
+  return pdfjsHasLoaded;
+}
+
 function readPdf(path, callback) {
     OS.File.open(path, { read: true }).then(function (file) {
-        file.flush().then(function() {
-            file.read().then(function (data) {
-                let fakePort = new PDFJS.main.LoopbackPort(true);
-                PDFJS.worker.WorkerMessageHandler.initializeFromPort(fakePort);
-                let myWorker = new PDFJS.main.PDFWorker("worker", fakePort);
-                PDFJS.main.PDFJS.getDocument({
-                    worker: myWorker,
-                    data: data
-                }).then(function (pdf) {
-                    callback(null, pdf);
-                }, function () {
-                    callback(new Error("Couldn't parse " + path));
-                });
-                return;
-            }, function () {
-                callback(new Error("Couldn't read PDF"));
+        file.read().then(function (data) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = "resource://pdf.js/build/pdf.worker.js";
+            pdfjsLib.getDocument({
+                data: data
+            }).promise.then(function (pdf) {
+                callback(null, pdf);
+            }, function (e) {
+                callback(new Error(`Couldn't parse ${path}, exception: ${e}`));
             });
+            return;
+        }, function (e) {
+            callback(new Error(`Couldn't read PDF ${path}, exception: ${e}`));
         });
     });
 }
 
 function comparePdfs(pathToTestPdf, pathToRefPdf, callback) {
-    Promise.all([pathToTestPdf, pathToRefPdf].map(function(path) {
+    pdfjsHasLoadedPromise().then(() =>
+      Promise.all([pathToTestPdf, pathToRefPdf].map(function(path) {
         return new Promise(function(resolve, reject) {
             readPdf(path, function(error, pdf) {
                 // Resolve or reject outer promise. reject and resolve are
@@ -1690,7 +1844,7 @@ function comparePdfs(pathToTestPdf, pathToRefPdf, callback) {
                 }
             });
         });
-    })).then(function(pdfs) {
+    }))).then(function(pdfs) {
         let numberOfPages = pdfs[1].numPages;
         let sameNumberOfPages = numberOfPages === pdfs[0].numPages;
 

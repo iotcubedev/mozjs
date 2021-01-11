@@ -9,6 +9,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Likely.h"
+#include "mozilla/TextUtils.h"
 
 #include "jsapi.h"
 #include "js/Proxy.h"
@@ -101,7 +102,7 @@ class DOMProxyHandler : public BaseDOMProxyHandler {
   virtual bool defineProperty(JSContext* cx, JS::Handle<JSObject*> proxy,
                               JS::Handle<jsid> id,
                               JS::Handle<JS::PropertyDescriptor> desc,
-                              JS::ObjectOpResult& result, bool* defined) const;
+                              JS::ObjectOpResult& result, bool* done) const;
   bool delete_(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
                JS::ObjectOpResult& result) const override;
   bool preventExtensions(JSContext* cx, JS::Handle<JSObject*> proxy,
@@ -111,6 +112,23 @@ class DOMProxyHandler : public BaseDOMProxyHandler {
   bool set(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
            JS::Handle<JS::Value> v, JS::Handle<JS::Value> receiver,
            JS::ObjectOpResult& result) const override;
+
+  // Override the Private Fields code to instead use the DOM Expando object
+  // rather than the Proxy Expando object.
+  virtual bool hasPrivate(JSContext* cx, JS::Handle<JSObject*> proxy,
+                          JS::Handle<jsid> id, bool* bp) const override;
+  virtual bool getPrivate(JSContext* cx, JS::Handle<JSObject*> proxy,
+                          JS::Handle<JS::Value> receiver, JS::Handle<jsid> id,
+                          JS::MutableHandle<JS::Value> vp) const override;
+  virtual bool setPrivate(JSContext* cx, JS::Handle<JSObject*> proxy,
+                          JS::Handle<jsid> id, JS::Handle<JS::Value> v,
+                          JS::Handle<JS::Value> receiver,
+                          JS::ObjectOpResult& result) const override;
+
+  virtual bool definePrivateField(JSContext* cx, JS::Handle<JSObject*> proxy,
+                                  JS::Handle<jsid> id,
+                                  JS::Handle<JS::PropertyDescriptor> desc,
+                                  JS::ObjectOpResult& result) const override;
 
   /*
    * If assigning to proxy[id] hits a named setter with OverrideBuiltins or
@@ -184,16 +202,14 @@ inline uint32_t GetArrayIndexFromId(JS::Handle<jsid> id) {
   }
 
   JSLinearString* str = js::AtomToLinearString(JSID_TO_ATOM(id));
-  char16_t s;
-  {
-    JS::AutoCheckCannotGC nogc;
-    if (js::LinearStringHasLatin1Chars(str)) {
-      s = *js::GetLatin1LinearStringChars(nogc, str);
-    } else {
-      s = *js::GetTwoByteLinearStringChars(nogc, str);
-    }
+  if (MOZ_UNLIKELY(js::GetLinearStringLength(str) == 0)) {
+    return UINT32_MAX;
   }
-  if (MOZ_LIKELY((unsigned)s >= 'a' && (unsigned)s <= 'z')) return UINT32_MAX;
+
+  char16_t firstChar = js::GetLinearStringCharAt(str, 0);
+  if (MOZ_LIKELY(IsAsciiLowercaseAlpha(firstChar))) {
+    return UINT32_MAX;
+  }
 
   uint32_t i;
   return js::StringIsArrayIndex(str, &i) ? i : UINT32_MAX;

@@ -31,8 +31,9 @@ using namespace dom;
 
 NS_IMPL_ISUPPORTS(AccessibleCaret::DummyTouchListener, nsIDOMEventListener)
 
-NS_NAMED_LITERAL_STRING(AccessibleCaret::sTextOverlayElementId, "text-overlay");
-NS_NAMED_LITERAL_STRING(AccessibleCaret::sCaretImageElementId, "image");
+const nsLiteralString AccessibleCaret::sTextOverlayElementId =
+    u"text-overlay"_ns;
+const nsLiteralString AccessibleCaret::sCaretImageElementId = u"image"_ns;
 
 #define AC_PROCESS_ENUM_TO_STREAM(e) \
   case (e):                          \
@@ -57,7 +58,8 @@ std::ostream& operator<<(
   using PositionChangedResult = AccessibleCaret::PositionChangedResult;
   switch (aResult) {
     AC_PROCESS_ENUM_TO_STREAM(PositionChangedResult::NotChanged);
-    AC_PROCESS_ENUM_TO_STREAM(PositionChangedResult::Changed);
+    AC_PROCESS_ENUM_TO_STREAM(PositionChangedResult::Position);
+    AC_PROCESS_ENUM_TO_STREAM(PositionChangedResult::Zoom);
     AC_PROCESS_ENUM_TO_STREAM(PositionChangedResult::Invisible);
   }
   return aStream;
@@ -102,8 +104,7 @@ void AccessibleCaret::SetAppearance(Appearance aAppearance) {
 
   // Need to reset rect since the cached rect will be compared in SetPosition.
   if (mAppearance == Appearance::None) {
-    mImaginaryCaretRect = nsRect();
-    mZoomLevel = 0.0f;
+    ClearCachedData();
   }
 }
 
@@ -113,16 +114,16 @@ nsAutoString AccessibleCaret::AppearanceString(Appearance aAppearance) {
   switch (aAppearance) {
     case Appearance::None:
     case Appearance::NormalNotShown:
-      string = NS_LITERAL_STRING("none");
+      string = u"none"_ns;
       break;
     case Appearance::Normal:
-      string = NS_LITERAL_STRING("normal");
+      string = u"normal"_ns;
       break;
     case Appearance::Right:
-      string = NS_LITERAL_STRING("right");
+      string = u"right"_ns;
       break;
     case Appearance::Left:
-      string = NS_LITERAL_STRING("left");
+      string = u"left"_ns;
       break;
   }
   return string;
@@ -167,9 +168,14 @@ void AccessibleCaret::EnsureApzAware() {
   // the element already.
   if (!CaretElement().IsApzAware()) {
     // FIXME(emilio): Is this needed anymore?
-    CaretElement().AddEventListener(NS_LITERAL_STRING("touchstart"),
-                                    mDummyTouchListener, false);
+    CaretElement().AddEventListener(u"touchstart"_ns, mDummyTouchListener,
+                                    false);
   }
+}
+
+bool AccessibleCaret::IsInPositionFixedSubtree() const {
+  return nsLayoutUtils::IsInPositionFixedSubtree(
+      mImaginaryCaretReferenceFrame.GetFrame());
 }
 
 void AccessibleCaret::InjectCaretElement(Document* aDocument) {
@@ -190,13 +196,13 @@ already_AddRefed<Element> AccessibleCaret::CreateCaretElement(
     Document* aDocument) const {
   // Content structure of AccessibleCaret
   // <div class="moz-accessiblecaret">  <- CaretElement()
-  //   <div id="text-overlay"           <- TextOverlayElement()
+  //   <div id="text-overlay">          <- TextOverlayElement()
   //   <div id="image">                 <- CaretImageElement()
 
   ErrorResult rv;
   RefPtr<Element> parent = aDocument->CreateHTMLElement(nsGkAtoms::div);
-  parent->ClassList()->Add(NS_LITERAL_STRING("moz-accessiblecaret"), rv);
-  parent->ClassList()->Add(NS_LITERAL_STRING("none"), rv);
+  parent->ClassList()->Add(u"moz-accessiblecaret"_ns, rv);
+  parent->ClassList()->Add(u"none"_ns, rv);
 
   auto CreateAndAppendChildElement =
       [aDocument, &parent](const nsLiteralString& aElementId) {
@@ -212,23 +218,17 @@ already_AddRefed<Element> AccessibleCaret::CreateCaretElement(
 }
 
 void AccessibleCaret::RemoveCaretElement(Document* aDocument) {
-  CaretElement().RemoveEventListener(NS_LITERAL_STRING("touchstart"),
-                                     mDummyTouchListener, false);
-
-  // FIXME(emilio): This shouldn't be needed and should be done by
-  // ContentRemoved via RemoveAnonymousContent, but the current setup tears down
-  // the accessible caret manager after the shell has stopped observing the
-  // document, but before the frame tree has gone away. This could clearly be
-  // better...
-  if (nsIFrame* frame = CaretElement().GetPrimaryFrame()) {
-    if (frame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
-      frame = frame->GetPlaceholderFrame();
-    }
-    nsAutoScriptBlocker scriptBlocker;
-    frame->GetParent()->RemoveFrame(nsIFrame::kPrincipalList, frame);
-  }
+  CaretElement().RemoveEventListener(u"touchstart"_ns, mDummyTouchListener,
+                                     false);
 
   aDocument->RemoveAnonymousContent(*mCaretElementHolder, IgnoreErrors());
+}
+
+void AccessibleCaret::ClearCachedData() {
+  mImaginaryCaretRect = nsRect();
+  mImaginaryCaretRectInContainerFrame = nsRect();
+  mImaginaryCaretReferenceFrame = nullptr;
+  mZoomLevel = 0.0f;
 }
 
 AccessibleCaret::PositionChangedResult AccessibleCaret::SetPosition(
@@ -245,30 +245,37 @@ AccessibleCaret::PositionChangedResult AccessibleCaret::SetPosition(
 
   if (imaginaryCaretRectInFrame.IsEmpty()) {
     // Don't bother to set the caret position since it's invisible.
-    mImaginaryCaretRect = nsRect();
-    mZoomLevel = 0.0f;
+    ClearCachedData();
     return PositionChangedResult::Invisible;
+  }
+
+  // SetCaretElementStyle() requires the input rect relative to the custom
+  // content container frame.
+  nsRect imaginaryCaretRectInContainerFrame = imaginaryCaretRectInFrame;
+  nsLayoutUtils::TransformRect(aFrame, CustomContentContainerFrame(),
+                               imaginaryCaretRectInContainerFrame);
+  const float zoomLevel = GetZoomLevel();
+  const bool isSamePosition = imaginaryCaretRectInContainerFrame.IsEqualEdges(
+      mImaginaryCaretRectInContainerFrame);
+  const bool isSameZoomLevel = FuzzyEqualsMultiplicative(zoomLevel, mZoomLevel);
+
+  if (isSamePosition && isSameZoomLevel) {
+    return PositionChangedResult::NotChanged;
   }
 
   nsRect imaginaryCaretRect = imaginaryCaretRectInFrame;
   nsLayoutUtils::TransformRect(aFrame, RootFrame(), imaginaryCaretRect);
-  float zoomLevel = GetZoomLevel();
 
-  if (imaginaryCaretRect.IsEqualEdges(mImaginaryCaretRect) &&
-      FuzzyEqualsMultiplicative(zoomLevel, mZoomLevel)) {
-    return PositionChangedResult::NotChanged;
-  }
-
+  // Cache mImaginaryCaretRect, which is relative to the root frame.
   mImaginaryCaretRect = imaginaryCaretRect;
+  mImaginaryCaretRectInContainerFrame = imaginaryCaretRectInContainerFrame;
+  mImaginaryCaretReferenceFrame = aFrame;
   mZoomLevel = zoomLevel;
 
-  // SetCaretElementStyle() requires the input rect relative to container frame.
-  nsRect imaginaryCaretRectInContainerFrame = imaginaryCaretRectInFrame;
-  nsLayoutUtils::TransformRect(aFrame, CustomContentContainerFrame(),
-                               imaginaryCaretRectInContainerFrame);
   SetCaretElementStyle(imaginaryCaretRectInContainerFrame, mZoomLevel);
 
-  return PositionChangedResult::Changed;
+  return isSamePosition ? PositionChangedResult::Zoom
+                        : PositionChangedResult::Position;
 }
 
 nsIFrame* AccessibleCaret::CustomContentContainerFrame() const {
@@ -282,17 +289,14 @@ void AccessibleCaret::SetCaretElementStyle(const nsRect& aRect,
                                            float aZoomLevel) {
   nsPoint position = CaretElementPosition(aRect);
   nsAutoString styleStr;
-  styleStr.AppendPrintf(
-      "left: %dpx; top: %dpx; "
-      "width: ",
-      nsPresContext::AppUnitsToIntCSSPixels(position.x),
-      nsPresContext::AppUnitsToIntCSSPixels(position.y));
   // We can't use AppendPrintf here, because it does locale-specific
   // formatting of floating-point values.
+  styleStr.AppendLiteral("left: ");
+  styleStr.AppendFloat(nsPresContext::AppUnitsToFloatCSSPixels(position.x));
+  styleStr.AppendLiteral("px; top: ");
+  styleStr.AppendFloat(nsPresContext::AppUnitsToFloatCSSPixels(position.y));
+  styleStr.AppendLiteral("px; width: ");
   styleStr.AppendFloat(StaticPrefs::layout_accessiblecaret_width() /
-                       aZoomLevel);
-  styleStr.AppendLiteral("px; height: ");
-  styleStr.AppendFloat(StaticPrefs::layout_accessiblecaret_height() /
                        aZoomLevel);
   styleStr.AppendLiteral("px; margin-left: ");
   styleStr.AppendFloat(StaticPrefs::layout_accessiblecaret_margin_left() /
@@ -310,8 +314,9 @@ void AccessibleCaret::SetCaretElementStyle(const nsRect& aRect,
 void AccessibleCaret::SetTextOverlayElementStyle(const nsRect& aRect,
                                                  float aZoomLevel) {
   nsAutoString styleStr;
-  styleStr.AppendPrintf("height: %dpx;",
-                        nsPresContext::AppUnitsToIntCSSPixels(aRect.height));
+  styleStr.AppendLiteral("height: ");
+  styleStr.AppendFloat(nsPresContext::AppUnitsToFloatCSSPixels(aRect.height));
+  styleStr.AppendLiteral("px;");
   TextOverlayElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr,
                                 true);
   AC_LOG("%s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(styleStr).get());
@@ -320,8 +325,10 @@ void AccessibleCaret::SetTextOverlayElementStyle(const nsRect& aRect,
 void AccessibleCaret::SetCaretImageElementStyle(const nsRect& aRect,
                                                 float aZoomLevel) {
   nsAutoString styleStr;
-  styleStr.AppendPrintf("margin-top: %dpx;",
-                        nsPresContext::AppUnitsToIntCSSPixels(aRect.height));
+  styleStr.AppendLiteral("height: ");
+  styleStr.AppendFloat(StaticPrefs::layout_accessiblecaret_height() /
+                       aZoomLevel);
+  styleStr.AppendLiteral("px;");
   CaretImageElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr,
                                true);
   AC_LOG("%s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(styleStr).get());

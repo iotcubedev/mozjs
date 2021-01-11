@@ -12,6 +12,8 @@
 #include "jit/JitRealm.h"
 #include "jit/MacroAssembler.h"
 #include "jit/MoveEmitter.h"
+#include "util/Memory.h"
+#include "vm/JitActivation.h"  // js::jit::JitActivation
 
 #include "jit/MacroAssembler-inl.h"
 
@@ -71,6 +73,16 @@ void MacroAssemblerX64::loadConstantSimd128Float(const SimdConstant& v,
     return;
   }
   JmpSrc j = masm.vmovaps_ripr(dest.encoding());
+  propagateOOM(val->uses.append(CodeOffset(j.offset())));
+}
+
+void MacroAssemblerX64::vpandSimd128(const SimdConstant& v,
+                                     FloatRegister dest) {
+  SimdData* val = getSimdData(v);
+  if (!val) {
+    return;
+  }
+  JmpSrc j = masm.vpand_ripr(dest.encoding());
   propagateOOM(val->uses.append(CodeOffset(j.offset())));
 }
 
@@ -184,7 +196,7 @@ void MacroAssemblerX64::handleFailureWithHandlerTail(void* handler,
   jmp(Operand(rax));
 
   // If we found a finally block, this must be a baseline frame. Push
-  // two values expected by JSOP_RETSUB: BooleanValue(true) and the
+  // two values expected by JSOp::Retsub: BooleanValue(true) and the
   // exception.
   bind(&finally);
   ValueOperand exception = ValueOperand(rcx);
@@ -467,45 +479,18 @@ void MacroAssembler::branchPtrInNurseryChunk(Condition cond, Register ptr,
            Imm32(int32_t(gc::ChunkLocation::Nursery)), label);
 }
 
-void MacroAssembler::branchValueIsNurseryObject(Condition cond,
-                                                ValueOperand value,
-                                                Register temp, Label* label) {
-  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
-  MOZ_ASSERT(temp != InvalidReg);
-
-  Label done;
-  branchTestObject(Assembler::NotEqual, value,
-                   cond == Assembler::Equal ? &done : label);
-
-  unboxObject(value, temp);
-  orPtr(Imm32(gc::ChunkMask), temp);
-  branch32(cond, Address(temp, gc::ChunkLocationOffsetFromLastByte),
-           Imm32(int32_t(gc::ChunkLocation::Nursery)), label);
-
-  bind(&done);
-}
-
 template <typename T>
 void MacroAssembler::branchValueIsNurseryCellImpl(Condition cond,
                                                   const T& value, Register temp,
                                                   Label* label) {
   MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
   MOZ_ASSERT(temp != InvalidReg);
-  Label done, checkAddress, checkObjectAddress;
 
-  Register tag = temp;
-  splitTag(value, tag);
-  branchTestObject(Assembler::Equal, tag, &checkObjectAddress);
-  branchTestString(Assembler::NotEqual, tag,
-                   cond == Assembler::Equal ? &done : label);
+  Label done;
+  branchTestGCThing(Assembler::NotEqual, value,
+                    cond == Assembler::Equal ? &done : label);
 
-  unboxString(value, temp);
-  jump(&checkAddress);
-
-  bind(&checkObjectAddress);
-  unboxObject(value, temp);
-
-  bind(&checkAddress);
+  unboxGCThingForGCBarrier(value, temp);
   orPtr(Imm32(gc::ChunkMask), temp);
   branch32(cond, Address(temp, gc::ChunkLocationOffsetFromLastByte),
            Imm32(int32_t(gc::ChunkLocation::Nursery)), label);
@@ -616,13 +601,16 @@ void MacroAssembler::wasmLoad(const wasm::MemoryAccessDesc& access,
     case Scalar::Float64:
       loadDouble(srcAddr, out.fpu());
       break;
+    case Scalar::Simd128:
+      MacroAssemblerX64::loadUnalignedSimd128(srcAddr, out.fpu());
+      break;
     case Scalar::Int64:
       MOZ_CRASH("int64 loads must use load64");
     case Scalar::BigInt64:
     case Scalar::BigUint64:
     case Scalar::Uint8Clamped:
     case Scalar::MaxTypedArrayViewType:
-      MOZ_CRASH("unexpected array type");
+      MOZ_CRASH("unexpected scalar type for wasmLoad");
   }
 
   memoryBarrierAfter(access.sync());
@@ -658,12 +646,13 @@ void MacroAssembler::wasmLoadI64(const wasm::MemoryAccessDesc& access,
       break;
     case Scalar::Float32:
     case Scalar::Float64:
-      MOZ_CRASH("non-int64 loads should use load()");
+    case Scalar::Simd128:
+      MOZ_CRASH("float loads must use wasmLoad");
     case Scalar::Uint8Clamped:
     case Scalar::BigInt64:
     case Scalar::BigUint64:
     case Scalar::MaxTypedArrayViewType:
-      MOZ_CRASH("unexpected array type");
+      MOZ_CRASH("unexpected scalar type for wasmLoadI64");
   }
 
   memoryBarrierAfter(access.sync());
@@ -695,6 +684,9 @@ void MacroAssembler::wasmStore(const wasm::MemoryAccessDesc& access,
       break;
     case Scalar::Float64:
       storeUncanonicalizedDouble(value.fpu(), dstAddr);
+      break;
+    case Scalar::Simd128:
+      MacroAssemblerX64::storeUnalignedSimd128(value.fpu(), dstAddr);
       break;
     case Scalar::Uint8Clamped:
     case Scalar::BigInt64:

@@ -4,8 +4,11 @@
 "use strict";
 
 ChromeUtils.import("resource://normandy/lib/AddonStudies.jsm", this);
+ChromeUtils.import("resource://normandy/lib/NormandyUtils.jsm", this);
+ChromeUtils.import("resource://normandy/lib/RecipeRunner.jsm", this);
 
 const FIXTURE_ADDON_ID = "normandydriver-a@example.com";
+const UUID_REGEX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 var EXPORTED_SYMBOLS = ["NormandyTestUtils"];
 
@@ -21,7 +24,7 @@ const NormandyTestUtils = {
   },
 
   factories: {
-    addonStudyFactory(attrs) {
+    addonStudyFactory(attrs = {}) {
       for (const key of ["name", "description"]) {
         if (attrs && attrs[key]) {
           throw new Error(
@@ -47,12 +50,14 @@ const NormandyTestUtils = {
           extensionHash:
             "ade1c14196ec4fe0aa0a6ba40ac433d7c8d1ec985581a8a94d43dc58991b5171",
           extensionHashAlgorithm: "sha256",
+          enrollmentId: NormandyUtils.generateUuid(),
+          temporaryErrorDeadline: null,
         },
         attrs
       );
     },
 
-    branchedAddonStudyFactory(attrs) {
+    branchedAddonStudyFactory(attrs = {}) {
       return NormandyTestUtils.factories.addonStudyFactory(
         Object.assign(
           {
@@ -63,7 +68,7 @@ const NormandyTestUtils = {
       );
     },
 
-    preferenceStudyFactory(attrs) {
+    preferenceStudyFactory(attrs = {}) {
       const defaultPref = {
         "test.study": {},
       };
@@ -93,11 +98,14 @@ const NormandyTestUtils = {
       return Object.assign(
         {
           userFacingName,
+          userFacingDescription: `${userFacingName} description`,
           slug,
           branch: "control",
           expired: false,
           lastSeen: new Date().toJSON(),
           experimentType: "exp",
+          enrollmentId: NormandyUtils.generateUuid(),
+          actionName: "PreferenceExperimentAction",
         },
         attrs,
         {
@@ -150,5 +158,73 @@ const NormandyTestUtils = {
    */
   decorate_task(...args) {
     return testGlobals.add_task(NormandyTestUtils.decorate(...args));
+  },
+
+  isUuid(s) {
+    return UUID_REGEX.test(s);
+  },
+
+  withMockRecipeCollection(recipes = []) {
+    return function wrapper(testFunc) {
+      return async function inner(...args) {
+        let recipeIds = new Set();
+        for (const recipe of recipes) {
+          if (!recipe.id || recipeIds.has(recipe.id)) {
+            throw new Error(
+              "To use withMockRecipeCollection, each recipe must have a unique ID"
+            );
+          }
+          recipeIds.add(recipe.id);
+        }
+
+        let db = await RecipeRunner._remoteSettingsClientForTesting.db;
+        await db.clear();
+        const fakeSig = { signature: "abc" };
+
+        for (const recipe of recipes) {
+          await db.create({
+            id: `recipe-${recipe.id}`,
+            recipe,
+            signature: fakeSig,
+          });
+        }
+
+        // last modified needs to be some positive integer
+        let lastModified = await db.getLastModified();
+        await db.importChanges({}, lastModified + 1);
+
+        const collectionHelper = {
+          async addRecipes(newRecipes) {
+            for (const recipe of newRecipes) {
+              if (!recipe.id || recipeIds.has(recipe)) {
+                throw new Error(
+                  "To use withMockRecipeCollection, each recipe must have a unique ID"
+                );
+              }
+            }
+            db = await RecipeRunner._remoteSettingsClientForTesting.db;
+            for (const recipe of newRecipes) {
+              recipeIds.add(recipe.id);
+              await db.create({
+                id: `recipe-${recipe.id}`,
+                recipe,
+                signature: fakeSig,
+              });
+            }
+            lastModified = (await db.getLastModified()) || 0;
+            await db.importChanges({}, lastModified + 1);
+          },
+        };
+
+        try {
+          await testFunc(...args, collectionHelper);
+        } finally {
+          db = await RecipeRunner._remoteSettingsClientForTesting.db;
+          await db.clear();
+          lastModified = await db.getLastModified();
+          await db.importChanges({}, lastModified + 1);
+        }
+      };
+    };
   },
 };

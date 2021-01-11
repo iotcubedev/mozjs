@@ -120,6 +120,9 @@ export const UserEventAction = Joi.object().keys({
         "ARCHIVE_FROM_POCKET",
         "SKIPPED_SIGNIN",
         "SUBMIT_EMAIL",
+        "SUBMIT_SIGNIN",
+        "SHOW_PRIVACY_INFO",
+        "CLICK_PRIVACY_INFO",
       ]).required(),
       source: Joi.valid(["TOP_SITES", "TOP_STORIES", "HIGHLIGHTS"]),
       action_position: Joi.number().integer(),
@@ -130,6 +133,7 @@ export const UserEventAction = Joi.object().keys({
           "screenshot_with_icon",
           "screenshot",
           "no_image",
+          "custom_screenshot",
         ]),
         card_type: Joi.valid([
           "bookmark",
@@ -137,6 +141,8 @@ export const UserEventAction = Joi.object().keys({
           "pinned",
           "pocket",
           "search",
+          "spoc",
+          "organic",
         ]),
         search_vendor: Joi.valid(["google", "amazon"]),
         has_flow_params: Joi.bool(),
@@ -199,7 +205,6 @@ export const SpocsFillEntrySchema = Joi.object().keys({
 export const SpocsFillPing = Joi.object().keys(
   Object.assign({}, baseKeys, {
     impression_id: Joi.string().required(),
-    client_id: Joi.valid("n/a").required(),
     session_id: Joi.valid("n/a").required(),
     spoc_fills: Joi.array()
       .items(SpocsFillEntrySchema)
@@ -222,6 +227,7 @@ export const SessionPing = Joi.object().keys(
     page: baseKeys.page.required(),
     session_duration: Joi.number().integer(),
     action: Joi.valid("activity_stream_session").required(),
+    profile_creation_date: Joi.number().integer(),
     perf: Joi.object()
       .keys({
         // How long it took in ms for data to be ready for display.
@@ -233,7 +239,7 @@ export const SessionPing = Joi.object().keys(
         // Not required at least for the error cases where the
         // observer event doesn't fire
         load_trigger_ts: Joi.number()
-          .positive()
+          .integer()
           .notes(["server counter", "server counter alert"]),
 
         // What was the perceived trigger of the load action?
@@ -256,7 +262,7 @@ export const SessionPing = Joi.object().keys(
         // topsites has yet to receive screenshots updates from the add-on code,
         // and is therefore just showing placeholder screenshots.
         topsites_first_painted_ts: Joi.number()
-          .positive()
+          .integer()
           .notes(["server counter", "server counter alert"]),
 
         // Information about the quality of TopSites images and icons.
@@ -282,7 +288,7 @@ export const SessionPing = Joi.object().keys(
         // visibility_event doesn't fire.  (It's not clear whether this
         // can happen in practice, but if it does, we'd like to know about it).
         visibility_event_rcvd_ts: Joi.number()
-          .positive()
+          .integer()
           .notes(["server counter", "server counter alert"]),
 
         // The boolean to signify whether the page is preloaded or not.
@@ -292,16 +298,16 @@ export const SessionPing = Joi.object().keys(
   })
 );
 
-export const ASRouterEventPing = Joi.object().keys({
-  client_id: Joi.string().required(),
-  action: Joi.string().required(),
-  impression_id: Joi.string().required(),
-  source: Joi.string().required(),
-  addon_version: Joi.string().required(),
-  locale: Joi.string().required(),
-  message_id: Joi.string().required(),
-  event: Joi.string().required(),
-});
+export const ASRouterEventPing = Joi.object()
+  .keys({
+    addon_version: Joi.string().required(),
+    locale: Joi.string().required(),
+    message_id: Joi.string().required(),
+    event: Joi.string().required(),
+    client_id: Joi.string(),
+    impression_id: Joi.string(),
+  })
+  .or("client_id", "impression_id");
 
 export const UTSessionPing = Joi.array().items(
   Joi.string()

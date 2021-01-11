@@ -241,6 +241,10 @@ class ExtensionBaseContextChild extends BaseContext {
 
   // Called when the extension shuts down.
   shutdown() {
+    if (this.contentWindow) {
+      this.contentWindow.close();
+    }
+
     this.unload();
   }
 
@@ -254,28 +258,12 @@ class ExtensionBaseContextChild extends BaseContext {
       return;
     }
 
-    if (this.contentWindow) {
-      this.contentWindow.close();
-    }
-
     super.unload();
   }
 }
 
 defineLazyGetter(ExtensionBaseContextChild.prototype, "messenger", function() {
-  let filter = { extensionId: this.extension.id };
-  let optionalFilter = {};
-  // Addon-generated messages (not necessarily from the same process as the
-  // addon itself) are sent to the main process, which forwards them via the
-  // parent process message manager. Specific replies can be sent to the frame
-  // message manager.
-  return new Messenger(
-    this,
-    [Services.cpmm, this.messageManager],
-    this.sender,
-    filter,
-    optionalFilter
-  );
+  return new Messenger(this, this.sender);
 });
 
 class ExtensionPageContextChild extends ExtensionBaseContextChild {

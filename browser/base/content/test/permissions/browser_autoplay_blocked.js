@@ -20,13 +20,21 @@ const MUTED_AUTOPLAY_PAGE =
     "https://example.com"
   ) + "browser_autoplay_muted.html";
 
+const EMPTY_PAGE =
+  getRootDirectory(gTestPath).replace(
+    "chrome://mochitests/content",
+    "https://example.com"
+  ) + "empty.html";
+
 const AUTOPLAY_PREF = "media.autoplay.default";
 const AUTOPLAY_PERM = "autoplay-media";
 
 function openIdentityPopup() {
   let promise = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    gBrowser.ownerGlobal,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   return promise;
@@ -209,10 +217,34 @@ add_task(async function testBFCache() {
     // Not sure why using `gBrowser.goForward()` doesn't trigger document's
     // visibility changes in some debug build on try server, which makes us not
     // to receive the blocked event.
-    await ContentTask.spawn(browser, null, () => {
+    await SpecialPowers.spawn(browser, [], () => {
       content.history.forward();
     });
     await blockedIconShown();
+  });
+
+  Services.perms.removeAll();
+});
+
+add_task(async function testBlockedIconFromCORSIframe() {
+  Services.prefs.setIntPref(AUTOPLAY_PREF, Ci.nsIAutoplay.BLOCKED);
+
+  await BrowserTestUtils.withNewTab(EMPTY_PAGE, async browser => {
+    const blockedIconShownPromise = blockedIconShown();
+    const CORS_AUTOPLAY_PAGE = AUTOPLAY_PAGE.replace(
+      "example.com",
+      "example.org"
+    );
+    info(`Load CORS autoplay on an iframe`);
+    await SpecialPowers.spawn(browser, [CORS_AUTOPLAY_PAGE], async url => {
+      const iframe = content.document.createElement("iframe");
+      iframe.src = url;
+      content.document.body.appendChild(iframe);
+      info("Wait until iframe finishes loading");
+      await new Promise(r => (iframe.onload = r));
+    });
+    await blockedIconShownPromise;
+    ok(true, "Blocked icon shown for the CORS autoplay iframe");
   });
 
   Services.perms.removeAll();

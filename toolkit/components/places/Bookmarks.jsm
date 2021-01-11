@@ -103,7 +103,6 @@ async function promiseTagsFolderId() {
 const MATCH_ANYWHERE_UNMODIFIED =
   Ci.mozIPlacesAutoComplete.MATCH_ANYWHERE_UNMODIFIED;
 const BEHAVIOR_BOOKMARK = Ci.mozIPlacesAutoComplete.BEHAVIOR_BOOKMARK;
-const SQLITE_MAX_VARIABLE_NUMBER = 999;
 
 var Bookmarks = Object.freeze({
   /**
@@ -1288,26 +1287,24 @@ var Bookmarks = Object.freeze({
       // Notify onItemRemoved to listeners.
       for (let item of removeItems) {
         let observers = PlacesUtils.bookmarks.getObservers();
-        let uri = item.hasOwnProperty("url")
-          ? PlacesUtils.toURI(item.url)
-          : null;
         let isUntagging = item._grandParentId == PlacesUtils.tagsFolderId;
-        notify(
-          observers,
-          "onItemRemoved",
-          [
-            item._id,
-            item._parentId,
-            item.index,
-            item.type,
-            uri,
-            item.guid,
-            item.parentGuid,
-            options.source,
-          ],
-          { isTagging: isUntagging }
-        );
-
+        let url = "";
+        if (item.type == Bookmarks.TYPE_BOOKMARK) {
+          url = item.hasOwnProperty("url") ? item.url.href : null;
+        }
+        let notification = new PlacesBookmarkRemoved({
+          id: item._id,
+          url,
+          itemType: item.type,
+          parentId: item._parentId,
+          index: item.index,
+          guid: item.guid,
+          parentGuid: item.parentGuid,
+          source: options.source,
+          isTagging: isUntagging,
+          isDescendantRemoval: false,
+        });
+        PlacesObservers.notifyListeners([notification]);
         if (isUntagging) {
           for (let entry of await fetchBookmarksByURL(item, {
             concurrent: true,
@@ -1824,7 +1821,6 @@ function notify(observers, notification, args = [], information = {}) {
 
     if (
       information.isDescendantRemoval &&
-      observer.skipDescendantsOnItemRemoval &&
       !PlacesUtils.bookmarks.userContentRoots.includes(information.parentGuid)
     ) {
       continue;
@@ -2217,13 +2213,10 @@ function insertBookmarkTree(items, source, parent, urls, lastAddedForParent) {
         );
 
         // Remove stale tombstones for new items.
-        for (let chunk of chunkArray(items, SQLITE_MAX_VARIABLE_NUMBER)) {
+        for (let chunk of PlacesUtils.chunkArray(items, db.variableLimit)) {
           await db.executeCached(
-            `DELETE FROM moz_bookmarks_deleted WHERE guid IN (${new Array(
-              chunk.length
-            )
-              .fill("?")
-              .join(",")})`,
+            `DELETE FROM moz_bookmarks_deleted
+             WHERE guid IN (${sqlBindPlaceholders(chunk)})`,
             chunk.map(item => item.guid)
           );
         }
@@ -2625,7 +2618,7 @@ function removeBookmarks(items, options) {
           }
         }
 
-        for (let chunk of chunkArray(items, SQLITE_MAX_VARIABLE_NUMBER)) {
+        for (let chunk of PlacesUtils.chunkArray(items, db.variableLimit)) {
           // We don't go through the annotations service for this cause otherwise
           // we'd get a pointless onItemChanged notification and it would also
           // set lastModified to an unexpected value.
@@ -2633,9 +2626,8 @@ function removeBookmarks(items, options) {
 
           // Remove the bookmarks.
           await db.executeCached(
-            `DELETE FROM moz_bookmarks WHERE guid IN (${new Array(chunk.length)
-              .fill("?")
-              .join(",")})`,
+            `DELETE FROM moz_bookmarks
+             WHERE guid IN (${sqlBindPlaceholders(chunk)})`,
             chunk.map(item => item.guid)
           );
         }
@@ -3023,13 +3015,15 @@ var updateFrecency = async function(db, urls, collapseNotifications = false) {
       ", url, guid, hidden, last_visit_date)";
   }
   // We just use the hashes, since updating a few additional urls won't hurt.
-  await db.execute(
-    `UPDATE moz_places
-     SET hidden = (url_hash BETWEEN hash("place", "prefix_lo") AND hash("place", "prefix_hi")),
-         frecency = ${frecencyClause}
-     WHERE url_hash IN (${sqlBindPlaceholders(hrefs, "hash(", ")")})`,
-    hrefs
-  );
+  for (let chunk of PlacesUtils.chunkArray(hrefs, db.variableLimit)) {
+    await db.execute(
+      `UPDATE moz_places
+       SET hidden = (url_hash BETWEEN hash("place", "prefix_lo") AND hash("place", "prefix_hi")),
+           frecency = ${frecencyClause}
+       WHERE url_hash IN (${sqlBindPlaceholders(chunk, "hash(", ")")})`,
+      chunk
+    );
+  }
 
   // Trigger frecency updates for all affected origins.
   await db.executeCached(`DELETE FROM moz_updateoriginsupdate_temp`);
@@ -3220,30 +3214,28 @@ var removeFoldersContents = async function(db, folderGuids, options) {
   // Notify listeners in reverse order to serve children before parents.
   let { source = Bookmarks.SOURCES.DEFAULT } = options;
   let observers = PlacesUtils.bookmarks.getObservers();
+  let notification = [];
   for (let item of itemsRemoved.reverse()) {
-    let uri = item.hasOwnProperty("url") ? PlacesUtils.toURI(item.url) : null;
-    notify(
-      observers,
-      "onItemRemoved",
-      [
-        item._id,
-        item._parentId,
-        item.index,
-        item.type,
-        uri,
-        item.guid,
-        item.parentGuid,
-        source,
-      ],
-      // Notify observers that this item is being
-      // removed as a descendent.
-      {
-        isDescendantRemoval: true,
-        parentGuid: item.parentGuid,
-      }
-    );
-
     let isUntagging = item._grandParentId == PlacesUtils.tagsFolderId;
+    let url = "";
+    if (item.type == Bookmarks.TYPE_BOOKMARK) {
+      url = item.hasOwnProperty("url") ? item.url.href : null;
+    }
+    notification = new PlacesBookmarkRemoved({
+      id: item._id,
+      url,
+      parentId: item._parentId,
+      index: item.index,
+      itemType: item.type,
+      guid: item.guid,
+      parentGuid: item.parentGuid,
+      source,
+      isTagging: isUntagging,
+      isDescendantRemoval: !PlacesUtils.bookmarks.userContentRoots.includes(
+        item.parentGuid
+      ),
+    });
+    PlacesObservers.notifyListeners([notification]);
     if (isUntagging) {
       for (let entry of await fetchBookmarksByURL(item, true)) {
         notify(observers, "onItemChanged", [
@@ -3388,17 +3380,6 @@ function adjustSeparatorsSyncCounter(
       item_type: Bookmarks.TYPE_SEPARATOR,
     }
   );
-}
-
-function* chunkArray(array, chunkLength) {
-  if (array.length <= chunkLength) {
-    yield array;
-    return;
-  }
-  let startIndex = 0;
-  while (startIndex < array.length) {
-    yield array.slice(startIndex, (startIndex += chunkLength));
-  }
 }
 
 /**

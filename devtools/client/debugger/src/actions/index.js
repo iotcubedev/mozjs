@@ -6,6 +6,7 @@
 
 import * as ast from "./ast";
 import * as breakpoints from "./breakpoints";
+import * as exceptions from "./exceptions";
 import * as expressions from "./expressions";
 import * as eventListeners from "./event-listeners";
 import * as pause from "./pause";
@@ -22,10 +23,14 @@ import * as threads from "./threads";
 import * as toolbox from "./toolbox";
 import * as preview from "./preview";
 
+// eslint-disable-next-line import/named
+import { objectInspector } from "devtools-reps";
+
 export default {
   ...ast,
   ...navigation,
   ...breakpoints,
+  ...exceptions,
   ...expressions,
   ...eventListeners,
   ...sources,
@@ -34,6 +39,7 @@ export default {
   ...pause,
   ...ui,
   ...fileSearch,
+  ...objectInspector.actions,
   ...projectTextSearch,
   ...quickOpen,
   ...sourceTree,

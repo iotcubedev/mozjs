@@ -108,10 +108,15 @@ interface nsIScriptSecurityManager : nsISupports
      * @param aPrincipal the principal identifying the actor causing the load
      * @param uri the URI that is being loaded
      * @param flags the permission set, see above
+     * @param innerWindowID the window ID for error reporting.  If this is 0
+     *        (which happens automatically if it's not passed from JS), errors
+     *        will only appear in the browser console, not window-associated
+     *        consoles like the web console.
      */
     void checkLoadURIWithPrincipal(in nsIPrincipal aPrincipal,
                                    in nsIURI uri,
-                                   in unsigned long flags);
+                                   in unsigned long flags,
+                                   [optional] in unsigned long long innerWindowID);
 
     /**
      * Similar to checkLoadURIWithPrincipal but there are two differences:
@@ -226,14 +231,15 @@ interface nsIScriptSecurityManager : nsISupports
     nsIPrincipal getChannelResultStoragePrincipal(in nsIChannel aChannel);
 
     /**
-     * This method does getChannelResultPrincipal() +
-     * getChannelResultStoragePrincipal().
-     * This method is mainly done for Document::Reset(). There are no other
-     * reasons to use this method.
+     * This method returns 2 principals from a nsIChannel:
+     * - aPrincipal is the regular principal.
+     * - aPartitionedPrincipal is aPrincipal plus an isolation key in its
+     *   originAttributes.
+     * See more in StoragePrincipalHelper.h
      */
     void getChannelResultPrincipals(in nsIChannel aChannel,
                                     out nsIPrincipal aPrincipal,
-                                    out nsIPrincipal aStoragePrincipal);
+                                    out nsIPrincipal aPartitionedPrincipal);
 
     /**
      * Temporary API until bug 1220687 is fixed.
@@ -260,6 +266,8 @@ interface nsIScriptSecurityManager : nsISupports
     nsIPrincipal getChannelURIPrincipal(in nsIChannel aChannel);
 
     const unsigned long DEFAULT_USER_CONTEXT_ID = 0;
+
+    const unsigned long DEFAULT_PRIVATE_BROWSING_ID = 0;
 
     /**
      * Per-domain controls to enable and disable script. This system is designed

@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
+import attr
 
 from ..result import Issue
 
@@ -18,11 +18,11 @@ class TreeherderFormatter(object):
 
     def __call__(self, result):
         message = []
-        for path, errors in sorted(result.issues.iteritems()):
+        for path, errors in sorted(result.issues.items()):
             for err in errors:
                 assert isinstance(err, Issue)
 
-                d = {s: getattr(err, s) for s in err.__slots__}
+                d = attr.asdict(err)
                 d["column"] = ":%s" % d["column"] if d["column"] else ""
                 d['level'] = d['level'].upper()
                 d['rule'] = d['rule'] or d['linter']

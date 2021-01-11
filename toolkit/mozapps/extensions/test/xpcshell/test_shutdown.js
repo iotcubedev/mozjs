@@ -27,11 +27,11 @@ const IGNORE = [
   "removeUpgradeListener",
   "getInstallSourceFromHost",
   "getInstallSourceFromPrincipal",
+  "stageLangpacksForAppUpdate",
 ];
 
 const IGNORE_PRIVATE = [
   "AddonAuthor",
-  "AddonCompatibilityOverride",
   "AddonScreenshot",
   "AddonType",
   "startup",

@@ -52,11 +52,13 @@ const webconsoleSpecPrototype = {
       exceptionMessage: Option(0, "nullable:string"),
       exceptionDocURL: Option(0, "nullable:string"),
       exceptionStack: Option(0, "nullable:json"),
+      hasException: Option(0, "nullable:boolean"),
       frame: Option(0, "nullable:json"),
       helperResult: Option(0, "nullable:json"),
       input: Option(0, "nullable:string"),
       notes: Option(0, "nullable:string"),
       result: Option(0, "nullable:json"),
+      startTime: Option(0, "number"),
       timestamp: Option(0, "string"),
       topLevelAwaitRejected: Option(0, "nullable:boolean"),
     },
@@ -145,17 +147,6 @@ const webconsoleSpecPrototype = {
       // response
       response: RetVal("console.cachedmessages"),
     },
-    evaluateJS: {
-      request: {
-        text: Option(0, "string"),
-        frameActor: Option(0, "string"),
-        url: Option(0, "string"),
-        selectedNodeActor: Option(0, "string"),
-        selectedObjectActor: Option(0, "string"),
-        mapped: Option(0, "nullable:json"),
-      },
-      response: RetVal("json"),
-    },
     evaluateJSAsync: {
       request: {
         text: Option(0, "string"),
@@ -163,7 +154,9 @@ const webconsoleSpecPrototype = {
         url: Option(0, "string"),
         selectedNodeActor: Option(0, "string"),
         selectedObjectActor: Option(0, "string"),
+        innerWindowID: Option(0, "number"),
         mapped: Option(0, "nullable:json"),
+        eager: Option(0, "nullable:boolean"),
       },
       response: RetVal("console.evaluatejsasync"),
     },
@@ -189,6 +182,7 @@ const webconsoleSpecPrototype = {
         frameActor: Arg(2, "nullable:string"),
         selectedNodeActor: Arg(3, "nullable:string"),
         authorizedEvaluations: Arg(4, "nullable:json"),
+        expressionVars: Arg(5, "nullable:json"),
       },
       response: RetVal("console.autocomplete"),
     },
@@ -245,6 +239,16 @@ const webconsoleSpecPrototype = {
       request: {
         filter: Arg(0, "json"),
       },
+    },
+
+    setBlockedUrls: {
+      request: {
+        url: Arg(0, "json"),
+      },
+    },
+    getBlockedUrls: {
+      request: {},
+      response: RetVal("array:string"),
     },
   },
 };

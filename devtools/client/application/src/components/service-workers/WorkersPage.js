@@ -14,8 +14,13 @@ const {
 } = require("devtools/client/shared/vendor/react-dom-factories");
 const { connect } = require("devtools/client/shared/vendor/react-redux");
 
-const WorkerList = createFactory(require("./WorkerList"));
-const WorkerListEmpty = createFactory(require("./WorkerListEmpty"));
+const Types = require("devtools/client/application/src/types/index");
+const RegistrationList = createFactory(
+  require("devtools/client/application/src/components/service-workers/RegistrationList")
+);
+const RegistrationListEmpty = createFactory(
+  require("devtools/client/application/src/components/service-workers/RegistrationListEmpty")
+);
 
 class WorkersPage extends PureComponent {
   static get propTypes() {
@@ -23,28 +28,30 @@ class WorkersPage extends PureComponent {
       // mapped from state
       canDebugWorkers: PropTypes.bool.isRequired,
       domain: PropTypes.string.isRequired,
-      workers: PropTypes.array.isRequired,
+      registrations: Types.registrationArray.isRequired,
     };
   }
 
   render() {
-    const { canDebugWorkers, domain, workers } = this.props;
+    const { canDebugWorkers, domain, registrations } = this.props;
 
     // Filter out workers from other domains
-    const domainWorkers = workers.filter(
-      x => new URL(x.url).hostname === domain
+    const domainWorkers = registrations.filter(
+      x => x.workers.length > 0 && new URL(x.workers[0].url).hostname === domain
     );
-    const isWorkerListEmpty = domainWorkers.length === 0;
+    const isListEmpty = domainWorkers.length === 0;
 
     return section(
       {
-        className: `app-page ${isWorkerListEmpty ? "app-page--empty" : ""}`,
+        className: `app-page js-service-workers-page ${
+          isListEmpty ? "app-page--empty" : ""
+        }`,
       },
-      isWorkerListEmpty
-        ? WorkerListEmpty({})
-        : WorkerList({
+      isListEmpty
+        ? RegistrationListEmpty({})
+        : RegistrationList({
             canDebugWorkers,
-            workers: domainWorkers,
+            registrations: domainWorkers,
           })
     );
   }
@@ -54,7 +61,7 @@ function mapStateToProps(state) {
   return {
     canDebugWorkers: state.workers.canDebugWorkers,
     domain: state.page.domain,
-    workers: state.workers.list,
+    registrations: state.workers.list,
   };
 }
 

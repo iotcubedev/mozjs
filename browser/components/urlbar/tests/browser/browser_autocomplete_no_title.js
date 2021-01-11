@@ -21,7 +21,10 @@ add_task(async function() {
     BrowserTestUtils.removeTab(tab);
   });
 
-  await promiseAutocompleteResultPopup("bug1060642");
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "bug1060642",
+  });
   let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
   Assert.equal(
     result.displayed.title,

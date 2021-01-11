@@ -18,20 +18,14 @@
     constructor() {
       super();
 
-      this.addEventListener(
+      this.attachShadow({ mode: "open" });
+
+      document.addEventListener(
         "keypress",
         event => {
           if (event.keyCode == KeyEvent.DOM_VK_RETURN) {
             this._hitEnter(event);
-          }
-        },
-        { mozSystemGroup: true }
-      );
-
-      this.addEventListener(
-        "keypress",
-        event => {
-          if (
+          } else if (
             event.keyCode == KeyEvent.DOM_VK_ESCAPE &&
             !event.defaultPrevented
           ) {
@@ -42,7 +36,7 @@
       );
 
       if (AppConstants.platform == "macosx") {
-        this.addEventListener(
+        document.addEventListener(
           "keypress",
           event => {
             if (event.key == "." && event.metaKey) {
@@ -52,36 +46,19 @@
           true
         );
       } else {
-        this.addEventListener(
-          "focus",
-          event => {
-            let btn = this.getButton(this.defaultButton);
-            if (btn) {
-              btn.setAttribute(
-                "default",
-                event.originalTarget == btn ||
-                  !(
-                    event.originalTarget.localName == "button" ||
-                    event.originalTarget.localName == "toolbarbutton"
-                  )
-              );
-            }
-          },
-          true
-        );
+        this.addEventListener("focus", this, true);
+        this.shadowRoot.addEventListener("focus", this, true);
       }
 
       // listen for when window is closed via native close buttons
       window.addEventListener("close", event => {
-        if (!document.documentElement.cancelDialog()) {
+        if (!this.cancelDialog()) {
           event.preventDefault();
         }
       });
 
       // for things that we need to initialize after onload fires
       window.addEventListener("load", event => this.postLoadInit(event));
-
-      this.attachShadow({ mode: "open" });
     }
 
     static get observedAttributes() {
@@ -122,52 +99,39 @@
       let buttons = AppConstants.XP_UNIX
         ? `
       <hbox class="dialog-button-box">
-        <button dlgtype="disclosure" class="dialog-button" hidden="true"/>
-        <button dlgtype="help" class="dialog-button" hidden="true"/>
-        <button dlgtype="extra2" class="dialog-button" hidden="true"/>
-        <button dlgtype="extra1" class="dialog-button" hidden="true"/>
-        <spacer class="spacer" flex="1"/>
-        <button dlgtype="cancel" class="dialog-button"/>
-        <button dlgtype="accept" class="dialog-button"/>
+        <button dlgtype="disclosure" hidden="true"/>
+        <button dlgtype="help" hidden="true"/>
+        <button dlgtype="extra2" hidden="true"/>
+        <button dlgtype="extra1" hidden="true"/>
+        <spacer class="button-spacer" part="button-spacer" flex="1"/>
+        <button dlgtype="cancel"/>
+        <button dlgtype="accept"/>
       </hbox>`
         : `
       <hbox class="dialog-button-box" pack="end">
-        <button dlgtype="extra2" class="dialog-button" hidden="true"/>
-        <spacer class="spacer" flex="1" hidden="true"/>
-        <button dlgtype="accept" class="dialog-button"/>
-        <button dlgtype="extra1" class="dialog-button" hidden="true"/>
-        <button dlgtype="cancel" class="dialog-button"/>
-        <button dlgtype="help" class="dialog-button" hidden="true"/>
-        <button dlgtype="disclosure" class="dialog-button" hidden="true"/>
+        <button dlgtype="extra2" hidden="true"/>
+        <spacer class="button-spacer" part="button-spacer" flex="1" hidden="true"/>
+        <button dlgtype="accept"/>
+        <button dlgtype="extra1" hidden="true"/>
+        <button dlgtype="cancel"/>
+        <button dlgtype="help" hidden="true"/>
+        <button dlgtype="disclosure" hidden="true"/>
       </hbox>`;
 
       let key =
         AppConstants.platform == "macosx"
           ? `<key phase="capturing"
-            oncommand="document.documentElement.openHelp(event)"
+            oncommand="document.querySelector('dialog').openHelp(event)"
             key="&openHelpMac.commandkey;" modifiers="accel"/>`
           : `<key phase="capturing"
-            oncommand="document.documentElement.openHelp(event)"
+            oncommand="document.querySelector('dialog').openHelp(event)"
             keycode="&openHelp.commandkey;"/>`;
 
       return `
-      <html:link rel="stylesheet" href="chrome://global/content/widgets.css" />
+      <html:link rel="stylesheet" href="chrome://global/skin/button.css"/>
+      <html:link rel="stylesheet" href="chrome://global/skin/dialog.css"/>
       ${this.hasAttribute("subdialog") ? this.inContentStyle : ""}
-      <html:style>
-        :host([nobuttonspacer]) .spacer {
-          display: none;
-        }
-        :host([subdialog]) > .dialog-content-box {
-          /* This allows the focus ring to display fully when scrolling is enabled.
-            See matching style in dialog.inc.css.
-          */
-          padding: 4px;
-        }
-        :host(.doScroll) > .dialog-content-box {
-          overflow-y: auto;
-        }
-      </html:style>
-      <vbox class="box-inherit dialog-content-box" flex="1">
+      <vbox class="box-inherit dialog-content-box" part="content-box" flex="1">
         <html:slot></html:slot>
       </vbox>
       ${buttons}
@@ -178,6 +142,8 @@
       if (this.delayConnectedCallback()) {
         return;
       }
+
+      document.documentElement.setAttribute("role", "dialog");
 
       this.shadowRoot.textContent = "";
       this.shadowRoot.appendChild(
@@ -294,14 +260,13 @@
     }
 
     postLoadInit(aEvent) {
-      function focusInit() {
-        const dialog = document.documentElement;
-        const defaultButton = dialog.getButton(dialog.defaultButton);
+      let focusInit = () => {
+        const defaultButton = this.getButton(this.defaultButton);
 
         // give focus to the first focusable element in the dialog
         let focusedElt = document.commandDispatcher.focusedElement;
         if (!focusedElt) {
-          document.commandDispatcher.advanceFocusIntoSubtree(dialog);
+          document.commandDispatcher.advanceFocusIntoSubtree(this);
 
           focusedElt = document.commandDispatcher.focusedElement;
           if (focusedElt) {
@@ -343,7 +308,7 @@
             window.notifyDefaultButtonLoaded(defaultButton);
           }
         } catch (e) {}
-      }
+      };
 
       // Give focus after onload completes, see bug 103197.
       setTimeout(focusInit, 0);
@@ -356,7 +321,7 @@
     }
 
     openHelp(event) {
-      var helpButton = document.documentElement.getButton("help");
+      var helpButton = this.getButton("help");
       if (helpButton.disabled || helpButton.hidden) {
         return;
       }
@@ -393,7 +358,11 @@
       // add the label and oncommand handler to each button
       for (dlgtype in buttons) {
         var button = buttons[dlgtype];
-        button.addEventListener("command", this._handleButtonCommand, true);
+        button.addEventListener(
+          "command",
+          this._handleButtonCommand.bind(this),
+          true
+        );
 
         // don't override custom labels with pre-defined labels on explicit buttons
         if (!button.hasAttribute("label")) {
@@ -428,38 +397,10 @@
             }
           }
         }
-        // allow specifying alternate icons in the dialog header
-        if (!button.hasAttribute("icon")) {
-          // if there's an icon specified, use that
-          if (this.hasAttribute("buttonicon" + dlgtype)) {
-            button.setAttribute(
-              "icon",
-              this.getAttribute("buttonicon" + dlgtype)
-            );
-          }
-          // otherwise set defaults
-          else {
-            switch (dlgtype) {
-              case "accept":
-                button.setAttribute("icon", "accept");
-                break;
-              case "cancel":
-                button.setAttribute("icon", "cancel");
-                break;
-              case "disclosure":
-                button.setAttribute("icon", "properties");
-                break;
-              case "help":
-                button.setAttribute("icon", "help");
-                break;
-              default:
-                break;
-            }
-          }
-        }
       }
 
       // ensure that hitting enter triggers the default button command
+      // eslint-disable-next-line no-self-assign
       this.defaultButton = this.defaultButton;
 
       // if there is a special button configuration, use it
@@ -487,7 +428,7 @@
 
         // show the spacer on Windows only when the extra2 button is present
         if (AppConstants.platform == "win") {
-          let spacer = this.shadowRoot.querySelector(".spacer");
+          let spacer = this.shadowRoot.querySelector(".button-spacer");
           spacer.removeAttribute("hidden");
           spacer.setAttribute("flex", shown.extra2 ? "1" : "0");
         }
@@ -516,9 +457,7 @@
     }
 
     _handleButtonCommand(aEvent) {
-      return document.documentElement._doButtonCommand(
-        aEvent.target.getAttribute("dlgtype")
-      );
+      return this._doButtonCommand(aEvent.target.getAttribute("dlgtype"));
     }
 
     _doButtonCommand(aDlgType) {
@@ -556,6 +495,20 @@
       var btn = this.getButton(this.defaultButton);
       if (btn) {
         this._doButtonCommand(this.defaultButton);
+      }
+    }
+
+    on_focus(event) {
+      let btn = this.getButton(this.defaultButton);
+      if (btn) {
+        btn.setAttribute(
+          "default",
+          event.originalTarget == btn ||
+            !(
+              event.originalTarget.localName == "button" ||
+              event.originalTarget.localName == "toolbarbutton"
+            )
+        );
       }
     }
   }

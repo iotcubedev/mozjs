@@ -8,14 +8,14 @@ using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
 namespace mozilla {
 namespace ipc {
 
-struct ContentSecurityPolicy
+comparable struct ContentSecurityPolicy
 {
   nsString policy;
   bool reportOnlyFlag;
   bool deliveredViaMetaTagFlag;
 };
 
-struct ContentPrincipalInfo
+comparable struct ContentPrincipalInfo
 {
   OriginAttributes attrs;
 
@@ -36,22 +36,22 @@ struct ContentPrincipalInfo
   nsCString baseDomain;
 };
 
-struct SystemPrincipalInfo
+comparable struct SystemPrincipalInfo
 { };
 
-struct NullPrincipalInfo
+comparable struct NullPrincipalInfo
 {
   OriginAttributes attrs;
   nsCString spec;
 };
 
-struct ExpandedPrincipalInfo
+comparable struct ExpandedPrincipalInfo
 {
   OriginAttributes attrs;
   PrincipalInfo[] allowlist;
 };
 
-union PrincipalInfo
+comparable union PrincipalInfo
 {
   ContentPrincipalInfo;
   SystemPrincipalInfo;
@@ -59,26 +59,14 @@ union PrincipalInfo
   ExpandedPrincipalInfo;
 };
 
-union OptionalPrincipalInfo
+comparable struct CSPInfo
 {
-  PrincipalInfo;
-  void_t;
-};
-
-struct PolicyInfo
-{
-  nsCString policy;
-  bool reportOnly;
-  bool deliveredViaMetaTag;
-};
-
-struct CSPInfo
-{
-  PolicyInfo[] policyInfos;
+  ContentSecurityPolicy[] policyInfos;
   PrincipalInfo requestPrincipalInfo;
   nsCString selfURISpec;
   nsString referrer;
   uint64_t innerWindowID;
+  bool skipAllowInlineStyleCheck;
 };
 
 } // namespace ipc

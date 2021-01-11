@@ -37,8 +37,28 @@ def normsep(path):
     return path
 
 
+def cargo_workaround(path):
+    unc = '//?/'
+    if path.startswith(unc):
+        return path[len(unc):]
+    return path
+
+
 def relpath(path, start):
-    rel = normsep(os.path.relpath(path, start))
+    path = normsep(path)
+    start = normsep(start)
+    if sys.platform == 'win32':
+        # os.path.relpath can't handle relative paths between UNC and non-UNC
+        # paths, so strip a //?/ prefix if present (bug 1581248)
+        path = cargo_workaround(path)
+        start = cargo_workaround(start)
+    try:
+        rel = os.path.relpath(path, start)
+    except ValueError:
+        # On Windows this can throw a ValueError if the two paths are on
+        # different drives. In that case, just return the path.
+        return abspath(path)
+    rel = normsep(rel)
     return '' if rel == '.' else rel
 
 

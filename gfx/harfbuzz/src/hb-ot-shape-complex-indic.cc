@@ -248,6 +248,7 @@ struct indic_shape_plan_t
   hb_indic_would_substitute_feature_t pref;
   hb_indic_would_substitute_feature_t blwf;
   hb_indic_would_substitute_feature_t pstf;
+  hb_indic_would_substitute_feature_t vatu;
 
   hb_mask_t mask_array[INDIC_NUM_FEATURES];
 };
@@ -286,6 +287,7 @@ data_create_indic (const hb_ot_shape_plan_t *plan)
   indic_plan->pref.init (&plan->map, HB_TAG('p','r','e','f'), zero_context);
   indic_plan->blwf.init (&plan->map, HB_TAG('b','l','w','f'), zero_context);
   indic_plan->pstf.init (&plan->map, HB_TAG('p','s','t','f'), zero_context);
+  indic_plan->vatu.init (&plan->map, HB_TAG('v','a','t','u'), zero_context);
 
   for (unsigned int i = 0; i < ARRAY_LENGTH (indic_plan->mask_array); i++)
     indic_plan->mask_array[i] = (indic_features[i].flags & F_GLOBAL) ?
@@ -315,10 +317,16 @@ consonant_position_from_face (const indic_shape_plan_t *indic_plan,
    * base at 0.  The font however, only has lookups matching
    * 930,94D in 'blwf', not the expected 94D,930 (with new-spec
    * table).  As such, we simply match both sequences.  Seems
-   * to work. */
+   * to work.
+   *
+   * Vatu is done as well, for:
+   * https://github.com/harfbuzz/harfbuzz/issues/1587
+   */
   hb_codepoint_t glyphs[3] = {virama, consonant, virama};
   if (indic_plan->blwf.would_substitute (glyphs  , 2, face) ||
-      indic_plan->blwf.would_substitute (glyphs+1, 2, face))
+      indic_plan->blwf.would_substitute (glyphs+1, 2, face) ||
+      indic_plan->vatu.would_substitute (glyphs  , 2, face) ||
+      indic_plan->vatu.would_substitute (glyphs+1, 2, face))
     return POS_BELOW_C;
   if (indic_plan->pstf.would_substitute (glyphs  , 2, face) ||
       indic_plan->pstf.would_substitute (glyphs+1, 2, face))
@@ -540,7 +548,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
 
       case BASE_POS_LAST_SINHALA:
       {
-        /* Sinhala base positioning is slightly different from main Indic, in that:
+	/* Sinhala base positioning is slightly different from main Indic, in that:
 	 * 1. Its ZWJ behavior is different,
 	 * 2. We don't need to look into the font for consonant positions.
 	 */
@@ -642,7 +650,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
    * is *not* a Halant after last consonant already.  We know that is the
    * case for Kannada, while it reorders unconditionally in other scripts,
    * eg. Malayalam, Bengali, and Devanagari.  We don't currently know about
-   * other scripts, so we blacklist Kannada.
+   * other scripts, so we block Kannada.
    *
    * Kannada test case:
    * U+0C9A,U+0CCD,U+0C9A,U+0CCD
@@ -669,8 +677,8 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
     for (unsigned int i = base + 1; i < end; i++)
       if (info[i].indic_category() == OT_H)
       {
-        unsigned int j;
-        for (j = end - 1; j > i; j--)
+	unsigned int j;
+	for (j = end - 1; j > i; j--)
 	  if (is_consonant (info[j]) ||
 	      (disallow_double_halants && info[j].indic_category() == OT_H))
 	    break;
@@ -680,7 +688,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
 	  memmove (&info[i], &info[i + 1], (j - i) * sizeof (info[0]));
 	  info[j] = t;
 	}
-        break;
+	break;
       }
   }
 
@@ -711,7 +719,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
 	    }
 	}
       } else if (info[i].indic_position() != POS_SMVD) {
-        last_pos = (indic_position_t) info[i].indic_position();
+	last_pos = (indic_position_t) info[i].indic_position();
       }
     }
   }
@@ -727,7 +735,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
 	    info[j].indic_position() = info[i].indic_position();
 	last = i;
       } else if (info[i].indic_category() == OT_M)
-        last = i;
+	last = i;
   }
 
 
@@ -764,7 +772,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
     {
       /* Note!  syllable() is a one-byte field. */
       for (unsigned int i = base; i < end; i++)
-        if (info[i].syllable() != 255)
+	if (info[i].syllable() != 255)
 	{
 	  unsigned int max = i;
 	  unsigned int j = start + info[i].syllable();
@@ -852,7 +860,7 @@ initial_reordering_consonant_syllable (const hb_ot_shape_plan_t *plan,
     for (unsigned int i = base + 1; i + pref_len - 1 < end; i++) {
       hb_codepoint_t glyphs[2];
       for (unsigned int j = 0; j < pref_len; j++)
-        glyphs[j] = info[i + j].codepoint;
+	glyphs[j] = info[i + j].codepoint;
       if (indic_plan->pref.would_substitute (glyphs, pref_len, face))
       {
 	for (unsigned int j = 0; j < pref_len; j++)
@@ -983,7 +991,7 @@ insert_dotted_circles_indic (const hb_ot_shape_plan_t *plan HB_UNUSED,
       while (buffer->idx < buffer->len && buffer->successful &&
 	     last_syllable == buffer->cur().syllable() &&
 	     buffer->cur().indic_category() == OT_Repha)
-        buffer->next_glyph ();
+	buffer->next_glyph ();
 
       buffer->output_info (ginfo);
     }
@@ -1029,7 +1037,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	  _hb_glyph_info_ligated (&info[i]) &&
 	  _hb_glyph_info_multiplied (&info[i]))
       {
-        /* This will make sure that this glyph passes is_halant() test. */
+	/* This will make sure that this glyph passes is_halant() test. */
 	info[i].indic_category() = OT_H;
 	_hb_glyph_info_clear_ligated_and_multiplied (&info[i]);
       }
@@ -1092,7 +1100,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
       }
 
       if (start < base && info[base].indic_position() > POS_BASE_C)
-        base--;
+	base--;
       break;
     }
   if (base == end && start < base &&
@@ -1182,7 +1190,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	}
       }
       else
-        new_pos = start; /* No move. */
+	new_pos = start; /* No move. */
     }
 
     if (start < new_pos && info[new_pos].indic_position () != POS_PRE_M)
@@ -1284,7 +1292,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
       while (new_reph_pos + 1 < end && info[new_reph_pos + 1].indic_position() <= POS_AFTER_MAIN)
 	new_reph_pos++;
       if (new_reph_pos < end)
-        goto reph_move;
+	goto reph_move;
     }
 
     /*       4. If reph should be positioned before post-base consonant, find
@@ -1300,7 +1308,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	     !( FLAG_UNSAFE (info[new_reph_pos + 1].indic_position()) & (FLAG (POS_POST_C) | FLAG (POS_AFTER_POST) | FLAG (POS_SMVD))))
 	new_reph_pos++;
       if (new_reph_pos < end)
-        goto reph_move;
+	goto reph_move;
     }
 
     /*       5. If no consonant is found in steps 3 or 4, move reph to a position
@@ -1325,6 +1333,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	goto reph_move;
       }
     }
+    /* See https://github.com/harfbuzz/harfbuzz/issues/2298#issuecomment-615318654 */
 
     /*       6. Otherwise, reorder reph to the end of the syllable.
      */
@@ -1382,7 +1391,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	 *          of the <pref> feature. (Note that a font may shape a Ra consonant with
 	 *          the feature generally but block it in certain contexts.)
 	 */
-        /* Note: We just check that something got substituted.  We don't check that
+	/* Note: We just check that something got substituted.  We don't check that
 	 * the <pref> feature actually did it...
 	 *
 	 * Reorder pref only if it ligated. */
@@ -1428,7 +1437,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
 	  }
 	}
 
-        break;
+	break;
       }
   }
 
@@ -1454,7 +1463,7 @@ final_reordering_syllable_indic (const hb_ot_shape_plan_t *plan,
     {
       case HB_SCRIPT_TAMIL:
       case HB_SCRIPT_SINHALA:
-        break;
+	break;
 
       default:
 	/* Uniscribe merges the entire syllable into a single cluster... Except for Tamil & Sinhala.

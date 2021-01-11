@@ -138,6 +138,8 @@ static SECItem bigBuf;
 static int configureDHE = -1;        /* -1: don't configure, 0 disable, >=1 enable*/
 static int configureReuseECDHE = -1; /* -1: don't configure, 0 refresh, >=1 reuse*/
 static int configureWeakDHE = -1;    /* -1: don't configure, 0 disable, >=1 enable*/
+SECItem psk = { siBuffer, NULL, 0 };
+SECItem pskLabel = { siBuffer, NULL, 0 };
 
 static PRThread *acceptorThread;
 
@@ -167,7 +169,7 @@ PrintUsageHeader(const char *progName)
             "         [ T <good|revoked|unknown|badsig|corrupted|none|ocsp>] [-A ca]\n"
             "         [-C SSLCacheEntries] [-S dsa_nickname] [-Q]\n"
             "         [-I groups] [-J signatureschemes] [-e ec_nickname]\n"
-            "         -U [0|1] -H [0|1|2] -W [0|1]\n"
+            "         -U [0|1] -H [0|1|2] -W [0|1] [-z externalPsk]\n"
             "\n",
             progName);
 }
@@ -235,7 +237,17 @@ PrintParameterUsage()
         "     rsa_pss_pss_sha256, rsa_pss_pss_sha384, rsa_pss_pss_sha512,\n"
         "-Z enable 0-RTT (for TLS 1.3; also use -u)\n"
         "-E enable post-handshake authentication\n"
-        "   (for TLS 1.3; only has an effect with 3 or more -r options)\n",
+        "   (for TLS 1.3; only has an effect with 3 or more -r options)\n"
+        "-x Export and print keying material after successful handshake\n"
+        "   The argument is a comma separated list of exporters in the form:\n"
+        "     LABEL[:OUTPUT-LENGTH[:CONTEXT]]\n"
+        "   where LABEL and CONTEXT can be either a free-form string or\n"
+        "   a hex string if it is preceded by \"0x\"; OUTPUT-LENGTH\n"
+        "   is a decimal integer.\n"
+        "-z Configure a TLS 1.3 External PSK with the given hex string for a key.\n"
+        "   To specify a label, use ':' as a delimiter. For example:\n"
+        "   0xAAAABBBBCCCCDDDD:mylabel. Otherwise, the default label of\n"
+        "  'Client_identity' will be used.\n",
         stderr);
 }
 
@@ -812,6 +824,8 @@ SSLNamedGroup *enabledGroups = NULL;
 unsigned int enabledGroupsCount = 0;
 const SSLSignatureScheme *enabledSigSchemes = NULL;
 unsigned int enabledSigSchemeCount = 0;
+const secuExporter *enabledExporters = NULL;
+unsigned int enabledExporterCount = 0;
 
 static char *virtServerNameArray[MAX_VIRT_SERVER_NAME_ARRAY_INDEX];
 static int virtServerNameIndex = 1;
@@ -1822,6 +1836,41 @@ handshakeCallback(PRFileDesc *fd, void *client_data)
             SECITEM_FreeItem(hostInfo, PR_TRUE);
         }
     }
+    if (enabledExporters) {
+        SECStatus rv = exportKeyingMaterials(fd, enabledExporters, enabledExporterCount);
+        if (rv != SECSuccess) {
+            PRErrorCode err = PR_GetError();
+            fprintf(stderr,
+                    "couldn't export keying material: %s\n",
+                    SECU_Strerror(err));
+        }
+    }
+}
+
+static SECStatus
+importPsk(PRFileDesc *model_sock)
+{
+    SECU_PrintAsHex(stdout, &psk, "Using External PSK", 0);
+    PK11SlotInfo *slot = NULL;
+    PK11SymKey *symKey = NULL;
+    slot = PK11_GetInternalSlot();
+    if (!slot) {
+        errWarn("PK11_GetInternalSlot failed");
+        return SECFailure;
+    }
+    symKey = PK11_ImportSymKey(slot, CKM_HKDF_KEY_GEN, PK11_OriginUnwrap,
+                               CKA_DERIVE, &psk, NULL);
+    PK11_FreeSlot(slot);
+    if (!symKey) {
+        errWarn("PK11_ImportSymKey failed\n");
+        return SECFailure;
+    }
+
+    SECStatus rv = SSL_AddExternalPsk(model_sock, symKey,
+                                      (const PRUint8 *)pskLabel.data,
+                                      pskLabel.len, ssl_hash_sha256);
+    PK11_FreeSymKey(symKey);
+    return rv;
 }
 
 void
@@ -2012,7 +2061,7 @@ server_main(
         errExit("SSL_CipherPrefSetDefault:TLS_RSA_WITH_NULL_MD5");
     }
 
-    if (expectedHostNameVal) {
+    if (expectedHostNameVal || enabledExporters) {
         SSL_HandshakeCallback(model_sock, handshakeCallback,
                               (void *)expectedHostNameVal);
     }
@@ -2030,6 +2079,13 @@ server_main(
             if (rv < 0) {
                 errExit("first SSL_OptionSet SSL_REQUIRE_CERTIFICATE");
             }
+        }
+    }
+
+    if (psk.data) {
+        rv = importPsk(model_sock);
+        if (rv != SECSuccess) {
+            errExit("importPsk failed");
         }
     }
 
@@ -2108,6 +2164,20 @@ haveAChild(int argc, char **argv, PRProcessAttr *attr)
     return newProcess;
 }
 
+#ifdef XP_UNIX
+void
+sigusr1_parent_handler(int sig)
+{
+    PRProcess *process;
+    int i;
+    fprintf(stderr, "SIG_USER: Parent got sig_user, killing children (%d).\n", numChildren);
+    for (i = 0; i < numChildren; i++) {
+        process = child[i];
+        PR_KillProcess(process); /* it would be nice to kill with a sigusr signal */
+    }
+}
+#endif
+
 void
 beAGoodParent(int argc, char **argv, int maxProcs, PRFileDesc *listen_sock)
 {
@@ -2116,6 +2186,19 @@ beAGoodParent(int argc, char **argv, int maxProcs, PRFileDesc *listen_sock)
     int i;
     PRInt32 exitCode;
     PRStatus rv;
+
+#ifdef XP_UNIX
+    struct sigaction act;
+
+    /* set up the signal handler */
+    act.sa_handler = sigusr1_parent_handler;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+    if (sigaction(SIGUSR1, &act, NULL)) {
+        fprintf(stderr, "Error installing signal handler.\n");
+        exit(1);
+    }
+#endif
 
     rv = PR_SetFDInheritable(listen_sock, PR_TRUE);
     if (rv != PR_SUCCESS)
@@ -2246,11 +2329,10 @@ main(int argc, char **argv)
 
     /* please keep this list of options in ASCII collating sequence.
     ** numbers, then capital letters, then lower case, alphabetical.
-    ** XXX: 'B', 'E', 'q', and 'x' were used in the past but removed
-    **      in 3.28, please leave some time before resuing those.
-    **      'z' was removed in 3.39. */
+    ** XXX: 'B', and 'q' were used in the past but removed
+    **      in 3.28, please leave some time before resuing those. */
     optstate = PL_CreateOptState(argc, argv,
-                                 "2:A:C:DEGH:I:J:L:M:NP:QRS:T:U:V:W:YZa:bc:d:e:f:g:hi:jk:lmn:op:rst:uvw:y");
+                                 "2:A:C:DEGH:I:J:L:M:NP:QRS:T:U:V:W:YZa:bc:d:e:f:g:hi:jk:lmn:op:rst:uvw:x:yz:");
     while ((status = PL_GetNextOpt(optstate)) == PL_OPT_OK) {
         ++optionsFound;
         switch (optstate->option) {
@@ -2472,6 +2554,16 @@ main(int argc, char **argv)
                 zeroRTT = PR_TRUE;
                 break;
 
+            case 'z':
+                rv = readPSK(optstate->value, &psk, &pskLabel);
+                if (rv != SECSuccess) {
+                    PL_DestroyOptState(optstate);
+                    fprintf(stderr, "Bad PSK specified.\n");
+                    Usage(progName);
+                    exit(1);
+                }
+                break;
+
             case 'Q':
                 enableALPN = PR_TRUE;
                 break;
@@ -2491,6 +2583,17 @@ main(int argc, char **argv)
                 if (rv != SECSuccess) {
                     PL_DestroyOptState(optstate);
                     fprintf(stderr, "Bad signature scheme specified.\n");
+                    fprintf(stderr, "Run '%s -h' for usage information.\n", progName);
+                    exit(5);
+                }
+                break;
+
+            case 'x':
+                rv = parseExporters(optstate->value,
+                                    &enabledExporters, &enabledExporterCount);
+                if (rv != SECSuccess) {
+                    PL_DestroyOptState(optstate);
+                    fprintf(stderr, "Bad exporter specified.\n");
                     fprintf(stderr, "Run '%s -h' for usage information.\n", progName);
                     exit(5);
                 }
@@ -2560,7 +2663,8 @@ main(int argc, char **argv)
         exit(14);
     }
 
-    if (pidFile) {
+    envString = PR_GetEnvSecure(envVarName);
+    if (!envString && pidFile) {
         FILE *tmpfile = fopen(pidFile, "w+");
 
         if (tmpfile) {
@@ -2585,13 +2689,6 @@ main(int argc, char **argv)
     if (!tmp)
         tmp = PR_GetEnvSecure("TEMP");
 
-    /* Call the NSS initialization routines */
-    rv = NSS_Initialize(dir, certPrefix, certPrefix, SECMOD_DB, NSS_INIT_READONLY);
-    if (rv != SECSuccess) {
-        fputs("NSS_Init failed.\n", stderr);
-        exit(8);
-    }
-
     if (envString) {
         /* we're one of the children in a multi-process server. */
         listen_sock = PR_GetInheritedFD(inheritableSockName);
@@ -2614,6 +2711,12 @@ main(int argc, char **argv)
         if (rv != SECSuccess)
             errExit("SSL_InheritMPServerSIDCache");
         hasSidCache = PR_TRUE;
+        /* Call the NSS initialization routines */
+        rv = NSS_Initialize(dir, certPrefix, certPrefix, SECMOD_DB, NSS_INIT_READONLY);
+        if (rv != SECSuccess) {
+            fputs("NSS_Init failed.\n", stderr);
+            exit(8);
+        }
     } else if (maxProcs > 1) {
         /* we're going to be the parent in a multi-process server.  */
         listen_sock = getBoundListenSocket(port);
@@ -2624,6 +2727,12 @@ main(int argc, char **argv)
         beAGoodParent(argc, argv, maxProcs, listen_sock);
         exit(99); /* should never get here */
     } else {
+        /* Call the NSS initialization routines */
+        rv = NSS_Initialize(dir, certPrefix, certPrefix, SECMOD_DB, NSS_INIT_READONLY);
+        if (rv != SECSuccess) {
+            fputs("NSS_Init failed.\n", stderr);
+            exit(8);
+        }
         /* we're an ordinary single process server. */
         listen_sock = getBoundListenSocket(port);
         prStatus = PR_SetFDInheritable(listen_sock, PR_FALSE);
@@ -2810,6 +2919,8 @@ cleanup:
     if (antiReplay) {
         SSL_ReleaseAntiReplayContext(antiReplay);
     }
+    SECITEM_ZfreeItem(&psk, PR_FALSE);
+    SECITEM_ZfreeItem(&pskLabel, PR_FALSE);
     if (NSS_Shutdown() != SECSuccess) {
         SECU_PrintError(progName, "NSS_Shutdown");
         if (loggerThread) {

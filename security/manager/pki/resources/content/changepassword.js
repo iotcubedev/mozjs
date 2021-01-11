@@ -4,25 +4,38 @@
 "use strict";
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
+);
+
+XPCOMUtils.defineLazyGetter(
+  this,
+  "l10n",
+  () => new Localization(["security/pippki/pippki.ftl"], true)
+);
 
 var params;
 var token;
 var pw1;
 
-function doPrompt(msg) {
+function doPrompt(messageL10nId) {
+  let msg = l10n.formatValueSync(messageL10nId);
   Services.prompt.alert(window, null, msg);
 }
 
 function onLoad() {
-  document.documentElement.getButton("accept").disabled = true;
+  document.getElementById("set_password").getButton("accept").disabled = true;
   document.addEventListener("dialogaccept", setPassword);
 
   pw1 = document.getElementById("pw1");
   params = window.arguments[0].QueryInterface(Ci.nsIDialogParamBlock);
   token = params.objects.GetElementAt(0).QueryInterface(Ci.nsIPK11Token);
 
-  document.getElementById("tokenName").setAttribute("value", token.name);
-
+  document.l10n.setAttributes(
+    document.getElementById("tokenName"),
+    "change-password-token",
+    { tokenName: token.tokenName }
+  );
   process();
 }
 
@@ -62,7 +75,6 @@ function process() {
 function setPassword(event) {
   var oldpwbox = document.getElementById("oldpw");
   var initpw = oldpwbox.getAttribute("inited");
-  var bundle = document.getElementById("pippki_bundle");
 
   var success = false;
 
@@ -88,20 +100,16 @@ function setPassword(event) {
             ].getService(Ci.nsIPKCS11ModuleDB);
             if (secmoddb.isFIPSEnabled) {
               // empty passwords are not allowed in FIPS mode
-              doPrompt(bundle.getString("pw_change2empty_in_fips_mode"));
+              doPrompt("pippki-pw-change2empty-in-fips-mode");
               passok = 0;
             }
           }
           if (passok) {
             token.changePassword(oldpw, pw1.value);
             if (pw1.value == "") {
-              doPrompt(
-                bundle.getString("pw_erased_ok") +
-                  " " +
-                  bundle.getString("pw_empty_warning")
-              );
+              doPrompt("pippki-pw-erased-ok");
             } else {
-              doPrompt(bundle.getString("pw_change_ok"));
+              doPrompt("pippki-pw-change-ok");
             }
             success = true;
           }
@@ -109,19 +117,15 @@ function setPassword(event) {
       } else {
         oldpwbox.focus();
         oldpwbox.setAttribute("value", "");
-        doPrompt(bundle.getString("incorrect_pw"));
+        doPrompt("pippki-incorrect-pw");
       }
     } catch (e) {
-      doPrompt(bundle.getString("failed_pw_change"));
+      doPrompt("pippki-failed-pw-change");
     }
   } else {
     token.initPassword(pw1.value);
     if (pw1.value == "") {
-      doPrompt(
-        bundle.getString("pw_not_wanted") +
-          " " +
-          bundle.getString("pw_empty_warning")
-      );
+      doPrompt("pippki-pw-not-wanted");
     }
     success = true;
   }
@@ -197,10 +201,13 @@ function checkPasswords() {
       // was called with the intention to change the password.
       // The token currently uses an empty password.
       // We will not allow changing the password from empty to empty.
-      document.documentElement.getButton("accept").disabled = true;
+      document
+        .getElementById("set_password")
+        .getButton("accept").disabled = true;
       return;
     }
   }
 
-  document.documentElement.getButton("accept").disabled = pw1 != pw2;
+  document.getElementById("set_password").getButton("accept").disabled =
+    pw1 != pw2;
 }

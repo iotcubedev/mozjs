@@ -26,7 +26,7 @@ const PROPERTIES_RESET_WHEN_ACTIVE = [
 
 // Duplicated in SelectChild.jsm
 // Please keep these lists in sync.
-const SUPPORTED_PROPERTIES = [
+const SUPPORTED_OPTION_OPTGROUP_PROPERTIES = [
   "direction",
   "color",
   "background-color",
@@ -35,6 +35,12 @@ const SUPPORTED_PROPERTIES = [
   "font-weight",
   "font-size",
   "font-style",
+];
+
+const SUPPORTED_SELECT_PROPERTIES = [
+  ...SUPPORTED_OPTION_OPTGROUP_PROPERTIES,
+  "scrollbar-width",
+  "scrollbar-color",
 ];
 
 const customStylingEnabled = Services.prefs.getBoolPref(
@@ -122,7 +128,7 @@ var SelectParentHelper = {
       }
 
       let addedRule = false;
-      for (let property of SUPPORTED_PROPERTIES) {
+      for (let property of SUPPORTED_SELECT_PROPERTIES) {
         if (property == "direction") {
           continue;
         } // Handled above, or before.
@@ -408,11 +414,15 @@ var SelectParentHelper = {
   ) {
     let element = menulist.menupopup;
 
+    let ariaOwns = "";
     for (let option of options) {
       let isOptGroup = option.tagName == "OPTGROUP";
       let item = element.ownerDocument.createXULElement(
         isOptGroup ? "menucaption" : "menuitem"
       );
+      if (isOptGroup) {
+        item.setAttribute("role", "group");
+      }
       let style = uniqueOptionStyles[option.styleIndex];
 
       item.setAttribute("label", option.textContent);
@@ -438,7 +448,7 @@ var SelectParentHelper = {
 
       if (customStylingEnabled) {
         let addedRule = false;
-        for (const property of SUPPORTED_PROPERTIES) {
+        for (const property of SUPPORTED_OPTION_OPTGROUP_PROPERTIES) {
           if (property == "direction" || property == "font-size") {
             continue;
           } // handled above
@@ -485,6 +495,16 @@ var SelectParentHelper = {
         item.setAttribute("customoptionstyling", "true");
       } else {
         item.removeAttribute("customoptionstyling");
+      }
+
+      if (parentElement) {
+        // In the menupopup, the optgroup is a sibling of its contained options.
+        // For accessibility, we want to preserve the hierarchy such that the
+        // options are inside the optgroup. We do this using aria-owns on the
+        // parent.
+        item.id = "ContentSelectDropdownOption" + nthChildIndex;
+        item.setAttribute("aria-level", "2");
+        ariaOwns += item.id + " ";
       }
 
       element.appendChild(item);
@@ -536,6 +556,10 @@ var SelectParentHelper = {
       }
     }
 
+    if (parentElement && ariaOwns) {
+      parentElement.setAttribute("aria-owns", ariaOwns);
+    }
+
     // Check if search pref is enabled, if this is the first time iterating through
     // the dropdown, and if the list is long enough for a search element to be added.
     if (
@@ -544,16 +568,11 @@ var SelectParentHelper = {
       element.childElementCount > SEARCH_MINIMUM_ELEMENTS
     ) {
       // Add a search text field as the first element of the dropdown
-      let searchbox = element.ownerDocument.createXULElement("textbox", {
-        is: "search-textbox",
-      });
+      let searchbox = element.ownerDocument.createXULElement("search-textbox");
       searchbox.className = "contentSelectDropdown-searchbox";
       searchbox.addEventListener("input", this.onSearchInput);
-      searchbox.inputField.addEventListener(
-        "focus",
-        this.onSearchFocus.bind(this)
-      );
-      searchbox.inputField.addEventListener("blur", this.onSearchBlur);
+      searchbox.addEventListener("focus", this.onSearchFocus.bind(this));
+      searchbox.addEventListener("blur", this.onSearchBlur);
       searchbox.addEventListener("command", this.onSearchInput);
 
       // Handle special keys for exiting search
@@ -672,16 +691,14 @@ var SelectParentHelper = {
   },
 
   onSearchFocus(event) {
-    let searchObj = event.currentTarget;
-    let menupopup = searchObj.closest("menupopup");
+    let menupopup = event.target.closest("menupopup");
     menupopup.parentElement.activeChild = null;
     menupopup.setAttribute("ignorekeys", "true");
     this._actor.sendAsyncMessage("Forms:SearchFocused", {});
   },
 
   onSearchBlur(event) {
-    let searchObj = event.currentTarget;
-    let menupopup = searchObj.closest("menupopup");
+    let menupopup = event.target.closest("menupopup");
     menupopup.setAttribute("ignorekeys", "false");
   },
 };
@@ -692,11 +709,6 @@ class SelectParent extends JSWindowActorParent {
       case "Forms:ShowDropDown": {
         let topBrowsingContext = this.manager.browsingContext.top;
         let browser = topBrowsingContext.embedderElement;
-
-        if (browser.outerBrowser) {
-          // We are in RDM mode
-          browser = browser.outerBrowser;
-        }
 
         if (!browser.hasAttribute("selectmenulist")) {
           return;
@@ -716,18 +728,15 @@ class SelectParent extends JSWindowActorParent {
         let data = message.data;
         menulist.menupopup.style.direction = data.style.direction;
 
-        let useFullZoom =
-          !browser.isRemoteBrowser ||
-          Services.prefs.getBoolPref("browser.zoom.full") ||
-          browser.isSyntheticDocument;
-        let zoom = useFullZoom ? browser._fullZoom : browser._textZoom;
-
+        let { ZoomManager } = topBrowsingContext.topChromeWindow;
         SelectParentHelper.populate(
           menulist,
           data.options.options,
           data.options.uniqueStyles,
           data.selectedIndex,
-          zoom,
+          // We only want to apply the full zoom. The text zoom is already
+          // applied in the font-size.
+          ZoomManager.getFullZoomForBrowser(browser),
           data.defaultStyle,
           data.style
         );
@@ -744,11 +753,6 @@ class SelectParent extends JSWindowActorParent {
       case "Forms:HideDropDown": {
         let topBrowsingContext = this.manager.browsingContext.top;
         let browser = topBrowsingContext.embedderElement;
-
-        if (browser.outerBrowser) {
-          // We are in RDM mode
-          browser = browser.outerBrowser;
-        }
 
         SelectParentHelper.hide(this._menulist, browser);
         break;

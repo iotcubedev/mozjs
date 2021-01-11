@@ -18,14 +18,14 @@ add_task(async function() {
     MAIN_DOMAIN + "inspector-search-data.html"
   );
 
-  await ContentTask.spawn(
+  await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
-    [walker.actorID],
+    [[walker.actorID]],
     async function(actorID) {
       const { require } = ChromeUtils.import(
         "resource://devtools/shared/Loader.jsm"
       );
-      const { DebuggerServer } = require("devtools/server/debugger-server");
+      const { DevToolsServer } = require("devtools/server/devtools-server");
       const {
         DocumentWalker: _documentWalker,
       } = require("devtools/server/actors/inspector/document-walker");
@@ -33,7 +33,7 @@ add_task(async function() {
       // Convert actorID to current compartment string otherwise
       // searchAllConnectionsForActor is confused and won't find the actor.
       actorID = String(actorID);
-      const walkerActor = DebuggerServer.searchAllConnectionsForActor(actorID);
+      const walkerActor = DevToolsServer.searchAllConnectionsForActor(actorID);
       const walkerSearch = walkerActor.walkerSearch;
       const {
         WalkerSearch,
@@ -152,6 +152,49 @@ add_task(async function() {
             },
           ],
         },
+        {
+          desc: "Search for XPath with one result",
+          search: "//strong",
+          expected: [
+            { node: inspectee.querySelector("strong"), type: "xpath" },
+          ],
+        },
+        {
+          desc: "Search for XPath with multiple results",
+          search: "//h2",
+          expected: [
+            { node: inspectee.querySelectorAll("h2")[0], type: "xpath" },
+            { node: inspectee.querySelectorAll("h2")[1], type: "xpath" },
+            { node: inspectee.querySelectorAll("h2")[2], type: "xpath" },
+          ],
+        },
+        {
+          desc: "Search for XPath via containing text",
+          search: "//*[contains(text(), 'p tag')]",
+          expected: [{ node: inspectee.querySelector("p"), type: "xpath" }],
+        },
+        {
+          desc: "Search for XPath matching text node",
+          search: "//strong/text()",
+          expected: [
+            {
+              node: inspectee.querySelector("strong").firstChild,
+              type: "xpath",
+            },
+          ],
+        },
+        {
+          desc: "Search using XPath grouping expression",
+          search: "(//*)[2]",
+          expected: [{ node: inspectee.querySelector("head"), type: "xpath" }],
+        },
+        {
+          desc: "Search using XPath function",
+          search: "id('arrows')",
+          expected: [
+            { node: inspectee.querySelector("#arrows"), type: "xpath" },
+          ],
+        },
       ];
 
       const isDeeply = (a, b, msg) => {
@@ -193,7 +236,10 @@ add_task(async function() {
       results = walkerSearch.search("before element");
       isDeeply(
         results,
-        [{ node: styleText, type: "text" }, { node: beforeElt, type: "text" }],
+        [
+          { node: styleText, type: "text" },
+          { node: beforeElt, type: "text" },
+        ],
         "Text search works for pseudo element"
       );
 
@@ -211,7 +257,10 @@ add_task(async function() {
       results = walkerSearch.search("after element");
       isDeeply(
         results,
-        [{ node: styleText, type: "text" }, { node: afterElt, type: "text" }],
+        [
+          { node: styleText, type: "text" },
+          { node: afterElt, type: "text" },
+        ],
         "Text search works for pseudo element"
       );
 

@@ -118,7 +118,10 @@ class DiscoveryAPIHandler {
 // Retrieve the list of visible action elements inside a document or container.
 function getVisibleActions(documentOrElement) {
   return Array.from(documentOrElement.querySelectorAll("[action]")).filter(
-    elem => elem.offsetWidth && elem.offsetHeight
+    elem =>
+      elem.getAttribute("action") !== "page-options" &&
+      elem.offsetWidth &&
+      elem.offsetHeight
   );
 }
 
@@ -156,7 +159,7 @@ async function switchToNonDiscoView(win) {
   // Listeners registered while the discopane was the active view continue to be
   // active when the view switches to the extensions list, because both views
   // share the same document.
-  win.managerWindow.gViewController.loadView("addons://list/extensions");
+  win.managerWindow.gViewController.loadView("addons://list/extension");
   await wait_for_view_load(win.managerWindow);
   ok(
     win.document.querySelector("addon-list"),
@@ -181,7 +184,9 @@ async function switchToDiscoView(win) {
 // There must be at least one `<img>` in the document.
 // Returns the number of loaded images.
 async function waitForAllImagesLoaded(win) {
-  let imgs = Array.from(win.document.querySelectorAll("img[src]"));
+  let imgs = Array.from(
+    win.document.querySelectorAll("discovery-pane img[src]")
+  );
   function areAllImagesLoaded() {
     let loadCount = imgs.filter(img => img.naturalWidth).length;
     info(`Loaded ${loadCount} out of ${imgs.length} images`);
@@ -289,7 +294,6 @@ add_task(async function setup() {
         "extensions.getAddons.discovery.api_url",
         `http://${AMO_TEST_HOST}/discoapi`,
       ],
-      ["extensions.htmlaboutaddons.discover.enabled", true],
       // Disable non-discopane recommendations to avoid unexpected discovery
       // API requests.
       ["extensions.htmlaboutaddons.recommendations.enabled", false],
@@ -692,7 +696,8 @@ add_task(async function discopane_no_cookies() {
     false,
     Date.now() / 1000 + 600,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTP
   );
   let win = await loadInitialView("discover");
   let request = await requestPromise;
@@ -816,6 +821,33 @@ add_task(async function csp_img_src() {
 
   apiHandler.unblockResponses();
   await cspPromise;
+
+  await closeView(win);
+});
+
+add_task(async function checkDiscopaneNotice() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.discovery.enabled", true],
+      ["datareporting.healthreport.uploadEnabled", true],
+      ["extensions.htmlaboutaddons.recommendations.enabled", true],
+      ["extensions.recommendations.hideNotice", false],
+    ],
+  });
+
+  let win = await loadInitialView("extension");
+  let messageBar = win.document.querySelector("message-bar.discopane-notice");
+  ok(messageBar, "Recommended notice should exist in extensions view");
+  await switchToDiscoView(win);
+  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  ok(messageBar, "Recommended notice should exist in disco view");
+
+  messageBar.closeButton.click();
+  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  ok(!messageBar, "Recommended notice should not exist in disco view");
+  await switchToNonDiscoView(win);
+  messageBar = win.document.querySelector("message-bar.discopane-notice");
+  ok(!messageBar, "Recommended notice should not exist in extensions view");
 
   await closeView(win);
 });

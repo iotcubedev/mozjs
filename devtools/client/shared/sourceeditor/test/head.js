@@ -15,7 +15,7 @@ Services.scriptloader.loadSubScript(
 const Editor = require("devtools/client/shared/sourceeditor/editor");
 const {
   getClientCssProperties,
-} = require("devtools/shared/fronts/css-properties");
+} = require("devtools/client/fronts/css-properties");
 
 function promiseWaitForFocus(el) {
   return new Promise(resolve => waitForFocus(resolve, el));
@@ -26,7 +26,7 @@ async function setup(additionalOpts = {}) {
     const opt = "chrome,titlebar,toolbar,centerscreen,resizable,dialog=no";
     const win = Services.ww.openWindow(
       null,
-      CHROME_URL_ROOT + "head.xul",
+      CHROME_URL_ROOT + "head.xhtml",
       "_blank",
       opt,
       null

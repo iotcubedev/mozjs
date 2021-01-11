@@ -20,13 +20,13 @@ struct LangGroupFontPrefs {
   // Font sizes default to zero; they will be set in GetFontPreferences
   LangGroupFontPrefs()
       : mLangGroup(nullptr),
-        mMinimumFontSize(0),
+        mMinimumFontSize({0}),
         mDefaultVariableFont(),
-        mDefaultSerifFont(StyleGenericFontFamily::Serif, 0),
-        mDefaultSansSerifFont(StyleGenericFontFamily::SansSerif, 0),
-        mDefaultMonospaceFont(StyleGenericFontFamily::Monospace, 0),
-        mDefaultCursiveFont(StyleGenericFontFamily::Cursive, 0),
-        mDefaultFantasyFont(StyleGenericFontFamily::Fantasy, 0) {
+        mDefaultSerifFont(StyleGenericFontFamily::Serif, {0}),
+        mDefaultSansSerifFont(StyleGenericFontFamily::SansSerif, {0}),
+        mDefaultMonospaceFont(StyleGenericFontFamily::Monospace, {0}),
+        mDefaultCursiveFont(StyleGenericFontFamily::Cursive, {0}),
+        mDefaultFantasyFont(StyleGenericFontFamily::Fantasy, {0}) {
     mDefaultVariableFont.fontlist.SetDefaultFontType(
         StyleGenericFontFamily::Serif);
     // We create mDefaultVariableFont.fontlist with defaultType as the
@@ -40,22 +40,6 @@ struct LangGroupFontPrefs {
 
     // Make GetFontPreferences reinitialize mLangGroupFontPrefs:
     mLangGroup = nullptr;
-  }
-
-  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const {
-    size_t n = 0;
-    LangGroupFontPrefs* curr = mNext.get();
-    while (curr) {
-      n += aMallocSizeOf(curr);
-
-      // Measurement of the following members may be added later if DMD finds
-      // it is worthwhile:
-      // - mLangGroup
-      // - mDefault*Font
-
-      curr = curr->mNext.get();
-    }
-    return n;
   }
 
   // Initialize this with the data for a given language
@@ -96,14 +80,14 @@ struct LangGroupFontPrefs {
   }
 
   nsStaticAtom* mLangGroup;
-  nscoord mMinimumFontSize;
+  Length mMinimumFontSize;
   nsFont mDefaultVariableFont;
   nsFont mDefaultSerifFont;
   nsFont mDefaultSansSerifFont;
   nsFont mDefaultMonospaceFont;
   nsFont mDefaultCursiveFont;
   nsFont mDefaultFantasyFont;
-  mozilla::UniquePtr<LangGroupFontPrefs> mNext;
+  UniquePtr<LangGroupFontPrefs> mNext;
 };
 
 /**

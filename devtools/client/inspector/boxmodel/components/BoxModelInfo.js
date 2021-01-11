@@ -9,7 +9,7 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { LocalizationHelper } = require("devtools/shared/l10n");
 
-const Types = require("../types");
+const Types = require("devtools/client/inspector/boxmodel/types");
 
 const BOXMODEL_STRINGS_URI = "devtools/client/locales/boxmodel.properties";
 const BOXMODEL_L10N = new LocalizationHelper(BOXMODEL_STRINGS_URI);
@@ -45,7 +45,16 @@ class BoxModelInfo extends PureComponent {
     }
 
     return dom.div(
-      { className: "boxmodel-info" },
+      {
+        className: "boxmodel-info",
+        role: "region",
+        "aria-label": SHARED_L10N.getFormatStr(
+          "boxModelInfo.accessibleLabel",
+          width,
+          height,
+          position
+        ),
+      },
       dom.span(
         { className: "boxmodel-element-size" },
         SHARED_L10N.getFormatStr("dimensions", width, height)

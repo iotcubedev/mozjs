@@ -91,6 +91,8 @@ interface nsICertStorage : nsISupports {
   const octet DATA_TYPE_REVOCATION = 1;
   const octet DATA_TYPE_CERTIFICATE = 2;
   const octet DATA_TYPE_CRLITE = 3;
+  const octet DATA_TYPE_CRLITE_FILTER_FULL = 4;
+  const octet DATA_TYPE_CRLITE_FILTER_INCREMENTAL = 5;
 
   /**
    * Asynchronously check if the backing storage has stored data of the given
@@ -104,6 +106,7 @@ interface nsICertStorage : nsISupports {
 
   const short STATE_UNSET = 0;
   const short STATE_ENFORCE = 1;
+  const short STATE_NOT_ENROLLED = 2;
 
   /**
    * Asynchronously set the revocation states of a set of certificates.
@@ -159,6 +162,62 @@ interface nsICertStorage : nsISupports {
   short getCRLiteState(in Array<octet> subject, in Array<octet> spki);
 
   /**
+   * Given the contents of a CRLite filter and its creation date as seconds since the epoch,
+   * replaces any existing filter with the new one. Also clears any previously-set incremental
+   * revocation updates ("stashes").
+   */
+  [must_use]
+  void setFullCRLiteFilter(in Array<octet> filter, in uint64_t timestamp,
+                           in nsICertStorageCallback callback);
+
+  /**
+   * Given the DER-encoded issuer distinguished name, DER-encoded issuer subject public key info,
+   * and the bytes of the value of the serial number (so, not including the DER tag and length) of a
+   * certificate, returns the result of looking up the corresponding entry in the currently-saved
+   * CRLite filter (if any). Returns STATE_ENFORCE if the lookup indicates the corresponding
+   * certificate is revoked via CRLite. Returns STATE_UNSET if the lookup indicates the
+   * corresponding certificate is not revoked via CRLite. Returns STATE_NOT_ENROLLED if the issuer
+   * certificate is not enrolled in CRLite and thus no lookup was made. Also returns the timestamp
+   * before which lookups will be valid. That is, if a certificate has a notBefore value after the
+   * returned filter timestamp, the lookup is not trustworthy because the certificate may have been
+   * created after the filter, and thus it may cause a false negative or positive. If no filter is
+   * available (it may not have been downloaded yet), validBefore will be 0. The timestamp is
+   * represented as seconds since the epoch (i.e. it returns what was most recently set via
+   * setFullCRLiteFilter).
+   */
+  [must_use]
+  short getCRLiteRevocationState(in Array<octet> issuer,
+                                 in Array<octet> issuerSPKI,
+                                 in Array<octet> serialNumber,
+                                 out uint64_t validBefore);
+
+  /**
+   * Given the contents of a CRLite incremental revocation update ("stash"), adds the revocation
+   * information to the current set of stashed revocations. The basic unit of the stash file is an
+   * issuer subject public key info hash (sha-256) followed by a number of serial numbers
+   * corresponding to revoked certificates issued by that issuer. More specifically, each unit
+   * consists of:
+   *   4 bytes little-endian: the number of serial numbers following the issuer spki hash
+   *   1 byte: the length of the issuer spki hash
+   *   issuer spki hash length bytes: the issuer spki hash
+   *   as many times as the indicated serial numbers:
+   *     1 byte: the length of the serial number
+   *     serial number length bytes: the serial number
+   * The stash file consists of any number of these units concatenated together.
+   */
+  [must_use]
+  void addCRLiteStash(in Array<octet> stash, in nsICertStorageCallback callback);
+
+  /**
+   * Given a DER-encoded issuer subject public key info and the bytes of the value of the serial
+   * number (so, not including the DER tag and length), determines if the certificate identified by
+   * this issuer SPKI and serial number is revoked according to the current set of stashed CRLite
+   * revocation information.
+   */
+  [must_use]
+  bool isCertRevokedByStash(in Array<octet> issuerSPKI, in Array<octet> serialNumber);
+
+  /**
    * Trust flags to use when adding a adding a certificate.
    * TRUST_INHERIT indicates a certificate inherits trust from another
    * certificate.
@@ -202,4 +261,12 @@ interface nsICertStorage : nsISupports {
    */
   [must_use]
   Array<Array<octet> > findCertsBySubject(in Array<octet> subject);
+
+  /**
+   * Get the count of remaining async operations. Called to ensure we don't skip
+   * or interrupt any operations during fast shutdown.
+   * Must only be called from the main thread.
+   */
+  [must_use]
+  int32_t GetRemainingOperationCount();
 };

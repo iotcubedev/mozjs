@@ -134,32 +134,28 @@ add_task(async function testInlineOptions() {
   let waitForHeightChange = expectedHeight =>
     TestUtils.waitForCondition(() => browser.clientHeight === expectedHeight);
 
-  // The expected heights are 1px taller, to work around bug 1548687.
-  const EXPECTED_HEIGHT_SHORT = HEIGHT_SHORT + 1;
-  const EXPECTED_HEIGHT_TALL = HEIGHT_TALL + 1;
-
-  await waitForHeightChange(EXPECTED_HEIGHT_SHORT);
+  await waitForHeightChange(HEIGHT_SHORT);
 
   // Check resizing the browser through extension CSS.
   await extension.sendMessage("get-height");
   let height = await extension.awaitMessage("height");
-  is(height, EXPECTED_HEIGHT_SHORT, "The height is smaller to start");
+  is(height, HEIGHT_SHORT, "The height is smaller to start");
   is(height, browser.clientHeight, "The browser is the same size");
 
   info("Resize the browser to be taller");
   await extension.sendMessage("toggle-class");
-  await waitForHeightChange(EXPECTED_HEIGHT_TALL);
+  await waitForHeightChange(HEIGHT_TALL);
   await extension.sendMessage("get-height");
   height = await extension.awaitMessage("height");
-  is(height, EXPECTED_HEIGHT_TALL, "The height is bigger now");
+  is(height, HEIGHT_TALL, "The height is bigger now");
   is(height, browser.clientHeight, "The browser is the same size");
 
   info("Shrink the browser again");
   await extension.sendMessage("toggle-class");
-  await waitForHeightChange(EXPECTED_HEIGHT_SHORT);
+  await waitForHeightChange(HEIGHT_SHORT);
   await extension.sendMessage("get-height");
   height = await extension.awaitMessage("height");
-  is(height, EXPECTED_HEIGHT_SHORT, "The browser shrunk back");
+  is(height, HEIGHT_SHORT, "The browser shrunk back");
   is(height, browser.clientHeight, "The browser is the same size");
 
   info("Switching to details view");
@@ -212,7 +208,7 @@ add_task(async function testCardRerender() {
   card = doc.querySelector("addon-card");
 
   let browserAdded = waitOptionsBrowserInserted();
-  card.querySelector('named-deck-button[name="preferences"]').click();
+  card.querySelector('.tab-button[name="preferences"]').click();
   await browserAdded;
 
   is(
@@ -238,7 +234,7 @@ add_task(async function testCardRerender() {
 
   // Load the permissions tab again.
   browserAdded = waitOptionsBrowserInserted();
-  card.querySelector('named-deck-button[name="preferences"]').click();
+  card.querySelector('.tab-button[name="preferences"]').click();
   await browserAdded;
 
   // Switching to preferences will create a new browser element.
@@ -401,7 +397,7 @@ add_task(async function testUpgradeTemporary() {
 
   card = doc.querySelector("addon-card");
   let browserAdded = waitOptionsBrowserInserted();
-  card.querySelector('named-deck-button[name="preferences"]').click();
+  card.querySelector('.tab-button[name="preferences"]').click();
   await browserAdded;
 
   await firstExtension.awaitMessage("options-loaded");
@@ -463,7 +459,7 @@ add_task(async function testReloadExtension() {
   is(deck.selectedViewName, "details", "Details load first");
 
   let browserAdded = waitOptionsBrowserInserted();
-  card.querySelector('named-deck-button[name="preferences"]').click();
+  card.querySelector('.tab-button[name="preferences"]').click();
   await browserAdded;
 
   is(deck.selectedViewName, "preferences", "Preferences are shown");

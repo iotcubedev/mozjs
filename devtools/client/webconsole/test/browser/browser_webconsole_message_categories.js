@@ -4,12 +4,13 @@
 "use strict";
 
 // Check that messages are logged and observed with the correct category. See Bug 595934.
+const { MESSAGE_CATEGORY } = require("devtools/shared/constants");
 
 const TEST_URI =
   "data:text/html;charset=utf-8,Web Console test for " +
   "bug 595934 - message categories coverage.";
 const TESTS_PATH =
-  "http://example.com/browser/devtools/client/webconsole/" + "test/browser/";
+  "http://example.com/browser/devtools/client/webconsole/test/browser/";
 const TESTS = [
   {
     // #0
@@ -29,7 +30,7 @@ const TESTS = [
     category: "HTML",
     matchString: "multipart/form-data",
     onload: function() {
-      ContentTask.spawn(gBrowser.selectedBrowser, null, async function() {
+      SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
         const form = content.document.querySelector("form");
         form.submit();
       });
@@ -56,7 +57,7 @@ const TESTS = [
   {
     // #6
     file: "test-message-categories-css-parser.html",
-    category: "CSS Parser",
+    category: MESSAGE_CATEGORY.CSS_PARSER,
     matchString: "foobarCssParser",
   },
   {
@@ -74,7 +75,7 @@ const TESTS = [
   {
     // #9
     file: "test-message-categories-canvas-css.html",
-    category: "CSS Parser",
+    category: MESSAGE_CATEGORY.CSS_PARSER,
     matchString: "foobarCanvasCssParser",
   },
   {
@@ -90,6 +91,7 @@ const TESTS = [
 add_task(async function() {
   requestLongerTimeout(2);
 
+  await pushPref("devtools.target-switching.enabled", true);
   await pushPref("devtools.webconsole.filter.css", true);
   await pushPref("devtools.webconsole.filter.net", true);
 
@@ -99,6 +101,12 @@ add_task(async function() {
     info("Running test #" + i);
     await runTest(test, hud);
   }
+
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      resolve()
+    );
+  });
 });
 
 async function runTest(test, hud) {
@@ -127,7 +135,7 @@ async function runTest(test, hud) {
   });
 
   info("Load test file " + file);
-  await loadDocument(TESTS_PATH + file);
+  await navigateTo(TESTS_PATH + file);
 
   // Call test specific callback if defined
   if (onload) {

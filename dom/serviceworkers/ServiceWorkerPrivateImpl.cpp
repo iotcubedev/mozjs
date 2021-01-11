@@ -13,19 +13,14 @@
 #include "nsContentUtils.h"
 #include "nsDebug.h"
 #include "nsError.h"
-#include "nsICacheInfoChannel.h"
 #include "nsIChannel.h"
-#include "nsIHttpChannel.h"
 #include "nsIHttpChannelInternal.h"
 #include "nsIHttpHeaderVisitor.h"
-#include "nsIInputStream.h"
-#include "nsILoadInfo.h"
 #include "nsINetworkInterceptController.h"
 #include "nsIObserverService.h"
-#include "nsIPermissionManager.h"
+#include "nsIScriptError.h"
 #include "nsIURI.h"
 #include "nsIUploadChannel2.h"
-#include "nsPermissionManager.h"
 #include "nsThreadUtils.h"
 
 #include "ServiceWorkerManager.h"
@@ -33,10 +28,12 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/Result.h"
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/SystemGroup.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/DOMTypes.h"
@@ -45,182 +42,18 @@
 #include "mozilla/dom/InternalRequest.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/RemoteWorkerControllerChild.h"
+#include "mozilla/dom/RemoteWorkerManager.h"  // RemoteWorkerManager::GetRemoteType
 #include "mozilla/dom/ServiceWorkerBinding.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
+#include "mozilla/net/CookieJarSettings.h"
+#include "mozilla/RemoteLazyInputStreamStorage.h"
 
 namespace mozilla {
 
 using namespace ipc;
 
 namespace dom {
-
-namespace {
-
-class HeaderFiller final : public nsIHttpHeaderVisitor {
- public:
-  NS_DECL_ISUPPORTS
-
-  explicit HeaderFiller(HeadersGuardEnum aGuard)
-      : mInternalHeaders(new InternalHeaders(aGuard)) {
-    MOZ_ASSERT(mInternalHeaders);
-  }
-
-  NS_IMETHOD
-  VisitHeader(const nsACString& aHeader, const nsACString& aValue) override {
-    ErrorResult result;
-    mInternalHeaders->Append(aHeader, aValue, result);
-
-    if (NS_WARN_IF(result.Failed())) {
-      return result.StealNSResult();
-    }
-
-    return NS_OK;
-  }
-
-  RefPtr<InternalHeaders> Extract() {
-    return RefPtr<InternalHeaders>(std::move(mInternalHeaders));
-  }
-
- private:
-  ~HeaderFiller() = default;
-
-  RefPtr<InternalHeaders> mInternalHeaders;
-};
-
-NS_IMPL_ISUPPORTS(HeaderFiller, nsIHttpHeaderVisitor)
-
-nsresult GetIPCInternalRequest(nsIInterceptedChannel* aChannel,
-                               IPCInternalRequest* aOutRequest,
-                               UniquePtr<AutoIPCStream>& aAutoStream) {
-  AssertIsOnMainThread();
-
-  nsCOMPtr<nsIURI> uri;
-  nsresult rv = aChannel->GetSecureUpgradedChannelURI(getter_AddRefs(uri));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIURI> uriNoFragment;
-  rv = NS_GetURIWithoutRef(uri, getter_AddRefs(uriNoFragment));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIChannel> underlyingChannel;
-  rv = aChannel->GetChannel(getter_AddRefs(underlyingChannel));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(underlyingChannel);
-  MOZ_ASSERT(httpChannel, "How come we don't have an HTTP channel?");
-
-  nsCOMPtr<nsIHttpChannelInternal> internalChannel =
-      do_QueryInterface(httpChannel);
-  NS_ENSURE_TRUE(internalChannel, NS_ERROR_NOT_AVAILABLE);
-
-  nsCOMPtr<nsICacheInfoChannel> cacheInfoChannel =
-      do_QueryInterface(underlyingChannel);
-
-  nsAutoCString spec;
-  rv = uriNoFragment->GetSpec(spec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString fragment;
-  rv = uri->GetRef(fragment);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString method;
-  rv = httpChannel->GetRequestMethod(method);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  // This is safe due to static_asserts in ServiceWorkerManager.cpp
-  uint32_t cacheModeInt;
-  rv = internalChannel->GetFetchCacheMode(&cacheModeInt);
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
-  RequestCache cacheMode = static_cast<RequestCache>(cacheModeInt);
-
-  RequestMode requestMode =
-      InternalRequest::MapChannelToRequestMode(underlyingChannel);
-
-  // This is safe due to static_asserts in ServiceWorkerManager.cpp
-  uint32_t redirectMode;
-  rv = internalChannel->GetRedirectMode(&redirectMode);
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
-  RequestRedirect requestRedirect = static_cast<RequestRedirect>(redirectMode);
-
-  RequestCredentials requestCredentials =
-      InternalRequest::MapChannelToRequestCredentials(underlyingChannel);
-
-  nsAutoString referrer;
-  ReferrerPolicy referrerPolicy = ReferrerPolicy::_empty;
-
-  nsCOMPtr<nsIReferrerInfo> referrerInfo = httpChannel->GetReferrerInfo();
-  if (referrerInfo) {
-    referrerPolicy = referrerInfo->ReferrerPolicy();
-    Unused << referrerInfo->GetComputedReferrerSpec(referrer);
-  }
-
-  uint32_t loadFlags;
-  rv = underlyingChannel->GetLoadFlags(&loadFlags);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsILoadInfo> loadInfo;
-  rv = underlyingChannel->GetLoadInfo(getter_AddRefs(loadInfo));
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_STATE(loadInfo);
-
-  nsContentPolicyType contentPolicyType = loadInfo->InternalContentPolicyType();
-
-  nsAutoString integrity;
-  rv = internalChannel->GetIntegrityMetadata(integrity);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  RefPtr<HeaderFiller> headerFiller =
-      MakeRefPtr<HeaderFiller>(HeadersGuardEnum::Request);
-  rv = httpChannel->VisitNonDefaultRequestHeaders(headerFiller);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  RefPtr<InternalHeaders> internalHeaders = headerFiller->Extract();
-
-  ErrorResult result;
-  internalHeaders->SetGuard(HeadersGuardEnum::Immutable, result);
-  if (NS_WARN_IF(result.Failed())) {
-    return result.StealNSResult();
-  }
-
-  nsCOMPtr<nsIUploadChannel2> uploadChannel = do_QueryInterface(httpChannel);
-  nsCOMPtr<nsIInputStream> uploadStream;
-  int64_t uploadStreamContentLength = -1;
-  if (uploadChannel) {
-    rv = uploadChannel->CloneUploadStream(&uploadStreamContentLength,
-                                          getter_AddRefs(uploadStream));
-    NS_ENSURE_SUCCESS(rv, rv);
-  }
-
-  RefPtr<InternalRequest> internalRequest = new InternalRequest(
-      spec, fragment, method, internalHeaders.forget(), cacheMode, requestMode,
-      requestRedirect, requestCredentials, referrer, referrerPolicy,
-      contentPolicyType, integrity);
-  internalRequest->SetBody(uploadStream, uploadStreamContentLength);
-  internalRequest->SetCreatedByFetchEvent();
-
-  nsAutoCString alternativeDataType;
-  if (cacheInfoChannel &&
-      !cacheInfoChannel->PreferredAlternativeDataTypes().IsEmpty()) {
-    // TODO: the internal request probably needs all the preferred types.
-    alternativeDataType.Assign(
-        cacheInfoChannel->PreferredAlternativeDataTypes()[0].type());
-    internalRequest->SetPreferredAlternativeDataType(alternativeDataType);
-  }
-
-  PBackgroundChild* bgChild = BackgroundChild::GetForCurrentThread();
-
-  if (NS_WARN_IF(!bgChild)) {
-    return NS_ERROR_DOM_INVALID_STATE_ERR;
-  }
-
-  internalRequest->ToIPC(aOutRequest, bgChild, aAutoStream);
-
-  return NS_OK;
-}
-
-}  // anonymous namespace
 
 ServiceWorkerPrivateImpl::RAIIActorPtrHolder::RAIIActorPtrHolder(
     already_AddRefed<RemoteWorkerControllerChild> aActor)
@@ -238,8 +71,8 @@ ServiceWorkerPrivateImpl::RAIIActorPtrHolder::~RAIIActorPtrHolder() {
   mActor->MaybeSendDelete();
 }
 
-RemoteWorkerControllerChild* ServiceWorkerPrivateImpl::RAIIActorPtrHolder::
-operator->() const {
+RemoteWorkerControllerChild*
+ServiceWorkerPrivateImpl::RAIIActorPtrHolder::operator->() const {
   AssertIsOnMainThread();
 
   return get();
@@ -275,7 +108,8 @@ nsresult ServiceWorkerPrivateImpl::Initialize() {
   nsCOMPtr<nsIPrincipal> principal = mOuter->mInfo->Principal();
 
   nsCOMPtr<nsIURI> uri;
-  nsresult rv = principal->GetURI(getter_AddRefs(uri));
+  auto* basePrin = BasePrincipal::Cast(principal);
+  nsresult rv = basePrin->GetURI(getter_AddRefs(uri));
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -297,7 +131,6 @@ nsresult ServiceWorkerPrivateImpl::Initialize() {
 
   PrincipalInfo principalInfo;
   rv = PrincipalToPrincipalInfo(principal, &principalInfo);
-
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -315,12 +148,31 @@ nsresult ServiceWorkerPrivateImpl::Initialize() {
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
-  nsCOMPtr<nsICookieSettings> cookieSettings =
-      mozilla::net::CookieSettings::Create();
-  MOZ_ASSERT(cookieSettings);
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+      net::CookieJarSettings::Create();
+  MOZ_ASSERT(cookieJarSettings);
+
+  net::CookieJarSettings::Cast(cookieJarSettings)->SetPartitionKey(uri);
+
+  net::CookieJarSettingsArgs cjsData;
+  net::CookieJarSettings::Cast(cookieJarSettings)->Serialize(cjsData);
+
+  nsCOMPtr<nsIPrincipal> partitionedPrincipal;
+  rv = StoragePrincipalHelper::CreatePartitionedPrincipalForServiceWorker(
+      principal, cookieJarSettings, getter_AddRefs(partitionedPrincipal));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  PrincipalInfo partitionedPrincipalInfo;
+  rv =
+      PrincipalToPrincipalInfo(partitionedPrincipal, &partitionedPrincipalInfo);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
 
   StorageAccess storageAccess =
-      StorageAllowedForServiceWorker(principal, cookieSettings);
+      StorageAllowedForServiceWorker(principal, cookieJarSettings);
 
   ServiceWorkerData serviceWorkerData;
   serviceWorkerData.cacheName() = mOuter->mInfo->CacheName();
@@ -329,31 +181,43 @@ nsresult ServiceWorkerPrivateImpl::Initialize() {
                             nsIChannel::LOAD_BYPASS_SERVICE_WORKER);
   serviceWorkerData.id() = std::move(id);
 
-  mRemoteWorkerData.originalScriptURL() =
-      NS_ConvertUTF8toUTF16(mOuter->mInfo->ScriptSpec());
-  mRemoteWorkerData.baseScriptURL() = baseScriptURL;
-  mRemoteWorkerData.resolvedScriptURL() = baseScriptURL;
-  mRemoteWorkerData.name() = VoidString();
-
-  mRemoteWorkerData.loadingPrincipalInfo() = principalInfo;
-  mRemoteWorkerData.principalInfo() = principalInfo;
-  // storagePrincipalInfo for ServiceWorkers is equal to principalInfo because,
-  // at the moment, ServiceWorkers are not exposed in partitioned contexts.
-  mRemoteWorkerData.storagePrincipalInfo() = principalInfo;
-
-  rv = uri->GetHost(mRemoteWorkerData.domain());
-  NS_ENSURE_SUCCESS(rv, rv);
-  mRemoteWorkerData.isSecureContext() = true;
-  mRemoteWorkerData.referrerInfo() = MakeAndAddRef<ReferrerInfo>();
-  mRemoteWorkerData.storageAccess() = storageAccess;
-  mRemoteWorkerData.serviceWorkerData() = std::move(serviceWorkerData);
-
-  // This fills in the rest of mRemoteWorkerData.serviceWorkerData().
-  rv = RefreshRemoteWorkerData(regInfo);
-
+  nsAutoCString domain;
+  rv = uri->GetHost(domain);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
+
+  auto remoteType = RemoteWorkerManager::GetRemoteType(
+      principal, WorkerType::WorkerTypeService);
+  if (NS_WARN_IF(remoteType.isErr())) {
+    return remoteType.unwrapErr();
+  }
+
+  mRemoteWorkerData = RemoteWorkerData(
+      NS_ConvertUTF8toUTF16(mOuter->mInfo->ScriptSpec()), baseScriptURL,
+      baseScriptURL, /* name */ VoidString(),
+      /* loading principal */ principalInfo, principalInfo,
+      partitionedPrincipalInfo,
+      /* useRegularPrincipal */ true,
+
+      // ServiceWorkers run as first-party, no storage-access permission needed.
+      /* hasStorageAccessPermissionGranted */ false,
+
+      cjsData, domain,
+      /* isSecureContext */ true,
+      /* clientInfo*/ Nothing(),
+
+      // The RemoteWorkerData CTOR doesn't allow to set the referrerInfo via
+      // already_AddRefed<>. Let's set it to null.
+      /* referrerInfo */ nullptr,
+
+      storageAccess, std::move(serviceWorkerData), regInfo->AgentClusterId(),
+      remoteType.unwrap());
+
+  mRemoteWorkerData.referrerInfo() = MakeAndAddRef<ReferrerInfo>();
+
+  // This fills in the rest of mRemoteWorkerData.serviceWorkerData().
+  RefreshRemoteWorkerData(regInfo);
 
   return NS_OK;
 }
@@ -386,43 +250,17 @@ RefPtr<GenericPromise> ServiceWorkerPrivateImpl::SetSkipWaitingFlag() {
   return promise;
 }
 
-nsresult ServiceWorkerPrivateImpl::RefreshRemoteWorkerData(
+void ServiceWorkerPrivateImpl::RefreshRemoteWorkerData(
     const RefPtr<ServiceWorkerRegistrationInfo>& aRegistration) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mOuter);
   MOZ_ASSERT(mOuter->mInfo);
 
-  nsTArray<KeyAndPermissions> permissions;
-  nsCOMPtr<nsIPermissionManager> permManager = services::GetPermissionManager();
-  nsTArray<nsCString> keys =
-      nsPermissionManager::GetAllKeysForPrincipal(mOuter->mInfo->Principal());
-  MOZ_ASSERT(!keys.IsEmpty());
-
-  for (auto& key : keys) {
-    nsTArray<IPC::Permission> perms;
-    nsresult rv = permManager->GetPermissionsWithKey(key, perms);
-
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-
-    KeyAndPermissions kp;
-    kp.key() = nsCString(key);
-    kp.permissions() = std::move(perms);
-
-    permissions.AppendElement(std::move(kp));
-  }
-
-  MOZ_ASSERT(!permissions.IsEmpty());
-
   ServiceWorkerData& serviceWorkerData =
       mRemoteWorkerData.serviceWorkerData().get_ServiceWorkerData();
-  serviceWorkerData.permissionsByKey() = std::move(permissions);
   serviceWorkerData.descriptor() = mOuter->mInfo->Descriptor().ToIPC();
   serviceWorkerData.registrationDescriptor() =
       aRegistration->Descriptor().ToIPC();
-
-  return NS_OK;
 }
 
 nsresult ServiceWorkerPrivateImpl::SpawnWorkerIfNeeded() {
@@ -431,6 +269,7 @@ nsresult ServiceWorkerPrivateImpl::SpawnWorkerIfNeeded() {
   MOZ_ASSERT(mOuter->mInfo);
 
   if (mControllerChild) {
+    mOuter->RenewKeepAliveToken(ServiceWorkerPrivate::WakeUpReason::Unknown);
     return NS_OK;
   }
 
@@ -453,11 +292,7 @@ nsresult ServiceWorkerPrivateImpl::SpawnWorkerIfNeeded() {
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
-  nsresult rv = RefreshRemoteWorkerData(regInfo);
-
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
+  RefreshRemoteWorkerData(regInfo);
 
   RefPtr<RemoteWorkerControllerChild> controllerChild =
       new RemoteWorkerControllerChild(this);
@@ -574,7 +409,7 @@ nsresult ServiceWorkerPrivateImpl::CheckScriptEvaluation(
         // If a termination operation was already issued using `holder`...
         if (self->mControllerChild != holder) {
           holder->OnDestructor()->Then(
-              GetCurrentThreadSerialEventTarget(), __func__,
+              GetCurrentSerialEventTarget(), __func__,
               [callback = std::move(callback)](
                   const GenericPromise::ResolveOrRejectValue&) {
                 callback->SetResult(false);
@@ -584,15 +419,18 @@ nsresult ServiceWorkerPrivateImpl::CheckScriptEvaluation(
           return;
         }
 
-        RefPtr<GenericNonExclusivePromise> promise = self->ShutdownInternal();
-
         RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
         MOZ_ASSERT(swm);
 
-        swm->BlockShutdownOn(promise);
+        auto shutdownStateId = swm->MaybeInitServiceWorkerShutdownProgress();
+
+        RefPtr<GenericNonExclusivePromise> promise =
+            self->ShutdownInternal(shutdownStateId);
+
+        swm->BlockShutdownOn(promise, shutdownStateId);
 
         promise->Then(
-            GetCurrentThreadSerialEventTarget(), __func__,
+            GetCurrentSerialEventTarget(), __func__,
             [callback = std::move(callback)](
                 const GenericNonExclusivePromise::ResolveOrRejectValue&) {
               callback->SetResult(false);
@@ -753,15 +591,12 @@ ServiceWorkerPrivateImpl::PendingFetchEvent::PendingFetchEvent(
     ServiceWorkerPrivateImpl* aOwner,
     RefPtr<ServiceWorkerRegistrationInfo>&& aRegistration,
     ServiceWorkerFetchEventOpArgs&& aArgs,
-    nsCOMPtr<nsIInterceptedChannel>&& aChannel,
-    UniquePtr<AutoIPCStream>&& aAutoStream)
+    nsCOMPtr<nsIInterceptedChannel>&& aChannel)
     : PendingFunctionalEvent(aOwner, std::move(aRegistration)),
       mArgs(std::move(aArgs)),
-      mChannel(std::move(aChannel)),
-      mAutoStream(std::move(aAutoStream)) {
+      mChannel(std::move(aChannel)) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mChannel);
-  MOZ_ASSERT(mAutoStream);
 }
 
 nsresult ServiceWorkerPrivateImpl::PendingFetchEvent::Send() {
@@ -770,8 +605,7 @@ nsresult ServiceWorkerPrivateImpl::PendingFetchEvent::Send() {
   MOZ_ASSERT(mOwner->mOuter->mInfo);
 
   return mOwner->SendFetchEventInternal(std::move(mRegistration),
-                                        std::move(mArgs), std::move(mChannel),
-                                        std::move(mAutoStream));
+                                        std::move(mArgs), std::move(mChannel));
 }
 
 ServiceWorkerPrivateImpl::PendingFetchEvent::~PendingFetchEvent() {
@@ -782,12 +616,195 @@ ServiceWorkerPrivateImpl::PendingFetchEvent::~PendingFetchEvent() {
   }
 }
 
+namespace {
+
+class HeaderFiller final : public nsIHttpHeaderVisitor {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit HeaderFiller(HeadersGuardEnum aGuard)
+      : mInternalHeaders(new InternalHeaders(aGuard)) {
+    MOZ_ASSERT(mInternalHeaders);
+  }
+
+  NS_IMETHOD
+  VisitHeader(const nsACString& aHeader, const nsACString& aValue) override {
+    ErrorResult result;
+    mInternalHeaders->Append(aHeader, aValue, result);
+
+    if (NS_WARN_IF(result.Failed())) {
+      return result.StealNSResult();
+    }
+
+    return NS_OK;
+  }
+
+  RefPtr<InternalHeaders> Extract() {
+    return RefPtr<InternalHeaders>(std::move(mInternalHeaders));
+  }
+
+ private:
+  ~HeaderFiller() = default;
+
+  RefPtr<InternalHeaders> mInternalHeaders;
+};
+
+NS_IMPL_ISUPPORTS(HeaderFiller, nsIHttpHeaderVisitor)
+
+Result<IPCInternalRequest, nsresult> GetIPCInternalRequest(
+    nsIInterceptedChannel* aChannel) {
+  AssertIsOnMainThread();
+
+  nsCOMPtr<nsIURI> uri;
+  MOZ_TRY(aChannel->GetSecureUpgradedChannelURI(getter_AddRefs(uri)));
+
+  nsCOMPtr<nsIURI> uriNoFragment;
+  MOZ_TRY(NS_GetURIWithoutRef(uri, getter_AddRefs(uriNoFragment)));
+
+  nsCOMPtr<nsIChannel> underlyingChannel;
+  MOZ_TRY(aChannel->GetChannel(getter_AddRefs(underlyingChannel)));
+
+  nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(underlyingChannel);
+  MOZ_ASSERT(httpChannel, "How come we don't have an HTTP channel?");
+
+  nsCOMPtr<nsIHttpChannelInternal> internalChannel =
+      do_QueryInterface(httpChannel);
+  NS_ENSURE_TRUE(internalChannel, Err(NS_ERROR_NOT_AVAILABLE));
+
+  nsCOMPtr<nsICacheInfoChannel> cacheInfoChannel =
+      do_QueryInterface(underlyingChannel);
+
+  nsAutoCString spec;
+  MOZ_TRY(uriNoFragment->GetSpec(spec));
+
+  nsAutoCString fragment;
+  MOZ_TRY(uri->GetRef(fragment));
+
+  nsAutoCString method;
+  MOZ_TRY(httpChannel->GetRequestMethod(method));
+
+  // This is safe due to static_asserts in ServiceWorkerManager.cpp
+  uint32_t cacheModeInt;
+  MOZ_ALWAYS_SUCCEEDS(internalChannel->GetFetchCacheMode(&cacheModeInt));
+  RequestCache cacheMode = static_cast<RequestCache>(cacheModeInt);
+
+  RequestMode requestMode =
+      InternalRequest::MapChannelToRequestMode(underlyingChannel);
+
+  // This is safe due to static_asserts in ServiceWorkerManager.cpp
+  uint32_t redirectMode;
+  MOZ_ALWAYS_SUCCEEDS(internalChannel->GetRedirectMode(&redirectMode));
+  RequestRedirect requestRedirect = static_cast<RequestRedirect>(redirectMode);
+
+  RequestCredentials requestCredentials =
+      InternalRequest::MapChannelToRequestCredentials(underlyingChannel);
+
+  nsAutoString referrer;
+  ReferrerPolicy referrerPolicy = ReferrerPolicy::_empty;
+
+  nsCOMPtr<nsIReferrerInfo> referrerInfo = httpChannel->GetReferrerInfo();
+  if (referrerInfo) {
+    referrerPolicy = referrerInfo->ReferrerPolicy();
+    Unused << referrerInfo->GetComputedReferrerSpec(referrer);
+  }
+
+  uint32_t loadFlags;
+  MOZ_TRY(underlyingChannel->GetLoadFlags(&loadFlags));
+
+  nsCOMPtr<nsILoadInfo> loadInfo;
+  MOZ_TRY(underlyingChannel->GetLoadInfo(getter_AddRefs(loadInfo)));
+  MOZ_ASSERT(loadInfo);
+
+  nsContentPolicyType contentPolicyType = loadInfo->InternalContentPolicyType();
+
+  nsAutoString integrity;
+  MOZ_TRY(internalChannel->GetIntegrityMetadata(integrity));
+
+  RefPtr<HeaderFiller> headerFiller =
+      MakeRefPtr<HeaderFiller>(HeadersGuardEnum::Request);
+  MOZ_TRY(httpChannel->VisitNonDefaultRequestHeaders(headerFiller));
+
+  RefPtr<InternalHeaders> internalHeaders = headerFiller->Extract();
+
+  ErrorResult result;
+  internalHeaders->SetGuard(HeadersGuardEnum::Immutable, result);
+  if (NS_WARN_IF(result.Failed())) {
+    return Err(result.StealNSResult());
+  }
+
+  nsTArray<HeadersEntry> ipcHeaders;
+  HeadersGuardEnum ipcHeadersGuard;
+  internalHeaders->ToIPC(ipcHeaders, ipcHeadersGuard);
+
+  nsAutoCString alternativeDataType;
+  if (cacheInfoChannel &&
+      !cacheInfoChannel->PreferredAlternativeDataTypes().IsEmpty()) {
+    // TODO: the internal request probably needs all the preferred types.
+    alternativeDataType.Assign(
+        cacheInfoChannel->PreferredAlternativeDataTypes()[0].type());
+  }
+
+  Maybe<PrincipalInfo> principalInfo;
+
+  if (loadInfo->TriggeringPrincipal()) {
+    principalInfo.emplace();
+    MOZ_ALWAYS_SUCCEEDS(PrincipalToPrincipalInfo(
+        loadInfo->TriggeringPrincipal(), principalInfo.ptr()));
+  }
+
+  // Note: all the arguments are copied rather than moved, which would be more
+  // efficient, because there's no move-friendly constructor generated.
+  return IPCInternalRequest(
+      method, {spec}, ipcHeadersGuard, ipcHeaders, Nothing(), -1,
+      alternativeDataType, contentPolicyType, referrer, referrerPolicy,
+      requestMode, requestCredentials, cacheMode, requestRedirect, integrity,
+      fragment, principalInfo);
+}
+
+nsresult MaybeStoreStreamForBackgroundThread(nsIInterceptedChannel* aChannel,
+                                             IPCInternalRequest& aIPCRequest) {
+  nsCOMPtr<nsIChannel> channel;
+  MOZ_ALWAYS_SUCCEEDS(aChannel->GetChannel(getter_AddRefs(channel)));
+
+  Maybe<BodyStreamVariant> body;
+  int64_t bodySize = -1;
+  nsCOMPtr<nsIUploadChannel2> uploadChannel = do_QueryInterface(channel);
+
+  if (uploadChannel) {
+    nsCOMPtr<nsIInputStream> uploadStream;
+    MOZ_TRY(uploadChannel->CloneUploadStream(&aIPCRequest.bodySize(),
+                                             getter_AddRefs(uploadStream)));
+
+    if (uploadStream) {
+      Maybe<BodyStreamVariant>& body = aIPCRequest.body();
+      body.emplace(ParentToParentStream());
+
+      MOZ_TRY(nsContentUtils::GenerateUUIDInPlace(
+          body->get_ParentToParentStream().uuid()));
+
+      auto storageOrErr = RemoteLazyInputStreamStorage::Get();
+      if (NS_WARN_IF(storageOrErr.isErr())) {
+        return storageOrErr.unwrapErr();
+      }
+
+      auto storage = storageOrErr.unwrap();
+      storage->AddStream(uploadStream, body->get_ParentToParentStream().uuid(),
+                         bodySize, 0);
+    }
+  }
+
+  return NS_OK;
+}
+
+}  // anonymous namespace
+
 nsresult ServiceWorkerPrivateImpl::SendFetchEvent(
     RefPtr<ServiceWorkerRegistrationInfo> aRegistration,
     nsCOMPtr<nsIInterceptedChannel> aChannel, const nsAString& aClientId,
-    const nsAString& aResultingClientId, bool aIsReload) {
+    const nsAString& aResultingClientId) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mOuter);
+  MOZ_ASSERT(mOuter->mInfo);
   MOZ_ASSERT(aRegistration);
   MOZ_ASSERT(aChannel);
 
@@ -797,34 +814,22 @@ nsresult ServiceWorkerPrivateImpl::SendFetchEvent(
   });
 
   nsCOMPtr<nsIChannel> channel;
-  nsresult rv = aChannel->GetChannel(getter_AddRefs(channel));
+  MOZ_TRY(aChannel->GetChannel(getter_AddRefs(channel)));
 
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  IPCInternalRequest internalRequest;
-  UniquePtr<AutoIPCStream> autoStream = MakeUnique<AutoIPCStream>();
-  rv = GetIPCInternalRequest(aChannel, &internalRequest, autoStream);
-
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
+  IPCInternalRequest request;
+  MOZ_TRY_VAR(request, GetIPCInternalRequest(aChannel));
 
   scopeExit.release();
 
-  MOZ_ASSERT(mOuter->mInfo);
-
   ServiceWorkerFetchEventOpArgs args(
-      mOuter->mInfo->ScriptSpec(), internalRequest, nsString(aClientId),
-      nsString(aResultingClientId), aIsReload,
+      mOuter->mInfo->ScriptSpec(), std::move(request), nsString(aClientId),
+      nsString(aResultingClientId),
       nsContentUtils::IsNonSubresourceRequest(channel));
 
   if (mOuter->mInfo->State() == ServiceWorkerState::Activating) {
     UniquePtr<PendingFunctionalEvent> pendingEvent =
         MakeUnique<PendingFetchEvent>(this, std::move(aRegistration),
-                                      std::move(args), std::move(aChannel),
-                                      std::move(autoStream));
+                                      std::move(args), std::move(aChannel));
 
     mPendingFunctionalEvents.AppendElement(std::move(pendingEvent));
 
@@ -834,14 +839,13 @@ nsresult ServiceWorkerPrivateImpl::SendFetchEvent(
   MOZ_ASSERT(mOuter->mInfo->State() == ServiceWorkerState::Activated);
 
   return SendFetchEventInternal(std::move(aRegistration), std::move(args),
-                                std::move(aChannel), std::move(autoStream));
+                                std::move(aChannel));
 }
 
 nsresult ServiceWorkerPrivateImpl::SendFetchEventInternal(
     RefPtr<ServiceWorkerRegistrationInfo>&& aRegistration,
     ServiceWorkerFetchEventOpArgs&& aArgs,
-    nsCOMPtr<nsIInterceptedChannel>&& aChannel,
-    UniquePtr<AutoIPCStream>&& aAutoStream) {
+    nsCOMPtr<nsIInterceptedChannel>&& aChannel) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mOuter);
 
@@ -851,11 +855,9 @@ nsresult ServiceWorkerPrivateImpl::SendFetchEventInternal(
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
-  nsresult rv = SpawnWorkerIfNeeded();
-
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
+  MOZ_TRY(SpawnWorkerIfNeeded());
+  MOZ_TRY(
+      MaybeStoreStreamForBackgroundThread(aChannel, aArgs.internalRequest()));
 
   scopeExit.release();
 
@@ -863,16 +865,14 @@ nsresult ServiceWorkerPrivateImpl::SendFetchEventInternal(
 
   RefPtr<RAIIActorPtrHolder> holder = mControllerChild;
 
-  FetchEventOpChild::Create(mControllerChild->get(), std::move(aArgs),
-                            std::move(aChannel), std::move(aRegistration),
-                            mOuter->CreateEventKeepAliveToken())
-      ->Then(GetCurrentThreadSerialEventTarget(), __func__,
+  FetchEventOpChild::SendFetchEvent(
+      mControllerChild->get(), std::move(aArgs), std::move(aChannel),
+      std::move(aRegistration), mOuter->CreateEventKeepAliveToken())
+      ->Then(GetCurrentSerialEventTarget(), __func__,
              [holder = std::move(holder)](
                  const GenericPromise::ResolveOrRejectValue& aResult) {
                Unused << NS_WARN_IF(aResult.IsReject());
              });
-
-  aAutoStream->TakeOptionalValue();
 
   return NS_OK;
 }
@@ -897,15 +897,18 @@ void ServiceWorkerPrivateImpl::Shutdown() {
                "All Service Workers should start shutting down before the "
                "ServiceWorkerManager does!");
 
-    RefPtr<GenericNonExclusivePromise> promise = ShutdownInternal();
-    swm->BlockShutdownOn(promise);
+    auto shutdownStateId = swm->MaybeInitServiceWorkerShutdownProgress();
+
+    RefPtr<GenericNonExclusivePromise> promise =
+        ShutdownInternal(shutdownStateId);
+    swm->BlockShutdownOn(promise, shutdownStateId);
   }
 
   MOZ_ASSERT(WorkerIsDead());
 }
 
-RefPtr<GenericNonExclusivePromise>
-ServiceWorkerPrivateImpl::ShutdownInternal() {
+RefPtr<GenericNonExclusivePromise> ServiceWorkerPrivateImpl::ShutdownInternal(
+    uint32_t aShutdownStateId) {
   AssertIsOnMainThread();
   MOZ_ASSERT(mControllerChild);
 
@@ -924,7 +927,7 @@ ServiceWorkerPrivateImpl::ShutdownInternal() {
       new GenericNonExclusivePromise::Private(__func__);
 
   Unused << ExecServiceWorkerOp(
-      ServiceWorkerTerminateWorkerOpArgs(),
+      ServiceWorkerTerminateWorkerOpArgs(aShutdownStateId),
       [promise](ServiceWorkerOpResult&& aResult) {
         MOZ_ASSERT(aResult.type() == ServiceWorkerOpResult::Tnsresult);
         promise->Resolve(true, __func__);
@@ -1008,8 +1011,8 @@ void ServiceWorkerPrivateImpl::ErrorReceived(const ErrorValue& aError) {
 
   swm->HandleError(nullptr, info->Principal(), info->Scope(),
                    NS_ConvertUTF8toUTF16(info->ScriptSpec()), EmptyString(),
-                   EmptyString(), EmptyString(), 0, 0, JSREPORT_ERROR,
-                   JSEXN_ERR);
+                   EmptyString(), EmptyString(), 0, 0,
+                   nsIScriptError::errorFlag, JSEXN_ERR);
 }
 
 void ServiceWorkerPrivateImpl::Terminated() {
@@ -1059,7 +1062,7 @@ nsresult ServiceWorkerPrivateImpl::ExecServiceWorkerOp(
    * can accept rvalue references rather than just const references.
    */
   mControllerChild->get()->SendExecServiceWorkerOp(aArgs)->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [self = std::move(self), holder = std::move(holder),
        token = std::move(token), onSuccess = std::move(aSuccessCallback),
        onFailure = std::move(aFailureCallback)](

@@ -21,7 +21,7 @@ ChromeUtils.defineModuleGetter(
 );
 XPCOMUtils.defineLazyGlobalGetters(this, ["URL"]);
 
-const ATTR_CODE_MAX_LENGTH = 200;
+const ATTR_CODE_MAX_LENGTH = 1010;
 const ATTR_CODE_VALUE_REGEX = /[a-zA-Z0-9_%\\-\\.\\(\\)]*/;
 const ATTR_CODE_FIELD_SEPARATOR = "%26"; // URL-encoded &
 const ATTR_CODE_KEY_VALUE_SEPARATOR = "%3D"; // URL-encoded =
@@ -32,6 +32,7 @@ const ATTR_CODE_KEYS = [
   "content",
   "experiment",
   "variation",
+  "ua",
 ];
 
 let gCachedAttrData = null;
@@ -49,6 +50,13 @@ function getAttributionFile() {
 }
 
 var AttributionCode = {
+  /**
+   * Returns an array of allowed attribution code keys.
+   */
+  get allowedCodeKeys() {
+    return [...ATTR_CODE_KEYS];
+  },
+
   /**
    * Returns an object containing a key-value pair for each piece of attribution
    * data included in the passed-in attribution code string.
@@ -72,7 +80,16 @@ var AttributionCode = {
         break;
       }
     }
-    return isValid ? parsed : {};
+
+    if (isValid) {
+      return parsed;
+    }
+
+    Services.telemetry
+      .getHistogramById("BROWSER_ATTRIBUTION_ERRORS")
+      .add("decode_error");
+
+    return {};
   },
 
   /**
@@ -92,15 +109,28 @@ var AttributionCode = {
 
     gCachedAttrData = {};
     if (AppConstants.platform == "win") {
+      let bytes;
       try {
-        let bytes = await OS.File.read(getAttributionFile().path);
-        let decoder = new TextDecoder();
-        let code = decoder.decode(bytes);
-        gCachedAttrData = this.parseAttributionCode(code);
+        bytes = await OS.File.read(getAttributionFile().path);
       } catch (ex) {
-        // The attribution file may already have been deleted,
-        // or it may have never been installed at all;
-        // failure to open or read it isn't an error.
+        if (ex instanceof OS.File.Error && ex.becauseNoSuchFile) {
+          return gCachedAttrData;
+        }
+        Services.telemetry
+          .getHistogramById("BROWSER_ATTRIBUTION_ERRORS")
+          .add("read_error");
+      }
+      if (bytes) {
+        try {
+          let decoder = new TextDecoder();
+          let code = decoder.decode(bytes);
+          gCachedAttrData = this.parseAttributionCode(code);
+        } catch (ex) {
+          // TextDecoder can throw an error
+          Services.telemetry
+            .getHistogramById("BROWSER_ATTRIBUTION_ERRORS")
+            .add("decode_error");
+        }
       }
     } else if (AppConstants.platform == "macosx") {
       try {

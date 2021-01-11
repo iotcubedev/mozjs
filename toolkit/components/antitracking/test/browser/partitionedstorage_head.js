@@ -53,6 +53,7 @@ this.PartitionedStorageHelper = {
 
   runPartitioningTestInNormalAndPrivateMode(
     name,
+    testCategory,
     getDataCallback,
     addDataCallback,
     cleanupFunction
@@ -60,6 +61,7 @@ this.PartitionedStorageHelper = {
     // Normal mode
     this.runPartitioningTest(
       name,
+      testCategory,
       getDataCallback,
       addDataCallback,
       cleanupFunction,
@@ -69,6 +71,7 @@ this.PartitionedStorageHelper = {
     // Private mode
     this.runPartitioningTest(
       name,
+      testCategory,
       getDataCallback,
       addDataCallback,
       cleanupFunction,
@@ -78,46 +81,51 @@ this.PartitionedStorageHelper = {
 
   runPartitioningTest(
     name,
+    testCategory,
     getDataCallback,
     addDataCallback,
     cleanupFunction,
     runInPrivateWindow = false
   ) {
-    this.runPartitioningTestInner(
-      name,
-      getDataCallback,
-      addDataCallback,
-      cleanupFunction,
-      "normal",
-      runInPrivateWindow
-    );
-    this.runPartitioningTestInner(
-      name,
-      getDataCallback,
-      addDataCallback,
-      cleanupFunction,
-      "initial-aboutblank",
-      runInPrivateWindow
-    );
+    for (let variant of ["normal", "initial-aboutblank"]) {
+      for (let limitForeignContexts of [false, true]) {
+        this.runPartitioningTestInner(
+          name,
+          testCategory,
+          getDataCallback,
+          addDataCallback,
+          cleanupFunction,
+          variant,
+          runInPrivateWindow,
+          limitForeignContexts
+        );
+      }
+    }
   },
 
   runPartitioningTestInner(
     name,
+    testCategory,
     getDataCallback,
     addDataCallback,
     cleanupFunction,
     variant,
-    runInPrivateWindow
+    runInPrivateWindow,
+    limitForeignContexts
   ) {
     add_task(async _ => {
       info(
         "Starting test `" +
           name +
+          "' testCategory `" +
+          testCategory +
           "' variant `" +
           variant +
           "' in a " +
           (runInPrivateWindow ? "private" : "normal") +
-          " window to check that 2 tabs are correctly partititioned"
+          " window " +
+          (limitForeignContexts ? "with" : "without") +
+          " limitForeignContexts to check that 2 tabs are correctly partititioned"
       );
 
       await SpecialPowers.flushPrefEnv();
@@ -128,6 +136,7 @@ this.PartitionedStorageHelper = {
             "network.cookie.cookieBehavior",
             Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN,
           ],
+          ["privacy.dynamic_firstparty.limitForeign", limitForeignContexts],
           ["privacy.trackingprotection.enabled", false],
           ["privacy.trackingprotection.pbmode.enabled", false],
           ["privacy.trackingprotection.annotate_channels", true],
@@ -169,14 +178,31 @@ this.PartitionedStorageHelper = {
       let browser3 = win.gBrowser.getBrowserForTab(tab3);
       await BrowserTestUtils.browserLoaded(browser3);
 
+      // Use the same URL as first tab to check partitioned data
+      info("Creating the forth tab");
+      let tab4 = BrowserTestUtils.addTab(win.gBrowser, TEST_TOP_PAGE);
+      win.gBrowser.selectedTab = tab4;
+
+      let browser4 = win.gBrowser.getBrowserForTab(tab4);
+      await BrowserTestUtils.browserLoaded(browser4);
+
       async function getDataFromThirdParty(browser, result) {
-        await ContentTask.spawn(
+        // Overwrite the special case here since third party cookies are not
+        // avilable when `limitForeignContexts` is enabled.
+        if (testCategory === "cookies" && limitForeignContexts) {
+          info("overwrite result to empty");
+          result = "";
+        }
+
+        await SpecialPowers.spawn(
           browser,
-          {
-            page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
-            getDataCallback: getDataCallback.toString(),
-            result,
-          },
+          [
+            {
+              page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
+              getDataCallback: getDataCallback.toString(),
+              result,
+            },
+          ],
           async obj => {
             await new content.Promise(resolve => {
               let ifr = content.document.createElement("iframe");
@@ -206,13 +232,15 @@ this.PartitionedStorageHelper = {
       }
 
       async function getDataFromFirstParty(browser, result) {
-        await ContentTask.spawn(
+        await SpecialPowers.spawn(
           browser,
-          {
-            getDataCallback: getDataCallback.toString(),
-            result,
-            variant,
-          },
+          [
+            {
+              getDataCallback: getDataCallback.toString(),
+              result,
+              variant,
+            },
+          ],
           async obj => {
             let runnableStr = `(() => {return (${obj.getDataCallback});})();`;
             let runnable = eval(runnableStr); // eslint-disable-line no-eval
@@ -244,14 +272,19 @@ this.PartitionedStorageHelper = {
       info("Checking first party has an empty cookie jar in third tab");
       await getDataFromFirstParty(browser3, "");
 
+      info("Checking 3rd party has an empty cookie jar in forth tab");
+      await getDataFromThirdParty(browser4, "");
+
       async function createDataInThirdParty(browser, value) {
-        await ContentTask.spawn(
+        await SpecialPowers.spawn(
           browser,
-          {
-            page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
-            addDataCallback: addDataCallback.toString(),
-            value,
-          },
+          [
+            {
+              page: TEST_4TH_PARTY_PARTITIONED_PAGE + "?variant=" + variant,
+              addDataCallback: addDataCallback.toString(),
+              value,
+            },
+          ],
           async obj => {
             await new content.Promise(resolve => {
               let ifr = content.document.getElementsByTagName("iframe")[0];
@@ -277,13 +310,15 @@ this.PartitionedStorageHelper = {
       }
 
       async function createDataInFirstParty(browser, value) {
-        await ContentTask.spawn(
+        await SpecialPowers.spawn(
           browser,
-          {
-            addDataCallback: addDataCallback.toString(),
-            value,
-            variant,
-          },
+          [
+            {
+              addDataCallback: addDataCallback.toString(),
+              value,
+              variant,
+            },
+          ],
           async obj => {
             let runnableStr = `(() => {return (${obj.addDataCallback});})();`;
             let runnable = eval(runnableStr); // eslint-disable-line no-eval
@@ -308,11 +343,24 @@ this.PartitionedStorageHelper = {
       info("Creating data in the second tab");
       await createDataInThirdParty(browser2, "B");
 
+      // Before writing browser4, check data written by browser1
+      info("First tab should still have just 'A'");
+      await getDataFromThirdParty(browser1, "A");
+      info("Forth tab should still have just 'A'");
+      await getDataFromThirdParty(browser4, "A");
+
+      // Ensure to create data in the forth tab before the third tab,
+      // otherwise cookie will be written successfully due to prior cookie
+      // of the base domain exists.
+      info("Creating data in the forth tab");
+      await createDataInThirdParty(browser4, "D");
+
       info("Creating data in the third tab");
       await createDataInFirstParty(browser3, "C");
 
-      info("First tab should still have just 'A'");
-      await getDataFromThirdParty(browser1, "A");
+      // read all tabs
+      info("First tab should be changed to 'D'");
+      await getDataFromThirdParty(browser1, "D");
 
       info("Second tab should still have just 'B'");
       await getDataFromThirdParty(browser2, "B");
@@ -320,10 +368,14 @@ this.PartitionedStorageHelper = {
       info("Third tab should still have just 'C'");
       await getDataFromFirstParty(browser3, "C");
 
+      info("Forth tab should still have just 'D'");
+      await getDataFromThirdParty(browser4, "D");
+
       info("Removing the tabs");
       BrowserTestUtils.removeTab(tab1);
       BrowserTestUtils.removeTab(tab2);
       BrowserTestUtils.removeTab(tab3);
+      BrowserTestUtils.removeTab(tab4);
 
       if (runInPrivateWindow) {
         win.close();

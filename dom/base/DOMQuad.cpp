@@ -6,10 +6,11 @@
 
 #include "mozilla/dom/DOMQuad.h"
 
-#include "mozilla/dom/DOMQuadBinding.h"
 #include "mozilla/dom/DOMPoint.h"
+#include "mozilla/dom/DOMQuadBinding.h"
 #include "mozilla/dom/DOMRect.h"
-#include <algorithm>
+#include "mozilla/dom/DOMRectBinding.h"
+#include "mozilla/FloatingPoint.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -29,7 +30,7 @@ DOMQuad::DOMQuad(nsISupports* aParent, CSSPoint aPoints[4]) : mParent(aParent) {
 
 DOMQuad::DOMQuad(nsISupports* aParent) : mParent(aParent) {}
 
-DOMQuad::~DOMQuad() {}
+DOMQuad::~DOMQuad() = default;
 
 JSObject* DOMQuad::WrapObject(JSContext* aCx,
                               JS::Handle<JSObject*> aGivenProto) {
@@ -64,8 +65,7 @@ already_AddRefed<DOMQuad> DOMQuad::Constructor(const GlobalObject& aGlobal,
                                                const DOMPointInit& aP1,
                                                const DOMPointInit& aP2,
                                                const DOMPointInit& aP3,
-                                               const DOMPointInit& aP4,
-                                               ErrorResult& aRV) {
+                                               const DOMPointInit& aP4) {
   RefPtr<DOMQuad> obj = new DOMQuad(aGlobal.GetAsSupports());
   obj->mPoints[0] = DOMPoint::FromPoint(aGlobal, aP1);
   obj->mPoints[1] = DOMPoint::FromPoint(aGlobal, aP2);
@@ -75,8 +75,7 @@ already_AddRefed<DOMQuad> DOMQuad::Constructor(const GlobalObject& aGlobal,
 }
 
 already_AddRefed<DOMQuad> DOMQuad::Constructor(const GlobalObject& aGlobal,
-                                               const DOMRectReadOnly& aRect,
-                                               ErrorResult& aRV) {
+                                               const DOMRectReadOnly& aRect) {
   CSSPoint points[4];
   Float x = aRect.X(), y = aRect.Y(), w = aRect.Width(), h = aRect.Height();
   points[0] = CSSPoint(x, y);
@@ -92,8 +91,8 @@ void DOMQuad::GetHorizontalMinMax(double* aX1, double* aX2) const {
   x1 = x2 = Point(0)->X();
   for (uint32_t i = 1; i < 4; ++i) {
     double x = Point(i)->X();
-    x1 = std::min(x1, x);
-    x2 = std::max(x2, x);
+    x1 = NaNSafeMin(x1, x);
+    x2 = NaNSafeMax(x2, x);
   }
   *aX1 = x1;
   *aX2 = x2;
@@ -104,8 +103,8 @@ void DOMQuad::GetVerticalMinMax(double* aY1, double* aY2) const {
   y1 = y2 = Point(0)->Y();
   for (uint32_t i = 1; i < 4; ++i) {
     double y = Point(i)->Y();
-    y1 = std::min(y1, y);
-    y2 = std::max(y2, y);
+    y1 = NaNSafeMin(y1, y);
+    y2 = NaNSafeMax(y2, y);
   }
   *aY1 = y1;
   *aY2 = y2;

@@ -8,6 +8,7 @@
 
 #include <utility>
 
+#include "js/Exception.h"  // JS::ExceptionStack, JS::StealPendingExceptionStack
 #include "jsapi.h"
 
 #include "nsCOMPtr.h"
@@ -24,13 +25,14 @@
 #include "nsThreadUtils.h"
 
 #include "ServiceWorkerCloneData.h"
+#include "ServiceWorkerShutdownState.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/OwningNonNull.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/ScopeExit.h"
-#include "mozilla/SystemGroup.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/BindingDeclarations.h"
@@ -52,6 +54,7 @@
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
+#include "mozilla/net/MozURL.h"
 
 namespace mozilla {
 namespace dom {
@@ -87,6 +90,7 @@ class ExtendableEventKeepAliveHandler final
    */
   bool WaitOnPromise(Promise& aPromise) override {
     if (!mAcceptingPromises) {
+      MOZ_ASSERT(!GetDispatchFlag());
       MOZ_ASSERT(!mSelfRef, "We shouldn't be holding a self reference!");
       return false;
     }
@@ -115,6 +119,7 @@ class ExtendableEventKeepAliveHandler final
 
   void MaybeDone() {
     MOZ_ASSERT(IsCurrentThreadRunningWorker());
+    MOZ_ASSERT(!GetDispatchFlag());
 
     if (mPendingPromisesCount) {
       return;
@@ -175,7 +180,7 @@ class ExtendableEventKeepAliveHandler final
     mRejected |= (aResult == Rejected);
 
     --mPendingPromisesCount;
-    if (mPendingPromisesCount) {
+    if (mPendingPromisesCount || GetDispatchFlag()) {
       return;
     }
 
@@ -252,13 +257,14 @@ bool DispatchFailed(nsresult aStatus) {
 
 }  // anonymous namespace
 
-class ServiceWorkerOp::ServiceWorkerOpRunnable : public WorkerRunnable {
+class ServiceWorkerOp::ServiceWorkerOpRunnable : public WorkerDebuggeeRunnable {
  public:
   NS_DECL_ISUPPORTS_INHERITED
 
   ServiceWorkerOpRunnable(RefPtr<ServiceWorkerOp> aOwner,
                           WorkerPrivate* aWorkerPrivate)
-      : WorkerRunnable(aWorkerPrivate), mOwner(std::move(aOwner)) {
+      : WorkerDebuggeeRunnable(aWorkerPrivate, WorkerThreadModifyBusyCount),
+        mOwner(std::move(aOwner)) {
     AssertIsOnMainThread();
     MOZ_ASSERT(mOwner);
     MOZ_ASSERT(aWorkerPrivate);
@@ -301,7 +307,7 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
   MOZ_ASSERT(aOwner);
   MOZ_ASSERT(aOwner->GetOwningEventTarget()->IsOnCurrentThread());
 
-  MOZ_ACCESS_THREAD_BOUND(aOwner->mLauncherData, launcherData);
+  auto launcherData = aOwner->mLauncherData.Access();
 
   if (NS_WARN_IF(!launcherData->mIPCActive)) {
     RejectAll(NS_ERROR_DOM_ABORT_ERR);
@@ -327,9 +333,11 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
 
   if (IsTerminationOp()) {
     aOwner->GetTerminationPromise()->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [self](
             const GenericNonExclusivePromise::ResolveOrRejectValue& aResult) {
+          MaybeReportServiceWorkerShutdownProgress(self->mArgs, true);
+
           MOZ_ASSERT(!self->mPromiseHolder.IsEmpty());
 
           if (NS_WARN_IF(aResult.IsReject())) {
@@ -345,6 +353,8 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
 
   nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction(
       __func__, [self = std::move(self), owner = std::move(owner)]() mutable {
+        MaybeReportServiceWorkerShutdownProgress(self->mArgs);
+
         auto lock = owner->mState.Lock();
         auto& state = lock.ref();
 
@@ -357,21 +367,6 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
           owner->CloseWorkerOnMainThread(state);
         } else {
           MOZ_ASSERT(state.is<Running>());
-
-          if (NS_WARN_IF(
-                  state.as<Running>().mWorkerPrivate->ParentStatusProtected() >
-                  Running)) {
-            owner->GetTerminationPromise()->Then(
-                GetCurrentThreadSerialEventTarget(), __func__,
-                [self = std::move(self)](
-                    const GenericNonExclusivePromise::ResolveOrRejectValue&) {
-                  MOZ_ASSERT(!self->mPromiseHolder.IsEmpty());
-                  self->RejectAll(NS_ERROR_DOM_ABORT_ERR);
-                });
-
-            owner->CloseWorkerOnMainThread(state);
-            return;
-          }
 
           RefPtr<WorkerRunnable> workerRunnable =
               self->GetRunnable(state.as<Running>().mWorkerPrivate);
@@ -387,7 +382,8 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
 
   mStarted = true;
 
-  MOZ_ALWAYS_SUCCEEDS(SystemGroup::Dispatch(TaskCategory::Other, r.forget()));
+  MOZ_ALWAYS_SUCCEEDS(
+      SchedulerGroup::Dispatch(TaskCategory::Other, r.forget()));
 
   return true;
 }
@@ -395,15 +391,15 @@ bool ServiceWorkerOp::MaybeStart(RemoteWorkerChild* aOwner,
 void ServiceWorkerOp::Cancel() { RejectAll(NS_ERROR_DOM_ABORT_ERR); }
 
 ServiceWorkerOp::ServiceWorkerOp(
-    const ServiceWorkerOpArgs& aArgs,
+    ServiceWorkerOpArgs&& aArgs,
     std::function<void(const ServiceWorkerOpResult&)>&& aCallback)
-    : mArgs(aArgs) {
+    : mArgs(std::move(aArgs)) {
   MOZ_ASSERT(RemoteWorkerService::Thread()->IsOnCurrentThread());
 
   RefPtr<ServiceWorkerOpPromise> promise = mPromiseHolder.Ensure(__func__);
 
   promise->Then(
-      GetCurrentThreadSerialEventTarget(), __func__,
+      GetCurrentSerialEventTarget(), __func__,
       [callback = std::move(aCallback)](
           ServiceWorkerOpPromise::ResolveOrRejectValue&& aResult) mutable {
         if (NS_WARN_IF(aResult.IsReject())) {
@@ -516,10 +512,11 @@ class UpdateServiceWorkerStateOp final : public ServiceWorkerOp {
       MOZ_ASSERT(aWorkerPrivate);
       aWorkerPrivate->AssertIsOnWorkerThread();
       MOZ_ASSERT(aWorkerPrivate->IsServiceWorker());
-      MOZ_ASSERT(mOwner);
 
-      Unused << mOwner->Exec(aCx, aWorkerPrivate);
-      mOwner = nullptr;
+      if (mOwner) {
+        Unused << mOwner->Exec(aCx, aWorkerPrivate);
+        mOwner = nullptr;
+      }
 
       return true;
     }
@@ -668,8 +665,8 @@ class PushEventOp final : public ExtendableEventOp {
     pushEventInit.mCancelable = false;
 
     GlobalObject globalObj(aCx, aWorkerPrivate->GlobalScope()->GetWrapper());
-    RefPtr<PushEvent> pushEvent = PushEvent::Constructor(
-        globalObj, NS_LITERAL_STRING("push"), pushEventInit, result);
+    RefPtr<PushEvent> pushEvent =
+        PushEvent::Constructor(globalObj, u"push"_ns, pushEventInit, result);
 
     if (NS_WARN_IF(result.Failed())) {
       return false;
@@ -758,7 +755,7 @@ class PushSubscriptionChangeEventOp final : public ExtendableEventOp {
     init.mCancelable = false;
 
     RefPtr<ExtendableEvent> event = ExtendableEvent::Constructor(
-        target, NS_LITERAL_STRING("pushsubscriptionchange"), init);
+        target, u"pushsubscriptionchange"_ns, init);
     event->SetTrusted(true);
 
     nsresult rv = DispatchExtendableEventOnWorkerScope(
@@ -881,11 +878,7 @@ class NotificationEventOp : public ExtendableEventOp,
     init.mCancelable = false;
 
     RefPtr<NotificationEvent> notificationEvent =
-        NotificationEvent::Constructor(target, args.eventName(), init, result);
-
-    if (NS_WARN_IF(result.Failed())) {
-      return false;
-    }
+        NotificationEvent::Constructor(target, args.eventName(), init);
 
     notificationEvent->SetTrusted(true);
 
@@ -941,9 +934,9 @@ class MessageEventOp final : public ExtendableEventOp {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(MessageEventOp, override)
 
-  MessageEventOp(const ServiceWorkerOpArgs& aArgs,
+  MessageEventOp(ServiceWorkerOpArgs&& aArgs,
                  std::function<void(const ServiceWorkerOpResult&)>&& aCallback)
-      : ExtendableEventOp(aArgs, std::move(aCallback)),
+      : ExtendableEventOp(std::move(aArgs), std::move(aCallback)),
         mData(new ServiceWorkerCloneData()) {
     mData->CopyFromClonedMessageDataForBackgroundChild(
         mArgs.get_ServiceWorkerMessageEventOpArgs().clonedData());
@@ -961,19 +954,20 @@ class MessageEventOp final : public ExtendableEventOp {
     JS::Rooted<JS::Value> messageData(aCx);
     nsCOMPtr<nsIGlobalObject> sgo = aWorkerPrivate->GlobalScope();
     ErrorResult rv;
-    mData->Read(aCx, &messageData, rv);
-
-    // If deserialization fails, we will fire a messageerror event
-    bool deserializationFailed = rv.ErrorCodeIs(NS_ERROR_DOM_DATA_CLONE_ERR);
-
-    if (!deserializationFailed && NS_WARN_IF(rv.Failed())) {
-      RejectAll(rv.StealNSResult());
-      return true;
+    if (!mData->IsErrorMessageData()) {
+      mData->Read(aCx, &messageData, rv);
     }
+
+    // If mData is an error message data, then it means that it failed to
+    // serialize on the caller side because it contains a shared memory object.
+    // If deserialization fails, we will fire a messageerror event.
+    const bool deserializationFailed =
+        rv.Failed() || mData->IsErrorMessageData();
 
     Sequence<OwningNonNull<MessagePort>> ports;
     if (!mData->TakeTransferredPortsAsSequence(ports)) {
       RejectAll(NS_ERROR_FAILURE);
+      rv.SuppressException();
       return true;
     }
 
@@ -986,24 +980,35 @@ class MessageEventOp final : public ExtendableEventOp {
     // https://w3c.github.io/ServiceWorker/#service-worker-postmessage
     if (!deserializationFailed) {
       init.mData = messageData;
-      init.mPorts = ports;
+      init.mPorts = std::move(ports);
     }
+
+    RefPtr<net::MozURL> mozUrl;
+    nsresult result = net::MozURL::Init(
+        getter_AddRefs(mozUrl), mArgs.get_ServiceWorkerMessageEventOpArgs()
+                                    .clientInfoAndState()
+                                    .info()
+                                    .url());
+    if (NS_WARN_IF(NS_FAILED(result))) {
+      RejectAll(result);
+      rv.SuppressException();
+      return true;
+    }
+
+    nsCString origin;
+    mozUrl->Origin(origin);
+
+    init.mOrigin = NS_ConvertUTF8toUTF16(origin);
 
     init.mSource.SetValue().SetAsClient() = new Client(
         sgo, mArgs.get_ServiceWorkerMessageEventOpArgs().clientInfoAndState());
 
-    rv = NS_OK;
+    rv.SuppressException();
     RefPtr<EventTarget> target = aWorkerPrivate->GlobalScope();
     RefPtr<ExtendableMessageEvent> extendableEvent =
         ExtendableMessageEvent::Constructor(
-            target,
-            deserializationFailed ? NS_LITERAL_STRING("messageerror")
-                                  : NS_LITERAL_STRING("message"),
-            init, rv);
-    if (NS_WARN_IF(rv.Failed())) {
-      RejectAll(rv.StealNSResult());
-      return false;
-    }
+            target, deserializationFailed ? u"messageerror"_ns : u"message"_ns,
+            init);
 
     extendableEvent->SetTrusted(true);
 
@@ -1031,7 +1036,7 @@ class MOZ_STACK_CLASS FetchEventOp::AutoCancel {
       : mOwner(aOwner),
         mLine(0),
         mColumn(0),
-        mMessageName(NS_LITERAL_CSTRING("InterceptionFailedWithURL")) {
+        mMessageName("InterceptionFailedWithURL"_ns) {
     MOZ_ASSERT(IsCurrentThreadRunningWorker());
     MOZ_ASSERT(mOwner);
 
@@ -1068,16 +1073,14 @@ class MOZ_STACK_CLASS FetchEventOp::AutoCancel {
     MOZ_ASSERT(!aRv.Failed());
 
     // Let's take the pending exception.
-    JS::Rooted<JS::Value> exn(aCx);
-    if (!JS_GetPendingException(aCx, &exn)) {
+    JS::ExceptionStack exnStack(aCx);
+    if (!JS::StealPendingExceptionStack(aCx, &exnStack)) {
       return;
     }
 
-    JS_ClearPendingException(aCx);
-
-    // Converting the exception in a js::ErrorReport.
-    js::ErrorReport report(aCx);
-    if (!report.init(aCx, exn, js::ErrorReport::WithSideEffects)) {
+    // Converting the exception in a JS::ErrorReportBuilder.
+    JS::ErrorReportBuilder report(aCx);
+    if (!report.init(aCx, exnStack, JS::ErrorReportBuilder::WithSideEffects)) {
       JS_ClearPendingException(aCx);
       return;
     }
@@ -1178,8 +1181,7 @@ void FetchEventOp::ReportCanceled(const nsCString& aPreventDefaultScriptSpec,
   GetRequestURL(requestURL);
 
   AsyncLog(aPreventDefaultScriptSpec, aPreventDefaultLineNumber,
-           aPreventDefaultColumnNumber,
-           NS_LITERAL_CSTRING("InterceptionCanceledWithURL"),
+           aPreventDefaultColumnNumber, "InterceptionCanceledWithURL"_ns,
            {std::move(requestURL)});
 }
 
@@ -1323,10 +1325,9 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
     nsContentUtils::ExtractErrorValues(aCx, aValue, sourceSpec, &line, &column,
                                        valueString);
 
-    autoCancel.SetCancelMessageAndLocation(
-        sourceSpec, line, column,
-        NS_LITERAL_CSTRING("InterceptedNonResponseWithURL"), requestURL,
-        valueString);
+    autoCancel.SetCancelMessageAndLocation(sourceSpec, line, column,
+                                           "InterceptedNonResponseWithURL"_ns,
+                                           requestURL, valueString);
     return;
   }
 
@@ -1340,10 +1341,9 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
     nsContentUtils::ExtractErrorValues(aCx, aValue, sourceSpec, &line, &column,
                                        valueString);
 
-    autoCancel.SetCancelMessageAndLocation(
-        sourceSpec, line, column,
-        NS_LITERAL_CSTRING("InterceptedNonResponseWithURL"), requestURL,
-        valueString);
+    autoCancel.SetCancelMessageAndLocation(sourceSpec, line, column,
+                                           "InterceptedNonResponseWithURL"_ns,
+                                           requestURL, valueString);
     return;
   }
 
@@ -1361,8 +1361,8 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
   //      has more than one item.
 
   if (response->Type() == ResponseType::Error) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("InterceptedErrorResponseWithURL"), requestURL);
+    autoCancel.SetCancelMessage("InterceptedErrorResponseWithURL"_ns,
+                                requestURL);
     return;
   }
 
@@ -1372,16 +1372,14 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
 
   if (response->Type() == ResponseType::Opaque &&
       requestMode != RequestMode::No_cors) {
-    uint32_t mode = static_cast<uint32_t>(requestMode);
-    NS_ConvertASCIItoUTF16 modeString(RequestModeValues::strings[mode].value,
-                                      RequestModeValues::strings[mode].length);
+    NS_ConvertASCIItoUTF16 modeString(
+        RequestModeValues::GetString(requestMode));
 
     nsAutoString requestURL;
     GetRequestURL(requestURL);
 
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadOpaqueInterceptionRequestModeWithURL"),
-        requestURL, modeString);
+    autoCancel.SetCancelMessage("BadOpaqueInterceptionRequestModeWithURL"_ns,
+                                requestURL, modeString);
     return;
   }
 
@@ -1390,15 +1388,15 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
 
   if (requestRedirectMode != RequestRedirect::Manual &&
       response->Type() == ResponseType::Opaqueredirect) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadOpaqueRedirectInterceptionWithURL"), requestURL);
+    autoCancel.SetCancelMessage("BadOpaqueRedirectInterceptionWithURL"_ns,
+                                requestURL);
     return;
   }
 
   if (requestRedirectMode != RequestRedirect::Follow &&
       response->Redirected()) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadRedirectModeInterceptionWithURL"), requestURL);
+    autoCancel.SetCancelMessage("BadRedirectModeInterceptionWithURL"_ns,
+                                requestURL);
     return;
   }
 
@@ -1411,8 +1409,8 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
       return;
     }
     if (NS_WARN_IF(bodyUsed)) {
-      autoCancel.SetCancelMessage(
-          NS_LITERAL_CSTRING("InterceptedUsedResponseWithURL"), requestURL);
+      autoCancel.SetCancelMessage("InterceptedUsedResponseWithURL"_ns,
+                                  requestURL);
       return;
     }
   }
@@ -1441,9 +1439,8 @@ void FetchEventOp::ResolvedCallback(JSContext* aCx,
     // The variadic template provided by StringArrayAppender requires exactly
     // an nsString.
     NS_ConvertUTF8toUTF16 responseURL(ir->GetUnfilteredURL());
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("CorsResponseForSameOriginRequest"), requestURL,
-        responseURL);
+    autoCancel.SetCancelMessage("CorsResponseForSameOriginRequest"_ns,
+                                requestURL, responseURL);
     return;
   }
 
@@ -1493,8 +1490,7 @@ void FetchEventOp::RejectedCallback(JSContext* aCx,
   nsString requestURL;
   GetRequestURL(requestURL);
 
-  AsyncLog(sourceSpec, line, column,
-           NS_LITERAL_CSTRING("InterceptionRejectedResponseWithURL"),
+  AsyncLog(sourceSpec, line, column, "InterceptionRejectedResponseWithURL"_ns,
            {std::move(requestURL), valueString});
 
   mRespondWithPromiseHolder.Resolve(
@@ -1521,7 +1517,8 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
    * correct thread before creating this op, so we can take its saved
    * InternalRequest.
    */
-  RefPtr<InternalRequest> internalRequest = mActor->ExtractInternalRequest();
+  SafeRefPtr<InternalRequest> internalRequest =
+      mActor->ExtractInternalRequest();
 
   /**
    * Step 2: get the worker's global object
@@ -1539,7 +1536,7 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
    * which should be aborted if the loading is aborted. See but 1394102.
    */
   RefPtr<Request> request =
-      new Request(globalObjectAsSupports, internalRequest, nullptr);
+      new Request(globalObjectAsSupports, internalRequest.clonePtr(), nullptr);
   MOZ_ASSERT_IF(internalRequest->IsNavigationRequest(),
                 request->Redirect() == RequestRedirect::Manual);
 
@@ -1550,7 +1547,6 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
   fetchEventInit.mRequest = request;
   fetchEventInit.mBubbles = false;
   fetchEventInit.mCancelable = true;
-  fetchEventInit.mIsReload = args.isReload();
 
   /**
    * TODO: only expose the FetchEvent.clientId on subresource requests for
@@ -1577,12 +1573,8 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
   /**
    * Step 4b: create the FetchEvent
    */
-  ErrorResult result;
-  RefPtr<FetchEvent> fetchEvent = FetchEvent::Constructor(
-      globalObject, NS_LITERAL_STRING("fetch"), fetchEventInit, result);
-  if (NS_WARN_IF(result.Failed())) {
-    return result.StealNSResult();
-  }
+  RefPtr<FetchEvent> fetchEvent =
+      FetchEvent::Constructor(globalObject, u"fetch"_ns, fetchEventInit);
   fetchEvent->SetTrusted(true);
   fetchEvent->PostInit(args.workerScriptSpec(), this);
 
@@ -1652,7 +1644,7 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
 }
 
 /* static */ already_AddRefed<ServiceWorkerOp> ServiceWorkerOp::Create(
-    const ServiceWorkerOpArgs& aArgs,
+    ServiceWorkerOpArgs&& aArgs,
     std::function<void(const ServiceWorkerOpResult&)>&& aCallback) {
   MOZ_ASSERT(RemoteWorkerService::Thread()->IsOnCurrentThread());
 
@@ -1660,32 +1652,36 @@ nsresult FetchEventOp::DispatchFetchEvent(JSContext* aCx,
 
   switch (aArgs.type()) {
     case ServiceWorkerOpArgs::TServiceWorkerCheckScriptEvaluationOpArgs:
-      op = MakeRefPtr<CheckScriptEvaluationOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<CheckScriptEvaluationOp>(std::move(aArgs),
+                                               std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerUpdateStateOpArgs:
-      op = MakeRefPtr<UpdateServiceWorkerStateOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<UpdateServiceWorkerStateOp>(std::move(aArgs),
+                                                  std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerTerminateWorkerOpArgs:
-      op = MakeRefPtr<TerminateServiceWorkerOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<TerminateServiceWorkerOp>(std::move(aArgs),
+                                                std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerLifeCycleEventOpArgs:
-      op = MakeRefPtr<LifeCycleEventOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<LifeCycleEventOp>(std::move(aArgs), std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerPushEventOpArgs:
-      op = MakeRefPtr<PushEventOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<PushEventOp>(std::move(aArgs), std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerPushSubscriptionChangeEventOpArgs:
-      op = MakeRefPtr<PushSubscriptionChangeEventOp>(aArgs,
+      op = MakeRefPtr<PushSubscriptionChangeEventOp>(std::move(aArgs),
                                                      std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerNotificationEventOpArgs:
-      op = MakeRefPtr<NotificationEventOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<NotificationEventOp>(std::move(aArgs),
+                                           std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerMessageEventOpArgs:
-      op = MakeRefPtr<MessageEventOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<MessageEventOp>(std::move(aArgs), std::move(aCallback));
       break;
     case ServiceWorkerOpArgs::TServiceWorkerFetchEventOpArgs:
-      op = MakeRefPtr<FetchEventOp>(aArgs, std::move(aCallback));
+      op = MakeRefPtr<FetchEventOp>(std::move(aArgs), std::move(aCallback));
       break;
     default:
       MOZ_CRASH("Unknown Service Worker operation!");

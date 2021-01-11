@@ -21,7 +21,7 @@ let requestObserver = {
       });
     }
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 };
 Services.obs.addObserver(requestObserver, "http-on-opening-request");
 addEventListener("unload", e => {
@@ -31,10 +31,8 @@ addEventListener("unload", e => {
 });
 
 function getChildDocShells() {
-  let docShellsEnum = docShell.getDocShellEnumerator(
+  return docShell.getAllDocShellsInSubtree(
     Ci.nsIDocShellTreeItem.typeAll,
     Ci.nsIDocShell.ENUMERATE_FORWARDS
   );
-
-  return Array.from(docShellsEnum);
 }

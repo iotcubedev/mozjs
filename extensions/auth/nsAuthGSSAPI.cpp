@@ -18,8 +18,6 @@
 #include "mozilla/IntegerPrintfMacros.h"
 
 #include "nsCOMPtr.h"
-#include "nsIPrefService.h"
-#include "nsIServiceManager.h"
 #include "nsMemory.h"
 #include "nsNativeCharsetUtils.h"
 #include "mozilla/Preferences.h"
@@ -119,9 +117,9 @@ static nsresult gssInit() {
   } else {
 #ifdef XP_WIN
 #  ifdef _WIN64
-    NS_NAMED_LITERAL_STRING(kLibName, "gssapi64.dll");
+    constexpr auto kLibName = u"gssapi64.dll"_ns;
 #  else
-    NS_NAMED_LITERAL_STRING(kLibName, "gssapi32.dll");
+    constexpr auto kLibName = u"gssapi32.dll"_ns;
 #  endif
 
     lib = LoadLibraryWithFlags(kLibName.get());

@@ -8,9 +8,8 @@
 
 #include "nsCOMPtr.h"
 #include "nsIDeviceContextSpec.h"
-#include "nsIPrinterEnumerator.h"
+#include "nsIPrinterList.h"
 #include "nsIPrintSettings.h"
-#include "nsISupportsPrimitives.h"
 #include <windows.h>
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
@@ -82,15 +81,16 @@ class nsDeviceContextSpecWin : public nsIDeviceContextSpec {
 };
 
 //-------------------------------------------------------------------------
-// Printer Enumerator
+// Printer List
 //-------------------------------------------------------------------------
-class nsPrinterEnumeratorWin final : public nsIPrinterEnumerator {
-  ~nsPrinterEnumeratorWin();
-
+class nsPrinterListWin final : public nsIPrinterList {
  public:
-  nsPrinterEnumeratorWin();
   NS_DECL_ISUPPORTS
-  NS_DECL_NSIPRINTERENUMERATOR
+  NS_DECL_NSIPRINTERLIST
+  nsPrinterListWin() = default;
+
+ private:
+  ~nsPrinterListWin();
 };
 
 #endif

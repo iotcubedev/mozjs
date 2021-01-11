@@ -8,21 +8,20 @@
 #![deny(missing_docs)]
 
 use crate::applicable_declarations::ApplicableDeclarationBlock;
+use crate::context::SharedStyleContext;
 #[cfg(feature = "gecko")]
-use crate::context::PostAnimationTasks;
-#[cfg(feature = "gecko")]
-use crate::context::UpdateAnimationsTasks;
+use crate::context::{PostAnimationTasks, UpdateAnimationsTasks};
 use crate::data::ElementData;
 use crate::element_state::ElementState;
 use crate::font_metrics::FontMetricsProvider;
 use crate::media_queries::Device;
-use crate::properties::{AnimationRules, ComputedValues, PropertyDeclarationBlock};
+use crate::properties::{AnimationDeclarations, ComputedValues, PropertyDeclarationBlock};
 use crate::selector_parser::{AttrValue, Lang, PseudoElement, SelectorImpl};
-use crate::shared_lock::Locked;
+use crate::shared_lock::{Locked, SharedRwLock};
 use crate::stylist::CascadeData;
 use crate::traversal_flags::TraversalFlags;
 use crate::{Atom, LocalName, Namespace, WeakAtom};
-use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
+use atomic_refcell::{AtomicRef, AtomicRefMut};
 use selectors::matching::{ElementSelectorFlags, QuirksMode, VisitedHandlingMode};
 use selectors::sink::Push;
 use selectors::Element as SelectorsElement;
@@ -32,26 +31,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::Deref;
 
-/// An opaque handle to a node, which, unlike UnsafeNode, cannot be transformed
-/// back into a non-opaque representation. The only safe operation that can be
-/// performed on this node is to compare it to another opaque handle or to another
-/// OpaqueNode.
-///
-/// Layout and Graphics use this to safely represent nodes for comparison purposes.
-/// Because the script task's GC does not trace layout, node data cannot be safely stored in layout
-/// data structures. Also, layout code tends to be faster when the DOM is not being accessed, for
-/// locality reasons. Using `OpaqueNode` enforces this invariant.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf, Deserialize, Serialize))]
-pub struct OpaqueNode(pub usize);
-
-impl OpaqueNode {
-    /// Returns the address of this node, for debugging purposes.
-    #[inline]
-    pub fn id(&self) -> usize {
-        self.0
-    }
-}
+pub use style_traits::dom::OpaqueNode;
 
 /// Simple trait to provide basic information about the type of an element.
 ///
@@ -148,6 +128,9 @@ pub trait TDocument: Sized + Copy + Clone {
     {
         Err(())
     }
+
+    /// This document's shared lock.
+    fn shared_lock(&self) -> &SharedRwLock;
 }
 
 /// The `TNode` trait. This is the main generic trait over which the style
@@ -331,7 +314,7 @@ where
 }
 
 /// The ShadowRoot trait.
-pub trait TShadowRoot: Sized + Copy + Clone + PartialEq {
+pub trait TShadowRoot: Sized + Copy + Clone + Debug + PartialEq {
     /// The concrete node type.
     type ConcreteNode: TNode<ConcreteShadowRoot = Self>;
 
@@ -496,23 +479,28 @@ pub trait TElement:
     /// Get the combined animation and transition rules.
     ///
     /// FIXME(emilio): Is this really useful?
-    fn animation_rules(&self) -> AnimationRules {
+    fn animation_declarations(&self, context: &SharedStyleContext) -> AnimationDeclarations {
         if !self.may_have_animations() {
-            return AnimationRules(None, None);
+            return Default::default();
         }
 
-        AnimationRules(self.animation_rule(), self.transition_rule())
+        AnimationDeclarations {
+            animations: self.animation_rule(context),
+            transitions: self.transition_rule(context),
+        }
     }
 
     /// Get this element's animation rule.
-    fn animation_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        None
-    }
+    fn animation_rule(
+        &self,
+        _: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>>;
 
     /// Get this element's transition rule.
-    fn transition_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
-        None
-    }
+    fn transition_rule(
+        &self,
+        context: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>>;
 
     /// Get this element's state, for non-tree-structural pseudos.
     fn state(&self) -> ElementState;
@@ -522,6 +510,9 @@ pub trait TElement:
 
     /// Returns whether this element has a `part` attribute.
     fn has_part_attr(&self) -> bool;
+
+    /// Returns whether this element exports any part from its shadow tree.
+    fn exports_any_part(&self) -> bool;
 
     /// The ID for this element.
     fn id(&self) -> Option<&WeakAtom>;
@@ -533,6 +524,14 @@ pub trait TElement:
 
     /// Internal iterator for the part names of this element.
     fn each_part<F>(&self, _callback: F)
+    where
+        F: FnMut(&Atom),
+    {
+    }
+
+    /// Internal iterator for the part names that this element exports for a
+    /// given part name.
+    fn each_exported_part<F>(&self, _name: &Atom, _callback: F)
     where
         F: FnMut(&Atom),
     {
@@ -705,18 +704,14 @@ pub trait TElement:
     /// Unsafe following the same reasoning as ensure_data.
     unsafe fn clear_data(&self);
 
-    /// Gets a reference to the ElementData container.
-    fn get_data(&self) -> Option<&AtomicRefCell<ElementData>>;
+    /// Whether there is an ElementData container.
+    fn has_data(&self) -> bool;
 
     /// Immutably borrows the ElementData.
-    fn borrow_data(&self) -> Option<AtomicRef<ElementData>> {
-        self.get_data().map(|x| x.borrow())
-    }
+    fn borrow_data(&self) -> Option<AtomicRef<ElementData>>;
 
     /// Mutably borrows the ElementData.
-    fn mutate_data(&self) -> Option<AtomicRefMut<ElementData>> {
-        self.get_data().map(|x| x.borrow_mut())
-    }
+    fn mutate_data(&self) -> Option<AtomicRefMut<ElementData>>;
 
     /// Whether we should skip any root- or item-based display property
     /// blockification on this element.  (This function exists so that Gecko
@@ -739,9 +734,7 @@ pub trait TElement:
     /// In Gecko, element has a flag that represents the element may have
     /// any type of animations or not to bail out animation stuff early.
     /// Whereas Servo doesn't have such flag.
-    fn may_have_animations(&self) -> bool {
-        false
-    }
+    fn may_have_animations(&self) -> bool;
 
     /// Creates a task to update various animation state on a given (pseudo-)element.
     #[cfg(feature = "gecko")]
@@ -758,14 +751,25 @@ pub trait TElement:
     /// Returns true if the element has relevant animations. Relevant
     /// animations are those animations that are affecting the element's style
     /// or are scheduled to do so in the future.
-    fn has_animations(&self) -> bool;
+    fn has_animations(&self, context: &SharedStyleContext) -> bool;
 
-    /// Returns true if the element has a CSS animation.
-    fn has_css_animations(&self) -> bool;
+    /// Returns true if the element has a CSS animation. The `context` and `pseudo_element`
+    /// arguments are only used by Servo, since it stores animations globally and pseudo-elements
+    /// are not in the DOM.
+    fn has_css_animations(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has a CSS transition (including running transitions and
-    /// completed transitions).
-    fn has_css_transitions(&self) -> bool;
+    /// completed transitions). The `context` and `pseudo_element` arguments are only used
+    /// by Servo, since it stores animations globally and pseudo-elements are not in the DOM.
+    fn has_css_transitions(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has animation restyle hints.
     fn has_animation_restyle_hints(&self) -> bool {
@@ -774,14 +778,6 @@ pub trait TElement:
             None => return false,
         };
         return data.hint.has_animation_hint();
-    }
-
-    /// Returns the anonymous content for the current element's XBL binding,
-    /// given if any.
-    ///
-    /// This is used in Gecko for XBL.
-    fn xbl_binding_anonymous_content(&self) -> Option<Self::ConcreteNode> {
-        None
     }
 
     /// The shadow root this element is a host of.
@@ -812,12 +808,15 @@ pub trait TElement:
     /// data if it comes from Shadow DOM.
     ///
     /// Returns whether normal document author rules should apply.
+    ///
+    /// TODO(emilio): We could separate the invalidation data for elements
+    /// matching in other scopes to avoid over-invalidation.
     fn each_applicable_non_document_style_rule_data<'a, F>(&self, mut f: F) -> bool
     where
         Self: 'a,
         F: FnMut(&'a CascadeData, Self),
     {
-        use rule_collector::containing_shadow_ignoring_svg_use;
+        use crate::rule_collector::containing_shadow_ignoring_svg_use;
 
         let target = self.rule_hash_target();
         if !target.matches_user_and_author_rules() {
@@ -846,25 +845,44 @@ pub trait TElement:
             // Slots can only have assigned nodes when in a shadow tree.
             let shadow = slot.containing_shadow().unwrap();
             if let Some(data) = shadow.style_data() {
-                f(data, shadow.host());
+                if data.any_slotted_rule() {
+                    f(data, shadow.host());
+                }
             }
             current = slot.assigned_slot();
         }
 
+        if target.has_part_attr() {
+            if let Some(mut inner_shadow) = target.containing_shadow() {
+                loop {
+                    let inner_shadow_host = inner_shadow.host();
+                    match inner_shadow_host.containing_shadow() {
+                        Some(shadow) => {
+                            if let Some(data) = shadow.style_data() {
+                                if data.any_part_rule() {
+                                    f(data, shadow.host())
+                                }
+                            }
+                            // TODO: Could be more granular.
+                            if !shadow.host().exports_any_part() {
+                                break;
+                            }
+                            inner_shadow = shadow;
+                        },
+                        None => {
+                            // TODO(emilio): Should probably distinguish with
+                            // MatchesDocumentRules::{No,Yes,IfPart} or
+                            // something so that we could skip some work.
+                            doc_rules_apply = true;
+                            break;
+                        },
+                    }
+                }
+            }
+        }
+
         doc_rules_apply
     }
-
-    /// Does a rough (and cheap) check for whether or not transitions might need to be updated that
-    /// will quickly return false for the common case of no transitions specified or running. If
-    /// this returns false, we definitely don't need to update transitions but if it returns true
-    /// we can perform the more thoroughgoing check, needs_transitions_update, to further
-    /// reduce the possibility of false positives.
-    #[cfg(feature = "gecko")]
-    fn might_need_transitions_update(
-        &self,
-        old_values: Option<&ComputedValues>,
-        new_values: &ComputedValues,
-    ) -> bool;
 
     /// Returns true if one of the transitions needs to be updated on this element. We check all
     /// the transition properties to make sure that updating transitions is necessary.

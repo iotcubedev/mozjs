@@ -45,7 +45,7 @@ template <>
 nsresult BodyExtractor<const ArrayBuffer>::GetAsStream(
     nsIInputStream** aResult, uint64_t* aContentLength,
     nsACString& aContentTypeWithCharset, nsACString& aCharset) const {
-  mBody->ComputeLengthAndData();
+  mBody->ComputeState();
   return GetBufferDataAsStream(mBody->Data(), mBody->Length(), aResult,
                                aContentLength, aContentTypeWithCharset,
                                aCharset);
@@ -55,7 +55,7 @@ template <>
 nsresult BodyExtractor<const ArrayBufferView>::GetAsStream(
     nsIInputStream** aResult, uint64_t* aContentLength,
     nsACString& aContentTypeWithCharset, nsACString& aCharset) const {
-  mBody->ComputeLengthAndData();
+  mBody->ComputeState();
   return GetBufferDataAsStream(mBody->Data(), mBody->Length(), aResult,
                                aContentLength, aContentTypeWithCharset,
                                aCharset);
@@ -102,8 +102,7 @@ nsresult BodyExtractor<Document>::GetAsStream(
 
     // Make sure to use the encoding we'll send
     ErrorResult res;
-    serializer->SerializeToStream(*mBody, output, NS_LITERAL_STRING("UTF-8"),
-                                  res);
+    serializer->SerializeToStream(*mBody, output, u"UTF-8"_ns, res);
     if (NS_WARN_IF(res.Failed())) {
       return res.StealNSResult();
     }

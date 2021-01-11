@@ -10,15 +10,12 @@
 #include "nsContentUtils.h"
 #include "nsDeviceSensors.h"
 
-#include "nsIDOMWindow.h"
 #include "nsPIDOMWindow.h"
 #include "nsIScriptObjectPrincipal.h"
-#include "nsIServiceManager.h"
-#include "nsIServiceManager.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_device.h"
 #include "mozilla/Attributes.h"
-#include "nsIPermissionManager.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/DeviceLightEvent.h"
 #include "mozilla/dom/DeviceOrientationEvent.h"
 #include "mozilla/dom/DeviceProximityEvent.h"
@@ -31,6 +28,8 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 using namespace hal;
+
+class nsIDOMWindow;
 
 #undef near
 
@@ -65,7 +64,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_ADDREF(nsDeviceSensorData)
 NS_IMPL_RELEASE(nsDeviceSensorData)
 
-nsDeviceSensorData::~nsDeviceSensorData() {}
+nsDeviceSensorData::~nsDeviceSensorData() = default;
 
 NS_IMETHODIMP nsDeviceSensorData::GetType(uint32_t* aType) {
   NS_ENSURE_ARG_POINTER(aType);
@@ -202,10 +201,16 @@ static bool WindowCannotReceiveSensorEvent(nsPIDOMWindowInner* aWindow) {
     return true;
   }
 
-  // Check to see if this window is a cross-origin iframe
-  nsCOMPtr<nsPIDOMWindowOuter> top = aWindow->GetInProcessScriptableTop();
+  // Check to see if this window is a cross-origin iframe:
+
+  auto topBC = aWindow->GetBrowsingContext()->Top();
+  if (!topBC->IsInProcess()) {
+    return true;
+  }
+
   nsCOMPtr<nsIScriptObjectPrincipal> sop = do_QueryInterface(aWindow);
-  nsCOMPtr<nsIScriptObjectPrincipal> topSop = do_QueryInterface(top);
+  nsCOMPtr<nsIScriptObjectPrincipal> topSop =
+      do_QueryInterface(topBC->GetDOMWindow());
   if (!sop || !topSop) {
     return true;
   }
@@ -342,8 +347,8 @@ void nsDeviceSensors::FireDOMLightEvent(mozilla::dom::EventTarget* aTarget,
   init.mBubbles = true;
   init.mCancelable = false;
   init.mValue = round(aValue);
-  RefPtr<DeviceLightEvent> event = DeviceLightEvent::Constructor(
-      aTarget, NS_LITERAL_STRING("devicelight"), init);
+  RefPtr<DeviceLightEvent> event =
+      DeviceLightEvent::Constructor(aTarget, u"devicelight"_ns, init);
 
   event->SetTrusted(true);
 
@@ -359,8 +364,8 @@ void nsDeviceSensors::FireDOMProximityEvent(mozilla::dom::EventTarget* aTarget,
   init.mValue = aValue;
   init.mMin = aMin;
   init.mMax = aMax;
-  RefPtr<DeviceProximityEvent> event = DeviceProximityEvent::Constructor(
-      aTarget, NS_LITERAL_STRING("deviceproximity"), init);
+  RefPtr<DeviceProximityEvent> event =
+      DeviceProximityEvent::Constructor(aTarget, u"deviceproximity"_ns, init);
   event->SetTrusted(true);
 
   aTarget->DispatchEvent(*event);
@@ -383,8 +388,8 @@ void nsDeviceSensors::FireDOMUserProximityEvent(
   init.mBubbles = true;
   init.mCancelable = false;
   init.mNear = aNear;
-  RefPtr<UserProximityEvent> event = UserProximityEvent::Constructor(
-      aTarget, NS_LITERAL_STRING("userproximity"), init);
+  RefPtr<UserProximityEvent> event =
+      UserProximityEvent::Constructor(aTarget, u"userproximity"_ns, init);
 
   event->SetTrusted(true);
 
@@ -409,8 +414,8 @@ void nsDeviceSensors::FireDOMOrientationEvent(EventTarget* aTarget,
     aEventTarget->DispatchEvent(*event);
   };
 
-  Dispatch(aTarget, aIsAbsolute ? NS_LITERAL_STRING("absolutedeviceorientation")
-                                : NS_LITERAL_STRING("deviceorientation"));
+  Dispatch(aTarget, aIsAbsolute ? u"absolutedeviceorientation"_ns
+                                : u"deviceorientation"_ns);
 
   // This is used to determine whether relative events have been dispatched
   // during the current session, in which case we don't dispatch the additional
@@ -425,7 +430,7 @@ void nsDeviceSensors::FireDOMOrientationEvent(EventTarget* aTarget,
     // For absolute events on devices without support for relative events,
     // we need to additionally dispatch type "deviceorientation" to keep
     // backwards-compatibility.
-    Dispatch(aTarget, NS_LITERAL_STRING("deviceorientation"));
+    Dispatch(aTarget, u"deviceorientation"_ns);
   }
 }
 
@@ -482,8 +487,8 @@ void nsDeviceSensors::FireDOMMotionEvent(Document* doc, EventTarget* target,
   }
 
   IgnoredErrorResult ignored;
-  RefPtr<Event> event = doc->CreateEvent(NS_LITERAL_STRING("DeviceMotionEvent"),
-                                         CallerType::System, ignored);
+  RefPtr<Event> event =
+      doc->CreateEvent(u"DeviceMotionEvent"_ns, CallerType::System, ignored);
   if (!event) {
     return;
   }
@@ -491,7 +496,7 @@ void nsDeviceSensors::FireDOMMotionEvent(Document* doc, EventTarget* target,
   DeviceMotionEvent* me = static_cast<DeviceMotionEvent*>(event.get());
 
   me->InitDeviceMotionEvent(
-      NS_LITERAL_STRING("devicemotion"), true, false, *mLastAcceleration,
+      u"devicemotion"_ns, true, false, *mLastAcceleration,
       *mLastAccelerationIncludingGravity, *mLastRotationRate,
       Nullable<double>(DEFAULT_SENSOR_POLL), Nullable<uint64_t>(timestamp));
 
@@ -564,5 +569,7 @@ bool nsDeviceSensors::IsSensorAllowedByPref(uint32_t aType,
     return true;
   }
 
-  return !nsContentUtils::ShouldResistFingerprinting(window->GetDocShell());
+  nsCOMPtr<nsIScriptObjectPrincipal> soPrincipal = do_QueryInterface(window);
+  return !nsContentUtils::ShouldResistFingerprinting(
+      soPrincipal->GetPrincipal());
 }

@@ -89,7 +89,7 @@ class Dispatcher {
   }
 
   get frameId() {
-    // 0 for top-level windows, outerWindowId otherwise
+    // 0 for top-level windows, BrowsingContext ID otherwise
     return WebNavigationFrames.getFrameId(this.window);
   }
 
@@ -110,7 +110,7 @@ class Dispatcher {
       this.messages.set(msg, actors);
     }
 
-    if (actors.length == 0) {
+    if (!actors.length) {
       this.mm.addMessageListener(msg, this);
     }
 

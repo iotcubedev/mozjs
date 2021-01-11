@@ -6,7 +6,6 @@
 
 #include <string.h>
 #include "mozilla/Telemetry.h"
-#include "mozilla/Preferences.h"
 #include "sqlite3.h"
 #include "nsThreadUtils.h"
 #include "mozilla/dom/quota/PersistenceType.h"
@@ -15,29 +14,17 @@
 #include "mozilla/net/IOActivityMonitor.h"
 #include "mozilla/IOInterposer.h"
 #include "nsEscape.h"
+#include "mozilla/StaticPrefs_storage.h"
+
+#ifdef XP_WIN
+#  include "mozilla/StaticPrefs_dom.h"
+#endif
 
 // The last VFS version for which this file has been updated.
 #define LAST_KNOWN_VFS_VERSION 3
 
 // The last io_methods version for which this file has been updated.
 #define LAST_KNOWN_IOMETHODS_VERSION 3
-
-/**
- * By default use the unix-excl VFS, for the following reasons:
- * 1. It improves compatibility with NFS shares, whose implementation
- *    is incompatible with SQLite's locking requirements.
- *    Bug 433129 attempted to automatically identify such file-systems,
- *    but a reliable way was not found and the fallback locking is slower than
- *    POSIX locking, so we do not want to do it by default.
- * 2. It allows wal mode to avoid the memory mapped -shm file, reducing the
- *    likelihood of SIGBUS failures when disk space is exhausted.
- * 3. It provides some protection from third party database tampering while a
- *    connection is open.
- * This preference allows to revert to the "unix" VFS, that is not exclusive,
- * thus it can be used by developers to query a database through the Sqlite
- * command line while it's already in use.
- */
-#define PREF_MULTI_PROCESS_ACCESS "storage.multiProcessAccess.enabled"
 
 namespace {
 
@@ -167,189 +154,25 @@ struct telemetry_file {
   sqlite3_file pReal[1];
 };
 
-const char* DatabasePathFromWALPath(const char* zWALName) {
-  /**
-   * Do some sketchy pointer arithmetic to find the parameter key. The WAL
-   * filename is in the middle of a big allocated block that contains:
-   *
-   *   - Random Values
-   *   - Main Database Path
-   *   - \0
-   *   - Multiple URI components consisting of:
-   *     - Key
-   *     - \0
-   *     - Value
-   *     - \0
-   *   - \0
-   *   - Journal Path
-   *   - \0
-   *   - WAL Path (zWALName)
-   *   - \0
-   *
-   * Because the main database path is preceded by a random value we have to be
-   * careful when trying to figure out when we should terminate this loop.
-   */
-  MOZ_ASSERT(zWALName);
-
-  nsDependentCSubstring dbPath(zWALName, strlen(zWALName));
-
-  // Chop off the "-wal" suffix.
-  NS_NAMED_LITERAL_CSTRING(kWALSuffix, "-wal");
-  MOZ_ASSERT(StringEndsWith(dbPath, kWALSuffix));
-
-  dbPath.Rebind(zWALName, dbPath.Length() - kWALSuffix.Length());
-  MOZ_ASSERT(!dbPath.IsEmpty());
-
-  // We want to scan to the end of the key/value URI pairs. Skip the preceding
-  // null and go to the last char of the journal path.
-  const char* cursor = zWALName - 2;
-
-  // Make sure we just skipped a null.
-  MOZ_ASSERT(!*(cursor + 1));
-
-  // Walk backwards over the journal path.
-  while (*cursor) {
-    cursor--;
-  }
-
-  // There should be another null here.
-  cursor--;
-  MOZ_ASSERT(!*cursor);
-
-  // Back up one more char to the last char of the previous string. It may be
-  // the database path or it may be a key/value URI pair.
-  cursor--;
-
-#ifdef DEBUG
-  {
-    // Verify that we just walked over the journal path. Account for the two
-    // nulls we just skipped.
-    const char* journalStart = cursor + 3;
-
-    nsDependentCSubstring journalPath(journalStart, strlen(journalStart));
-
-    // Chop off the "-journal" suffix.
-    NS_NAMED_LITERAL_CSTRING(kJournalSuffix, "-journal");
-    MOZ_ASSERT(StringEndsWith(journalPath, kJournalSuffix));
-
-    journalPath.Rebind(journalStart,
-                       journalPath.Length() - kJournalSuffix.Length());
-    MOZ_ASSERT(!journalPath.IsEmpty());
-
-    // Make sure that the database name is a substring of the journal name.
-    MOZ_ASSERT(journalPath == dbPath);
-  }
-#endif
-
-  // Now we're either at the end of the key/value URI pairs or we're at the
-  // end of the database path. Carefully walk backwards one character at a
-  // time to do this safely without running past the beginning of the database
-  // path.
-  const char* const dbPathStart = dbPath.BeginReading();
-  const char* dbPathCursor = dbPath.EndReading() - 1;
-  bool isDBPath = true;
-
-  while (true) {
-    MOZ_ASSERT(*dbPathCursor, "dbPathCursor should never see a null char!");
-
-    if (isDBPath) {
-      isDBPath =
-          dbPathStart <= dbPathCursor && *dbPathCursor == *cursor && *cursor;
-    }
-
-    if (!isDBPath) {
-      // This isn't the database path so it must be a value. Scan past it and
-      // the key also.
-      for (size_t stringCount = 0; stringCount < 2; stringCount++) {
-        // Scan past the string to the preceding null character.
-        while (*cursor) {
-          cursor--;
-        }
-
-        // Back up one more char to the last char of preceding string.
-        cursor--;
-      }
-
-      // Reset and start again.
-      dbPathCursor = dbPath.EndReading() - 1;
-      isDBPath = true;
-
-      continue;
-    }
-
-    MOZ_ASSERT(isDBPath);
-    MOZ_ASSERT(*cursor);
-
-    if (dbPathStart == dbPathCursor) {
-      // Found the full database path, we're all done.
-      MOZ_ASSERT(nsDependentCString(cursor) == dbPath);
-      return cursor;
-    }
-
-    // Change the cursors and go through the loop again.
-    cursor--;
-    dbPathCursor--;
-  }
-
-  MOZ_CRASH("Should never get here!");
-}
-
-already_AddRefed<QuotaObject> GetQuotaObjectFromNameAndParameters(
-    const char* zName, const char* zURIParameterKey) {
+already_AddRefed<QuotaObject> GetQuotaObjectFromName(const char* zName) {
   MOZ_ASSERT(zName);
-  MOZ_ASSERT(zURIParameterKey);
 
-  const char* persistenceType =
-      sqlite3_uri_parameter(zURIParameterKey, "persistenceType");
-  if (!persistenceType) {
+  const char* directoryLockIdParam =
+      sqlite3_uri_parameter(zName, "directoryLockId");
+  if (!directoryLockIdParam) {
     return nullptr;
   }
 
-  const char* group = sqlite3_uri_parameter(zURIParameterKey, "group");
-  if (!group) {
-    NS_WARNING("SQLite URI had 'persistenceType' but not 'group'?!");
-    return nullptr;
-  }
-
-  const char* origin = sqlite3_uri_parameter(zURIParameterKey, "origin");
-  if (!origin) {
-    NS_WARNING(
-        "SQLite URI had 'persistenceType' and 'group' but not "
-        "'origin'?!");
-    return nullptr;
-  }
-
-  const char* clientType =
-      sqlite3_uri_parameter(zURIParameterKey, "clientType");
-  if (!clientType) {
-    NS_WARNING(
-        "SQLite URI had 'persistenceType', 'group' and 'origin' but not "
-        "'clientType'?!");
-    return nullptr;
-  }
-
-  // Re-escape group and origin to make sure we get the right quota group and
-  // origin.
-  nsAutoCString escGroup;
-  nsresult rv =
-      NS_EscapeURL(nsDependentCString(group), esc_Query, escGroup, fallible);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return nullptr;
-  }
-
-  nsAutoCString escOrigin;
-  rv = NS_EscapeURL(nsDependentCString(origin), esc_Query, escOrigin, fallible);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return nullptr;
-  }
+  nsresult rv;
+  const int64_t directoryLockId =
+      nsDependentCString(directoryLockIdParam).ToInteger64(&rv);
+  MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   QuotaManager* quotaManager = QuotaManager::Get();
   MOZ_ASSERT(quotaManager);
 
-  return quotaManager->GetQuotaObject(
-      PersistenceTypeFromText(nsDependentCString(persistenceType)), escGroup,
-      escOrigin, Client::TypeFromText(nsDependentCString(clientType)),
-      NS_ConvertUTF8toUTF16(zName));
+  return quotaManager->GetQuotaObject(directoryLockId,
+                                      NS_ConvertUTF8toUTF16(zName));
 }
 
 void MaybeEstablishQuotaControl(const char* zName, telemetry_file* pFile,
@@ -360,16 +183,7 @@ void MaybeEstablishQuotaControl(const char* zName, telemetry_file* pFile,
   if (!(flags & (SQLITE_OPEN_URI | SQLITE_OPEN_WAL))) {
     return;
   }
-
-  MOZ_ASSERT(zName);
-
-  const char* zURIParameterKey =
-      (flags & SQLITE_OPEN_WAL) ? DatabasePathFromWALPath(zName) : zName;
-
-  MOZ_ASSERT(zURIParameterKey);
-
-  pFile->quotaObject =
-      GetQuotaObjectFromNameAndParameters(zName, zURIParameterKey);
+  pFile->quotaObject = GetQuotaObjectFromName(zName);
 }
 
 /*
@@ -449,7 +263,9 @@ int xWrite(sqlite3_file* pFile, const void* zBuf, int iAmt,
         "update its current size...");
     sqlite_int64 currentSize;
     if (xFileSize(pFile, &currentSize) == SQLITE_OK) {
-      p->quotaObject->MaybeUpdateSize(currentSize, /* aTruncate */ true);
+      DebugOnly<bool> res =
+          p->quotaObject->MaybeUpdateSize(currentSize, /* aTruncate */ true);
+      MOZ_ASSERT(res);
     }
   }
   return rc;
@@ -488,7 +304,9 @@ int xTruncate(sqlite3_file* pFile, sqlite_int64 size) {
           "xTruncate failed on a quota-controlled file, attempting to "
           "update its current size...");
       if (xFileSize(pFile, &size) == SQLITE_OK) {
-        p->quotaObject->MaybeUpdateSize(size, /* aTruncate */ true);
+        DebugOnly<bool> res =
+            p->quotaObject->MaybeUpdateSize(size, /* aTruncate */ true);
+        MOZ_ASSERT(res);
       }
     }
   }
@@ -721,11 +539,8 @@ int xDelete(sqlite3_vfs* vfs, const char* zName, int syncDir) {
   int rc;
   RefPtr<QuotaObject> quotaObject;
 
-  if (StringEndsWith(nsDependentCString(zName), NS_LITERAL_CSTRING("-wal"))) {
-    const char* zURIParameterKey = DatabasePathFromWALPath(zName);
-    MOZ_ASSERT(zURIParameterKey);
-
-    quotaObject = GetQuotaObjectFromNameAndParameters(zName, zURIParameterKey);
+  if (StringEndsWith(nsDependentCString(zName), "-wal"_ns)) {
+    quotaObject = GetQuotaObjectFromName(zName);
   }
 
   rc = orig_vfs->xDelete(orig_vfs, zName, syncDir);
@@ -742,6 +557,43 @@ int xAccess(sqlite3_vfs* vfs, const char* zName, int flags, int* pResOut) {
 }
 
 int xFullPathname(sqlite3_vfs* vfs, const char* zName, int nOut, char* zOut) {
+#if defined(XP_WIN)
+  // SQLite uses GetFullPathnameW which also normailizes file path. If a file
+  // component ends with a dot, it would be removed. However, it's not desired.
+  //
+  // And that would result SQLite uses wrong database and quotaObject.
+  // Note that we are safe to avoid the GetFullPathnameW call for \\?\ prefixed
+  // paths.
+  // And note that this hack will be removed once the issue is fixed directly in
+  // SQLite.
+
+  // zName that starts with "//?/" is the case when a file URI was passed and
+  // zName that starts with "\\?\" is the case when a normal path was passed
+  // (not file URI).
+  if (StaticPrefs::dom_quotaManager_overrideXFullPathname() &&
+      ((zName[0] == '/' && zName[1] == '/' && zName[2] == '?' &&
+        zName[3] == '/') ||
+       (zName[0] == '\\' && zName[1] == '\\' && zName[2] == '?' &&
+        zName[3] == '\\'))) {
+    MOZ_ASSERT(nOut >= vfs->mxPathname);
+    MOZ_ASSERT(nOut > strlen(zName));
+
+    size_t index = 0;
+    while (zName[index] != '\0') {
+      if (zName[index] == '/') {
+        zOut[index] = '\\';
+      } else {
+        zOut[index] = zName[index];
+      }
+
+      index++;
+    }
+    zOut[index] = '\0';
+
+    return SQLITE_OK;
+  }
+#endif
+
   sqlite3_vfs* orig_vfs = static_cast<sqlite3_vfs*>(vfs->pAppData);
   return orig_vfs->xFullPathname(orig_vfs, zName, nOut, zOut);
 }
@@ -812,9 +664,11 @@ static const char* xNextSystemCall(sqlite3_vfs* vfs, const char* zName) {
 namespace mozilla {
 namespace storage {
 
-const char* GetVFSName() { return "telemetry-vfs"; }
+const char* GetVFSName(bool exclusive) {
+  return exclusive ? "telemetry-vfs-excl" : "telemetry-vfs";
+}
 
-sqlite3_vfs* ConstructTelemetryVFS() {
+sqlite3_vfs* ConstructTelemetryVFS(bool exclusive) {
 #if defined(XP_WIN)
 #  define EXPECTED_VFS "win32"
 #  define EXPECTED_VFS_EXCL "win32"
@@ -825,7 +679,7 @@ sqlite3_vfs* ConstructTelemetryVFS() {
 
   bool expected_vfs;
   sqlite3_vfs* vfs;
-  if (Preferences::GetBool(PREF_MULTI_PROCESS_ACCESS, false)) {
+  if (!exclusive) {
     // Use the non-exclusive VFS.
     vfs = sqlite3_vfs_find(nullptr);
     expected_vfs = vfs->zName && !strcmp(vfs->zName, EXPECTED_VFS);
@@ -847,7 +701,7 @@ sqlite3_vfs* ConstructTelemetryVFS() {
   tvfs->szOsFile =
       sizeof(telemetry_file) - sizeof(sqlite3_file) + vfs->szOsFile;
   tvfs->mxPathname = vfs->mxPathname;
-  tvfs->zName = GetVFSName();
+  tvfs->zName = GetVFSName(exclusive);
   tvfs->pAppData = vfs;
   tvfs->xOpen = xOpen;
   tvfs->xDelete = xDelete;

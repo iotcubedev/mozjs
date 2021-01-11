@@ -95,7 +95,7 @@ def create_suite(name, node, data_path, checkpoints=CHECKPOINTS,
         'name': name,
         'subtests': [],
         'lowerIsBetter': True,
-        'units': 'bytes'
+        'unit': 'bytes'
     }
 
     if alertThreshold:
@@ -143,7 +143,7 @@ def create_suite(name, node, data_path, checkpoints=CHECKPOINTS,
             # for simplicity (it's nice to be able to compare RSS of non-e10s
             # with RSS + USS of e10s).
             totals_rss = parse_about_memory.calculate_memory_report_values(
-                                            memory_report_path, node, 'Main')
+                                            memory_report_path, node, ['Main'])
             totals_uss = parse_about_memory.calculate_memory_report_values(
                                             memory_report_path, 'resident-unique')
             value = totals_rss.values()[0] + \
@@ -153,7 +153,7 @@ def create_suite(name, node, data_path, checkpoints=CHECKPOINTS,
             'name': checkpoint['name'],
             'value': value,
             'lowerIsBetter': True,
-            'units': 'bytes'
+            'unit': 'bytes'
         }
         suite['subtests'].append(subtest)
         total += math.log(subtest['value'])

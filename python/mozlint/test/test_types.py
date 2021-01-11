@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import
-
 import os
 
 import mozunit
@@ -44,6 +42,23 @@ def test_linter_types(lint, linter, files, path):
 
     name = os.path.basename(linter).split('.')[0]
     assert issue.linter.lower().startswith(name)
+
+
+def test_linter_missing_files(lint, linter, filedir):
+    # Missing files should be caught by `mozlint.cli`, so the only way they
+    # could theoretically happen is if they show up from versioncontrol. So
+    # let's just make sure they get ignored.
+    lint.read(linter)
+    files = [
+        os.path.join(filedir, 'missing.js'),
+        os.path.join(filedir, 'missing.py'),
+    ]
+    result = lint.roll(files)
+    assert result.returncode == 0
+
+    lint.mock_vcs(files)
+    result = lint.roll(outgoing=True)
+    assert result.returncode == 0
 
 
 def test_no_filter(lint, lintdir, files):

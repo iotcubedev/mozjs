@@ -14,17 +14,31 @@
     "resource://gre/modules/Services.jsm"
   );
 
-  const kDTDs = ["chrome://global/locale/wizard.dtd"];
+  const XUL_NS =
+    "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
+  // Note: MozWizard currently supports adding, but not removing MozWizardPage
+  //       children.
   class MozWizard extends MozXULElement {
     constructor() {
       super();
 
+      // About this._accessMethod:
+      //   There are two possible access methods: "sequential" and "random".
+      //   "sequential" causes the MozWizardPage's to be displayed in the order
+      //   that they are added to the DOM.
+      //   The "random" method name is a bit misleading since the pages aren't
+      //   displayed in a random order. Instead, each MozWizardPage must have
+      //   a "next" attribute containing the id of the MozWizardPage that should
+      //   be loaded next.
       this._accessMethod = null;
       this._currentPage = null;
       this._canAdvance = true;
       this._canRewind = false;
       this._hasLoaded = false;
+      this._hasStarted = false; // Whether any MozWizardPage has been shown yet
+      this._wizardButtonsReady = false;
+      this.pageCount = 0;
       this._pageStack = [];
 
       this._bundle = Services.strings.createBundle(
@@ -46,14 +60,19 @@
         { mozSystemGroup: true }
       );
 
+      /*
+        XXX(ntim): We import button.css here for the wizard-buttons children
+        This won't be needed after bug 1624888.
+      */
       this.attachShadow({ mode: "open" }).appendChild(
         MozXULElement.parseXULToFragment(`
-        <html:link rel="stylesheet" href="chrome://global/content/widgets.css" />
+        <html:link rel="stylesheet" href="chrome://global/skin/button.css"/>
+        <html:link rel="stylesheet" href="chrome://global/skin/wizard.css"/>
         <hbox class="wizard-header"></hbox>
         <deck class="wizard-page-box" flex="1">
-          <slot xmlns="http://www.w3.org/1999/xhtml" name="wizardpage"></slot>
+          <html:slot name="wizardpage"/>
         </deck>
-        <slot xmlns="http://www.w3.org/1999/xhtml"></slot>
+        <html:slot/>
         <wizard-buttons class="wizard-buttons"></wizard-buttons>
     `)
       );
@@ -95,17 +114,14 @@
     }
 
     connectedCallback() {
-      if (this.delayConnectedCallback()) {
-        return;
+      if (document.l10n) {
+        document.l10n.connectRoot(this.shadowRoot);
       }
-
-      this.pageCount = this.wizardPages.length;
-
-      this._initPages();
-      this.advance(); // start off on the first page
+      document.documentElement.setAttribute("role", "dialog");
+      this._maybeStartWizard();
 
       window.addEventListener("close", event => {
-        if (document.documentElement.cancel()) {
+        if (this.cancel()) {
           event.preventDefault();
         }
       });
@@ -114,12 +130,12 @@
       // onload completes, see bug 103197.
       window.addEventListener("load", () =>
         window.setTimeout(() => {
-          document.documentElement._hasLoaded = true;
+          this._hasLoaded = true;
           if (!document.commandDispatcher.focusedElement) {
             document.commandDispatcher.advanceFocusIntoSubtree(this);
           }
           try {
-            let button = document.documentElement._wizardButtons.defaultButton;
+            let button = this._wizardButtons.defaultButton;
             if (button) {
               window.notifyDefaultButtonLoaded(button);
             }
@@ -159,9 +175,7 @@
     }
 
     get wizardPages() {
-      const xulns =
-        "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-      return this.getElementsByTagNameNS(xulns, "wizardpage");
+      return this.getElementsByTagNameNS(XUL_NS, "wizardpage");
     }
 
     set currentPage(val) {
@@ -174,32 +188,11 @@
       // Setting this attribute allows wizard's clients to dynamically
       // change the styles of each page based on purpose of the page.
       this.setAttribute("currentpageid", val.pageid);
-      if (this.onFirstPage) {
-        this.canRewind = false;
-        this.setAttribute("firstpage", "true");
-        if (AppConstants.platform == "linux") {
-          this.getButton("back").setAttribute("hidden", "true");
-        }
-      } else {
-        this.canRewind = true;
-        this.setAttribute("firstpage", "false");
-        if (AppConstants.platform == "linux") {
-          this.getButton("back").setAttribute("hidden", "false");
-        }
-      }
 
-      if (this.onLastPage) {
-        this.canAdvance = true;
-        this.setAttribute("lastpage", "true");
-      } else {
-        this.setAttribute("lastpage", "false");
-      }
+      this._initCurrentPage();
 
       this._deck.setAttribute("selectedIndex", val.pageIndex);
       this._advanceFocusToPage(val);
-
-      this._adjustWizardHeader();
-      this._wizardButtons.onPageChange();
 
       this._fireEvent(val, "pageshow");
 
@@ -355,6 +348,32 @@
       return false;
     }
 
+    _initCurrentPage() {
+      if (this.onFirstPage) {
+        this.canRewind = false;
+        this.setAttribute("firstpage", "true");
+        if (AppConstants.platform == "linux") {
+          this.getButton("back").setAttribute("hidden", "true");
+        }
+      } else {
+        this.canRewind = true;
+        this.setAttribute("firstpage", "false");
+        if (AppConstants.platform == "linux") {
+          this.getButton("back").setAttribute("hidden", "false");
+        }
+      }
+
+      if (this.onLastPage) {
+        this.canAdvance = true;
+        this.setAttribute("lastpage", "true");
+      } else {
+        this.setAttribute("lastpage", "false");
+      }
+
+      this._adjustWizardHeader();
+      this._wizardButtons.onPageChange();
+    }
+
     _advanceFocusToPage(aPage) {
       if (!this._hasLoaded) {
         return;
@@ -373,41 +392,76 @@
       }
     }
 
-    _initPages() {
-      var meth = "sequential";
-      var pages = this.wizardPages;
-      for (var i = 0; i < pages.length; ++i) {
-        var page = pages[i];
-        page.pageIndex = i;
-        if (page.next != "") {
-          meth = "random";
-        }
+    _registerPage(aPage) {
+      aPage.pageIndex = this.pageCount;
+      this.pageCount += 1;
+      if (!this._accessMethod) {
+        this._accessMethod = aPage.next == "" ? "sequential" : "random";
       }
-      this._accessMethod = meth;
+      if (!this._maybeStartWizard() && this._hasStarted) {
+        // If the wizard has already started, adding a page might require
+        // updating elements to reflect that (ex: changing the Finish button to
+        // the Next button).
+        this._initCurrentPage();
+      }
+    }
+
+    _onWizardButtonsReady() {
+      this._wizardButtonsReady = true;
+      this._maybeStartWizard();
+    }
+
+    _maybeStartWizard(aIsConnected) {
+      if (
+        !this._hasStarted &&
+        this.isConnected &&
+        this._wizardButtonsReady &&
+        this.pageCount > 0
+      ) {
+        this._hasStarted = true;
+        this.advance();
+        return true;
+      }
+      return false;
     }
 
     _adjustWizardHeader() {
-      var label = this.currentPage.getAttribute("label");
-      if (!label && this.onFirstPage && this._bundle) {
-        if (AppConstants.platform == "macosx") {
-          label = this._bundle.GetStringFromName("default-first-title-mac");
-        } else {
-          label = this._bundle.formatStringFromName("default-first-title", [
-            this.title,
-          ]);
-        }
-      } else if (!label && this.onLastPage && this._bundle) {
-        if (AppConstants.platform == "macosx") {
-          label = this._bundle.GetStringFromName("default-last-title-mac");
-        } else {
-          label = this._bundle.formatStringFromName("default-last-title", [
-            this.title,
-          ]);
-        }
-      }
-      this._wizardHeader.querySelector(
+      let labelElement = this._wizardHeader.querySelector(
         ".wizard-header-label"
-      ).textContent = label;
+      );
+      // First deal with fluent. Ideally, we'd stop supporting anything else,
+      // but right now the migration wizard still uses non-fluent l10n
+      // (fixing is bug 1518234), as do some comm-central consumers
+      // (bug 1627049). Removing the DTD support is bug 1627051.
+      if (this.currentPage.hasAttribute("data-header-label-id")) {
+        let id = this.currentPage.getAttribute("data-header-label-id");
+        document.l10n.setAttributes(labelElement, id);
+      } else {
+        // Otherwise, make sure we remove any fluent IDs leftover:
+        if (labelElement.hasAttribute("data-l10n-id")) {
+          labelElement.removeAttribute("data-l10n-id");
+        }
+        // And use the label attribute or the default:
+        var label = this.currentPage.getAttribute("label") || "";
+        if (!label && this.onFirstPage && this._bundle) {
+          if (AppConstants.platform == "macosx") {
+            label = this._bundle.GetStringFromName("default-first-title-mac");
+          } else {
+            label = this._bundle.formatStringFromName("default-first-title", [
+              this.title,
+            ]);
+          }
+        } else if (!label && this.onLastPage && this._bundle) {
+          if (AppConstants.platform == "macosx") {
+            label = this._bundle.GetStringFromName("default-last-title-mac");
+          } else {
+            label = this._bundle.formatStringFromName("default-last-title", [
+              this.title,
+            ]);
+          }
+        }
+        labelElement.textContent = label;
+      }
       let headerDescEl = this._wizardHeader.querySelector(
         ".wizard-header-description"
       );
@@ -440,6 +494,11 @@
     }
     connectedCallback() {
       this.setAttribute("slot", "wizardpage");
+
+      let wizard = this.closest("wizard");
+      if (wizard) {
+        wizard._registerPage(this);
+      }
     }
     get pageid() {
       return this.getAttribute("pageid");
@@ -461,20 +520,24 @@
 
   class MozWizardButtons extends MozXULElement {
     connectedCallback() {
+      this._wizard = this.getRootNode().host;
+
       this.textContent = "";
-      this.appendChild(MozXULElement.parseXULToFragment(this._markup, kDTDs));
+      this.appendChild(this.constructor.fragment);
+
+      MozXULElement.insertFTLIfNeeded("toolkit/global/wizard.ftl");
 
       this._wizardButtonDeck = this.querySelector(".wizard-next-deck");
 
       this.initializeAttributeInheritance();
 
       const listeners = [
-        ["back", () => document.documentElement.rewind()],
-        ["next", () => document.documentElement.advance()],
-        ["finish", () => document.documentElement.advance()],
-        ["cancel", () => document.documentElement.cancel()],
-        ["extra1", () => document.documentElement.extra1()],
-        ["extra2", () => document.documentElement.extra2()],
+        ["back", () => this._wizard.rewind()],
+        ["next", () => this._wizard.advance()],
+        ["finish", () => this._wizard.advance()],
+        ["cancel", () => this._wizard.cancel()],
+        ["extra1", () => this._wizard.extra1()],
+        ["extra2", () => this._wizard.extra2()],
       ];
       for (let [name, listener] of listeners) {
         let btn = this.getButton(name);
@@ -482,6 +545,8 @@
           btn.addEventListener("command", listener);
         }
       }
+
+      this._wizard._onWizardButtonsReady();
     }
 
     static get inheritedAttributes() {
@@ -492,24 +557,22 @@
         : null;
     }
 
-    get _markup() {
+    static get markup() {
       if (AppConstants.platform == "macosx") {
         return `
         <vbox flex="1">
           <hbox class="wizard-buttons-btm">
             <button class="wizard-button" dlgtype="extra1" hidden="true"/>
             <button class="wizard-button" dlgtype="extra2" hidden="true"/>
-            <button label="&button-cancel-mac.label;"
+            <button data-l10n-id="wizard-macos-button-cancel"
                     class="wizard-button" dlgtype="cancel"/>
             <spacer flex="1"/>
-            <button label="&button-back-mac.label;"
-                    accesskey="&button-back-mac.accesskey;"
+            <button data-l10n-id="wizard-macos-button-back"
                     class="wizard-button wizard-nav-button" dlgtype="back"/>
-            <button label="&button-next-mac.label;"
-                    accesskey="&button-next-mac.accesskey;"
+            <button data-l10n-id="wizard-macos-button-next"
                     class="wizard-button wizard-nav-button" dlgtype="next"
                     default="true" />
-            <button label="&button-finish-mac.label;" class="wizard-button"
+            <button data-l10n-id="wizard-macos-button-finish" class="wizard-button"
                     dlgtype="finish" default="true" />
           </hbox>
         </vbox>`;
@@ -518,44 +581,40 @@
       let buttons =
         AppConstants.platform == "linux"
           ? `
-      <button label="&button-cancel-unix.label;"
+      <button data-l10n-id="wizard-linux-button-cancel"
               class="wizard-button"
               dlgtype="cancel"/>
       <spacer style="width: 24px;"/>
-      <button label="&button-back-unix.label;"
-              accesskey="&button-back-unix.accesskey;"
+      <button data-l10n-id="wizard-linux-button-back"
               class="wizard-button" dlgtype="back"/>
       <deck class="wizard-next-deck">
         <hbox>
-          <button label="&button-finish-unix.label;"
+          <button data-l10n-id="wizard-linux-button-finish"
                   class="wizard-button"
                   dlgtype="finish" default="true" flex="1"/>
         </hbox>
         <hbox>
-          <button label="&button-next-unix.label;"
-                  accesskey="&button-next-unix.accesskey;"
+          <button data-l10n-id="wizard-linux-button-next"
                   class="wizard-button" dlgtype="next"
                   default="true" flex="1"/>
         </hbox>
       </deck>`
           : `
-      <button label="&button-back-win.label;"
-              accesskey="&button-back-win.accesskey;"
+      <button data-l10n-id="wizard-win-button-back"
               class="wizard-button" dlgtype="back"/>
       <deck class="wizard-next-deck">
         <hbox>
-          <button label="&button-finish-win.label;"
+          <button data-l10n-id="wizard-win-button-finish"
                   class="wizard-button"
                   dlgtype="finish" default="true" flex="1"/>
         </hbox>
         <hbox>
-          <button label="&button-next-win.label;"
-                  accesskey="&button-next-win.accesskey;"
+          <button data-l10n-id="wizard-win-button-next"
                   class="wizard-button" dlgtype="next"
                   default="true" flex="1"/>
         </hbox>
       </deck>
-      <button label="&button-cancel-win.label;"
+      <button data-l10n-id="wizard-win-button-cancel"
               class="wizard-button"
               dlgtype="cancel"/>`;
 
@@ -588,10 +647,8 @@
     }
 
     get defaultButton() {
-      const kXULNS =
-        "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
       let buttons = this._wizardButtonDeck.selectedPanel.getElementsByTagNameNS(
-        kXULNS,
+        XUL_NS,
         "button"
       );
       for (let i = 0; i < buttons.length; i++) {

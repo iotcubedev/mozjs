@@ -10,7 +10,7 @@ job-defaults:
             default: 1800
     suite: raptor
     workdir: /home/cltbld
-    run-on-projects: ['try', 'mozilla-central']
+    run-on-projects: []
     tier: 2
     virtualization:
         by-test-platform:
@@ -24,9 +24,9 @@ job-defaults:
                     - raptor/mac_config.py
                 windows.*:
                     - raptor/windows_config.py
-                windows10-64-ccov/debug:
+                windows10-64-ccov/.*:
                     - raptor/windows_vm_config.py
-                linux64-ccov/opt:
+                linux64-ccov/.*:
                     - raptor/linux64_config_taskcluster.py
                 default:
                     - raptor/linux_config.py
@@ -41,98 +41,6 @@ job-defaults:
                     - mac-chromium
                 default:
                     - linux64-chromium
-
-raptor-tp6-1-chromium:
-    description: "Raptor tp6-1 on Chromium"
-    try-name: raptor-tp6-1-chromium
-    treeherder-symbol: Rap-Cr(tp6-1)
-    max-run-time: 1200
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-1
-            - --app=chromium
-
-raptor-tp6-2-chromium:
-    description: "Raptor tp6-2 on Chromium"
-    try-name: raptor-tp6-2-chromium
-    treeherder-symbol: Rap-Cr(tp6-2)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-2
-            - --app=chromium
-
-raptor-tp6-3-chromium:
-    description: "Raptor tp6-3 on Chromium"
-    try-name: raptor-tp6-3-chromium
-    treeherder-symbol: Rap-Cr(tp6-3)
-    max-run-time: 2400
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-3
-            - --app=chromium
-
-raptor-tp6-4-chromium:
-    description: "Raptor tp6-4 on Chromium"
-    try-name: raptor-tp6-4-chromium
-    treeherder-symbol: Rap-Cr(tp6-4)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-4
-            - --app=chromium
-
-raptor-tp6-5-chromium:
-    description: "Raptor tp6-5 on Chromium"
-    try-name: raptor-tp6-5-chromium
-    treeherder-symbol: Rap-Cr(tp6-5)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-5
-            - --app=chromium
-
-raptor-tp6-6-chromium:
-    description: "Raptor tp6-6 on Chromium"
-    try-name: raptor-tp6-6-chromium
-    treeherder-symbol: Rap-Cr(tp6-6)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-6
-            - --app=chromium
-
-raptor-tp6-7-chromium:
-    description: "Raptor tp6-7 on Chromium"
-    try-name: raptor-tp6-7-chromium
-    treeherder-symbol: Rap-Cr(tp6-7)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-7
-            - --app=chromium
-
-raptor-tp6-8-chromium:
-    description: "Raptor tp6-8 on Chromium"
-    try-name: raptor-tp6-8-chromium
-    treeherder-symbol: Rap-Cr(tp6-8)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-8
-            - --app=chromium
-
-raptor-tp6-9-chromium:
-    description: "Raptor tp6-9 on Chromium"
-    try-name: raptor-tp6-9-chromium
-    treeherder-symbol: Rap-Cr(tp6-9)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-9
-            - --app=chromium
-
-raptor-tp6-10-chromium:
-    description: "Raptor tp6-10 on Chromium"
-    try-name: raptor-tp6-10-chromium
-    treeherder-symbol: Rap-Cr(tp6-10)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-10
-            - --app=chromium
 
 raptor-speedometer-chromium:
     description: "Raptor Speedometer on Chromium"
@@ -271,42 +179,6 @@ raptor-wasm-godot-chromium:
     mozharness:
         extra-options:
             - --test=raptor-wasm-godot
-            - --app=chromium
-
-raptor-tp6-1-chromium-cold:
-    description: "Raptor tp6-1 cold page-load on Chromium"
-    try-name: raptor-tp6-1-chromium-cold
-    treeherder-symbol: Rap-Cr(tp6-c-1)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-cold-1
-            - --app=chromium
-
-raptor-tp6-2-chromium-cold:
-    description: "Raptor tp6-2 cold page-load on Chromium"
-    try-name: raptor-tp6-2-chromium-cold
-    treeherder-symbol: Rap-Cr(tp6-c-2)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-cold-2
-            - --app=chromium
-
-raptor-tp6-3-chromium-cold:
-    description: "Raptor tp6-3 cold page-load on Chromium"
-    try-name: raptor-tp6-3-chromium-cold
-    treeherder-symbol: Rap-Cr(tp6-c-3)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-cold-3
-            - --app=chromium
-
-raptor-tp6-4-chromium-cold:
-    description: "Raptor tp6-4 cold page-load on Chromium"
-    try-name: raptor-tp6-4-chromium-cold
-    treeherder-symbol: Rap-Cr(tp6-c-4)
-    mozharness:
-        extra-options:
-            - --test=raptor-tp6-cold-4
             - --app=chromium
 
 raptor-ares6-chromium:

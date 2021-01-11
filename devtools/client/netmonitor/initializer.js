@@ -18,8 +18,8 @@ const require = (window.windowRequire = BrowserLoader({
   window,
 }).require);
 
-const { NetMonitorAPI } = require("./src/api");
-const { NetMonitorApp } = require("./src/app");
+const { NetMonitorAPI } = require("devtools/client/netmonitor/src/api");
+const { NetMonitorApp } = require("devtools/client/netmonitor/src/app");
 const EventEmitter = require("devtools/shared/event-emitter");
 
 // Inject EventEmitter into global window.
@@ -79,10 +79,6 @@ if (window.location.protocol === "chrome:" && url.search.length > 1) {
   (async function() {
     try {
       const target = await targetFromURL(url);
-
-      // Start the network event listening as it is done in the toolbox code
-      await target.activeConsole.startListeners(["NetworkActivity"]);
-
       // Create a fake toolbox object
       const toolbox = {
         target,

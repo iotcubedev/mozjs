@@ -2,6 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "SiteSpecificBrowser",
+  "resource:///modules/SiteSpecificBrowserService.jsm"
+);
+
 var BrowserPageActions = {
   /**
    * The main page action button in the urlbar (DOM node)
@@ -422,6 +428,7 @@ var BrowserPageActions = {
       action && this.urlbarButtonNodeIDForActionID(action.id),
       this.mainButtonNode.id,
       "identity-icon",
+      "urlbar-search-button",
     ];
     for (let id of potentialAnchorNodeIDs) {
       if (id) {
@@ -694,7 +701,14 @@ var BrowserPageActions = {
   },
 
   doCommandForAction(action, event, buttonNode) {
-    if (event && event.type == "click" && event.button != 0) {
+    // On mac, ctrl-click will send a context menu event from the widget, so we
+    // don't want to handle the click event when ctrl key is pressed.
+    if (
+      event &&
+      event.type == "click" &&
+      (event.button != 0 ||
+        (AppConstants.platform == "macosx" && event.ctrlKey))
+    ) {
       return;
     }
     if (event && event.type == "keypress") {
@@ -703,7 +717,6 @@ var BrowserPageActions = {
       }
       event.stopPropagation();
     }
-    PageActions.logTelemetry("used", action, buttonNode);
     // If we're in the panel, open a subview inside the panel:
     // Note that we can't use this.panelNode.contains(buttonNode) here
     // because of XBL boundaries breaking Element.contains.
@@ -736,7 +749,9 @@ var BrowserPageActions = {
    * @param  node (DOM node, required)
    *         A button DOM node, either one that's shown in the page action panel
    *         or the urlbar.
-   * @return (PageAction.Action) The node's related action, or null if none.
+   * @return (PageAction.Action) If the node has a related action and the action
+   *         is not a separator, then the action is returned.  Otherwise null is
+   *         returned.
    */
   actionForNode(node) {
     if (!node) {
@@ -758,7 +773,7 @@ var BrowserPageActions = {
         action = PageActions.actionForID(actionID);
       }
     }
-    return action;
+    return action && !action.__isSeparator ? action : null;
   },
 
   /**
@@ -845,7 +860,11 @@ var BrowserPageActions = {
   mainButtonClicked(event) {
     event.stopPropagation();
     if (
-      (event.type == "mousedown" && event.button != 0) ||
+      // On mac, ctrl-click will send a context menu event from the widget, so
+      // we don't want to bring up the panel when ctrl key is pressed.
+      (event.type == "mousedown" &&
+        (event.button != 0 ||
+          (AppConstants.platform == "macosx" && event.ctrlKey))) ||
       (event.type == "keypress" &&
         event.charCode != KeyEvent.DOM_VK_SPACE &&
         event.keyCode != KeyEvent.DOM_VK_RETURN)
@@ -892,7 +911,7 @@ var BrowserPageActions = {
    * @param  popup (DOM node, required)
    *         The context menu popup DOM node.
    */
-  onContextMenuShowing(event, popup) {
+  async onContextMenuShowing(event, popup) {
     if (event.target != popup) {
       return;
     }
@@ -914,6 +933,16 @@ var BrowserPageActions = {
         : "extensionUnpinned";
     }
     popup.setAttribute("state", state);
+
+    let removeExtension = popup.querySelector(".removeExtensionItem");
+    let { extensionID } = this._contextAction;
+    let addon = extensionID && (await AddonManager.getAddonByID(extensionID));
+    removeExtension.hidden = !addon;
+    if (addon) {
+      removeExtension.disabled = !(
+        addon.permissions & AddonManager.PERM_CAN_UNINSTALL
+      );
+    }
   },
 
   /**
@@ -926,10 +955,12 @@ var BrowserPageActions = {
     let action = this._contextAction;
     this._contextAction = null;
 
-    let telemetryType = action.pinnedToUrlbar ? "removed" : "added";
-    PageActions.logTelemetry(telemetryType, action);
-
     action.pinnedToUrlbar = !action.pinnedToUrlbar;
+    BrowserUsageTelemetry.recordWidgetChange(
+      action.id,
+      action.pinnedToUrlbar ? "page-action-buttons" : null,
+      "pageaction-context"
+    );
   },
 
   /**
@@ -942,7 +973,6 @@ var BrowserPageActions = {
     let action = this._contextAction;
     this._contextAction = null;
 
-    PageActions.logTelemetry("managed", action);
     AMTelemetry.recordActionEvent({
       object: "pageAction",
       action: "manage",
@@ -951,6 +981,19 @@ var BrowserPageActions = {
 
     let viewID = "addons://detail/" + encodeURIComponent(action.extensionID);
     window.BrowserOpenAddonsMgr(viewID);
+  },
+
+  /**
+   * Call this from the menu item in the context menu that removes an add-on.
+   */
+  removeExtensionForContextAction() {
+    if (!this._contextAction) {
+      return;
+    }
+    let action = this._contextAction;
+    this._contextAction = null;
+
+    BrowserAddonUI.removeAddon(action.extensionID, "pageAction");
   },
 
   _contextAction: null,
@@ -1038,8 +1081,7 @@ function showBrowserPageActionFeedback(action, event = null, messageId = null) {
 // bookmark
 BrowserPageActions.bookmark = {
   onShowingInPanel(buttonNode) {
-    // Update the button label via the bookmark observer.
-    BookmarkingUI.updateBookmarkPageMenuItem();
+    // Do nothing.
   },
 
   onCommand(event, buttonNode) {
@@ -1081,6 +1123,33 @@ BrowserPageActions.pinTab = {
     } else {
       gBrowser.pinTab(gBrowser.selectedTab);
     }
+  },
+};
+
+// SiteSpecificBrowser
+BrowserPageActions.launchSSB = {
+  updateState() {
+    let action = PageActions.actionForID("launchSSB");
+    let browser = gBrowser.selectedBrowser;
+    action.setDisabled(!browser.currentURI.schemeIs("https"), window);
+  },
+
+  async onCommand(event, buttonNode) {
+    if (!gBrowser.currentURI.schemeIs("https")) {
+      return;
+    }
+
+    let ssb = await SiteSpecificBrowser.createFromBrowser(
+      gBrowser.selectedBrowser
+    );
+
+    // Launching through the UI implies installing.
+    await ssb.install();
+
+    // The site's manifest may point to a different start page so explicitly
+    // open the SSB to the current page.
+    ssb.launch(gBrowser.selectedBrowser.currentURI);
+    gBrowser.removeTab(gBrowser.selectedTab, { closeWindowWithLastTab: false });
   },
 };
 
@@ -1253,7 +1322,7 @@ BrowserPageActions.addSearchEngine = {
   },
 
   _installEngine(uri, image) {
-    Services.search.addEngine(uri, image, false).then(
+    Services.search.addOpenSearchEngine(uri, image).then(
       engine => {
         showBrowserPageActionFeedback(this.action);
       },
@@ -1274,14 +1343,12 @@ BrowserPageActions.addSearchEngine = {
           "error_duplicate_engine_msg",
           [brandName, uri]
         );
-        Services.prompt.QueryInterface(Ci.nsIPromptFactory);
-        let prompt = Services.prompt.getPrompt(
-          gBrowser.contentWindow,
-          Ci.nsIPrompt
+        Services.prompt.alertBC(
+          gBrowser.selectedBrowser.browsingContext,
+          Ci.nsIPrompt.MODAL_TYPE_CONTENT,
+          title,
+          text
         );
-        prompt.QueryInterface(Ci.nsIWritablePropertyBag2);
-        prompt.setPropertyAsBool("allowTabModal", true);
-        prompt.alert(title, text);
       }
     );
   },
@@ -1309,7 +1376,7 @@ BrowserPageActions.shareURL = {
 
     // We cache the providers + the UI if the user selects the share
     // panel multiple times while the panel is open.
-    if (this._cached && bodyNode.children.length > 0) {
+    if (this._cached && bodyNode.children.length) {
       return;
     }
 

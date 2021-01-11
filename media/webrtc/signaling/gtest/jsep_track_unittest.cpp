@@ -1010,6 +1010,92 @@ TEST_F(JsepTrackTest, VideoNegotiationOfferAnswerRemb) {
   CheckOtherFbExists(*codec, SdpRtcpFbAttributeList::kRemb);
 }
 
+TEST_F(JsepTrackTest, VideoNegotiationOfferTransportCC) {
+  InitCodecs();
+  // enable TransportCC on the offer codecs
+  ((JsepVideoCodecDescription&)*mOffCodecs[2]).EnableTransportCC();
+  InitTracks(SdpMediaSection::kVideo);
+  InitSdp(SdpMediaSection::kVideo);
+  OfferAnswer();
+
+  // make sure TransportCC is on offer and not on answer
+  ASSERT_NE(mOffer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  ASSERT_EQ(mAnswer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  CheckOffEncodingCount(1);
+  CheckAnsEncodingCount(1);
+
+  UniquePtr<JsepVideoCodecDescription> codec;
+  ASSERT_TRUE((codec = GetVideoCodec(mSendOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mSendAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+}
+
+TEST_F(JsepTrackTest, VideoNegotiationAnswerTransportCC) {
+  InitCodecs();
+  // enable TransportCC on the answer codecs
+  ((JsepVideoCodecDescription&)*mAnsCodecs[2]).EnableTransportCC();
+  InitTracks(SdpMediaSection::kVideo);
+  InitSdp(SdpMediaSection::kVideo);
+  OfferAnswer();
+
+  // make sure TransportCC is not on offer and not on answer
+  ASSERT_EQ(mOffer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  ASSERT_EQ(mAnswer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  CheckOffEncodingCount(1);
+  CheckAnsEncodingCount(1);
+
+  UniquePtr<JsepVideoCodecDescription> codec;
+  ASSERT_TRUE((codec = GetVideoCodec(mSendOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mSendAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 0U);
+}
+
+TEST_F(JsepTrackTest, VideoNegotiationOfferAnswerTransportCC) {
+  InitCodecs();
+  // enable TransportCC on the offer and answer codecs
+  ((JsepVideoCodecDescription&)*mOffCodecs[2]).EnableTransportCC();
+  ((JsepVideoCodecDescription&)*mAnsCodecs[2]).EnableTransportCC();
+  InitTracks(SdpMediaSection::kVideo);
+  InitSdp(SdpMediaSection::kVideo);
+  OfferAnswer();
+
+  // make sure TransportCC is on offer and on answer
+  ASSERT_NE(mOffer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  ASSERT_NE(mAnswer->ToString().find("a=rtcp-fb:120 transport-cc"),
+            std::string::npos);
+  CheckOffEncodingCount(1);
+  CheckAnsEncodingCount(1);
+
+  UniquePtr<JsepVideoCodecDescription> codec;
+  ASSERT_TRUE((codec = GetVideoCodec(mSendOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 1U);
+  CheckOtherFbExists(*codec, SdpRtcpFbAttributeList::kTransportCC);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 1U);
+  CheckOtherFbExists(*codec, SdpRtcpFbAttributeList::kTransportCC);
+  ASSERT_TRUE((codec = GetVideoCodec(mSendAns, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 1U);
+  CheckOtherFbExists(*codec, SdpRtcpFbAttributeList::kTransportCC);
+  ASSERT_TRUE((codec = GetVideoCodec(mRecvOff, 2, 0)));
+  ASSERT_EQ(codec->mOtherFbTypes.size(), 1U);
+  CheckOtherFbExists(*codec, SdpRtcpFbAttributeList::kTransportCC);
+}
+
 TEST_F(JsepTrackTest, AudioOffSendonlyAnsRecvonly) {
   Init(SdpMediaSection::kAudio);
   GetOffer().SetDirection(SdpDirectionAttribute::kSendonly);
@@ -1189,7 +1275,8 @@ TEST_F(JsepTrackTest, SimulcastOfferer) {
   CreateOffer();
   CreateAnswer();
   // Add simulcast/rid to answer
-  mRecvAns.AddToMsection(constraints, sdp::kRecv, mSsrcGenerator, &GetAnswer());
+  mRecvAns.AddToMsection(constraints, sdp::kRecv, mSsrcGenerator, false,
+                         &GetAnswer());
   Negotiate();
   ASSERT_TRUE(mSendOff.GetNegotiatedDetails());
   ASSERT_EQ(2U, mSendOff.GetNegotiatedDetails()->GetEncodingCount());
@@ -1200,9 +1287,9 @@ TEST_F(JsepTrackTest, SimulcastOfferer) {
   ASSERT_EQ(10000U,
             mSendOff.GetNegotiatedDetails()->GetEncoding(1).mConstraints.maxBr);
   ASSERT_NE(std::string::npos,
-            mOffer->ToString().find("a=simulcast: send rid=foo;bar"));
+            mOffer->ToString().find("a=simulcast:send foo;bar"));
   ASSERT_NE(std::string::npos,
-            mAnswer->ToString().find("a=simulcast: recv rid=foo;bar"));
+            mAnswer->ToString().find("a=simulcast:recv foo;bar"));
   ASSERT_NE(std::string::npos, mOffer->ToString().find("a=rid:foo send"));
   ASSERT_NE(std::string::npos, mOffer->ToString().find("a=rid:bar send"));
   ASSERT_NE(std::string::npos, mAnswer->ToString().find("a=rid:foo recv"));
@@ -1217,7 +1304,8 @@ TEST_F(JsepTrackTest, SimulcastAnswerer) {
   mSendAns.SetJsConstraints(constraints);
   CreateOffer();
   // Add simulcast/rid to offer
-  mRecvOff.AddToMsection(constraints, sdp::kRecv, mSsrcGenerator, &GetOffer());
+  mRecvOff.AddToMsection(constraints, sdp::kRecv, mSsrcGenerator, false,
+                         &GetOffer());
   CreateAnswer();
   Negotiate();
   ASSERT_TRUE(mSendAns.GetNegotiatedDetails());
@@ -1229,9 +1317,9 @@ TEST_F(JsepTrackTest, SimulcastAnswerer) {
   ASSERT_EQ(10000U,
             mSendAns.GetNegotiatedDetails()->GetEncoding(1).mConstraints.maxBr);
   ASSERT_NE(std::string::npos,
-            mOffer->ToString().find("a=simulcast: recv rid=foo;bar"));
+            mOffer->ToString().find("a=simulcast:recv foo;bar"));
   ASSERT_NE(std::string::npos,
-            mAnswer->ToString().find("a=simulcast: send rid=foo;bar"));
+            mAnswer->ToString().find("a=simulcast:send foo;bar"));
   ASSERT_NE(std::string::npos, mOffer->ToString().find("a=rid:foo recv"));
   ASSERT_NE(std::string::npos, mOffer->ToString().find("a=rid:bar recv"));
   ASSERT_NE(std::string::npos, mAnswer->ToString().find("a=rid:foo send"));

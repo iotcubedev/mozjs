@@ -8,8 +8,6 @@
 #include "mozilla/Unused.h"
 
 #include "nsResProtocolHandler.h"
-#include "nsIIOService.h"
-#include "nsIFile.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsURLHelper.h"
@@ -77,7 +75,7 @@ nsresult nsResProtocolHandler::GetApkURI(nsACString& aResult) {
   nsCString::const_iterator start_iter = start;
 
   // This is like jar:jar:file://path/to/apk/base.apk!/path/to/omni.ja!/
-  bool found = FindInReadable(NS_LITERAL_CSTRING("!/"), start_iter, iter);
+  bool found = FindInReadable("!/"_ns, start_iter, iter);
   NS_ENSURE_TRUE(found, NS_ERROR_UNEXPECTED);
 
   // like jar:jar:file://path/to/apk/base.apk!/
@@ -129,8 +127,7 @@ nsresult nsResProtocolHandler::GetSubstitutionInternal(const nsACString& aRoot,
                                                        uint32_t* aFlags) {
   nsAutoCString uri;
 
-  if (!ResolveSpecialCases(aRoot, NS_LITERAL_CSTRING("/"),
-                           NS_LITERAL_CSTRING("/"), uri)) {
+  if (!ResolveSpecialCases(aRoot, "/"_ns, "/"_ns, uri)) {
     return NS_ERROR_NOT_AVAILABLE;
   }
 

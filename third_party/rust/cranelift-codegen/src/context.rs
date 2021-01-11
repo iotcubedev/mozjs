@@ -19,12 +19,15 @@ use crate::flowgraph::ControlFlowGraph;
 use crate::ir::Function;
 use crate::isa::TargetIsa;
 use crate::legalize_function;
+use crate::legalizer::simple_legalize;
 use crate::licm::do_licm;
 use crate::loop_analysis::LoopAnalysis;
+use crate::machinst::MachCompileResult;
 use crate::nan_canonicalization::do_nan_canonicalization;
 use crate::postopt::do_postopt;
 use crate::redundant_reload_remover::RedundantReloadRemover;
 use crate::regalloc;
+use crate::remove_constant_phis::do_remove_constant_phis;
 use crate::result::CodegenResult;
 use crate::settings::{FlagsOrIsa, OptLevel};
 use crate::simple_gvn::do_simple_gvn;
@@ -33,7 +36,8 @@ use crate::timing;
 use crate::unreachable_code::eliminate_unreachable_code;
 use crate::value_label::{build_value_labels_ranges, ComparableSourceLoc, ValueLabelsRanges};
 use crate::verifier::{verify_context, verify_locations, VerifierErrors, VerifierResult};
-use std::vec::Vec;
+use alloc::vec::Vec;
+use log::debug;
 
 /// Persistent data structures and compilation pipeline.
 pub struct Context {
@@ -54,6 +58,12 @@ pub struct Context {
 
     /// Redundant-reload remover context.
     pub redundant_reload_remover: RedundantReloadRemover,
+
+    /// Result of MachBackend compilation, if computed.
+    pub mach_compile_result: Option<MachCompileResult>,
+
+    /// Flag: do we want a disassembly with the MachCompileResult?
+    pub want_disasm: bool,
 }
 
 impl Context {
@@ -77,6 +87,8 @@ impl Context {
             regalloc: regalloc::Context::new(),
             loop_analysis: LoopAnalysis::new(),
             redundant_reload_remover: RedundantReloadRemover::new(),
+            mach_compile_result: None,
+            want_disasm: false,
         }
     }
 
@@ -88,6 +100,14 @@ impl Context {
         self.regalloc.clear();
         self.loop_analysis.clear();
         self.redundant_reload_remover.clear();
+        self.mach_compile_result = None;
+        self.want_disasm = false;
+    }
+
+    /// Set the flag to request a disassembly when compiling with a
+    /// `MachBackend` backend.
+    pub fn set_disasm(&mut self, val: bool) {
+        self.want_disasm = val;
     }
 
     /// Compile the function, and emit machine code into a `Vec<u8>`.
@@ -130,35 +150,57 @@ impl Context {
         let _tt = timing::compile();
         self.verify_if(isa)?;
 
+        let opt_level = isa.flags().opt_level();
+        debug!(
+            "Compiling (opt level {:?}):\n{}",
+            opt_level,
+            self.func.display(isa)
+        );
+
         self.compute_cfg();
-        if isa.flags().opt_level() != OptLevel::Fastest {
+        if opt_level != OptLevel::None {
             self.preopt(isa)?;
         }
         if isa.flags().enable_nan_canonicalization() {
             self.canonicalize_nans(isa)?;
         }
+
         self.legalize(isa)?;
-        if isa.flags().opt_level() != OptLevel::Fastest {
+        if opt_level != OptLevel::None {
             self.postopt(isa)?;
-        }
-        if isa.flags().opt_level() == OptLevel::Best {
             self.compute_domtree();
             self.compute_loop_analysis();
             self.licm(isa)?;
             self.simple_gvn(isa)?;
         }
+
         self.compute_domtree();
         self.eliminate_unreachable_code(isa)?;
-        if isa.flags().opt_level() != OptLevel::Fastest {
+        if opt_level != OptLevel::None {
             self.dce(isa)?;
         }
-        self.regalloc(isa)?;
-        self.prologue_epilogue(isa)?;
-        if isa.flags().opt_level() == OptLevel::Best {
-            self.redundant_reload_remover(isa)?;
-            self.shrink_instructions(isa)?;
+
+        self.remove_constant_phis(isa)?;
+
+        if let Some(backend) = isa.get_mach_backend() {
+            let result = backend.compile_function(&self.func, self.want_disasm)?;
+            let info = result.code_info();
+            self.mach_compile_result = Some(result);
+            Ok(info)
+        } else {
+            self.regalloc(isa)?;
+            self.prologue_epilogue(isa)?;
+            if opt_level == OptLevel::Speed || opt_level == OptLevel::SpeedAndSize {
+                self.redundant_reload_remover(isa)?;
+            }
+            if opt_level == OptLevel::SpeedAndSize {
+                self.shrink_instructions(isa)?;
+            }
+            let result = self.relax_branches(isa);
+
+            debug!("Compiled:\n{}", self.func.display(isa));
+            result
         }
-        self.relax_branches(isa)
     }
 
     /// Emit machine code directly into raw memory.
@@ -167,6 +209,8 @@ impl Context {
     /// code is returned by `compile` above.
     ///
     /// The machine code is not relocated. Instead, any relocations are emitted into `relocs`.
+    ///
+    /// # Safety
     ///
     /// This function is unsafe since it does not perform bounds checking on the memory buffer,
     /// and it can't guarantee that the `mem` pointer is valid.
@@ -182,8 +226,23 @@ impl Context {
     ) -> CodeInfo {
         let _tt = timing::binemit();
         let mut sink = MemoryCodeSink::new(mem, relocs, traps, stackmaps);
-        isa.emit_function_to_memory(&self.func, &mut sink);
+        if let Some(ref result) = &self.mach_compile_result {
+            result.buffer.emit(&mut sink);
+        } else {
+            isa.emit_function_to_memory(&self.func, &mut sink);
+        }
         sink.info
+    }
+
+    /// Creates unwind information for the function.
+    ///
+    /// Returns `None` if the function has no unwind information.
+    #[cfg(feature = "unwind")]
+    pub fn create_unwind_info(
+        &self,
+        isa: &dyn TargetIsa,
+    ) -> CodegenResult<Option<crate::isa::unwind::UnwindInfo>> {
+        isa.create_unwind_info(&self.func)
     }
 
     /// Run the verifier on the function.
@@ -212,7 +271,7 @@ impl Context {
     /// Run the locations verifier on the function.
     pub fn verify_locations(&self, isa: &dyn TargetIsa) -> VerifierResult<()> {
         let mut errors = VerifierErrors::default();
-        let _ = verify_locations(isa, &self.func, None, &mut errors);
+        let _ = verify_locations(isa, &self.func, &self.cfg, None, &mut errors);
 
         if errors.is_empty() {
             Ok(())
@@ -236,9 +295,19 @@ impl Context {
         Ok(())
     }
 
+    /// Perform constant-phi removal on the function.
+    pub fn remove_constant_phis<'a, FOI: Into<FlagsOrIsa<'a>>>(
+        &mut self,
+        fisa: FOI,
+    ) -> CodegenResult<()> {
+        do_remove_constant_phis(&mut self.func, &mut self.domtree);
+        self.verify_if(fisa)?;
+        Ok(())
+    }
+
     /// Perform pre-legalization rewrites on the function.
     pub fn preopt(&mut self, isa: &dyn TargetIsa) -> CodegenResult<()> {
-        do_preopt(&mut self.func, &mut self.cfg);
+        do_preopt(&mut self.func, &mut self.cfg, isa);
         self.verify_if(isa)?;
         Ok(())
     }
@@ -255,8 +324,15 @@ impl Context {
         // TODO: Avoid doing this when legalization doesn't actually mutate the CFG.
         self.domtree.clear();
         self.loop_analysis.clear();
-        legalize_function(&mut self.func, &mut self.cfg, isa);
-        self.verify_if(isa)
+        if isa.get_mach_backend().is_some() {
+            // Run some specific legalizations only.
+            simple_legalize(&mut self.func, &mut self.cfg, isa);
+            self.verify_if(isa)
+        } else {
+            legalize_function(&mut self.func, &mut self.cfg, isa);
+            debug!("Legalized:\n{}", self.func.display(isa));
+            self.verify_if(isa)
+        }
     }
 
     /// Perform post-legalization rewrites on the function.
@@ -318,7 +394,7 @@ impl Context {
     /// Run the register allocator.
     pub fn regalloc(&mut self, isa: &dyn TargetIsa) -> CodegenResult<()> {
         self.regalloc
-            .run(isa, &mut self.func, &self.cfg, &mut self.domtree)
+            .run(isa, &mut self.func, &mut self.cfg, &mut self.domtree)
     }
 
     /// Insert prologue and epilogues after computing the stack frame layout.

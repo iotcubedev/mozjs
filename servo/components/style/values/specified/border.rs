@@ -47,20 +47,13 @@ use style_traits::{CssWriter, ParseError, ToCss};
 pub enum BorderStyle {
     Hidden,
     None,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Inset,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Groove,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Outset,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Ridge,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Dotted,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Dashed,
     Solid,
-    #[cfg(any(feature = "gecko", feature = "servo-layout-2013"))]
     Double,
 }
 
@@ -128,7 +121,8 @@ impl BorderSideWidth {
         input: &mut Parser<'i, 't>,
         allow_quirks: AllowQuirks,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(length) = input.try(|i| NonNegativeLength::parse_quirky(context, i, allow_quirks))
+        if let Ok(length) =
+            input.try_parse(|i| NonNegativeLength::parse_quirky(context, i, allow_quirks))
         {
             return Ok(BorderSideWidth::Length(length));
         }
@@ -180,33 +174,15 @@ impl BorderImageSideWidth {
     }
 }
 
-impl Parse for BorderImageSideWidth {
-    fn parse<'i, 't>(
-        context: &ParserContext,
-        input: &mut Parser<'i, 't>,
-    ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("auto")).is_ok() {
-            return Ok(GenericBorderImageSideWidth::Auto);
-        }
-
-        if let Ok(len) = input.try(|i| NonNegativeLengthPercentage::parse(context, i)) {
-            return Ok(GenericBorderImageSideWidth::LengthPercentage(len));
-        }
-
-        let num = NonNegativeNumber::parse(context, input)?;
-        Ok(GenericBorderImageSideWidth::Number(num))
-    }
-}
-
 impl Parse for BorderImageSlice {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let mut fill = input.try(|i| i.expect_ident_matching("fill")).is_ok();
+        let mut fill = input.try_parse(|i| i.expect_ident_matching("fill")).is_ok();
         let offsets = Rect::parse_with(context, input, NonNegativeNumberOrPercentage::parse)?;
         if !fill {
-            fill = input.try(|i| i.expect_ident_matching("fill")).is_ok();
+            fill = input.try_parse(|i| i.expect_ident_matching("fill")).is_ok();
         }
         Ok(GenericBorderImageSlice { offsets, fill })
     }
@@ -218,7 +194,7 @@ impl Parse for BorderRadius {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         let widths = Rect::parse_with(context, input, NonNegativeLengthPercentage::parse)?;
-        let heights = if input.try(|i| i.expect_delim('/')).is_ok() {
+        let heights = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
             Rect::parse_with(context, input, NonNegativeLengthPercentage::parse)?
         } else {
             widths.clone()
@@ -259,7 +235,18 @@ impl Parse for BorderSpacing {
 #[allow(missing_docs)]
 #[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
-    Clone, Copy, Debug, Eq, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
 )]
 pub enum BorderImageRepeatKeyword {
     Stretch,
@@ -315,7 +302,7 @@ impl Parse for BorderImageRepeat {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
         let horizontal = BorderImageRepeatKeyword::parse(input)?;
-        let vertical = input.try(BorderImageRepeatKeyword::parse).ok();
+        let vertical = input.try_parse(BorderImageRepeatKeyword::parse).ok();
         Ok(BorderImageRepeat(
             horizontal,
             vertical.unwrap_or(horizontal),

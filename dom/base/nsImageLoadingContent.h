@@ -21,7 +21,6 @@
 #include "nsIImageLoadingContent.h"
 #include "nsIRequest.h"
 #include "mozilla/ErrorResult.h"
-#include "nsIContentPolicy.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
 #include "nsAttrValue.h"
@@ -46,6 +45,7 @@ class Element;
 #endif
 
 class nsImageLoadingContent : public nsIImageLoadingContent {
+ protected:
   template <typename T>
   using Maybe = mozilla::Maybe<T>;
   using Nothing = mozilla::Nothing;
@@ -150,16 +150,16 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    *        principal to use for the image load
    */
   nsresult LoadImage(nsIURI* aNewURI, bool aForce, bool aNotify,
-                     ImageLoadType aImageLoadType, bool aLoadStart = true,
+                     ImageLoadType aImageLoadType, nsLoadFlags aLoadFlags,
+                     bool aLoadStart = true,
                      mozilla::dom::Document* aDocument = nullptr,
-                     nsLoadFlags aLoadFlags = nsIRequest::LOAD_NORMAL,
                      nsIPrincipal* aTriggeringPrincipal = nullptr);
 
   nsresult LoadImage(nsIURI* aNewURI, bool aForce, bool aNotify,
                      ImageLoadType aImageLoadType,
                      nsIPrincipal* aTriggeringPrincipal) {
-    return LoadImage(aNewURI, aForce, aNotify, aImageLoadType, true, nullptr,
-                     nsIRequest::LOAD_NORMAL, aTriggeringPrincipal);
+    return LoadImage(aNewURI, aForce, aNotify, aImageLoadType, LoadFlags(),
+                     true, nullptr, aTriggeringPrincipal);
   }
 
   /**
@@ -198,14 +198,13 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   void CancelImageRequests(bool aNotify);
 
   /**
-   * Derived classes of nsImageLoadingContent MUST call
-   * DestroyImageLoadingContent from their destructor, or earlier.  It
-   * does things that cannot be done in ~nsImageLoadingContent because
-   * they rely on being able to QueryInterface to other derived classes,
-   * which cannot happen once the derived class destructor has started
-   * calling the base class destructors.
+   * Derived classes of nsImageLoadingContent MUST call Destroy from their
+   * destructor, or earlier.  It does things that cannot be done in
+   * ~nsImageLoadingContent because they rely on being able to QueryInterface to
+   * other derived classes, which cannot happen once the derived class
+   * destructor has started calling the base class destructors.
    */
-  void DestroyImageLoadingContent();
+  void Destroy();
 
   /**
    * Returns the CORS mode that will be used for all future image loads. The
@@ -213,15 +212,13 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   virtual mozilla::CORSMode GetCORSMode();
 
-  virtual mozilla::dom::ReferrerPolicy GetImageReferrerPolicy();
-
   // Subclasses are *required* to call BindToTree/UnbindFromTree.
   void BindToTree(mozilla::dom::BindContext&, nsINode& aParent);
   void UnbindFromTree(bool aNullParent);
 
-  nsresult OnLoadComplete(imgIRequest* aRequest, nsresult aStatus);
+  void OnLoadComplete(imgIRequest* aRequest, nsresult aStatus);
   void OnUnlockedDraw();
-  nsresult OnImageIsAnimated(imgIRequest* aRequest);
+  void OnImageIsAnimated(imgIRequest* aRequest);
 
   // The nsContentPolicyType we would use for this ImageLoadType
   static nsContentPolicyType PolicyTypeForLoad(ImageLoadType aImageLoadType);
@@ -341,13 +338,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   friend struct AutoStateChanger;
 
   /**
-   * UpdateImageState recomputes the current state of this image loading
-   * content and updates what ImageState() returns accordingly.  It will also
-   * fire a ContentStatesChanged() notification as needed if aNotify is true.
-   */
-  void UpdateImageState(bool aNotify);
-
-  /**
    * Method to fire an event once we know what's going on with the image load.
    *
    * @param aEventType "loadstart", "loadend", "load", or "error" depending on
@@ -365,6 +355,13 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
 
  protected:
   /**
+   * UpdateImageState recomputes the current state of this image loading
+   * content and updates what ImageState() returns accordingly.  It will also
+   * fire a ContentStatesChanged() notification as needed if aNotify is true.
+   */
+  void UpdateImageState(bool aNotify);
+
+  /**
    * Method to create an nsIURI object from the given string (will
    * handle getting the right charset, base, etc).  You MUST pass in a
    * non-null document to this function.
@@ -375,8 +372,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   nsresult StringToURI(const nsAString& aSpec,
                        mozilla::dom::Document* aDocument, nsIURI** aURI);
-
-  void CreateStaticImageClone(nsImageLoadingContent* aDest) const;
 
   /**
    * Prepare and returns a reference to the "next request". If there's already
@@ -461,6 +456,8 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   void TrackImage(imgIRequest* aImage, nsIFrame* aFrame = nullptr);
   void UntrackImage(imgIRequest* aImage,
                     const Maybe<OnNonvisible>& aNonvisibleAction = Nothing());
+
+  nsLoadFlags LoadFlags();
 
   /* MEMBERS */
   RefPtr<imgRequestProxy> mCurrentRequest;
@@ -598,7 +595,10 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    * True if we want to set nsIClassOfService::UrgentStart to the channel to
    * get the response ASAP for better user responsiveness.
    */
-  bool mUseUrgentStartForChannel;
+  bool mUseUrgentStartForChannel : 1;
+
+  // Represents the image is deferred loading until this element gets visible.
+  bool mLazyLoading : 1;
 
  private:
   /* The number of nested AutoStateChangers currently tracking our state. */

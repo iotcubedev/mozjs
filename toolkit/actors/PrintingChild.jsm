@@ -13,6 +13,12 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
   this,
+  "setTimeout",
+  "resource://gre/modules/Timer.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  this,
   "ReaderMode",
   "resource://gre/modules/ReaderMode.jsm"
 );
@@ -26,10 +32,7 @@ class PrintingChild extends ActorChild {
   // this hackery.
 
   get shouldSavePrintSettings() {
-    return (
-      Services.prefs.getBoolPref("print.use_global_printsettings") &&
-      Services.prefs.getBoolPref("print.save_print_settings")
-    );
+    return Services.prefs.getBoolPref("print.save_print_settings");
   }
 
   handleEvent(event) {
@@ -83,7 +86,7 @@ class PrintingChild extends ActorChild {
           Services.wm.getOuterWindowWithId(data.windowID),
           data.simplifiedMode,
           data.changingBrowsers,
-          data.defaultPrinterName
+          data.lastUsedPrinterName
         );
         break;
       }
@@ -105,19 +108,10 @@ class PrintingChild extends ActorChild {
         );
         break;
       }
-
-      case "Printing:Print": {
-        this.print(
-          Services.wm.getOuterWindowWithId(data.windowID),
-          data.simplifiedMode,
-          data.defaultPrinterName
-        );
-        break;
-      }
     }
   }
 
-  getPrintSettings(defaultPrinterName) {
+  getPrintSettings(lastUsedPrinterName) {
     try {
       let PSSVC = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(
         Ci.nsIPrintSettingsService
@@ -125,7 +119,7 @@ class PrintingChild extends ActorChild {
 
       let printSettings = PSSVC.globalPrintSettings;
       if (!printSettings.printerName) {
-        printSettings.printerName = defaultPrinterName;
+        printSettings.printerName = lastUsedPrinterName;
       }
       // First get any defaults from the printer
       PSSVC.initPrintSettingsFromPrinter(
@@ -172,7 +166,7 @@ class PrintingChild extends ActorChild {
               };
               contentWindow.addEventListener("MozAfterPaint", onPaint);
               // This timer need when display list invalidation doesn't invalidate.
-              mm.setTimeout(() => {
+              setTimeout(() => {
                 mm.removeEventListener("MozAfterPaint", onPaint);
                 mm.sendAsyncMessage("Printing:Preview:ReaderModeReady");
               }, 100);
@@ -183,9 +177,9 @@ class PrintingChild extends ActorChild {
         },
 
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIWebProgressListener,
-          Ci.nsISupportsWeakReference,
-          Ci.nsIObserver,
+          "nsIWebProgressListener",
+          "nsISupportsWeakReference",
+          "nsIObserver",
         ]),
       };
 
@@ -316,11 +310,11 @@ class PrintingChild extends ActorChild {
     contentWindow,
     simplifiedMode,
     changingBrowsers,
-    defaultPrinterName
+    lastUsedPrinterName
   ) {
     const { docShell } = this;
     try {
-      let printSettings = this.getPrintSettings(defaultPrinterName);
+      let printSettings = this.getPrintSettings(lastUsedPrinterName);
 
       // If we happen to be on simplified mode, we need to set docURL in order
       // to generate header/footer content correctly, since simplified tab has
@@ -376,78 +370,6 @@ class PrintingChild extends ActorChild {
     this.docShell.initOrReusePrintPreviewViewer().exitPrintPreview();
   }
 
-  print(contentWindow, simplifiedMode, defaultPrinterName) {
-    let printSettings = this.getPrintSettings(defaultPrinterName);
-    let printCancelled = false;
-
-    // If we happen to be on simplified mode, we need to set docURL in order
-    // to generate header/footer content correctly, since simplified tab has
-    // "about:blank" as its URI.
-    if (printSettings && simplifiedMode) {
-      printSettings.docURL = contentWindow.document.baseURI;
-    }
-
-    try {
-      let print = contentWindow.getInterface(Ci.nsIWebBrowserPrint);
-
-      if (print.doingPrintPreview) {
-        this.logKeyedTelemetry("PRINT_DIALOG_OPENED_COUNT", "FROM_PREVIEW");
-      } else {
-        this.logKeyedTelemetry("PRINT_DIALOG_OPENED_COUNT", "FROM_PAGE");
-      }
-
-      print.print(printSettings, null);
-
-      if (print.doingPrintPreview) {
-        if (simplifiedMode) {
-          this.logKeyedTelemetry("PRINT_COUNT", "SIMPLIFIED");
-        } else {
-          this.logKeyedTelemetry("PRINT_COUNT", "WITH_PREVIEW");
-        }
-      } else {
-        this.logKeyedTelemetry("PRINT_COUNT", "WITHOUT_PREVIEW");
-      }
-    } catch (e) {
-      // Pressing cancel is expressed as an NS_ERROR_ABORT return value,
-      // causing an exception to be thrown which we catch here.
-      if (e.result == Cr.NS_ERROR_ABORT) {
-        printCancelled = true;
-      } else {
-        Cu.reportError(`In Printing:Print:Done handler, got unexpected rv
-                        ${e.result}.`);
-        this.mm.sendAsyncMessage("Printing:Error", {
-          isPrinting: true,
-          nsresult: e.result,
-        });
-      }
-    }
-
-    if (
-      (!printCancelled || printSettings.saveOnCancel) &&
-      this.shouldSavePrintSettings
-    ) {
-      let PSSVC = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(
-        Ci.nsIPrintSettingsService
-      );
-
-      PSSVC.savePrintSettingsToPrefs(
-        printSettings,
-        true,
-        printSettings.kInitSaveAll
-      );
-      PSSVC.savePrintSettingsToPrefs(
-        printSettings,
-        false,
-        printSettings.kInitSavePrinterName
-      );
-    }
-  }
-
-  logKeyedTelemetry(id, key) {
-    let histogram = Services.telemetry.getKeyedHistogramById(id);
-    histogram.add(key);
-  }
-
   updatePageCount() {
     let numPages = this.docShell.initOrReusePrintPreviewViewer()
       .printPreviewNumPages;
@@ -464,14 +386,14 @@ class PrintingChild extends ActorChild {
 }
 
 PrintingChild.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIPrintingPromptService,
+  "nsIPrintingPromptService",
 ]);
 
 function PrintingListener(global) {
   this.global = global;
 }
 PrintingListener.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIWebProgressListener]),
+  QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener"]),
 
   onStateChange(aWebProgress, aRequest, aStateFlags, aStatus) {
     this.global.sendAsyncMessage("Printing:Preview:StateChange", {

@@ -7,10 +7,10 @@
 #ifndef MOZILLA_GFX_RENDERCOMPOSITOR_OGL_H
 #define MOZILLA_GFX_RENDERCOMPOSITOR_OGL_H
 
+#include "GLTypes.h"
 #include "mozilla/webrender/RenderCompositor.h"
 
 namespace mozilla {
-
 namespace wr {
 
 class RenderCompositorOGL : public RenderCompositor {
@@ -22,31 +22,24 @@ class RenderCompositorOGL : public RenderCompositor {
                       RefPtr<widget::CompositorWidget>&& aWidget);
   virtual ~RenderCompositorOGL();
 
-  bool BeginFrame(layers::NativeLayer* aNativeLayer) override;
-  void EndFrame() override;
-  bool WaitForGPU() override;
+  bool BeginFrame() override;
+  RenderedFrameId EndFrame(const nsTArray<DeviceIntRect>& aDirtyRects) final;
   void Pause() override;
   bool Resume() override;
 
-  gl::GLContext* gl() const override { return mGL; }
+  bool UsePartialPresent() override { return mUsePartialPresent; }
+  uint32_t GetMaxPartialPresentRects() override;
 
-  bool UseANGLE() const override { return false; }
+  gl::GLContext* gl() const override { return mGL; }
 
   LayoutDeviceIntSize GetBufferSize() override;
 
+  // Interface for wr::Compositor
+  CompositorCapabilities GetCompositorCapabilities() override;
+
  protected:
-  void InsertFrameDoneSync();
-
   RefPtr<gl::GLContext> mGL;
-
-  // The native layer that we're currently rendering to, if any.
-  // Non-null only between BeginFrame and EndFrame if BeginFrame has been called
-  // with a non-null aNativeLayer.
-  RefPtr<layers::NativeLayer> mCurrentNativeLayer;
-
-  // Used to apply back-pressure in WaitForGPU().
-  GLsync mPreviousFrameDoneSync;
-  GLsync mThisFrameDoneSync;
+  bool mUsePartialPresent;
 };
 
 }  // namespace wr

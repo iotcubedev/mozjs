@@ -14,7 +14,7 @@
 dictionary EventListenerOptions {
   boolean capture = false;
   /* Setting to true make the listener be added to the system group. */
-  [Func="ThreadSafeIsChromeOrXBLOrUAWidget"]
+  [Func="ThreadSafeIsChromeOrUAWidget"]
   boolean mozSystemGroup = false;
 };
 
@@ -25,9 +25,11 @@ dictionary AddEventListenerOptions : EventListenerOptions {
   boolean wantUntrusted;
 };
 
-[Constructor,
- Exposed=(Window,Worker,WorkerDebugger,AudioWorklet)]
+[Exposed=(Window,Worker,WorkerDebugger,AudioWorklet)]
 interface EventTarget {
+  [Throws]
+  constructor();
+
   /* Passing null for wantsUntrusted means "default behavior", which
      differs in content and chrome.  In content that default boolean
      value is true, while in chrome the default boolean value is

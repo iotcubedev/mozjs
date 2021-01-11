@@ -27,11 +27,9 @@ async function waitUntilScreenshot() {
   });
 }
 
-addRDMTask(TEST_URL, async function({ ui: { toolWindow } }) {
+addRDMTask(TEST_URL, async function({ ui }) {
+  const { toolWindow } = ui;
   const { store, document } = toolWindow;
-
-  // Wait until the viewport has been added
-  await waitUntilState(store, state => state.viewports.length == 1);
 
   info("Click the screenshot button");
   const screenshotButton = document.getElementById("screenshot-button");

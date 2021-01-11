@@ -5,7 +5,7 @@
 function RecordingCmdLineHandler() {}
 RecordingCmdLineHandler.prototype = {
   /* nsISupports */
-  QueryInterface: ChromeUtils.generateQI([Ci.nsICommandLineHandler]),
+  QueryInterface: ChromeUtils.generateQI(["nsICommandLineHandler"]),
 
   /* nsICommandLineHandler */
   handle: function handler_handle(cmdLine) {
@@ -53,7 +53,7 @@ RecordingCmdLineHandler.prototype = {
     );
     wwatch.openWindow(
       null,
-      "chrome://recording/content/recording.xul",
+      "chrome://recording/content/recording.xhtml",
       "_blank",
       "chrome,dialog=no,all",
       args

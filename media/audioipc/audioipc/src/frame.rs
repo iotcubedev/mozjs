@@ -5,7 +5,7 @@
 
 use crate::codec::Codec;
 use bytes::{Buf, Bytes, BytesMut, IntoBuf};
-use futures::{AsyncSink, Poll, Sink, StartSend, Stream};
+use futures::{AsyncSink, Poll, Sink, StartSend, Stream, task};
 use std::io;
 use tokio_io::{AsyncRead, AsyncWrite};
 
@@ -95,6 +95,9 @@ where
 
             assert!(!self.eof);
 
+            // XXX(kinetik): work around tokio_named_pipes assuming at least 1kB available.
+            self.read_buf.reserve(INITIAL_CAPACITY);
+
             // Otherwise, try to read more data and try again. Make sure we've
             // got room for at least one byte to read to ensure that we don't
             // get a spurious 0 that looks like EOF
@@ -142,7 +145,9 @@ where
     }
 
     fn close(&mut self) -> Poll<(), Self::SinkError> {
-        try_ready!(self.poll_complete());
+        if task::is_in_task() {
+            try_ready!(self.poll_complete());
+        }
         self.io.shutdown()
     }
 }

@@ -12,6 +12,7 @@
 
 #include "Accessible-inl.h"
 #include "DocAccessible-inl.h"
+#include "mozilla/a11y/DocAccessibleParent.h"
 #include "nsAccessibilityService.h"
 #include "nsAccUtils.h"
 #include "nsCoreUtils.h"
@@ -29,7 +30,6 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/BrowserHost.h"
 
-#include "nsIDocShellTreeItem.h"
 #include "nsIDocShellTreeOwner.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/EventTarget.h"
@@ -37,7 +37,6 @@
 #include "mozilla/dom/Document.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIPropertyBag2.h"
-#include "nsIServiceManager.h"
 #include "nsPIDOMWindow.h"
 #include "nsIWebBrowserChrome.h"
 #include "nsReadableUtils.h"
@@ -45,7 +44,7 @@
 #include "nsGlobalWindow.h"
 
 #ifdef MOZ_XUL
-#  include "nsIXULWindow.h"
+#  include "nsIAppWindow.h"
 #endif
 
 using namespace mozilla;
@@ -82,33 +81,23 @@ ENameValueFlag RootAccessible::Name(nsString& aName) const {
   return eNameOK;
 }
 
-role RootAccessible::NativeRole() const {
-  // If it's a <dialog> or <wizard>, use roles::DIALOG instead
-  dom::Element* rootElm = mDocumentNode->GetRootElement();
-  if (rootElm &&
-      rootElm->IsAnyOfXULElements(nsGkAtoms::dialog, nsGkAtoms::wizard))
-    return roles::DIALOG;
-
-  return DocAccessibleWrap::NativeRole();
-}
-
 // RootAccessible protected member
 #ifdef MOZ_XUL
 uint32_t RootAccessible::GetChromeFlags() const {
   // Return the flag set for the top level window as defined
   // by nsIWebBrowserChrome::CHROME_WINDOW_[FLAGNAME]
-  // Not simple: nsIXULWindow is not just a QI from nsIDOMWindow
+  // Not simple: nsIAppWindow is not just a QI from nsIDOMWindow
   nsCOMPtr<nsIDocShell> docShell = nsCoreUtils::GetDocShellFor(mDocumentNode);
   NS_ENSURE_TRUE(docShell, 0);
   nsCOMPtr<nsIDocShellTreeOwner> treeOwner;
   docShell->GetTreeOwner(getter_AddRefs(treeOwner));
   NS_ENSURE_TRUE(treeOwner, 0);
-  nsCOMPtr<nsIXULWindow> xulWin(do_GetInterface(treeOwner));
-  if (!xulWin) {
+  nsCOMPtr<nsIAppWindow> appWin(do_GetInterface(treeOwner));
+  if (!appWin) {
     return 0;
   }
   uint32_t chromeFlags;
-  xulWin->GetChromeFlags(&chromeFlags);
+  appWin->GetChromeFlags(&chromeFlags);
   return chromeFlags;
 }
 #endif
@@ -156,7 +145,7 @@ const char* const kEventTypes[] = {
     // HTMLInputElement.cpp & radio.js)
     "RadioStateChange", "popupshown", "popuphiding", "DOMMenuInactive",
     "DOMMenuItemActive", "DOMMenuItemInactive", "DOMMenuBarActive",
-    "DOMMenuBarInactive"};
+    "DOMMenuBarInactive", "scroll"};
 
 nsresult RootAccessible::AddEventListeners() {
   // EventTarget interface allows to register event listeners to
@@ -234,13 +223,23 @@ RootAccessible::HandleEvent(Event* aDOMEvent) {
       GetAccService()->GetDocAccessible(origTargetNode->OwnerDoc());
 
   if (document) {
-    // Root accessible exists longer than any of its descendant documents so
-    // that we are guaranteed notification is processed before root accessible
-    // is destroyed.
-    // For shadow DOM, GetOriginalTarget on the Event returns null if we
-    // process the event async, so we must pass the target node as well.
-    document->HandleNotification<RootAccessible, Event, nsINode>(
-        this, &RootAccessible::ProcessDOMEvent, aDOMEvent, origTargetNode);
+    nsAutoString eventType;
+    aDOMEvent->GetType(eventType);
+    if (eventType.EqualsLiteral("scroll")) {
+      // We don't put this in the notification queue for 2 reasons:
+      // 1. We will flood the queue with repetitive events.
+      // 2. Since this doesn't necessarily touch layout, we are not
+      //    guaranteed to have a WillRefresh tick any time soon.
+      document->HandleScroll(origTargetNode);
+    } else {
+      // Root accessible exists longer than any of its descendant documents so
+      // that we are guaranteed notification is processed before root accessible
+      // is destroyed.
+      // For shadow DOM, GetOriginalTarget on the Event returns null if we
+      // process the event async, so we must pass the target node as well.
+      document->HandleNotification<RootAccessible, Event, nsINode>(
+          this, &RootAccessible::ProcessDOMEvent, aDOMEvent, origTargetNode);
+    }
   }
 
   return NS_OK;
@@ -268,6 +267,13 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
       GetAccService()->GetDocAccessible(aTarget->OwnerDoc());
   if (!targetDocument) {
     // Document has ceased to exist.
+    return;
+  }
+
+  if (eventType.EqualsLiteral("popupshown") &&
+      aTarget->IsXULElement(nsGkAtoms::tooltip)) {
+    targetDocument->ContentInserted(aTarget->AsContent(),
+                                    aTarget->GetNextSibling());
     return;
   }
 
@@ -348,6 +354,15 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
     if (FocusMgr()->HasDOMFocus(targetNode)) {
       nsCOMPtr<nsIDOMXULMultiSelectControlElement> multiSel =
           targetNode->AsElement()->AsXULMultiSelectControl();
+      if (!multiSel) {
+        // This shouldn't be possible. All XUL trees should have
+        // nsIDOMXULMultiSelectControlElement, and the tree is focused, so it
+        // shouldn't be dying. Nevertheless, this sometimes happens in the wild
+        // (bug 1597043).
+        MOZ_ASSERT_UNREACHABLE(
+            "XUL tree doesn't have nsIDOMXULMultiSelectControlElement");
+        return;
+      }
       nsAutoString selType;
       multiSel->GetSelType(selType);
       if (selType.IsEmpty() || !selType.EqualsLiteral("single")) {
@@ -484,15 +499,6 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
     return;
   }
 
-  if (role == roles::TOOLTIP) {
-    // There is a single <xul:tooltip> node which Mozilla moves around.
-    // The accessible for it stays the same no matter where it moves.
-    // AT's expect to get an EVENT_SHOW for the tooltip.
-    // In event callback the tooltip's accessible will be ready.
-    nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_SHOW, aAccessible);
-    return;
-  }
-
   if (role == roles::COMBOBOX_LIST) {
     // Fire expanded state change event for comboboxes and autocompeletes.
     Accessible* combobox = aAccessible->Parent();
@@ -503,16 +509,40 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
           new AccStateChangeEvent(combobox, states::EXPANDED, true);
       if (event) nsEventShell::FireEvent(event);
     }
+
+    // If aria-activedescendant is present, redirect focus.
+    // This is needed for parent process <select> dropdowns, which use a
+    // menulist containing div elements instead of XUL menuitems. XUL menuitems
+    // fire DOMMenuItemActive events from layout instead.
+    MOZ_ASSERT(aAccessible->Elm());
+    if (aAccessible->Elm()->HasAttr(kNameSpaceID_None,
+                                    nsGkAtoms::aria_activedescendant)) {
+      Accessible* activeDescendant = aAccessible->CurrentItem();
+      if (activeDescendant) {
+        FocusMgr()->ActiveItemChanged(activeDescendant, false);
+#ifdef A11Y_LOG
+        if (logging::IsEnabled(logging::eFocus)) {
+          logging::ActiveItemChangeCausedBy("ARIA activedescendant on popup",
+                                            activeDescendant);
+        }
+#endif
+      }
+    }
   }
 }
 
 void RootAccessible::HandlePopupHidingEvent(nsINode* aPopupNode) {
-  // Get popup accessible. There are cases when popup element isn't accessible
-  // but an underlying widget is and behaves like popup, an example is
-  // autocomplete popups.
   DocAccessible* document = nsAccUtils::GetDocAccessibleFor(aPopupNode);
   if (!document) return;
 
+  if (aPopupNode->IsXULElement(nsGkAtoms::tooltip)) {
+    document->ContentRemoved(aPopupNode->AsContent());
+    return;
+  }
+
+  // Get popup accessible. There are cases when popup element isn't accessible
+  // but an underlying widget is and behaves like popup, an example is
+  // autocomplete popups.
   Accessible* popup = document->GetAccessible(aPopupNode);
   if (!popup) {
     Accessible* popupContainer = document->GetContainerAccessible(aPopupNode);
@@ -640,10 +670,10 @@ void RootAccessible::HandleTreeRowCountChangedEvent(
 
   nsresult rv;
   int32_t index, count;
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("index"), &index);
+  rv = propBag->GetPropertyAsInt32(u"index"_ns, &index);
   if (NS_FAILED(rv)) return;
 
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("count"), &count);
+  rv = propBag->GetPropertyAsInt32(u"count"_ns, &count);
   if (NS_FAILED(rv)) return;
 
   aAccessible->InvalidateCache(index, count);
@@ -656,10 +686,10 @@ void RootAccessible::HandleTreeInvalidatedEvent(
   if (!propBag) return;
 
   int32_t startRow = 0, endRow = -1, startCol = 0, endCol = -1;
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startrow"), &startRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endrow"), &endRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startcolumn"), &startCol);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endcolumn"), &endCol);
+  propBag->GetPropertyAsInt32(u"startrow"_ns, &startRow);
+  propBag->GetPropertyAsInt32(u"endrow"_ns, &endRow);
+  propBag->GetPropertyAsInt32(u"startcolumn"_ns, &startCol);
+  propBag->GetPropertyAsInt32(u"endcolumn"_ns, &endCol);
 
   aAccessible->TreeViewInvalidated(startRow, endRow, startCol, endCol);
 }

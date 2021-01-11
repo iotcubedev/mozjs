@@ -11,7 +11,6 @@
 #include "Role.h"
 #include "States.h"
 
-#include "nsIMutableArray.h"
 #include "nsIPersistentProperties2.h"
 #include "nsComponentManagerUtils.h"
 
@@ -43,8 +42,7 @@ ARIAGridAccessible::NativeAttributes() {
 
   if (IsProbablyLayoutTable()) {
     nsAutoString unused;
-    attributes->SetStringProperty(NS_LITERAL_CSTRING("layout-guess"),
-                                  NS_LITERAL_STRING("true"), unused);
+    attributes->SetStringProperty("layout-guess"_ns, u"true"_ns, unused);
   }
 
   return attributes.forget();
@@ -386,13 +384,11 @@ nsresult ARIAGridAccessible::SetARIASelected(Accessible* aAccessible,
   nsresult rv = NS_OK;
   if (content->IsElement()) {
     if (aIsSelected)
-      rv = content->AsElement()->SetAttr(kNameSpaceID_None,
-                                         nsGkAtoms::aria_selected,
-                                         NS_LITERAL_STRING("true"), aNotify);
+      rv = content->AsElement()->SetAttr(
+          kNameSpaceID_None, nsGkAtoms::aria_selected, u"true"_ns, aNotify);
     else
-      rv = content->AsElement()->SetAttr(kNameSpaceID_None,
-                                         nsGkAtoms::aria_selected,
-                                         NS_LITERAL_STRING("false"), aNotify);
+      rv = content->AsElement()->SetAttr(
+          kNameSpaceID_None, nsGkAtoms::aria_selected, u"false"_ns, aNotify);
   }
 
   NS_ENSURE_SUCCESS(rv, rv);
@@ -462,11 +458,31 @@ role ARIARowAccessible::NativeRole() const {
 GroupPos ARIARowAccessible::GroupPosition() {
   int32_t count = 0, index = 0;
   Accessible* table = nsAccUtils::TableFor(this);
-  if (table &&
-      nsCoreUtils::GetUIntAttr(table->GetContent(), nsGkAtoms::aria_rowcount,
-                               &count) &&
-      nsCoreUtils::GetUIntAttr(mContent, nsGkAtoms::aria_rowindex, &index)) {
-    return GroupPos(0, index, count);
+  if (table) {
+    if (nsCoreUtils::GetUIntAttr(table->GetContent(), nsGkAtoms::aria_rowcount,
+                                 &count) &&
+        nsCoreUtils::GetUIntAttr(mContent, nsGkAtoms::aria_rowindex, &index)) {
+      return GroupPos(0, index, count);
+    }
+
+    // Deal with the special case here that tables and grids can have rows
+    // which are wrapped in generic text container elements. Exclude tree grids
+    // because these are dealt with elsewhere.
+    if (table->Role() == roles::TABLE) {
+      Accessible* row = nullptr;
+      AccIterator rowIter(table, filters::GetRow);
+      while ((row = rowIter.Next())) {
+        index++;
+        if (row == this) {
+          break;
+        }
+      }
+
+      if (row) {
+        count = table->AsTable()->RowCount();
+        return GroupPos(0, index, count);
+      }
+    }
   }
 
   return AccessibleWrap::GroupPosition();
@@ -589,8 +605,7 @@ ARIAGridCellAccessible::NativeAttributes() {
 
 #ifdef DEBUG
   nsAutoString unused;
-  attributes->SetStringProperty(NS_LITERAL_CSTRING("cppclass"),
-                                NS_LITERAL_STRING("ARIAGridCellAccessible"),
+  attributes->SetStringProperty("cppclass"_ns, u"ARIAGridCellAccessible"_ns,
                                 unused);
 #endif
 

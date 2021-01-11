@@ -59,10 +59,6 @@ class Device(object):
         """
         remote_dump_dir = posixpath.join(self.app_ctx.remote_profile, 'minidumps')
         local_dump_dir = tempfile.mkdtemp()
-        if not self.device.is_dir(remote_dump_dir):
-            # This may be a hint that something went wrong during browser
-            # start-up if (MOZ_CRASHREPORTER=1)
-            print("WARNING: No crash directory {} found on remote device".format(remote_dump_dir))
         try:
             self.device.pull(remote_dump_dir, local_dump_dir)
         except ADBError as e:
@@ -78,7 +74,7 @@ class Device(object):
                 print("WARNING: {}".format(e))
         if os.listdir(local_dump_dir):
             self.device.rm(remote_dump_dir, recursive=True)
-            self.device.mkdir(remote_dump_dir)
+            self.device.mkdir(remote_dump_dir, parents=True)
         return local_dump_dir
 
     def setup_profile(self, profile):

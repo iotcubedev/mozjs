@@ -10,7 +10,10 @@ import json
 import logging
 import time
 import sys
+from collections import defaultdict
 
+import six
+from six import text_type
 from redo import retry
 import yaml
 
@@ -20,7 +23,10 @@ from .create import create_tasks
 from .generator import TaskGraphGenerator
 from .parameters import Parameters, get_version, get_app_version
 from .taskgraph import TaskGraph
+from taskgraph.util.python_path import find_object
 from .try_option_syntax import parse_message
+from .util.bugbug import push_schedules
+from .util.chunking import resolver
 from .util.hg import get_hg_revision_branch, get_hg_commit_message
 from .util.partials import populate_release_history
 from .util.schema import validate_schema, Schema
@@ -45,8 +51,12 @@ PER_PROJECT_PARAMETERS = {
         'target_tasks_method': 'try_tasks',
     },
 
+    'kaios-try': {
+        'target_tasks_method': 'try_tasks',
+    },
+
     'ash': {
-        'target_tasks_method': 'ash_tasks',
+        'target_tasks_method': 'default',
     },
 
     'cedar': {
@@ -77,14 +87,14 @@ PER_PROJECT_PARAMETERS = {
         'release_type': 'release',
     },
 
-    'mozilla-esr60': {
-        'target_tasks_method': 'mozilla_esr60_tasks',
-        'release_type': 'esr60',
-    },
-
     'mozilla-esr68': {
         'target_tasks_method': 'mozilla_esr68_tasks',
         'release_type': 'esr68',
+    },
+
+    'mozilla-esr78': {
+        'target_tasks_method': 'mozilla_esr78_tasks',
+        'release_type': 'esr78',
     },
 
     'comm-central': {
@@ -97,18 +107,22 @@ PER_PROJECT_PARAMETERS = {
         'release_type': 'beta',
     },
 
-    'comm-esr60': {
-        'target_tasks_method': 'mozilla_esr60_tasks',
-        'release_type': 'release',
-    },
-
     'comm-esr68': {
         'target_tasks_method': 'mozilla_esr68_tasks',
         'release_type': 'release',
     },
 
+    'comm-esr78': {
+        'target_tasks_method': 'mozilla_esr78_tasks',
+        'release_type': 'release',
+    },
+
     'pine': {
         'target_tasks_method': 'pine_tasks',
+    },
+
+    'kaios': {
+        'target_tasks_method': 'kaios_tasks',
     },
 
     # the default parameters are used for projects that do not match above.
@@ -118,21 +132,42 @@ PER_PROJECT_PARAMETERS = {
 }
 
 try_task_config_schema = Schema({
-    Required('tasks'): [basestring],
-    Optional('templates'): {basestring: object},
-    Optional('disable-pgo'): bool,
+    Required('tasks'): [text_type],
     Optional('browsertime'): bool,
+    Optional('chemspill-prio'): bool,
+    Optional('disable-pgo'): bool,
+    Optional('env'): {text_type: text_type},
+    Optional('gecko-profile'): bool,
+    Optional(
+        "perftest-options",
+        description="Options passed from `mach perftest` to try."
+    ): object,
+    Optional(
+        "optimize-strategies",
+        description="Alternative optimization strategies to use instead of the default. "
+                    "A module path pointing to a dict to be use as the `strategy_override` "
+                    "argument in `taskgraph.optimize.optimize_task_graph`."
+    ): text_type,
+    Optional('rebuild'): int,
+    Optional('use-artifact-builds'): bool,
+    Optional(
+        "worker-overrides",
+        description="Mapping of worker alias to worker pools to use for those aliases."
+    ): {text_type: text_type},
+    Optional('routes'): [text_type],
 })
-
+"""
+Schema for try_task_config.json files.
+"""
 
 try_task_config_schema_v2 = Schema({
-    Optional('parameters'): {basestring: object},
+    Optional('parameters'): {text_type: object},
 })
 
 
 def full_task_graph_to_runnable_jobs(full_task_json):
     runnable_jobs = {}
-    for label, node in full_task_json.iteritems():
+    for label, node in six.iteritems(full_task_json):
         if not ('extra' in node['task'] and 'treeherder' in node['task']['extra']):
             continue
 
@@ -147,6 +182,17 @@ def full_task_graph_to_runnable_jobs(full_task_json):
         if th.get('machine', {}).get('platform'):
             runnable_jobs[label]['platform'] = th['machine']['platform']
     return runnable_jobs
+
+
+def full_task_graph_to_manifests_by_task(full_task_json):
+    manifests_by_task = defaultdict(list)
+    for label, node in six.iteritems(full_task_json):
+        manifests = node['attributes'].get('test_manifests')
+        if not manifests:
+            continue
+
+        manifests_by_task[label].extend(manifests)
+    return manifests_by_task
 
 
 def try_syntax_from_message(message):
@@ -172,18 +218,28 @@ def taskgraph_decision(options, parameters=None):
      * calling TaskCluster APIs to create the graph
     """
 
-    parameters = parameters or (lambda config: get_decision_parameters(config, options))
+    parameters = parameters or (
+        lambda graph_config: get_decision_parameters(graph_config, options)
+    )
+
+    decision_task_id = os.environ['TASK_ID']
 
     # create a TaskGraphGenerator instance
     tgg = TaskGraphGenerator(
         root_dir=options.get('root'),
-        parameters=parameters)
+        parameters=parameters,
+        decision_task_id=decision_task_id,
+        write_artifacts=True,
+    )
 
     # write out the parameters used to generate this graph
     write_artifact('parameters.yml', dict(**tgg.parameters))
 
     # write out the public/actions.json file
-    write_artifact('actions.json', render_actions_json(tgg.parameters, tgg.graph_config))
+    write_artifact(
+        'actions.json',
+        render_actions_json(tgg.parameters, tgg.graph_config, decision_task_id),
+    )
 
     # write out the full graph for reference
     full_task_json = tgg.full_task_graph.to_json()
@@ -192,28 +248,45 @@ def taskgraph_decision(options, parameters=None):
     # write out the public/runnable-jobs.json file
     write_artifact('runnable-jobs.json', full_task_graph_to_runnable_jobs(full_task_json))
 
+    # write out the public/manifests-by-task.json file
+    write_artifact('manifests-by-task.json.gz',
+                   full_task_graph_to_manifests_by_task(full_task_json))
+
+    # write out the public/tests-by-manifest.json file
+    write_artifact('tests-by-manifest.json.gz', resolver.tests_by_manifest)
+
     # this is just a test to check whether the from_json() function is working
     _, _ = TaskGraph.from_json(full_task_json)
 
     # write out the target task set to allow reproducing this as input
-    write_artifact('target-tasks.json', tgg.target_task_set.tasks.keys())
+    write_artifact('target-tasks.json', list(tgg.target_task_set.tasks.keys()))
 
     # write out the optimized task graph to describe what will actually happen,
     # and the map of labels to taskids
     write_artifact('task-graph.json', tgg.morphed_task_graph.to_json())
     write_artifact('label-to-taskid.json', tgg.label_to_taskid)
 
+    # write bugbug scheduling information if it was invoked
+    if len(push_schedules) > 0:
+        write_artifact("bugbug-push-schedules.json", push_schedules.popitem()[1])
+
     # actually create the graph
-    create_tasks(tgg.graph_config, tgg.morphed_task_graph, tgg.label_to_taskid, tgg.parameters)
+    create_tasks(
+        tgg.graph_config,
+        tgg.morphed_task_graph,
+        tgg.label_to_taskid,
+        tgg.parameters,
+        decision_task_id=decision_task_id,
+    )
 
 
-def get_decision_parameters(config, options):
+def get_decision_parameters(graph_config, options):
     """
     Load parameters from the command-line options for 'taskgraph decision'.
     This also applies per-project parameters, based on the given project.
 
     """
-    product_dir = config['product-dir']
+    product_dir = graph_config['product-dir']
 
     parameters = {n: options[n] for n in [
         'base_repository',
@@ -265,6 +338,7 @@ def get_decision_parameters(config, options):
     parameters['release_product'] = None
     parameters['required_signoffs'] = []
     parameters['signoff_urls'] = {}
+    parameters['test_manifest_loader'] = 'default'
     parameters['try_mode'] = None
     parameters['try_task_config'] = {}
     parameters['try_options'] = None
@@ -277,8 +351,8 @@ def get_decision_parameters(config, options):
     # use the pushdate as build_date if given, else use current time
     parameters['build_date'] = parameters['pushdate'] or int(time.time())
     # moz_build_date is the build identifier based on build_date
-    parameters['moz_build_date'] = time.strftime("%Y%m%d%H%M%S",
-                                                 time.gmtime(parameters['build_date']))
+    parameters['moz_build_date'] = six.ensure_text(
+        time.strftime("%Y%m%d%H%M%S", time.gmtime(parameters['build_date'])))
 
     project = parameters['project']
     try:
@@ -300,7 +374,7 @@ def get_decision_parameters(config, options):
         parameters['target_tasks_method'] = 'nothing'
 
     if options.get('include_push_tasks'):
-        get_existing_tasks(options.get('rebuild_kinds', []), parameters, config)
+        get_existing_tasks(options.get('rebuild_kinds', []), parameters, graph_config)
 
     # If the target method is nightly, we should build partials. This means
     # knowing what has been released previously.
@@ -321,6 +395,10 @@ def get_decision_parameters(config, options):
 
     if options.get('optimize_target_tasks') is not None:
         parameters['optimize_target_tasks'] = options['optimize_target_tasks']
+
+    if 'decision-parameters' in graph_config['taskgraph']:
+        find_object(graph_config['taskgraph']['decision-parameters'])(graph_config,
+                                                                      parameters)
 
     result = Parameters(**parameters)
     result.check()
@@ -375,8 +453,7 @@ def set_try_config(parameters, task_config_file):
 
     if 'try:' in parameters['message']:
         parameters['try_mode'] = 'try_option_syntax'
-        args = parse_message(parameters['message'])
-        parameters['try_options'] = args
+        parameters.update(parse_message(parameters['message']))
     else:
         parameters['try_options'] = None
 
@@ -402,10 +479,10 @@ def write_artifact(filename, data):
     elif filename.endswith('.json'):
         with open(path, 'w') as f:
             json.dump(data, f, sort_keys=True, indent=2, separators=(',', ': '))
-    elif filename.endswith('.gz'):
+    elif filename.endswith('.json.gz'):
         import gzip
         with gzip.open(path, 'wb') as f:
-            f.write(json.dumps(data))
+            f.write(json.dumps(data).encode('utf-8'))
     else:
         raise TypeError("Don't know how to write to {}".format(filename))
 
@@ -417,10 +494,10 @@ def read_artifact(filename):
     elif filename.endswith('.json'):
         with open(path, 'r') as f:
             return json.load(f)
-    elif filename.endswith('.gz'):
+    elif filename.endswith('.json.gz'):
         import gzip
         with gzip.open(path, 'rb') as f:
-            return json.load(f)
+            return json.load(f.decode('utf-8'))
     else:
         raise TypeError("Don't know how to read {}".format(filename))
 

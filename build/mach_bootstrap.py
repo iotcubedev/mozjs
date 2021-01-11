@@ -39,6 +39,7 @@ MACH_MODULES = [
     'build/valgrind/mach_commands.py',
     'devtools/shared/css/generated/mach_commands.py',
     'dom/bindings/mach_commands.py',
+    'js/src/devtools/rootAnalysis/mach_commands.py',
     'layout/tools/reftest/mach_commands.py',
     'mobile/android/mach_commands.py',
     'python/mach/mach/commands/commandinfo.py',
@@ -51,12 +52,15 @@ MACH_MODULES = [
     'python/mozbuild/mozbuild/code-analysis/mach_commands.py',
     'python/mozbuild/mozbuild/compilation/codecomplete.py',
     'python/mozbuild/mozbuild/frontend/mach_commands.py',
+    'python/mozbuild/mozbuild/vendor/mach_commands.py',
     'python/mozbuild/mozbuild/mach_commands.py',
+    'python/mozperftest/mozperftest/mach_commands.py',
     'python/mozrelease/mozrelease/mach_commands.py',
     'python/safety/mach_commands.py',
     'remote/mach_commands.py',
     'taskcluster/mach_commands.py',
     'testing/awsy/mach_commands.py',
+    'testing/condprofile/mach_commands.py',
     'testing/firefox-ui/mach_commands.py',
     'testing/geckodriver/mach_commands.py',
     'testing/mach_commands.py',
@@ -71,9 +75,10 @@ MACH_MODULES = [
     'toolkit/components/telemetry/tests/marionette/mach_commands.py',
     'tools/browsertime/mach_commands.py',
     'tools/compare-locales/mach_commands.py',
-    'tools/docs/mach_commands.py',
     'tools/lint/mach_commands.py',
     'tools/mach_commands.py',
+    'tools/moztreedocs/mach_commands.py',
+    'tools/phabricator/mach_commands.py',
     'tools/power/mach_commands.py',
     'tools/tryselect/mach_commands.py',
     'tools/vcs/mach_commands.py',
@@ -200,6 +205,46 @@ def bootstrap(topsrcdir, mozilla_dir=None):
     from mach.util import setenv
     from mozboot.util import get_state_dir
 
+    # Set a reasonable limit to the number of open files.
+    #
+    # Some linux systems set `ulimit -n` to a very high number, which works
+    # well for systems that run servers, but this setting causes performance
+    # problems when programs close file descriptors before forking, like
+    # Python's `subprocess.Popen(..., close_fds=True)` (close_fds=True is the
+    # default in Python 3), or Rust's stdlib.  In some cases, Firefox does the
+    # same thing when spawning processes.  We would prefer to lower this limit
+    # to avoid such performance problems; processes spawned by `mach` will
+    # inherit the limit set here.
+    #
+    # The Firefox build defaults the soft limit to 1024, except for builds that
+    # do LTO, where the soft limit is 8192.  We're going to default to the
+    # latter, since people do occasionally do LTO builds on their local
+    # machines, and requiring them to discover another magical setting after
+    # setting up an LTO build in the first place doesn't seem good.
+    #
+    # This code mimics the code in taskcluster/scripts/run-task.
+    try:
+        import resource
+        # Keep the hard limit the same, though, allowing processes to change
+        # their soft limit if they need to (Firefox does, for instance).
+        (soft, hard) = resource.getrlimit(resource.RLIMIT_NOFILE)
+        # Permit people to override our default limit if necessary via
+        # MOZ_LIMIT_NOFILE, which is the same variable `run-task` uses.
+        limit = os.environ.get('MOZ_LIMIT_NOFILE')
+        if limit:
+            limit = int(limit)
+        else:
+            # If no explicit limit is given, use our default if it's less than
+            # the current soft limit.  For instance, the default on macOS is
+            # 256, so we'd pick that rather than our default.
+            limit = min(soft, 8192)
+        # Now apply the limit, if it's different from the original one.
+        if limit != soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+    except ImportError:
+        # The resource module is UNIX only.
+        pass
+
     from mozbuild.util import patch_main
     patch_main()
 
@@ -214,6 +259,28 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         except (mozversioncontrol.InvalidRepoPath,
                 mozversioncontrol.MissingVCSTool):
             return None
+
+    def pre_dispatch_handler(context, handler, args):
+        # If --disable-tests flag was enabled in the mozconfig used to compile
+        # the build, tests will be disabled. Instead of trying to run
+        # nonexistent tests then reporting a failure, this will prevent mach
+        # from progressing beyond this point.
+        if handler.category == 'testing':
+            from mozbuild.base import BuildEnvironmentNotFoundException
+            try:
+                from mozbuild.base import MozbuildObject
+                # all environments should have an instance of build object.
+                build = MozbuildObject.from_environment()
+                if build is not None and hasattr(build, 'mozconfig'):
+                    ac_options = build.mozconfig['configure_args']
+                    if ac_options and '--disable-tests' in ac_options:
+                        print('Tests have been disabled by mozconfig with the flag ' +
+                              '"ac_add_options --disable-tests".\n' +
+                              'Remove the flag, and re-compile to enable tests.')
+                        sys.exit(1)
+            except BuildEnvironmentNotFoundException:
+                # likely automation environment, so do nothing.
+                pass
 
     def should_skip_telemetry_submission(handler):
         # The user is performing a maintenance command.
@@ -241,12 +308,8 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         if depth != 1 or os.environ.get('MACH_MAIN_PID') != str(os.getpid()):
             return
 
-        # Don't write telemetry data for 'mach' when 'DISABLE_TELEMETRY' is set.
-        if os.environ.get('DISABLE_TELEMETRY') == '1':
-            return
-
-        # We have not opted-in to telemetry
-        if not context.settings.build.telemetry:
+        from mozbuild.telemetry import is_telemetry_enabled
+        if not is_telemetry_enabled(context.settings):
             return
 
         from mozbuild.telemetry import gather_telemetry
@@ -309,7 +372,7 @@ def bootstrap(topsrcdir, mozilla_dir=None):
                               state_dir],
                              stdout=devnull, stderr=devnull)
 
-    def populate_context(context, key=None):
+    def populate_context(key=None):
         if key is None:
             return
         if key == 'state_dir':
@@ -338,6 +401,9 @@ def bootstrap(topsrcdir, mozilla_dir=None):
 
         if key == 'topdir':
             return topsrcdir
+
+        if key == 'pre_dispatch_handler':
+            return pre_dispatch_handler
 
         if key == 'post_dispatch_handler':
             return post_dispatch_handler
@@ -415,7 +481,7 @@ class ImportHook(object):
         self._modules.add(resolved_name)
 
         # Builtin modules don't have a __file__ attribute.
-        if not hasattr(module, '__file__'):
+        if not getattr(module, '__file__', None):
             return module
 
         # Note: module.__file__ is not always absolute.

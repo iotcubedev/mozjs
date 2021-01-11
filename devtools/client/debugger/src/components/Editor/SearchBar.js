@@ -14,11 +14,9 @@ import {
   getActiveSearch,
   getSelectedSource,
   getSourceContent,
-  getSelectedLocation,
   getFileSearchQuery,
   getFileSearchModifiers,
   getFileSearchResults,
-  getHighlightedLineRange,
   getContext,
 } from "../../selectors";
 
@@ -57,10 +55,15 @@ type State = {
   inputFocused: boolean,
 };
 
+type OwnProps = {|
+  editor: SourceEditor,
+  showClose?: boolean,
+  size?: string,
+|};
 type Props = {
   cx: Context,
   editor: SourceEditor,
-  selectedSource?: Source,
+  selectedSource: ?Source,
   selectedContentLoaded: boolean,
   searchOn: boolean,
   searchResults: SearchResults,
@@ -89,7 +92,7 @@ class SearchBar extends Component<Props, State> {
   }
 
   componentWillUnmount() {
-    const shortcuts = this.context.shortcuts;
+    const { shortcuts } = this.context;
     const {
       searchShortcut,
       searchAgainShortcut,
@@ -106,7 +109,7 @@ class SearchBar extends Component<Props, State> {
     // overwrite this.doSearch with debounced version to
     // reduce frequency of queries
     this.doSearch = debounce(this.doSearch, 100);
-    const shortcuts = this.context.shortcuts;
+    const { shortcuts } = this.context;
     const {
       searchShortcut,
       searchAgainShortcut,
@@ -188,7 +191,7 @@ class SearchBar extends Component<Props, State> {
   traverseResults = (e: SyntheticEvent<HTMLElement>, rev: boolean) => {
     e.stopPropagation();
     e.preventDefault();
-    const editor = this.props.editor;
+    const { editor } = this.props;
 
     if (!editor) {
       return;
@@ -259,7 +262,7 @@ class SearchBar extends Component<Props, State> {
 
     function SearchModBtn({ modVal, className, svgName, tooltip }) {
       const preppedClass = classnames(className, {
-        active: modifiers && modifiers[modVal],
+        active: modifiers?.[modVal],
       });
       return (
         <button
@@ -366,7 +369,7 @@ SearchBar.contextTypes = {
   shortcuts: PropTypes.object,
 };
 
-const mapStateToProps = state => {
+const mapStateToProps = (state, p: OwnProps) => {
   const selectedSource = getSelectedSource(state);
 
   return {
@@ -375,23 +378,18 @@ const mapStateToProps = state => {
     selectedSource,
     selectedContentLoaded: selectedSource
       ? !!getSourceContent(state, selectedSource.id)
-      : null,
-    selectedLocation: getSelectedLocation(state),
+      : false,
     query: getFileSearchQuery(state),
     modifiers: getFileSearchModifiers(state),
-    highlightedLineRange: getHighlightedLineRange(state),
     searchResults: getFileSearchResults(state),
   };
 };
 
-export default connect(
-  mapStateToProps,
-  {
-    toggleFileSearchModifier: actions.toggleFileSearchModifier,
-    setFileSearchQuery: actions.setFileSearchQuery,
-    setActiveSearch: actions.setActiveSearch,
-    closeFileSearch: actions.closeFileSearch,
-    doSearch: actions.doSearch,
-    traverseResults: actions.traverseResults,
-  }
-)(SearchBar);
+export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+  toggleFileSearchModifier: actions.toggleFileSearchModifier,
+  setFileSearchQuery: actions.setFileSearchQuery,
+  setActiveSearch: actions.setActiveSearch,
+  closeFileSearch: actions.closeFileSearch,
+  doSearch: actions.doSearch,
+  traverseResults: actions.traverseResults,
+})(SearchBar);

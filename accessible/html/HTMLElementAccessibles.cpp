@@ -7,7 +7,6 @@
 
 #include "DocAccessible.h"
 #include "nsAccUtils.h"
-#include "nsIPersistentProperties2.h"
 #include "nsTextEquivUtils.h"
 #include "Relation.h"
 #include "Role.h"
@@ -151,6 +150,28 @@ uint64_t HTMLSummaryAccessible::NativeState() const {
   return state;
 }
 
+HTMLSummaryAccessible* HTMLSummaryAccessible::FromDetails(Accessible* details) {
+  if (!dom::HTMLDetailsElement::FromNodeOrNull(details->GetContent())) {
+    return nullptr;
+  }
+
+  HTMLSummaryAccessible* summaryAccessible = nullptr;
+  for (uint32_t i = 0; i < details->ChildCount(); i++) {
+    // Iterate through the children of our details accessible to locate main
+    // summary. This iteration includes the anonymous summary if the details
+    // element was not explicitly created with one.
+    Accessible* child = details->GetChildAt(i);
+    auto* summary =
+        mozilla::dom::HTMLSummaryElement::FromNodeOrNull(child->GetContent());
+    if (summary && summary->IsMainSummary()) {
+      summaryAccessible = static_cast<HTMLSummaryAccessible*>(child);
+      break;
+    }
+  }
+
+  return summaryAccessible;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // HTMLSummaryAccessible: Widgets
 
@@ -197,7 +218,7 @@ nsAtom* HTMLHeaderOrFooterAccessible::LandmarkRole() const {
     }
   }
 
-  return nullptr;
+  return HyperTextAccessibleWrap::LandmarkRole();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -218,5 +239,6 @@ nsAtom* HTMLSectionAccessible::LandmarkRole() const {
   // Only return xml-roles "region" if the section has an accessible name.
   nsAutoString name;
   const_cast<HTMLSectionAccessible*>(this)->Name(name);
-  return name.IsEmpty() ? nullptr : nsGkAtoms::region;
+  return name.IsEmpty() ? HyperTextAccessibleWrap::LandmarkRole()
+                        : nsGkAtoms::region;
 }

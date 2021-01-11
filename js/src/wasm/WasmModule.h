@@ -19,6 +19,7 @@
 #ifndef wasm_module_h
 #define wasm_module_h
 
+#include "js/WasmModule.h"
 #include "js/BuildId.h"
 
 #include "wasm/WasmCode.h"
@@ -32,7 +33,7 @@ struct CompileArgs;
 // In the context of wasm, the OptimizedEncodingListener specifically is
 // listening for the completion of tier-2.
 
-typedef RefPtr<JS::OptimizedEncodingListener> Tier2Listener;
+using Tier2Listener = RefPtr<JS::OptimizedEncodingListener>;
 
 // A struct containing the typed, imported values that are harvested from the
 // import object and passed to Module::instantiate(). This struct must be
@@ -209,7 +210,8 @@ class Module : public JS::WasmModule {
 
   // JS API and JS::WasmModule implementation:
 
-  JSObject* createObject(JSContext* cx) override;
+  JSObject* createObject(JSContext* cx) const override;
+  JSObject* createObjectForAsmJS(JSContext* cx) const override;
 
   // about:memory reporting:
 
@@ -228,8 +230,8 @@ class Module : public JS::WasmModule {
   bool extractCode(JSContext* cx, Tier tier, MutableHandleValue vp) const;
 };
 
-typedef RefPtr<Module> MutableModule;
-typedef RefPtr<const Module> SharedModule;
+using MutableModule = RefPtr<Module>;
+using SharedModule = RefPtr<const Module>;
 
 // JS API implementations:
 

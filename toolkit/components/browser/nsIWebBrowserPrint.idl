@@ -27,16 +27,6 @@ interface nsIWebBrowserPrint : nsISupports
   const short PRINTPREVIEW_END          = 4;
 
   /**
-   * Returns a "global" PrintSettings object
-   * Creates a new the first time, if one doesn't exist.
-   *
-   * Then returns the same object each time after that.
-   *
-   * Initializes the globalPrintSettings from the default printer
-   */
-  readonly attribute nsIPrintSettings globalPrintSettings;
-
-  /**
    * Returns a pointer to the PrintSettings object that
    * that was passed into either "print" or "print preview"
    *
@@ -44,13 +34,6 @@ interface nsIWebBrowserPrint : nsISupports
    * to the "current" PrintSetting at later points in the execution
    */
   readonly attribute nsIPrintSettings currentPrintSettings;
-
-  /**
-   * The "name" of the document that is to be printed.  This is the document's
-   * title, unless that's empty, in which case it is a sanitized version of the
-   * document's URL.
-   */
-  readonly attribute AString documentName;
 
   /**
    * Returns whether it is in Print mode
@@ -85,8 +68,8 @@ interface nsIWebBrowserPrint : nsISupports
    * @param aWPListener - is updated during the print
    * @return void
    */
-  void print(in nsIPrintSettings aThePrintSettings,
-             in nsIWebProgressListener aWPListener);
+  [noscript] void print(in nsIPrintSettings aThePrintSettings,
+                        in nsIWebProgressListener aWPListener);
 
   /**
    * Print Preview the specified DOM window

@@ -116,7 +116,7 @@ class DocManager : public nsIWebProgressListener,
 
  protected:
   DocManager();
-  virtual ~DocManager() {}
+  virtual ~DocManager() = default;
 
   /**
    * Initialize the manager.
@@ -172,8 +172,9 @@ class DocManager : public nsIWebProgressListener,
                             xpcAccessibleDocument>
       XPCDocumentHashtable;
   XPCDocumentHashtable mXPCDocumentCache;
-  static nsRefPtrHashtable<nsPtrHashKey<const DocAccessibleParent>,
-                           xpcAccessibleDocument>* sRemoteXPCDocumentCache;
+  static StaticAutoPtr<nsRefPtrHashtable<
+      nsPtrHashKey<const DocAccessibleParent>, xpcAccessibleDocument>>
+      sRemoteXPCDocumentCache;
 
   /*
    * The list of remote top level documents.

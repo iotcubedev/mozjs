@@ -13,15 +13,19 @@ DIRS += [ 'featurepolicy' ]
 
 EXPORTS.mozilla.dom += [
     'CSPEvalChecker.h',
+    'DOMSecurityMonitor.h',
     'FramingChecker.h',
     'nsContentSecurityManager.h',
     'nsContentSecurityUtils.h',
     'nsCSPContext.h',
     'nsCSPService.h',
     'nsCSPUtils.h',
+    'nsHTTPSOnlyStreamListener.h',
+    'nsHTTPSOnlyUtils.h',
     'nsMixedContentBlocker.h',
     'PolicyTokenizer.h',
     'ReferrerInfo.h',
+    'SecFetch.h',
     'SRICheck.h',
     'SRILogHelper.h',
     'SRIMetadata.h',
@@ -36,6 +40,7 @@ EXPORTS += [
 
 UNIFIED_SOURCES += [
     'CSPEvalChecker.cpp',
+    'DOMSecurityMonitor.cpp',
     'FramingChecker.cpp',
     'nsContentSecurityManager.cpp',
     'nsContentSecurityUtils.cpp',
@@ -43,9 +48,12 @@ UNIFIED_SOURCES += [
     'nsCSPParser.cpp',
     'nsCSPService.cpp',
     'nsCSPUtils.cpp',
+    'nsHTTPSOnlyStreamListener.cpp',
+    'nsHTTPSOnlyUtils.cpp',
     'nsMixedContentBlocker.cpp',
     'PolicyTokenizer.cpp',
     'ReferrerInfo.cpp',
+    'SecFetch.cpp',
     'SRICheck.cpp',
     'SRIMetadata.cpp',
 ]
@@ -68,3 +76,9 @@ if CONFIG['FUZZING_INTERFACES']:
         'fuzztest'
     ]
 
+
+XPIDL_SOURCES += [
+    'nsIHttpsOnlyModePermission.idl',
+]
+
+XPIDL_MODULE = 'dom_security'

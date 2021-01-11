@@ -6,7 +6,6 @@
 #include "nsSocketTransport2.h"
 #include "nsServerSocket.h"
 #include "nsProxyRelease.h"
-#include "nsAutoPtr.h"
 #include "nsError.h"
 #include "nsNetCID.h"
 #include "prnetdb.h"
@@ -209,7 +208,7 @@ void nsServerSocket::OnSocketDetached(PRFileDesc* fd) {
     RefPtr<nsIServerSocketListener> listener = nullptr;
     {
       MutexAutoLock lock(mLock);
-      listener = mListener.forget();
+      listener = ToRefPtr(std::move(mListener));
     }
 
     // XXX we need to proxy the release to the listener's target thread to work
@@ -425,7 +424,7 @@ class ServerSocketListenerProxy final : public nsIServerSocketListener {
   explicit ServerSocketListenerProxy(nsIServerSocketListener* aListener)
       : mListener(new nsMainThreadPtrHolder<nsIServerSocketListener>(
             "ServerSocketListenerProxy::mListener", aListener)),
-        mTarget(GetCurrentThreadEventTarget()) {}
+        mTarget(GetCurrentEventTarget()) {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSISERVERSOCKETLISTENER
@@ -511,7 +510,7 @@ nsServerSocket::AsyncListen(nsIServerSocketListener* aListener) {
   {
     MutexAutoLock lock(mLock);
     mListener = new ServerSocketListenerProxy(aListener);
-    mListenerTarget = GetCurrentThreadEventTarget();
+    mListenerTarget = GetCurrentEventTarget();
   }
 
   // Child classes may need to do additional setup just before listening begins

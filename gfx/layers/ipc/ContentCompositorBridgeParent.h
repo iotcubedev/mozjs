@@ -7,14 +7,18 @@
 #ifndef mozilla_layers_ContentCompositorBridgeParent_h
 #define mozilla_layers_ContentCompositorBridgeParent_h
 
+#include "mozilla/layers/CanvasTranslator.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/UniquePtr.h"
 
 namespace mozilla {
+namespace webgpu {
+class PWebGPUParent;
+}  // namespace webgpu
+
 namespace layers {
 
-class CanvasParent;
 class CompositorOptions;
 
 /**
@@ -42,6 +46,9 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
   }
   mozilla::ipc::IPCResult RecvWillClose() override { return IPC_OK(); }
   mozilla::ipc::IPCResult RecvPause() override { return IPC_OK(); }
+  mozilla::ipc::IPCResult RecvRequestFxrOutput() override {
+    return IPC_FAIL_NO_REASON(this);
+  }
   mozilla::ipc::IPCResult RecvResume() override { return IPC_OK(); }
   mozilla::ipc::IPCResult RecvResumeAsync() override { return IPC_OK(); }
   mozilla::ipc::IPCResult RecvNotifyChildCreated(
@@ -93,8 +100,15 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
     return IPC_OK();
   }
 
-  mozilla::ipc::IPCResult RecvEndRecording(bool* aOutSuccess) override {
-    *aOutSuccess = false;
+  mozilla::ipc::IPCResult RecvEndRecordingToDisk(
+      EndRecordingToDiskResolver&& aResolve) override {
+    aResolve(false);
+    return IPC_OK();
+  }
+
+  mozilla::ipc::IPCResult RecvEndRecordingToMemory(
+      EndRecordingToMemoryResolver&& aResolve) override {
+    aResolve(Nothing());
     return IPC_OK();
   }
 
@@ -128,24 +142,26 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
   void LeaveTestMode(const LayersId& aId) override;
   void ApplyAsyncProperties(LayerTransactionParent* aLayerTree,
                             TransformsToSkip aSkip) override;
-  void SetTestAsyncScrollOffset(const WRRootId& aLayersId,
+  void SetTestAsyncScrollOffset(const LayersId& aLayersId,
                                 const ScrollableLayerGuid::ViewID& aScrollId,
                                 const CSSPoint& aPoint) override;
-  void SetTestAsyncZoom(const WRRootId& aLayersId,
+  void SetTestAsyncZoom(const LayersId& aLayersId,
                         const ScrollableLayerGuid::ViewID& aScrollId,
                         const LayerToParentLayerScale& aZoom) override;
-  void FlushApzRepaints(const WRRootId& aLayersId) override;
-  void GetAPZTestData(const WRRootId& aLayersId,
+  void FlushApzRepaints(const LayersId& aLayersId) override;
+  void GetAPZTestData(const LayersId& aLayersId,
                       APZTestData* aOutData) override;
   void SetConfirmedTargetAPZC(
       const LayersId& aLayersId, const uint64_t& aInputBlockId,
-      const nsTArray<SLGuidAndRenderRoot>& aTargets) override;
+      const nsTArray<ScrollableLayerGuid>& aTargets) override;
 
   AsyncCompositionManager* GetCompositionManager(
       LayerTransactionParent* aParent) override;
   mozilla::ipc::IPCResult RecvRemotePluginsReady() override {
     return IPC_FAIL_NO_REASON(this);
   }
+
+  already_AddRefed<dom::PWebGLParent> AllocPWebGLParent() override;
 
   // Use DidCompositeLocked if you already hold a lock on
   // sIndirectLayerTreesLock; Otherwise use DidComposite, which would request
@@ -163,6 +179,8 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
 
   mozilla::ipc::IPCResult RecvInitPCanvasParent(
       Endpoint<PCanvasParent>&& aEndpoint) final;
+
+  mozilla::ipc::IPCResult RecvReleasePCanvasParent() final;
 
   bool IsSameProcess() const override;
 
@@ -194,6 +212,9 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
       const LayoutDeviceIntSize& aSize) override;
   bool DeallocPWebRenderBridgeParent(PWebRenderBridgeParent* aActor) override;
 
+  webgpu::PWebGPUParent* AllocPWebGPUParent() override;
+  bool DeallocPWebGPUParent(webgpu::PWebGPUParent* aActor) override;
+
   void ObserveLayersUpdate(LayersId aLayersId, LayersObserverEpoch aEpoch,
                            bool aActive) override;
 
@@ -201,6 +222,10 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
 
   UniquePtr<SurfaceDescriptor> LookupSurfaceDescriptorForClientDrawTarget(
       const uintptr_t aDrawTarget) final;
+
+  mozilla::ipc::IPCResult RecvSupportsAsyncDXGISurface(bool* value) override;
+  mozilla::ipc::IPCResult RecvPreferredDXGIAdapter(
+      DxgiAdapterDesc* desc) override;
 
  private:
   // Private destructor, to discourage deletion outside of Release():
@@ -218,7 +243,7 @@ class ContentCompositorBridgeParent final : public CompositorBridgeParentBase {
   bool mNotifyAfterRemotePaint;
   bool mDestroyCalled;
 
-  RefPtr<CanvasParent> mCanvasParent;
+  RefPtr<CanvasTranslator> mCanvasTranslator;
 };
 
 }  // namespace layers

@@ -14,14 +14,23 @@ enum AnimationPlayState { "idle", "running", "paused", "finished" };
 
 enum AnimationReplaceState { "active", "removed", "persisted" };
 
-[Constructor(optional AnimationEffect? effect = null,
-             optional AnimationTimeline? timeline)]
+[Exposed=Window]
 interface Animation : EventTarget {
+  [Throws]
+  constructor(optional AnimationEffect? effect = null,
+              optional AnimationTimeline? timeline);
+
   attribute DOMString id;
   [Func="Document::IsWebAnimationsEnabled", Pure]
   attribute AnimationEffect? effect;
   [Func="Document::AreWebAnimationsTimelinesEnabled"]
+#ifdef NIGHTLY_BUILD
+  // Animation.timeline setter is supported only on Nightly.
   attribute AnimationTimeline? timeline;
+#else
+  readonly attribute AnimationTimeline? timeline;
+#endif
+
   [BinaryName="startTimeAsDouble"]
   attribute double? startTime;
   [SetterThrows, BinaryName="currentTimeAsDouble"]

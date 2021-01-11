@@ -15,7 +15,6 @@
 #include "TimeUnits.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/gfx/Types.h"
-#include "nsIThread.h"
 
 namespace mozilla {
 
@@ -56,9 +55,8 @@ class AppleVTDecoder : public MediaDataDecoder,
   }
 
   nsCString GetDescriptionName() const override {
-    return mIsHardwareAccelerated
-               ? NS_LITERAL_CSTRING("apple hardware VT decoder")
-               : NS_LITERAL_CSTRING("apple software VT decoder");
+    return mIsHardwareAccelerated ? "apple hardware VT decoder"_ns
+                                  : "apple software VT decoder"_ns;
   }
 
   ConversionRequired NeedsConversion() const override {
@@ -68,6 +66,7 @@ class AppleVTDecoder : public MediaDataDecoder,
   // Access from the taskqueue and the decoder's thread.
   // OutputFrame is thread-safe.
   void OutputFrame(CVPixelBufferRef aImage, AppleFrameRef aFrameRef);
+  void OnDecodeError(OSStatus aError);
 
  private:
   virtual ~AppleVTDecoder();
@@ -75,6 +74,7 @@ class AppleVTDecoder : public MediaDataDecoder,
   RefPtr<DecodePromise> ProcessDrain();
   void ProcessShutdown();
   void ProcessDecode(MediaRawData* aSample);
+  void MaybeResolveBufferedFrames();
 
   void AssertOnTaskQueueThread() {
     MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
@@ -109,7 +109,7 @@ class AppleVTDecoder : public MediaDataDecoder,
   // Protects mReorderQueue and mPromise.
   Monitor mMonitor;
   ReorderQueue mReorderQueue;
-  MozPromiseHolder<DecodePromise> mPromise;
+  MozMonitoredPromiseHolder<DecodePromise> mPromise;
 
   // Decoded frame will be dropped if its pts is smaller than this
   // value. It shold be initialized before Input() or after Flush(). So it is

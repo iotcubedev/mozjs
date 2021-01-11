@@ -5,12 +5,16 @@
 #ifndef GetUserMediaRequest_h__
 #define GetUserMediaRequest_h__
 
-#include "mozilla/ErrorResult.h"
-#include "nsISupportsImpl.h"
-#include "nsAutoPtr.h"
+#include <cstdint>
+#include "js/RootingAPI.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/UniquePtr.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsISupports.h"
+#include "nsString.h"
 #include "nsWrapperCache.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "nsPIDOMWindow.h"
+
+class nsPIDOMWindowInner;
 
 namespace mozilla {
 namespace dom {
@@ -49,7 +53,7 @@ class GetUserMediaRequest : public nsISupports, public nsWrapperCache {
   const nsString mCallID;
   const nsString mRawID;
   const nsString mMediaSource;
-  nsAutoPtr<MediaStreamConstraints> mConstraints;
+  UniquePtr<MediaStreamConstraints> mConstraints;
   bool mIsSecure;
   bool mIsHandlingUserInput;
 };

@@ -1,3 +1,18 @@
+add_task(async function setup_pref() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      // To avoid throttling requestAnimationFrame callbacks in invisible
+      // iframes
+      ["layout.throttled_frame_rate", 60],
+      ["dom.animations-api.getAnimations.enabled", true],
+      ["dom.animations-api.timelines.enabled", true],
+      // Next two prefs are needed for hit-testing to work
+      ["test.events.async.enabled", true],
+      ["apz.test.logging_enabled", true],
+    ],
+  });
+});
+
 add_task(async function test_main() {
   function httpURL(filename) {
     let chromeURL = getRootDirectory(gTestPath) + filename;
@@ -24,16 +39,33 @@ add_task(async function test_main() {
       setup(win) {
         win.document.addEventListener("wheel", e => e.preventDefault(), {
           once: true,
+          passive: false,
         });
       },
     },
+    { url: httpURL("helper_fission_animation_styling_in_oopif.html") },
+    { url: httpURL("helper_fission_force_empty_hit_region.html") },
+    { url: httpURL("helper_fission_touch.html") },
     // add additional tests here
   ];
   if (isWebRender) {
     subtests = subtests.concat([
       // add additional WebRender-specific tests here
     ]);
+  } else {
+    subtests = subtests.concat([
+      // Bug 1576514: On WebRender this test casues an assertion.
+      {
+        url: httpURL(
+          "helper_fission_animation_styling_in_transformed_oopif.html"
+        ),
+      },
+    ]);
   }
+
+  // ccov builds run slower and need longer, so let's scale up the timeout
+  // by the number of tests we're running.
+  requestLongerTimeout(subtests.length);
 
   let fissionWindow = await BrowserTestUtils.openNewBrowserWindow({
     fission: true,

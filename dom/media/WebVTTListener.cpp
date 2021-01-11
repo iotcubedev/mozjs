@@ -12,7 +12,6 @@
 #include "nsComponentManagerUtils.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIInputStream.h"
-#include "nsIWebVTTParserWrapper.h"
 
 extern mozilla::LazyLogModule gTextTrackLog;
 #define LOG(msg, ...)                     \
@@ -94,7 +93,7 @@ WebVTTListener::OnStartRequest(nsIRequest* aRequest) {
   }
 
   LOG("OnStartRequest");
-  mElement->DispatchTestEvent(NS_LITERAL_STRING("mozStartedLoadingTextTrack"));
+  mElement->DispatchTestEvent(u"mozStartedLoadingTextTrack"_ns);
   return NS_OK;
 }
 

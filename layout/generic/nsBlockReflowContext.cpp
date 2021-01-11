@@ -18,13 +18,7 @@
 using namespace mozilla;
 
 #ifdef DEBUG
-#  undef NOISY_MAX_ELEMENT_SIZE
-#  undef REALLY_NOISY_MAX_ELEMENT_SIZE
-#  undef NOISY_BLOCK_DIR_MARGINS
-#else
-#  undef NOISY_MAX_ELEMENT_SIZE
-#  undef REALLY_NOISY_MAX_ELEMENT_SIZE
-#  undef NOISY_BLOCK_DIR_MARGINS
+#  include "nsBlockDebugFlags.h"  // For NOISY_BLOCK_DIR_MARGINS
 #endif
 
 nsBlockReflowContext::nsBlockReflowContext(nsPresContext* aPresContext,
@@ -63,7 +57,7 @@ bool nsBlockReflowContext::ComputeCollapsedBStartMargin(
   // since it doesn't need to be done by the top-level (non-recursive)
   // caller.
 
-#ifdef NOISY_BLOCKDIR_MARGINS
+#ifdef NOISY_BLOCK_DIR_MARGINS
   aRI.mFrame->ListTag(stdout);
   printf(": %d => %d\n", aRI.ComputedLogicalMargin().BStart(wm),
          aMargin->get());
@@ -210,7 +204,7 @@ done:
     *aBlockIsEmpty = aRI.mFrame->IsEmpty();
   }
 
-#ifdef NOISY_BLOCKDIR_MARGINS
+#ifdef NOISY_BLOCK_DIR_MARGINS
   aRI.mFrame->ListTag(stdout);
   printf(": => %d\n", aMargin->get());
 #endif
@@ -235,7 +229,7 @@ void nsBlockReflowContext::ReflowBlock(
   if (aApplyBStartMargin) {
     mBStartMargin = aPrevMargin;
 
-#ifdef NOISY_BLOCKDIR_MARGINS
+#ifdef NOISY_BLOCK_DIR_MARGINS
     mOuterReflowInput.mFrame->ListTag(stdout);
     printf(": reflowing ");
     mFrame->ListTag(stdout);
@@ -247,10 +241,12 @@ void nsBlockReflowContext::ReflowBlock(
     if (mWritingMode.IsOrthogonalTo(mFrame->GetWritingMode())) {
       if (NS_UNCONSTRAINEDSIZE != aFrameRI.AvailableISize()) {
         aFrameRI.AvailableISize() -= mBStartMargin.get() + aClearance;
+        aFrameRI.AvailableISize() = std::max(0, aFrameRI.AvailableISize());
       }
     } else {
       if (NS_UNCONSTRAINEDSIZE != aFrameRI.AvailableBSize()) {
         aFrameRI.AvailableBSize() -= mBStartMargin.get() + aClearance;
+        aFrameRI.AvailableBSize() = std::max(0, aFrameRI.AvailableBSize());
       }
     }
   } else {
@@ -283,9 +279,10 @@ void nsBlockReflowContext::ReflowBlock(
     tI = space.LineLeft(mWritingMode, mContainerSize);
     tB = mBCoord;
 
-    if ((mFrame->GetStateBits() & NS_BLOCK_FLOAT_MGR) == 0)
+    if (!mFrame->HasAnyStateBits(NS_BLOCK_FLOAT_MGR)) {
       aFrameRI.mBlockDelta =
           mOuterReflowInput.mBlockDelta + mBCoord - aLine->BStart();
+    }
   }
 
 #ifdef DEBUG
@@ -353,7 +350,10 @@ bool nsBlockReflowContext::PlaceBlock(const ReflowInput& aReflowInput,
   // Compute collapsed block-end margin value.
   WritingMode wm = aReflowInput.GetWritingMode();
   WritingMode parentWM = mMetrics.GetWritingMode();
-  if (aReflowStatus.IsComplete()) {
+
+  // Don't apply the block-end margin if the block has a *later* sibling across
+  // column-span split.
+  if (aReflowStatus.IsComplete() && !mFrame->HasColumnSpanSiblings()) {
     aBEndMarginResult = mMetrics.mCarriedOutBEndMargin;
     aBEndMarginResult.Include(aReflowInput.ComputedLogicalMargin()
                                   .ConvertTo(parentWM, wm)
@@ -380,7 +380,7 @@ bool nsBlockReflowContext::PlaceBlock(const ReflowInput& aReflowInput,
     // already applied.
     aBEndMarginResult.Include(mBStartMargin);
 
-#ifdef NOISY_BLOCKDIR_MARGINS
+#ifdef NOISY_BLOCK_DIR_MARGINS
     printf("  ");
     mOuterReflowInput.mFrame->ListTag(stdout);
     printf(": ");
@@ -430,16 +430,11 @@ bool nsBlockReflowContext::PlaceBlock(const ReflowInput& aReflowInput,
                    mMetrics.ISize(mWritingMode), mMetrics.BSize(mWritingMode),
                    mContainerSize);
 
-  WritingMode frameWM = mFrame->GetWritingMode();
-  LogicalPoint logPos =
-      LogicalPoint(mWritingMode, mICoord, mBCoord)
-          .ConvertTo(frameWM, mWritingMode,
-                     mContainerSize - mMetrics.PhysicalSize());
-
   // Now place the frame and complete the reflow process
   nsContainerFrame::FinishReflowChild(
-      mFrame, mPresContext, mMetrics, &aReflowInput, frameWM, logPos,
-      mContainerSize, nsIFrame::ReflowChildFlags::ApplyRelativePositioning);
+      mFrame, mPresContext, mMetrics, &aReflowInput, mWritingMode,
+      LogicalPoint(mWritingMode, mICoord, mBCoord), mContainerSize,
+      nsIFrame::ReflowChildFlags::ApplyRelativePositioning);
 
   aOverflowAreas = mMetrics.mOverflowAreas + mFrame->GetPosition();
 

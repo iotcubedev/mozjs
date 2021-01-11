@@ -1,4 +1,6 @@
-%include ../../global/shared.inc
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* Elevation Dialog */
 /* Specify the size for the UI so it has a fixed size. 3rd
@@ -16,7 +18,8 @@
 }
 
 .update-header {
-  -moz-appearance: dialog;
+  appearance: auto;
+  -moz-default-appearance: dialog;
   margin: 12px 12px 0 12px;
 }
 
@@ -45,15 +48,16 @@
 
 #update-button-box {
   padding: 10px 12px 12px 12px;
-  -moz-appearance: statusbar;
+  appearance: auto;
+  -moz-default-appearance: statusbar;
   -moz-window-dragging: drag;
 }
 
 #update-button-box button {
-  -moz-appearance: toolbarbutton;
+  appearance: auto;
+  -moz-default-appearance: toolbarbutton;
   color: ButtonText;
   min-height: 22px;
-  text-shadow: @loweredShadow@;
 }
 
 #updateFinishedName {

@@ -16,6 +16,13 @@
 
 namespace mozilla {
 namespace dom {
+// XXX Move this to ToJSValue.h
+template <typename T>
+MOZ_MUST_USE bool ToJSValue(JSContext* aCx, const SafeRefPtr<T>& aArgument,
+                            JS::MutableHandle<JS::Value> aValue) {
+  return ToJSValue(aCx, *aArgument.unsafeGetRawPtr(), aValue);
+}
+
 namespace cache {
 
 using mozilla::ipc::PBackgroundChild;
@@ -23,17 +30,17 @@ using mozilla::ipc::PBackgroundChild;
 namespace {
 
 void AddWorkerRefToStreamChild(const CacheReadStream& aReadStream,
-                               CacheWorkerRef* aWorkerRef) {
+                               const SafeRefPtr<CacheWorkerRef>& aWorkerRef) {
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
   CacheStreamControlChild* cacheControl =
       static_cast<CacheStreamControlChild*>(aReadStream.controlChild());
   if (cacheControl) {
-    cacheControl->SetWorkerRef(aWorkerRef);
+    cacheControl->SetWorkerRef(aWorkerRef.clonePtr());
   }
 }
 
 void AddWorkerRefToStreamChild(const CacheResponse& aResponse,
-                               CacheWorkerRef* aWorkerRef) {
+                               const SafeRefPtr<CacheWorkerRef>& aWorkerRef) {
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
 
   if (aResponse.body().isNothing()) {
@@ -44,7 +51,7 @@ void AddWorkerRefToStreamChild(const CacheResponse& aResponse,
 }
 
 void AddWorkerRefToStreamChild(const CacheRequest& aRequest,
-                               CacheWorkerRef* aWorkerRef) {
+                               const SafeRefPtr<CacheWorkerRef>& aWorkerRef) {
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
 
   if (aRequest.body().isNothing()) {
@@ -56,8 +63,9 @@ void AddWorkerRefToStreamChild(const CacheRequest& aRequest,
 
 }  // namespace
 
-CacheOpChild::CacheOpChild(CacheWorkerRef* aWorkerRef, nsIGlobalObject* aGlobal,
-                           nsISupports* aParent, Promise* aPromise)
+CacheOpChild::CacheOpChild(SafeRefPtr<CacheWorkerRef> aWorkerRef,
+                           nsIGlobalObject* aGlobal, nsISupports* aParent,
+                           Promise* aPromise)
     : mGlobal(aGlobal), mParent(aParent), mPromise(aPromise) {
   MOZ_DIAGNOSTIC_ASSERT(mGlobal);
   MOZ_DIAGNOSTIC_ASSERT(mParent);
@@ -65,10 +73,8 @@ CacheOpChild::CacheOpChild(CacheWorkerRef* aWorkerRef, nsIGlobalObject* aGlobal,
 
   MOZ_ASSERT_IF(!NS_IsMainThread(), aWorkerRef);
 
-  RefPtr<CacheWorkerRef> workerRef = CacheWorkerRef::PreferBehavior(
-      aWorkerRef, CacheWorkerRef::eStrongWorkerRef);
-
-  SetWorkerRef(workerRef);
+  SetWorkerRef(CacheWorkerRef::PreferBehavior(
+      std::move(aWorkerRef), CacheWorkerRef::eStrongWorkerRef));
 }
 
 CacheOpChild::~CacheOpChild() {
@@ -90,15 +96,12 @@ void CacheOpChild::ActorDestroy(ActorDestroyReason aReason) {
 }
 
 mozilla::ipc::IPCResult CacheOpChild::Recv__delete__(
-    const ErrorResult& aRv, const CacheOpResult& aResult) {
+    ErrorResult&& aRv, const CacheOpResult& aResult) {
   NS_ASSERT_OWNINGTHREAD(CacheOpChild);
 
   if (NS_WARN_IF(aRv.Failed())) {
     MOZ_DIAGNOSTIC_ASSERT(aResult.type() == CacheOpResult::Tvoid_t);
-    // TODO: Remove this const_cast (bug 1152078).
-    // It is safe for now since this ErrorResult is handed off to us by IPDL
-    // and is thrown into the trash afterwards.
-    mPromise->MaybeReject(const_cast<ErrorResult&>(aRv));
+    mPromise->MaybeReject(std::move(aRv));
     mPromise = nullptr;
     return IPC_OK();
   }
@@ -140,16 +143,13 @@ mozilla::ipc::IPCResult CacheOpChild::Recv__delete__(
       // reject instead of crashing, though, if we get a nullptr here.
       MOZ_DIAGNOSTIC_ASSERT(actor);
       if (!actor) {
-        ErrorResult status;
-        status.ThrowTypeError<MSG_CACHE_OPEN_FAILED>();
-        mPromise->MaybeReject(status);
+        mPromise->MaybeRejectWithTypeError(
+            "CacheStorage.open() failed to access the storage system.");
         break;
       }
 
-      RefPtr<CacheWorkerRef> workerRef = CacheWorkerRef::PreferBehavior(
-          GetWorkerRef(), CacheWorkerRef::eIPCWorkerRef);
-
-      actor->SetWorkerRef(workerRef);
+      actor->SetWorkerRef(CacheWorkerRef::PreferBehavior(
+          GetWorkerRefPtr().clonePtr(), CacheWorkerRef::eIPCWorkerRef));
       RefPtr<Cache> cache = new Cache(mGlobal, actor, result.ns());
       mPromise->MaybeResolve(cache);
       break;
@@ -198,7 +198,7 @@ void CacheOpChild::HandleResponse(const Maybe<CacheResponse>& aMaybeResponse) {
 
   const CacheResponse& cacheResponse = aMaybeResponse.ref();
 
-  AddWorkerRefToStreamChild(cacheResponse, GetWorkerRef());
+  AddWorkerRefToStreamChild(cacheResponse, GetWorkerRefPtr());
   RefPtr<Response> response = ToResponse(cacheResponse);
 
   mPromise->MaybeResolve(response);
@@ -210,7 +210,7 @@ void CacheOpChild::HandleResponseList(
   responses.SetCapacity(aResponseList.Length());
 
   for (uint32_t i = 0; i < aResponseList.Length(); ++i) {
-    AddWorkerRefToStreamChild(aResponseList[i], GetWorkerRef());
+    AddWorkerRefToStreamChild(aResponseList[i], GetWorkerRefPtr());
     responses.AppendElement(ToResponse(aResponseList[i]));
   }
 
@@ -219,11 +219,11 @@ void CacheOpChild::HandleResponseList(
 
 void CacheOpChild::HandleRequestList(
     const nsTArray<CacheRequest>& aRequestList) {
-  AutoTArray<RefPtr<Request>, 256> requests;
+  AutoTArray<SafeRefPtr<Request>, 256> requests;
   requests.SetCapacity(aRequestList.Length());
 
   for (uint32_t i = 0; i < aRequestList.Length(); ++i) {
-    AddWorkerRefToStreamChild(aRequestList[i], GetWorkerRef());
+    AddWorkerRefToStreamChild(aRequestList[i], GetWorkerRefPtr());
     requests.AppendElement(ToRequest(aRequestList[i]));
   }
 

@@ -3,7 +3,7 @@
 
 /*
  * Detects and reports unhandled rejections during test runs. Test harnesses
- * will fail tests in this case, unless the test whitelists itself.
+ * will fail tests in this case, unless the test explicitly allows rejections.
  */
 
 "use strict";
@@ -102,7 +102,9 @@ var PromiseTestUtils = {
           this._ensureDOMPromiseRejectionsProcessedReason
         ) {
           observed = true;
+          return true;
         }
+        return false;
       },
       onConsumed() {},
     };
@@ -123,7 +125,7 @@ var PromiseTestUtils = {
   },
 
   /**
-   * Called by tests that have been whitelisted, disables the observers in this
+   * Called by tests with uncaught rejections to disable the observers in this
    * module. For new tests where uncaught rejections are expected, you should
    * use the more granular expectUncaughtRejection function instead.
    */
@@ -211,14 +213,14 @@ var PromiseTestUtils = {
   },
 
   /**
-   * Whitelists an entire class of Promise rejections. Usage of this function
+   * Allows an entire class of Promise rejections. Usage of this function
    * should be kept to a minimum because it has a broad scope and doesn't
    * prevent new unhandled rejections of this class from being added.
    *
    * @param regExp
    *        This should match the error message of the rejection.
    */
-  whitelistRejectionsGlobally(regExp) {
+  allowMatchingRejectionsGlobally(regExp) {
     this._globalRejectionIgnoreFns.push(rejection =>
       regExp.test(rejection.message)
     );
@@ -226,7 +228,7 @@ var PromiseTestUtils = {
 
   /**
    * Fails the test if there are any uncaught rejections at this time that have
-   * not been whitelisted using expectUncaughtRejection.
+   * not been explicitly allowed using expectUncaughtRejection.
    *
    * Depending on the configuration of the test suite, this function might only
    * report the details of the first uncaught rejection that was generated.
@@ -238,7 +240,7 @@ var PromiseTestUtils = {
     JSMPromise.Debugging.flushUncaughtErrors();
 
     // If there is any uncaught rejection left at this point, the test fails.
-    while (this._rejections.length > 0) {
+    while (this._rejections.length) {
       let rejection = this._rejections.shift();
 
       // If one of the ignore functions matches, ignore the rejection, then
@@ -249,7 +251,7 @@ var PromiseTestUtils = {
         continue;
       }
 
-      // Check the global whitelisting functions.
+      // Check the global ignore functions.
       if (this._globalRejectionIgnoreFns.some(fn => fn(rejection))) {
         continue;
       }
@@ -277,7 +279,7 @@ var PromiseTestUtils = {
    */
   assertNoMoreExpectedRejections() {
     // Only log this condition is there is a failure.
-    if (this._rejectionIgnoreFns.length > 0) {
+    if (this._rejectionIgnoreFns.length) {
       Assert.equal(
         this._rejectionIgnoreFns.length,
         0,

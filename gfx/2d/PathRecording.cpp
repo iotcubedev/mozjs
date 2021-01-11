@@ -183,10 +183,23 @@ void PathBuilderRecording::Arc(const Point& aOrigin, float aRadius,
 }
 
 already_AddRefed<Path> PathBuilderRecording::Finish() {
+  // We rely on mPathBuilder to track begin and current point, but that stops
+  // when we call Finish, so we need to store them first.
+  Point beginPoint = BeginPoint();
+  Point currentPoint = CurrentPoint();
   RefPtr<Path> path = mPathBuilder->Finish();
   return MakeAndAddRef<PathRecording>(path, std::move(mPathOps), mFillRule,
-                                      mCurrentPoint, mBeginPoint);
+                                      currentPoint, beginPoint);
 }
+
+PathRecording::PathRecording(Path* aPath, PathOps&& aOps, FillRule aFillRule,
+                             const Point& aCurrentPoint,
+                             const Point& aBeginPoint)
+    : mPath(aPath),
+      mPathOps(std::move(aOps)),
+      mFillRule(aFillRule),
+      mCurrentPoint(aCurrentPoint),
+      mBeginPoint(aBeginPoint) {}
 
 PathRecording::~PathRecording() {
   for (size_t i = 0; i < mStoredRecorders.size(); i++) {

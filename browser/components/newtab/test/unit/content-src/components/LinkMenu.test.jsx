@@ -302,6 +302,7 @@ describe("<LinkMenu>", () => {
     assert.equal(option.action.data.index, index);
   });
   describe(".onClick", () => {
+    const FAKE_EVENT = {};
     const FAKE_INDEX = 3;
     const FAKE_SOURCE = "TOP_SITES";
     const FAKE_SITE = {
@@ -322,6 +323,7 @@ describe("<LinkMenu>", () => {
       "GoToDownloadPage",
       "RemoveDownload",
       "Separator",
+      "ShowPrivacyInfo",
       "RemoveBookmark",
       "AddBookmark",
       "OpenInNewWindow",
@@ -351,10 +353,12 @@ describe("<LinkMenu>", () => {
         url: FAKE_SITE.url,
         referrer: FAKE_SITE.referrer,
       },
-      "newtab-menu-dismiss": {
-        url: FAKE_SITE.url,
-        pocket_id: FAKE_SITE.pocket_id,
-      },
+      "newtab-menu-dismiss": [
+        {
+          url: FAKE_SITE.url,
+          pocket_id: FAKE_SITE.pocket_id,
+        },
+      ],
       menu_action_webext_dismiss: {
         source: "TOP_SITES",
         url: FAKE_SITE.url,
@@ -396,10 +400,8 @@ describe("<LinkMenu>", () => {
     options
       .filter(o => o.type !== "separator")
       .forEach(option => {
-        it(`should fire a ${option.action.type} action for ${
-          option.id
-        } with the expected data`, () => {
-          option.onClick();
+        it(`should fire a ${option.action.type} action for ${option.id} with the expected data`, () => {
+          option.onClick(FAKE_EVENT);
 
           if (option.impression && option.userEvent) {
             assert.calledThrice(dispatch);
@@ -436,11 +438,9 @@ describe("<LinkMenu>", () => {
             assert.deepEqual(option.action.data, expectedActionData[option.id]);
           }
         });
-        it(`should fire a UserEvent action for ${
-          option.id
-        } if configured`, () => {
+        it(`should fire a UserEvent action for ${option.id} if configured`, () => {
           if (option.userEvent) {
-            option.onClick();
+            option.onClick(FAKE_EVENT);
             const [action] = dispatch.secondCall.args;
             assert.isUserEventAction(action);
             assert.propertyVal(action.data, "source", FAKE_SOURCE);
@@ -450,7 +450,7 @@ describe("<LinkMenu>", () => {
         });
         it(`should send impression stats for ${option.id}`, () => {
           if (option.impression) {
-            option.onClick();
+            option.onClick(FAKE_EVENT);
             const [action] = dispatch.thirdCall.args;
             assert.deepEqual(action, option.impression);
           }
@@ -474,7 +474,7 @@ describe("<LinkMenu>", () => {
         .filter(o => o.type !== "separator")
         .forEach(option => {
           if (option.impression) {
-            option.onClick();
+            option.onClick(FAKE_EVENT);
             assert.calledTwice(dispatch);
             assert.notEqual(dispatch.firstCall.args[0], option.impression);
             assert.notEqual(dispatch.secondCall.args[0], option.impression);
@@ -501,7 +501,7 @@ describe("<LinkMenu>", () => {
         .props();
 
       const [pinSpocOption] = spocOptions;
-      pinSpocOption.onClick();
+      pinSpocOption.onClick(FAKE_EVENT);
 
       if (pinSpocOption.impression && pinSpocOption.userEvent) {
         assert.calledThrice(dispatch);

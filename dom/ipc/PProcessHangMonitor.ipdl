@@ -20,6 +20,7 @@ struct SlowScriptData
   TabId tabId;
   nsCString filename;
   nsString addonId;
+  double duration;
 };
 
 struct PluginHangData
@@ -46,7 +47,7 @@ child:
   async BeginStartingDebugger();
   async EndStartingDebugger();
 
-  async PaintWhileInterruptingJS(TabId tabId, bool forceRepaint, LayersObserverEpoch aEpoch);
+  async PaintWhileInterruptingJS(TabId tabId, LayersObserverEpoch aEpoch);
 
   async CancelContentJSExecutionIfRunning(
       TabId tabId, NavigationType aNavigationType,

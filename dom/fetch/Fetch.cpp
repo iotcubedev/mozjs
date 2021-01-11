@@ -8,7 +8,6 @@
 
 #include "mozilla/dom/Document.h"
 #include "nsIGlobalObject.h"
-#include "nsIStreamLoader.h"
 
 #include "nsCharSeparatedTokenizer.h"
 #include "nsDOMString.h"
@@ -35,8 +34,7 @@
 #include "mozilla/dom/Response.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/URLSearchParams.h"
-#include "mozilla/net/CookieSettings.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/net/CookieJarSettings.h"
 
 #include "BodyExtractor.h"
 #include "EmptyBody.h"
@@ -302,7 +300,7 @@ class WorkerFetchResolver final : public FetchDriverObserver {
     MOZ_ASSERT(mPromiseProxy);
   }
 
-  ~WorkerFetchResolver() {}
+  ~WorkerFetchResolver() = default;
 
   virtual void FlushConsoleReport() override;
 };
@@ -356,7 +354,7 @@ class MainThreadFetchRunnable : public Runnable {
   const ClientInfo mClientInfo;
   const Maybe<ServiceWorkerDescriptor> mController;
   nsCOMPtr<nsICSPEventListener> mCSPEventListener;
-  RefPtr<InternalRequest> mRequest;
+  SafeRefPtr<InternalRequest> mRequest;
   UniquePtr<SerializedStackHolder> mOriginStack;
 
  public:
@@ -364,14 +362,14 @@ class MainThreadFetchRunnable : public Runnable {
                           const ClientInfo& aClientInfo,
                           const Maybe<ServiceWorkerDescriptor>& aController,
                           nsICSPEventListener* aCSPEventListener,
-                          InternalRequest* aRequest,
+                          SafeRefPtr<InternalRequest> aRequest,
                           UniquePtr<SerializedStackHolder>&& aOriginStack)
       : Runnable("dom::MainThreadFetchRunnable"),
         mResolver(aResolver),
         mClientInfo(aClientInfo),
         mController(aController),
         mCSPEventListener(aCSPEventListener),
-        mRequest(aRequest),
+        mRequest(std::move(aRequest)),
         mOriginStack(std::move(aOriginStack)) {
     MOZ_ASSERT(mResolver);
   }
@@ -398,9 +396,9 @@ class MainThreadFetchRunnable : public Runnable {
       MOZ_ASSERT(loadGroup);
       // We don't track if a worker is spawned from a tracking script for now,
       // so pass false as the last argument to FetchDriver().
-      fetch = new FetchDriver(mRequest, principal, loadGroup,
+      fetch = new FetchDriver(mRequest.clonePtr(), principal, loadGroup,
                               workerPrivate->MainThreadEventTarget(),
-                              workerPrivate->CookieSettings(),
+                              workerPrivate->CookieJarSettings(),
                               workerPrivate->GetPerformanceStorage(), false);
       nsAutoCString spec;
       if (proxy->GetWorkerPrivate()->GetBaseURI()) {
@@ -452,12 +450,13 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
   JS::Rooted<JSObject*> jsGlobal(cx, aGlobal->GetGlobalJSObject());
   GlobalObject global(cx, jsGlobal);
 
-  RefPtr<Request> request = Request::Constructor(global, aInput, aInit, aRv);
+  SafeRefPtr<Request> request =
+      Request::Constructor(global, aInput, aInit, aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
 
-  RefPtr<InternalRequest> r = request->GetInternalRequest();
+  SafeRefPtr<InternalRequest> r = request->GetInternalRequest();
   RefPtr<AbortSignalImpl> signalImpl = request->GetSignalImpl();
 
   if (signalImpl && signalImpl->Aborted()) {
@@ -476,7 +475,7 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
     nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal);
     nsCOMPtr<Document> doc;
     nsCOMPtr<nsILoadGroup> loadGroup;
-    nsCOMPtr<nsICookieSettings> cookieSettings;
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
     nsIPrincipal* principal;
     bool isTrackingFetch = false;
     if (window) {
@@ -487,7 +486,7 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
       }
       principal = doc->NodePrincipal();
       loadGroup = doc->GetDocumentLoadGroup();
-      cookieSettings = doc->CookieSettings();
+      cookieJarSettings = doc->CookieJarSettings();
 
       isTrackingFetch = doc->IsScriptTracking(cx);
     } else {
@@ -496,23 +495,25 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
         aRv.Throw(NS_ERROR_FAILURE);
         return nullptr;
       }
+
+      cookieJarSettings = mozilla::net::CookieJarSettings::Create();
+    }
+
+    if (!loadGroup) {
       nsresult rv = NS_NewLoadGroup(getter_AddRefs(loadGroup), principal);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         aRv.Throw(rv);
         return nullptr;
       }
-
-      cookieSettings = mozilla::net::CookieSettings::Create();
     }
-
-    Telemetry::Accumulate(Telemetry::FETCH_IS_MAINTHREAD, 1);
 
     RefPtr<MainThreadFetchResolver> resolver = new MainThreadFetchResolver(
         p, observer, signalImpl, request->MozErrors());
-    RefPtr<FetchDriver> fetch = new FetchDriver(
-        r, principal, loadGroup, aGlobal->EventTargetFor(TaskCategory::Other),
-        cookieSettings, nullptr,  // PerformanceStorage
-        isTrackingFetch);
+    RefPtr<FetchDriver> fetch =
+        new FetchDriver(std::move(r), principal, loadGroup,
+                        aGlobal->EventTargetFor(TaskCategory::Other),
+                        cookieJarSettings, nullptr,  // PerformanceStorage
+                        isTrackingFetch);
     fetch->SetDocument(doc);
     resolver->SetLoadGroup(loadGroup);
     aRv = fetch->Fetch(signalImpl, resolver);
@@ -522,8 +523,6 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
   } else {
     WorkerPrivate* worker = GetCurrentThreadWorkerPrivate();
     MOZ_ASSERT(worker);
-
-    Telemetry::Accumulate(Telemetry::FETCH_IS_MAINTHREAD, 0);
 
     if (worker->IsServiceWorker()) {
       r->SetSkipServiceWorker();
@@ -537,20 +536,20 @@ already_AddRefed<Promise> FetchRequest(nsIGlobalObject* aGlobal,
       return nullptr;
     }
 
-    Maybe<ClientInfo> clientInfo(worker->GetClientInfo());
+    Maybe<ClientInfo> clientInfo(worker->GlobalScope()->GetClientInfo());
     if (clientInfo.isNothing()) {
       aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
       return nullptr;
     }
 
     UniquePtr<SerializedStackHolder> stack;
-    if (worker->IsWatchedByDevtools()) {
+    if (worker->IsWatchedByDevTools()) {
       stack = GetCurrentStackForNetMonitor(cx);
     }
 
     RefPtr<MainThreadFetchRunnable> run = new MainThreadFetchRunnable(
-        resolver, clientInfo.ref(), worker->GetController(),
-        worker->CSPEventListener(), r, std::move(stack));
+        resolver, clientInfo.ref(), worker->GlobalScope()->GetController(),
+        worker->CSPEventListener(), std::move(r), std::move(stack));
     worker->DispatchToMainThread(run.forget());
   }
 
@@ -585,10 +584,10 @@ void MainThreadFetchResolver::OnResponseAvailableInternal(
     nsCOMPtr<nsIGlobalObject> go = mPromise->GetParentObject();
     mResponse = new Response(go, aResponse, mSignalImpl);
     nsCOMPtr<nsPIDOMWindowInner> inner = do_QueryInterface(go);
-    nsPIDOMWindowInner* topLevel =
-        inner ? inner->GetWindowForDeprioritizedLoadRunner() : nullptr;
-    if (topLevel) {
-      topLevel->AddDeprioritizedLoadRunner(
+    BrowsingContext* bc = inner ? inner->GetBrowsingContext() : nullptr;
+    bc = bc ? bc->Top() : nullptr;
+    if (bc && bc->IsLoading()) {
+      bc->AddDeprioritizedLoadRunner(
           new ResolveFetchPromise(mPromise, mResponse));
     } else {
       mPromise->MaybeResolve(mResponse);
@@ -603,9 +602,7 @@ void MainThreadFetchResolver::OnResponseAvailableInternal(
       return;
     }
 
-    ErrorResult result;
-    result.ThrowTypeError<MSG_FETCH_FAILED>();
-    mPromise->MaybeReject(result);
+    mPromise->MaybeRejectWithTypeError<MSG_FETCH_FAILED>();
   }
 }
 
@@ -669,9 +666,7 @@ class WorkerFetchResponseRunnable final : public MainThreadWorkerRunnable {
         fetchObserver->SetState(FetchState::Errored);
       }
 
-      ErrorResult result;
-      result.ThrowTypeError<MSG_FETCH_FAILED>();
-      promise->MaybeReject(result);
+      promise->MaybeRejectWithTypeError<MSG_FETCH_FAILED>();
     }
     return true;
   }
@@ -1238,7 +1233,7 @@ void FetchBody<Derived>::SetMimeType() {
   ErrorResult result;
   nsCString contentTypeValues;
   MOZ_ASSERT(DerivedClass()->GetInternalHeaders());
-  DerivedClass()->GetInternalHeaders()->Get(NS_LITERAL_CSTRING("Content-Type"),
+  DerivedClass()->GetInternalHeaders()->Get("Content-Type"_ns,
                                             contentTypeValues, result);
   MOZ_ALWAYS_TRUE(!result.Failed());
 

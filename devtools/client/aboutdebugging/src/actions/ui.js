@@ -24,15 +24,20 @@ const {
   SELECT_PAGE_SUCCESS,
   SELECTED_RUNTIME_ID_UPDATED,
   SHOW_PROFILER_DIALOG,
+  SWITCH_PROFILER_CONTEXT,
   USB_RUNTIMES_SCAN_START,
   USB_RUNTIMES_SCAN_SUCCESS,
-} = require("../constants");
+} = require("devtools/client/aboutdebugging/src/constants");
 
-const NetworkLocationsModule = require("../modules/network-locations");
-const { adbAddon } = require("devtools/shared/adb/adb-addon");
-const { refreshUSBRuntimes } = require("../modules/usb-runtimes");
+const NetworkLocationsModule = require("devtools/client/aboutdebugging/src/modules/network-locations");
+const {
+  adbAddon,
+} = require("devtools/client/shared/remote-debugging/adb/adb-addon");
+const {
+  refreshUSBRuntimes,
+} = require("devtools/client/aboutdebugging/src/modules/usb-runtimes");
 
-const Actions = require("./index");
+const Actions = require("devtools/client/aboutdebugging/src/actions/index");
 
 function selectPage(page, runtimeId) {
   return async (dispatch, getState) => {
@@ -105,6 +110,14 @@ function removeNetworkLocation(location) {
 
 function showProfilerDialog() {
   return { type: SHOW_PROFILER_DIALOG };
+}
+
+/**
+ * The profiler can switch between "devtools-remote" and "aboutprofiling-remote"
+ * page contexts.
+ */
+function switchProfilerContext(profilerContext) {
+  return { type: SWITCH_PROFILER_CONTEXT, profilerContext };
 }
 
 function hideProfilerDialog() {
@@ -180,6 +193,7 @@ module.exports = {
   scanUSBRuntimes,
   selectPage,
   showProfilerDialog,
+  switchProfilerContext,
   uninstallAdbAddon,
   updateAdbAddonStatus,
   updateAdbReady,

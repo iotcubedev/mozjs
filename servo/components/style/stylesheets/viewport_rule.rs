@@ -267,7 +267,7 @@ fn parse_shorthand<'i, 't>(
     input: &mut Parser<'i, 't>,
 ) -> Result<(ViewportLength, ViewportLength), ParseError<'i>> {
     let min = ViewportLength::parse(context, input)?;
-    match input.try(|i| ViewportLength::parse(context, i)) {
+    match input.try_parse(|i| ViewportLength::parse(context, i)) {
         Err(_) => Ok((min.clone(), min)),
         Ok(max) => Ok((min, max)),
     }
@@ -291,15 +291,18 @@ impl<'a, 'b, 'i> DeclarationParser<'i> for ViewportRuleParser<'a, 'b> {
     ) -> Result<Vec<ViewportDescriptorDeclaration>, ParseError<'i>> {
         macro_rules! declaration {
             ($declaration:ident($parse:expr)) => {
-                declaration!($declaration(value: try!($parse(input)),
-                                          important: input.try(parse_important).is_ok()))
+                declaration!($declaration {
+                    value: $parse(input)?,
+                    important: input.try_parse(parse_important).is_ok(),
+                })
             };
-            ($declaration:ident(value: $value:expr, important: $important:expr)) => {
+            ($declaration:ident { value: $value:expr, important: $important:expr, }) => {
                 ViewportDescriptorDeclaration::new(
                     self.context.stylesheet_origin,
                     ViewportDescriptor::$declaration($value),
-                    $important)
-            }
+                    $important,
+                )
+            };
         }
 
         macro_rules! ok {
@@ -308,11 +311,17 @@ impl<'a, 'b, 'i> DeclarationParser<'i> for ViewportRuleParser<'a, 'b> {
             };
             (shorthand -> [$min:ident, $max:ident]) => {{
                 let shorthand = parse_shorthand(self.context, input)?;
-                let important = input.try(parse_important).is_ok();
+                let important = input.try_parse(parse_important).is_ok();
 
                 Ok(vec![
-                    declaration!($min(value: shorthand.0, important: important)),
-                    declaration!($max(value: shorthand.1, important: important)),
+                    declaration!($min {
+                        value: shorthand.0,
+                        important: important,
+                    }),
+                    declaration!($max {
+                        value: shorthand.1,
+                        important: important,
+                    }),
                 ])
             }};
         }
@@ -724,7 +733,6 @@ impl MaybeNew for ViewportConstraints {
 
         let mut conditions = RuleCacheConditions::default();
         let context = Context {
-            is_root_element: false,
             // Note: DEVICE-ADAPT § 5. states that relative length values are
             // resolved against initial values
             builder: StyleBuilder::for_inheritance(device, None, None),

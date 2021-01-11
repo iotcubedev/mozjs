@@ -9,6 +9,7 @@
 #include "PaintedLayerMLGPU.h"
 #include "ImageLayerMLGPU.h"
 #include "CanvasLayerMLGPU.h"
+#include "ContainerLayerMLGPU.h"
 #include "GeckoProfiler.h"  // for profiler_*
 #include "gfxEnv.h"         // for gfxEnv
 #include "MLGDevice.h"
@@ -31,8 +32,6 @@
 #  include "mozilla/widget/WinCompositorWidget.h"
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #endif
-
-using namespace std;
 
 namespace mozilla {
 namespace layers {
@@ -213,7 +212,6 @@ void LayerManagerMLGPU::BeginTransactionWithDrawTarget(
 
   mTarget = aTarget;
   mTargetRect = aRect;
-  return;
 }
 
 // Helper class for making sure textures are unlocked.
@@ -230,8 +228,6 @@ void LayerManagerMLGPU::EndTransaction(const TimeStamp& aTimeStamp,
                                        EndTransactionFlags aFlags) {
   AUTO_PROFILER_LABEL("LayerManager::EndTransaction", GRAPHICS);
 
-  SetCompositionTime(aTimeStamp);
-
   TextureSourceProvider::AutoReadUnlockTextures unlock(mTextureSourceProvider);
 
   if (!mRoot || (aFlags & END_NO_IMMEDIATE_REDRAW) || !mWidget) {
@@ -243,6 +239,9 @@ void LayerManagerMLGPU::EndTransaction(const TimeStamp& aTimeStamp,
     return;
   }
 
+  mCompositionOpportunityId = mCompositionOpportunityId.Next();
+  SetCompositionTime(aTimeStamp);
+
   mCompositionStartTime = TimeStamp::Now();
 
   IntSize windowSize = mWidget->GetClientSize().ToUnknownSize();
@@ -251,6 +250,9 @@ void LayerManagerMLGPU::EndTransaction(const TimeStamp& aTimeStamp,
   }
 
   // Resize the window if needed.
+#ifdef XP_WIN
+  mWidget->AsWindows()->UpdateCompositorWndSizeIfNecessary();
+#endif
   if (mSwapChain->GetSize() != windowSize) {
     // Note: all references to the backbuffer must be cleared.
     mDevice->SetRenderTarget(nullptr);
@@ -437,9 +439,8 @@ void LayerManagerMLGPU::DrawDebugOverlay() {
   stats.mScreenPixels = windowSize.width * windowSize.height;
 
   std::string text = mDiagnostics->GetFrameOverlayString(stats);
-  RefPtr<TextureSource> texture =
-      mTextRenderer->RenderText(mTextureSourceProvider, text, 30, 600,
-                                TextRenderer::FontType::FixedWidth);
+  RefPtr<TextureSource> texture = mTextRenderer->RenderText(
+      mTextureSourceProvider, text, 600, TextRenderer::FontType::FixedWidth);
   if (!texture) {
     return;
   }

@@ -20,7 +20,6 @@
 #include "mozilla/layers/LayersTypes.h"  // for LayersBackend, etc
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/mozalloc.h"  // for operator delete, etc
-#include "nsAutoPtr.h"         // for nsRefPtr, nsAutoArrayPtr, etc
 #include "nsAutoRef.h"         // for nsCountedRef
 #include "nsCOMPtr.h"          // for already_AddRefed
 #include "nsDebug.h"           // for NS_ASSERTION
@@ -38,15 +37,13 @@
 #ifndef XPCOM_GLUE_AVOID_NSPR
 /**
  * We need to be able to hold a reference to a Moz2D SourceSurface from Image
- * subclasses. This is potentially a problem since Images can be addrefed
- * or released off the main thread. We can ensure that we never AddRef
- * a SourceSurface off the main thread, but we might want to Release due
- * to an Image being destroyed off the main thread.
+ * subclasses. Whilst SourceSurface is atomic refcounted and thus safe to
+ * AddRef/Release on any thread, it is potentially a problem since clean up code
+ * may need to run on a the main thread.
  *
  * We use nsCountedRef<nsMainThreadSourceSurfaceRef> to reference the
- * SourceSurface. When AddRefing, we assert that we're on the main thread.
- * When Releasing, if we're not on the main thread, we post an event to
- * the main thread to do the actual release.
+ * SourceSurface. When Releasing, if we're not on the main thread, we post an
+ * event to the main thread to do the actual release.
  */
 class nsMainThreadSourceSurfaceRef;
 
@@ -80,11 +77,7 @@ class nsAutoRefTraits<nsMainThreadSourceSurfaceRef> {
     nsCOMPtr<nsIRunnable> runnable = new SurfaceReleaser(aRawRef);
     NS_DispatchToMainThread(runnable);
   }
-  static void AddRef(RawRef aRawRef) {
-    NS_ASSERTION(NS_IsMainThread(),
-                 "Can only add a reference on the main thread");
-    aRawRef->AddRef();
-  }
+  static void AddRef(RawRef aRawRef) { aRawRef->AddRef(); }
 };
 
 class nsOwningThreadSourceSurfaceRef;
@@ -123,7 +116,7 @@ class nsAutoRefTraits<nsOwningThreadSourceSurfaceRef> {
   }
   void AddRef(RawRef aRawRef) {
     MOZ_ASSERT(!mOwningEventTarget);
-    mOwningEventTarget = mozilla::GetCurrentThreadSerialEventTarget();
+    mOwningEventTarget = mozilla::GetCurrentSerialEventTarget();
     aRawRef->AddRef();
   }
 
@@ -153,6 +146,7 @@ class SharedPlanarYCbCrImage;
 class SharedSurfacesAnimation;
 class PlanarYCbCrImage;
 class TextureClient;
+class TextureClientRecycleAllocator;
 class KnowsCompositor;
 class NVImage;
 #ifdef XP_WIN
@@ -164,7 +158,7 @@ struct ImageBackendData {
   virtual ~ImageBackendData() = default;
 
  protected:
-  ImageBackendData() {}
+  ImageBackendData() = default;
 };
 
 /* Forward declarations for Image derivatives. */
@@ -174,6 +168,8 @@ class SharedRGBImage;
 class SurfaceTextureImage;
 #elif defined(XP_MACOSX)
 class MacIOSurfaceImage;
+#elif MOZ_WAYLAND
+class DMABUFSurfaceImage;
 #endif
 
 /**
@@ -205,10 +201,10 @@ class Image {
   }
 
   ImageBackendData* GetBackendData(LayersBackend aBackend) {
-    return mBackendData[aBackend];
+    return mBackendData[aBackend].get();
   }
   void SetBackendData(LayersBackend aBackend, ImageBackendData* aData) {
-    mBackendData[aBackend] = aData;
+    mBackendData[aBackend] = mozilla::WrapUnique(aData);
   }
 
   int32_t GetSerial() const { return mSerial; }
@@ -234,6 +230,9 @@ class Image {
   virtual MacIOSurfaceImage* AsMacIOSurfaceImage() { return nullptr; }
 #endif
   virtual PlanarYCbCrImage* AsPlanarYCbCrImage() { return nullptr; }
+#ifdef MOZ_WAYLAND
+  virtual DMABUFSurfaceImage* AsDMABUFSurfaceImage() { return nullptr; }
+#endif
 
   virtual NVImage* AsNVImage() { return nullptr; }
 
@@ -246,7 +245,7 @@ class Image {
 
   mozilla::EnumeratedArray<mozilla::layers::LayersBackend,
                            mozilla::layers::LayersBackend::LAYERS_LAST,
-                           nsAutoPtr<ImageBackendData>>
+                           UniquePtr<ImageBackendData>>
       mBackendData;
 
   void* mImplData;
@@ -280,7 +279,7 @@ class BufferRecycleBin final {
   typedef mozilla::Mutex Mutex;
 
   // Private destructor, to discourage deletion outside of Release():
-  ~BufferRecycleBin() {}
+  ~BufferRecycleBin() = default;
 
   // This protects mRecycledBuffers, mRecycledBufferSize, mRecycledTextures
   // and mRecycledTextureSizes
@@ -314,7 +313,7 @@ class ImageFactory {
  protected:
   friend class ImageContainer;
 
-  ImageFactory() {}
+  ImageFactory() = default;
   virtual ~ImageFactory() = default;
 
   virtual RefPtr<PlanarYCbCrImage> CreatePlanarYCbCrImage(
@@ -364,14 +363,12 @@ class ImageContainerListener final {
  * synchronously updates the shared state to point to the new image and the old
  * image is immediately released (not true in Normal or Asynchronous modes).
  */
-class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
+class ImageContainer final : public SupportsWeakPtr {
   friend class ImageContainerChild;
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageContainer)
 
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(ImageContainer)
-
   enum Mode { SYNCHRONOUS = 0x0, ASYNCHRONOUS = 0x01 };
 
   static const uint64_t sInvalidAsyncContainerId = 0;
@@ -546,9 +543,11 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
 
   ImageFactory* GetImageFactory() const { return mImageFactory; }
 
+  void EnsureRecycleAllocatorForRDD(KnowsCompositor* aKnowsCompositor);
+
 #ifdef XP_WIN
   D3D11YCbCrRecycleAllocator* GetD3D11YCbCrRecycleAllocator(
-      KnowsCompositor* aAllocator);
+      KnowsCompositor* aKnowsCompositor);
 #endif
 
   /**
@@ -629,6 +628,8 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
   // RecursiveMutex to protect thread safe access to the "current
   // image", and any other state which is shared between threads.
   RecursiveMutex mRecursiveMutex;
+
+  RefPtr<TextureClientRecycleAllocator> mRecycleAllocator;
 
 #ifdef XP_WIN
   RefPtr<D3D11YCbCrRecycleAllocator> mD3D11YCbCrRecycleAllocator;
@@ -764,16 +765,16 @@ struct PlanarYCbCrData {
  * formats from hardware decoder. They are per-pixel skips in the
  * source image.
  *
- * For example when image width is 640, mYStride is 670, mYSkip is 3,
+ * For example when image width is 640, mYStride is 670, mYSkip is 2,
  * the mYChannel buffer looks like:
  *
  * |<----------------------- mYStride ----------------------------->|
  * |<----------------- mYSize.width --------------->|
- *  0   3   6   9   12  15  18  21                659             669
+ *  0   3   6   9   12  15  18  21                639             669
  * |----------------------------------------------------------------|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
  * |            |<->|
  *                mYSkip
  */

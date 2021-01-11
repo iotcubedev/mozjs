@@ -22,6 +22,7 @@
 #include "jit/JSJitFrameIter.h"
 #include "js/TraceLoggerAPI.h"
 #include "util/StringBuffer.h"
+#include "vm/FrameIter.h"  // js::OnlyJSJitFrameIter
 #include "vm/JSScript.h"
 
 #include "gc/Marking-inl.h"
@@ -164,7 +165,7 @@ void GeckoProfilerRuntime::enable(bool enabled) {
 
 /* Lookup the string for the function/script, creating one if necessary */
 const char* GeckoProfilerRuntime::profileString(JSContext* cx,
-                                                JSScript* script) {
+                                                BaseScript* script) {
   ProfileStringMap::AddPtr s = strings().lookupForAdd(script);
 
   if (!s) {
@@ -172,6 +173,7 @@ const char* GeckoProfilerRuntime::profileString(JSContext* cx,
     if (!str) {
       return nullptr;
     }
+    MOZ_ASSERT(script->hasBytecode());
     if (!strings().add(s, script, std::move(str))) {
       ReportOutOfMemory(cx);
       return nullptr;
@@ -181,7 +183,7 @@ const char* GeckoProfilerRuntime::profileString(JSContext* cx,
   return s->value().get();
 }
 
-void GeckoProfilerRuntime::onScriptFinalized(JSScript* script) {
+void GeckoProfilerRuntime::onScriptFinalized(BaseScript* script) {
   /*
    * This function is called whenever a script is destroyed, regardless of
    * whether profiling has been turned on, so don't invoke a function on an
@@ -223,7 +225,9 @@ bool GeckoProfilerThread::enter(JSContext* cx, JSScript* script) {
   }
 #endif
 
-  profilingStack_->pushJsFrame("", dynamicString, script, script->code());
+  profilingStack_->pushJsFrame(
+      "", dynamicString, script, script->code(),
+      script->realm()->creationOptions().profilerRealmID());
   return true;
 }
 
@@ -271,7 +275,7 @@ void GeckoProfilerThread::exit(JSContext* cx, JSScript* script) {
  */
 /* static */
 UniqueChars GeckoProfilerRuntime::allocProfileString(JSContext* cx,
-                                                     JSScript* script) {
+                                                     BaseScript* script) {
   // Note: this profiler string is regexp-matched by
   // devtools/client/profiler/cleopatra/js/parserWorker.js.
 
@@ -279,7 +283,7 @@ UniqueChars GeckoProfilerRuntime::allocProfileString(JSContext* cx,
   bool hasName = false;
   size_t nameLength = 0;
   UniqueChars nameStr;
-  JSFunction* func = script->functionDelazifying();
+  JSFunction* func = script->function();
   if (func && func->displayAtom()) {
     nameStr = StringToNewUTF8CharsZ(cx, *func->displayAtom());
     if (!nameStr) {
@@ -290,15 +294,17 @@ UniqueChars GeckoProfilerRuntime::allocProfileString(JSContext* cx,
     hasName = true;
   }
 
-  // Calculate filename length.
+  // Calculate filename length. We cap this to a reasonable limit to avoid
+  // performance impact of strlen/alloc/memcpy.
+  constexpr size_t MaxFilenameLength = 200;
   const char* filenameStr = script->filename() ? script->filename() : "(null)";
-  size_t filenameLength = strlen(filenameStr);
+  size_t filenameLength = js_strnlen(filenameStr, MaxFilenameLength);
 
   // Calculate line + column length.
   bool hasLineAndColumn = false;
   size_t lineAndColumnLength = 0;
   char lineAndColumnStr[30];
-  if (hasName || script->functionNonDelazifying() || script->isForEval()) {
+  if (hasName || script->isFunction() || script->isForEval()) {
     lineAndColumnLength = SprintfLiteral(lineAndColumnStr, "%u:%u",
                                          script->lineno(), script->column());
     hasLineAndColumn = true;
@@ -371,7 +377,7 @@ void GeckoProfilerThread::trace(JSTracer* trc) {
 
 void GeckoProfilerRuntime::fixupStringsMapAfterMovingGC() {
   for (ProfileStringMap::Enum e(strings()); !e.empty(); e.popFront()) {
-    JSScript* script = e.front().key();
+    BaseScript* script = e.front().key();
     if (IsForwarded(script)) {
       script = Forwarded(script);
       e.rekeyFront(script);
@@ -382,7 +388,7 @@ void GeckoProfilerRuntime::fixupStringsMapAfterMovingGC() {
 #ifdef JSGC_HASH_TABLE_CHECKS
 void GeckoProfilerRuntime::checkStringsMapAfterMovingGC() {
   for (auto r = strings().all(); !r.empty(); r.popFront()) {
-    JSScript* script = r.front().key();
+    BaseScript* script = r.front().key();
     CheckGCThingAfterMovingGC(script);
     auto ptr = strings().lookup(script);
     MOZ_RELEASE_ASSERT(ptr.found() && &*ptr == &r.front());
@@ -529,9 +535,9 @@ namespace JS {
     name,
 #define SUBCATEGORY_ENUMS_END_CATEGORY \
   };
-PROFILING_CATEGORY_LIST(SUBCATEGORY_ENUMS_BEGIN_CATEGORY,
-                        SUBCATEGORY_ENUMS_SUBCATEGORY,
-                        SUBCATEGORY_ENUMS_END_CATEGORY)
+MOZ_PROFILING_CATEGORY_LIST(SUBCATEGORY_ENUMS_BEGIN_CATEGORY,
+                            SUBCATEGORY_ENUMS_SUBCATEGORY,
+                            SUBCATEGORY_ENUMS_END_CATEGORY)
 #undef SUBCATEGORY_ENUMS_BEGIN_CATEGORY
 #undef SUBCATEGORY_ENUMS_SUBCATEGORY
 #undef SUBCATEGORY_ENUMS_END_CATEGORY
@@ -546,9 +552,9 @@ PROFILING_CATEGORY_LIST(SUBCATEGORY_ENUMS_BEGIN_CATEGORY,
    uint32_t(ProfilingSubcategory_##category::name), labelAsString},
 #define CATEGORY_INFO_END_CATEGORY
 const ProfilingCategoryPairInfo sProfilingCategoryPairInfo[] = {
-  PROFILING_CATEGORY_LIST(CATEGORY_INFO_BEGIN_CATEGORY,
-                          CATEGORY_INFO_SUBCATEGORY,
-                          CATEGORY_INFO_END_CATEGORY)
+  MOZ_PROFILING_CATEGORY_LIST(CATEGORY_INFO_BEGIN_CATEGORY,
+                              CATEGORY_INFO_SUBCATEGORY,
+                              CATEGORY_INFO_END_CATEGORY)
 };
 #undef CATEGORY_INFO_BEGIN_CATEGORY
 #undef CATEGORY_INFO_SUBCATEGORY

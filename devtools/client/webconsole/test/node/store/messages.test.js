@@ -12,9 +12,6 @@ const {
   getAllMessagesById,
   getVisibleMessages,
 } = require("devtools/client/webconsole/selectors/messages");
-const {
-  ensureExecutionPoint,
-} = require("devtools/client/webconsole/reducers/messages");
 
 const {
   clonePacket,
@@ -43,15 +40,10 @@ describe("Message reducer:", () => {
     it("adds a message to an empty store", () => {
       const { dispatch, getState } = setupStore();
 
-      // Retrieve the store before adding the message to not pollute the
-      // ensureExecutionPoint results.
-      const state = getState();
-
       const packet = stubPackets.get("console.log('foobar', 'test')");
       dispatch(actions.messagesAdd([packet]));
 
       const message = stubPreparedMessages.get("console.log('foobar', 'test')");
-      ensureExecutionPoint(state.messages, message);
 
       expect(getFirstMessage(getState())).toEqual(message);
     });
@@ -889,15 +881,9 @@ describe("Message reducer:", () => {
       let updatePacket = clonePacket(stubPackets.get("GET request update"));
 
       packet.actor = "message1";
-      updatePacket.networkInfo.actor = "message1";
+      updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1"]);
@@ -905,15 +891,9 @@ describe("Message reducer:", () => {
       packet = clonePacket(stubPackets.get("GET request"));
       updatePacket = stubPackets.get("XHR GET request update");
       packet.actor = "message2";
-      updatePacket.networkInfo.actor = "message2";
+      updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates)).toEqual(["message1", "message2"]);
@@ -923,13 +903,7 @@ describe("Message reducer:", () => {
       const { dispatch, getState } = setupStore(["XHR GET request"]);
 
       const updatePacket = stubPackets.get("XHR GET request update");
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       let networkUpdates = getAllNetworkMessagesUpdateById(getState());
       expect(Object.keys(networkUpdates).length > 0).toBe(true);
@@ -953,37 +927,19 @@ describe("Message reducer:", () => {
         stubPackets.get("XHR GET request update")
       );
       packet.actor = "message1";
-      updatePacket.networkInfo.actor = "message1";
+      updatePacket.actor = "message1";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       packet.actor = "message2";
-      updatePacket.networkInfo.actor = "message2";
+      updatePacket.actor = "message2";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       packet.actor = "message3";
-      updatePacket.networkInfo.actor = "message3";
+      updatePacket.actor = "message3";
       dispatch(actions.messagesAdd([packet]));
-      dispatch(
-        actions.networkMessageUpdate(
-          updatePacket.networkInfo,
-          null,
-          updatePacket
-        )
-      );
+      dispatch(actions.networkMessageUpdate(updatePacket, null));
 
       // Check that we have the expected data.
       const messages = getAllMessagesById(getState());
@@ -1109,9 +1065,9 @@ describe("Message reducer:", () => {
       const packet3 = clonePacket(stubPackets.get(key1));
 
       // Repeat ID must be the same even if the timestamp is different.
-      packet1.message.timeStamp = 1;
-      packet2.message.timeStamp = 2;
-      packet3.message.timeStamp = 3;
+      packet1.message.timeStamp = packet1.message.timeStamp + 1;
+      packet2.message.timeStamp = packet2.message.timeStamp + 2;
+      packet3.message.timeStamp = packet3.message.timeStamp + 3;
       dispatch(actions.messagesAdd([packet1, packet2, packet3]));
 
       // There is still only two messages being logged,
@@ -1122,6 +1078,32 @@ describe("Message reducer:", () => {
       const repeat = getAllRepeatById(getState());
       expect(repeat[getFirstMessage(getState()).id]).toBe(3);
       expect(repeat[getLastMessage(getState()).id]).toBe(undefined);
+    });
+  });
+
+  describe("messageRemove", () => {
+    it("removes the message from the store", () => {
+      const { dispatch, getState } = setupStore([
+        "console.trace()",
+        "console.log(undefined)",
+        "console.trace()",
+        "console.log(undefined)",
+      ]);
+
+      let expanded = getAllMessagesUiById(getState());
+      expect(expanded.length).toBe(2);
+
+      const secondTraceMessage = getMessageAt(getState(), 2);
+      dispatch(actions.messageRemove(secondTraceMessage.id));
+
+      const messages = getAllMessagesById(getState());
+      // The messages was removed
+      expect(messages.size).toBe(3);
+
+      // Its id was removed from the messagesUI property as well
+      expanded = getAllMessagesUiById(getState());
+      expect(expanded.length).toBe(1);
+      expect(expanded.includes(secondTraceMessage.id)).toBeFalsy();
     });
   });
 });

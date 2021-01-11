@@ -1,3 +1,5 @@
+"use strict";
+
 function getLinkFile() {
   if (mozinfo.os == "win") {
     return do_get_file("test_link.url");
@@ -34,7 +36,7 @@ NotificationCallbacks.prototype = {
     Assert.equal(newChan.originalURI.spec, this._newURI.spec);
     Assert.equal(newChan.originalURI, newChan.URI);
     Assert.equal(newChan.URI.spec, this._newURI.spec);
-    throw Cr.NS_ERROR_ABORT;
+    throw Components.Exception("", Cr.NS_ERROR_ABORT);
   },
 };
 
@@ -91,7 +93,13 @@ function run_test() {
   }
 
   link = getLinkFile();
-  linkURI = ios.newFileURI(link);
+  if (link.isSymlink()) {
+    let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+    file.initWithPath(link.target);
+    linkURI = ios.newFileURI(file);
+  } else {
+    linkURI = ios.newFileURI(link);
+  }
 
   do_test_pending();
   var chan = NetUtil.newChannel({

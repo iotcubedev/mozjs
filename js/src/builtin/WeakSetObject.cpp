@@ -71,10 +71,10 @@ bool WeakSetObject::add(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   // Steps 5-6.
-  if (ObjectValueMap* map =
+  if (ObjectValueWeakMap* map =
           args.thisv().toObject().as<WeakSetObject>().getMap()) {
     JSObject* value = &args[0].toObject();
-    if (ObjectValueMap::Ptr ptr = map->lookup(value)) {
+    if (ObjectValueWeakMap::Ptr ptr = map->lookup(value)) {
       map->remove(ptr);
       args.rval().setBoolean(true);
       return true;
@@ -107,7 +107,7 @@ bool WeakSetObject::delete_(JSContext* cx, unsigned argc, Value* vp) {
   }
 
   // Steps 4, 6.
-  if (ObjectValueMap* map =
+  if (ObjectValueWeakMap* map =
           args.thisv().toObject().as<WeakSetObject>().getMap()) {
     JSObject* value = &args[0].toObject();
     if (map->has(value)) {
@@ -146,8 +146,8 @@ const JSClass WeakSetObject::class_ = {
     &WeakCollectionObject::classOps_, &WeakSetObject::classSpec_};
 
 const JSClass WeakSetObject::protoClass_ = {
-    js_Object_str, JSCLASS_HAS_CACHED_PROTO(JSProto_WeakSet), JS_NULL_CLASS_OPS,
-    &WeakSetObject::classSpec_};
+    "WeakSet.prototype", JSCLASS_HAS_CACHED_PROTO(JSProto_WeakSet),
+    JS_NULL_CLASS_OPS, &WeakSetObject::classSpec_};
 
 const JSPropertySpec WeakSetObject::properties[] = {
     JS_STRING_SYM_PS(toStringTag, "WeakSet", JSPROP_READONLY), JS_PS_END};

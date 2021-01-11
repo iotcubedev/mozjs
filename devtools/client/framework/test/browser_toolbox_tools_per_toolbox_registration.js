@@ -47,7 +47,9 @@ function toolboxRegister(aToolbox) {
 
   toolbox.addAdditionalTool({
     id: TOOL_ID,
-    label: "per-toolbox Test Tool",
+    // The size of the label can make the test fail if it's too long.
+    // See ok(tab, ...) assert below and Bug 1596345.
+    label: "Test Tool",
     inMenu: true,
     isTargetSupported: () => true,
     build: function() {
@@ -77,7 +79,8 @@ function testToolRegistered() {
 
   // Test that the tool appeared in the UI.
   const doc = toolbox.doc;
-  const tab = doc.getElementById("toolbox-tab-" + TOOL_ID);
+  const tab = getToolboxTab(doc, TOOL_ID);
+
   ok(tab, "new tool's tab exists in toolbox UI");
 
   const panel = doc.getElementById("toolbox-panel-" + TOOL_ID);
@@ -120,7 +123,7 @@ function toolboxToolUnregistered() {
 
   // test that it disappeared from the UI
   const doc = toolbox.doc;
-  const tab = doc.getElementById("toolbox-tab-" + TOOL_ID);
+  const tab = getToolboxTab(doc, TOOL_ID);
   ok(!tab, "tool's tab was removed from the toolbox UI");
 
   const panel = doc.getElementById("toolbox-panel-" + TOOL_ID);

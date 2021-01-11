@@ -5,6 +5,9 @@ var gTestRoot = getRootDirectory(gTestPath).replace(
 var gTestBrowser = null;
 
 add_task(async function() {
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.navigation.requireUserInteraction", false]],
+  });
   registerCleanupFunction(async function() {
     clearAllPluginPermissions();
     setTestPluginEnabledState(Ci.nsIPluginTag.STATE_ENABLED, "Test Plug-in");
@@ -16,7 +19,6 @@ add_task(async function() {
       gTestRoot + "blockNoPlugins",
       gTestBrowser
     );
-    resetBlocklist();
     gBrowser.removeCurrentTab();
     window.focus();
     gTestBrowser = null;
@@ -65,7 +67,7 @@ add_task(async function() {
     "plugin should be marked as VULNERABLE"
   );
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     Assert.ok(
       !!content.document.getElementById("test"),
       "test part 1: plugin should not be activated"
@@ -87,7 +89,7 @@ add_task(async function() {
     !popupNotification,
     "test part 2: Should not have a click-to-play notification"
   );
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     Assert.ok(
       !content.document.getElementById("test"),
       "test part 2: plugin should not be activated"
@@ -122,7 +124,7 @@ add_task(async function() {
     "plugin should be marked as VULNERABLE"
   );
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     Assert.ok(
       !!content.document.getElementById("test"),
       "test part 3: plugin should not be activated"

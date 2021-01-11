@@ -106,7 +106,7 @@ function setupChannel(params) {
     channel = NetUtil.newChannel({
       uri: trackingOrigin + "/evil.js",
       loadingPrincipal: principal,
-      securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+      securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
       contentPolicyType: params.contentType,
     });
   }
@@ -128,6 +128,7 @@ add_task(async function testShouldClassify() {
     "privacy.trackingprotection.annotate_channels",
     true
   );
+  Services.prefs.setBoolPref("network.dns.native-is-localhost", true);
 
   setupHttpServer();
 
@@ -141,7 +142,11 @@ add_task(async function testShouldClassify() {
       channel.asyncOpen({
         onStartRequest: (request, context) => {
           Assert.equal(
-            request.QueryInterface(Ci.nsIHttpChannel).isTrackingResource(),
+            !!(
+              request.QueryInterface(Ci.nsIClassifiedChannel)
+                .classificationFlags &
+              Ci.nsIClassifiedChannel.CLASSIFIED_ANY_BASIC_TRACKING
+            ),
             getExpectedResult(params)
           );
           request.cancel(Cr.NS_ERROR_ABORT);

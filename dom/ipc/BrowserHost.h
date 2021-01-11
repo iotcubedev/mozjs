@@ -80,12 +80,12 @@ class BrowserHost : public RemoteBrowser,
     mRoot->VisitAll(aCallback);
   }
 
-  void LoadURL(nsIURI* aURI) override;
+  void LoadURL(nsIURI* aURI, nsIPrincipal* aTriggeringPrincipal) override;
   void ResumeLoad(uint64_t aPendingSwitchId) override;
   void DestroyStart() override;
   void DestroyComplete() override;
 
-  bool Show(const ScreenIntSize& aSize, bool aParentIsActive) override;
+  bool Show(const OwnerShowInfo&) override;
   void UpdateDimensions(const nsIntRect& aRect,
                         const ScreenIntSize& aSize) override;
 

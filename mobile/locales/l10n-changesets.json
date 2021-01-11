@@ -1,548 +1,779 @@
 {
+    "ach": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
+    },
     "an": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "6838e92d93c5"
+        "revision": "default"
     },
     "ar": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "33e2ffd36693"
+        "revision": "default"
     },
     "ast": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5fd4918aca04"
+        "revision": "default"
     },
     "az": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e4b4aaf0d80b"
+        "revision": "default"
     },
     "be": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "f333176f49e1"
+        "revision": "default"
     },
     "bg": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "681960858d4d"
+        "revision": "default"
     },
     "bn": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "120f8c972bf2"
+        "revision": "default"
     },
     "br": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "10221b3fcc66"
+        "revision": "default"
     },
     "bs": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "6733c012e29c"
+        "revision": "default"
     },
     "ca": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "bb56638eea56"
+        "revision": "default"
     },
     "cak": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "adff93fbf21b"
+        "revision": "default"
     },
     "cs": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a4e380125c76"
+        "revision": "default"
     },
     "cy": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "b3b8b5365996"
+        "revision": "default"
     },
     "da": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "fefc73d5e5c5"
+        "revision": "default"
     },
     "de": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "edc6a6fdefd9"
+        "revision": "default"
     },
     "dsb": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "32ee146e4a52"
+        "revision": "default"
     },
     "el": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "91a190e8484a"
+        "revision": "default"
     },
     "en-CA": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "55be2d937386"
+        "revision": "default"
     },
     "en-GB": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "31adfb363573"
+        "revision": "default"
     },
     "eo": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a96d4c4b872d"
+        "revision": "default"
     },
     "es-AR": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5500ba00d0ba"
+        "revision": "default"
     },
     "es-CL": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e55798f7da51"
+        "revision": "default"
     },
     "es-ES": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a99ec865e94c"
+        "revision": "default"
     },
     "es-MX": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e6405e0eeba1"
+        "revision": "default"
     },
     "et": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "bd6569e3cccd"
+        "revision": "default"
     },
     "eu": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "7cb2cec3f496"
+        "revision": "default"
     },
     "fa": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "4e8f95ed60d0"
+        "revision": "default"
     },
     "ff": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "97eb25b8e760"
+        "revision": "default"
     },
     "fi": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "34c66ea9f467"
+        "revision": "default"
     },
     "fr": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "8f25f09179cc"
+        "revision": "default"
     },
     "fy-NL": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "8f7c6e8af519"
+        "revision": "default"
     },
     "ga-IE": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "d43e8237a10c"
+        "revision": "default"
     },
     "gd": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "7b9af356e69d"
+        "revision": "default"
     },
     "gl": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "8f7215f8c168"
+        "revision": "default"
     },
     "gn": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "00f1f5fd690e"
+        "revision": "default"
     },
     "gu-IN": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e69af1df1771"
+        "revision": "default"
     },
     "he": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "74833c095a3a"
+        "revision": "default"
     },
     "hi-IN": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "9fb83c930fcb"
+        "revision": "default"
     },
     "hr": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "dcbeb4c4d6c4"
+        "revision": "default"
     },
     "hsb": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "380b2e9495bd"
+        "revision": "default"
     },
     "hu": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "f9394ce5f574"
+        "revision": "default"
     },
     "hy-AM": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "62ae0514049d"
+        "revision": "default"
+    },
+    "ia": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
     },
     "id": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "91ff2a38e2c1"
+        "revision": "default"
     },
     "is": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "6608ec0b94f4"
+        "revision": "default"
     },
     "it": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a0b9e60bf1bc"
+        "revision": "default"
     },
     "ja": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "f7a29d2f96c8"
+        "revision": "default"
     },
     "ka": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "db53a1a89048"
+        "revision": "default"
     },
     "kab": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "343d6e44a54e"
+        "revision": "default"
     },
     "kk": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "607e4cdbea5f"
+        "revision": "default"
+    },
+    "km": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
     },
     "kn": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5ec5e2e2b18c"
+        "revision": "default"
     },
     "ko": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "1d3206689f5c"
+        "revision": "default"
     },
     "lij": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "acd29ac067ec"
+        "revision": "default"
     },
     "lo": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "b0fdeb5e1fb2"
+        "revision": "default"
     },
     "lt": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "bbbb2e0ecbfd"
+        "revision": "default"
+    },
+    "ltg": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
     },
     "lv": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5305994a87e0"
+        "revision": "default"
+    },
+    "meh": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
+    },
+    "mix": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
     },
     "ml": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "4a3ea2b914e9"
+        "revision": "default"
     },
     "mr": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "44bee27eb620"
+        "revision": "default"
     },
     "ms": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "8f8f948c2a48"
+        "revision": "default"
     },
     "my": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "46b43de709fb"
+        "revision": "default"
     },
     "nb-NO": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "78cd6f6a6546"
+        "revision": "default"
     },
     "ne-NP": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5f469b588aeb"
+        "revision": "default"
     },
     "nl": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "b5320a199e64"
+        "revision": "default"
     },
     "nn-NO": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a671ab4a205b"
+        "revision": "default"
     },
     "oc": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "b0143ec04f3c"
+        "revision": "default"
     },
     "pa-IN": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "5b814984dd23"
+        "revision": "default"
     },
     "pl": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "dbe4f431f50f"
+        "revision": "default"
     },
     "pt-BR": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "99af08b0dc79"
+        "revision": "default"
     },
     "pt-PT": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "89c7a5aa6791"
+        "revision": "default"
     },
     "rm": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "96fa57ba730e"
+        "revision": "default"
     },
     "ro": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "107c0ce6f588"
+        "revision": "default"
     },
     "ru": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "0c338ac4cd9a"
+        "revision": "default"
     },
     "sk": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "0f98fe430b14"
+        "revision": "default"
     },
     "sl": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e806a4574193"
+        "revision": "default"
     },
     "son": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "89d9e8b17e49"
+        "revision": "default"
     },
     "sq": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "3c5988d12a3e"
+        "revision": "default"
     },
     "sr": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "4c1f22805fc7"
+        "revision": "default"
     },
     "sv-SE": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "84cab4cd561c"
+        "revision": "default"
     },
     "ta": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "d14006223afe"
+        "revision": "default"
     },
     "te": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "97aaac0551d8"
+        "revision": "default"
     },
     "th": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "7b0266bcdacc"
+        "revision": "default"
+    },
+    "tl": {
+        "platforms": [
+            "android",
+            "android-api-16"
+        ],
+        "revision": "default"
     },
     "tr": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a3d489164a7e"
+        "revision": "default"
     },
     "trs": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "e3102c24d5cb"
+        "revision": "default"
     },
     "uk": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "73adec26825d"
+        "revision": "default"
     },
     "ur": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "7c8d5f91d277"
+        "revision": "default"
     },
     "uz": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "b31e5d9388d8"
+        "revision": "default"
     },
     "vi": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "f4e9d650bdcc"
+        "revision": "default"
     },
     "wo": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a986453f11df"
+        "revision": "default"
     },
     "xh": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "611efbefefa8"
+        "revision": "default"
     },
     "zam": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "a91809eef593"
+        "revision": "default"
     },
     "zh-CN": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "1a6ed1e58bfe"
+        "revision": "default"
     },
     "zh-TW": {
         "platforms": [
+            "android",
+            "android-api-16",
             "android-multilocale"
         ],
-        "revision": "8892046afda2"
+        "revision": "default"
     }
 }

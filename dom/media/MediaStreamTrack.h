@@ -8,7 +8,7 @@
 
 #include "MediaTrackConstraints.h"
 #include "PrincipalChangeObserver.h"
-#include "StreamTracks.h"
+#include "PrincipalHandle.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
 #include "mozilla/dom/MediaTrackSettingsBinding.h"
@@ -23,15 +23,15 @@ namespace mozilla {
 class DOMMediaStream;
 class MediaEnginePhotoCallback;
 class MediaInputPort;
-class MediaStream;
-class MediaStreamGraph;
-class MediaStreamGraphImpl;
-class MediaStreamTrackListener;
-class DirectMediaStreamTrackListener;
+class MediaTrack;
+class MediaTrackGraph;
+class MediaTrackGraphImpl;
+class MediaTrackListener;
+class DirectMediaTrackListener;
 class PeerConnectionImpl;
 class PeerConnectionMedia;
 class PeerIdentity;
-class ProcessedMediaStream;
+class ProcessedMediaTrack;
 class RemoteSourceStreamInfo;
 class SourceStreamInfo;
 class MediaMgrError;
@@ -54,10 +54,8 @@ class MediaStreamTrackSource : public nsISupports {
   NS_DECL_CYCLE_COLLECTION_CLASS(MediaStreamTrackSource)
 
  public:
-  class Sink : public SupportsWeakPtr<Sink> {
+  class Sink : public SupportsWeakPtr {
    public:
-    MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackSource::Sink)
-
     /**
      * Must be constant throughout the Sink's lifetime.
      *
@@ -145,7 +143,7 @@ class MediaStreamTrackSource : public nsISupports {
 
   /**
    * Forwards a photo request to backends that support it. Other backends return
-   * NS_ERROR_NOT_IMPLEMENTED to indicate that a MediaStreamGraph-based fallback
+   * NS_ERROR_NOT_IMPLEMENTED to indicate that a MediaTrackGraph-based fallback
    * should be used.
    */
   virtual nsresult TakePhoto(MediaEnginePhotoCallback*) const {
@@ -235,7 +233,7 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
  protected:
-  virtual ~MediaStreamTrackSource() {}
+  virtual ~MediaStreamTrackSource() = default;
 
   bool IsActive() {
     for (const WeakPtr<Sink>& sink : mSinks) {
@@ -261,8 +259,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void PrincipalChanged() {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -279,8 +276,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void MutedChanged(bool aNewState) {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -296,8 +292,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void OverrideEnded() {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -308,7 +303,7 @@ class MediaStreamTrackSource : public nsISupports {
   }
 
   // Principal identifying who may access the contents of this source.
-  nsCOMPtr<nsIPrincipal> mPrincipal;
+  RefPtr<nsIPrincipal> mPrincipal;
 
   // Currently registered sinks.
   nsTArray<WeakPtr<Sink>> mSinks;
@@ -339,7 +334,7 @@ class BasicTrackSource : public MediaStreamTrackSource {
   void Enable() override {}
 
  protected:
-  ~BasicTrackSource() {}
+  ~BasicTrackSource() = default;
 
   const MediaSourceEnum mMediaSource;
 };
@@ -348,82 +343,79 @@ class BasicTrackSource : public MediaStreamTrackSource {
  * Base class that consumers of a MediaStreamTrack can use to get notifications
  * about state changes in the track.
  */
-class MediaStreamTrackConsumer
-    : public SupportsWeakPtr<MediaStreamTrackConsumer> {
+class MediaStreamTrackConsumer : public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackConsumer)
-
   /**
    * Called when the track's readyState transitions to "ended".
    * Unlike the "ended" event exposed to script this is called for any reason,
    * including MediaStreamTrack::Stop().
    */
   virtual void NotifyEnded(MediaStreamTrack* aTrack){};
+
+  /**
+   * Called when the track's enabled state changes.
+   */
+  virtual void NotifyEnabledChanged(MediaStreamTrack* aTrack, bool aEnabled){};
 };
 
 // clang-format off
 /**
- * DOM wrapper for MediaStreamGraph-MediaStreams.
+ * DOM wrapper for MediaTrackGraph-MediaTracks.
  *
  * To account for cloning, a MediaStreamTrack wraps two internal (and chained)
- * MediaStreams:
- *   1. mInputStream
+ * MediaTracks:
+ *   1. mInputTrack
  *      - Controlled by the producer of the data in the track. The producer
- *        decides on lifetime of the MediaStream and the track inside it.
- *      - It can be any type of MediaStream.
+ *        decides on lifetime of the MediaTrack and the track inside it.
+ *      - It can be any type of MediaTrack.
  *      - Contains one track only.
- *   2. mStream
- *      - A TrackUnionStream representing this MediaStreamTrack.
- *      - Its data is piped from mInputStream through mPort.
+ *   2. mTrack
+ *      - A ForwardedInputTrack representing this MediaStreamTrack.
+ *      - Its data is piped from mInputTrack through mPort.
  *      - Contains one track only.
  *      - When this MediaStreamTrack is enabled/disabled this is reflected in
- *        the chunks in the track in mStream.
- *      - When this MediaStreamTrack has ended, mStream gets destroyed.
- *        Note that mInputStream is unaffected, such that any clones of mStream
+ *        the chunks in the track in mTrack.
+ *      - When this MediaStreamTrack has ended, mTrack gets destroyed.
+ *        Note that mInputTrack is unaffected, such that any clones of mTrack
  *        can live on. When all clones are ended, this is signaled to the
  *        producer via our MediaStreamTrackSource. It is then likely to destroy
- *        mInputStream.
+ *        mInputTrack.
  *
  * A graphical representation of how tracks are connected when cloned follows:
  *
  * MediaStreamTrack A
- *       mInputStream     mStream
+ *       mInputTrack     mTrack
  *            t1 ---------> t1
  *               \
  *                -----
  * MediaStreamTrack B  \  (clone of A)
- *       mInputStream   \ mStream
+ *       mInputTrack   \ mTrack
  *            *          -> t1
  *
- *   (*) is a copy of A's mInputStream
+ *   (*) is a copy of A's mInputTrack
  */
 // clang-format on
-class MediaStreamTrack : public DOMEventTargetHelper,
-                         public SupportsWeakPtr<MediaStreamTrack> {
+class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // PeerConnection and friends need to know our owning DOMStream and track id.
   friend class mozilla::PeerConnectionImpl;
   friend class mozilla::PeerConnectionMedia;
   friend class mozilla::SourceStreamInfo;
   friend class mozilla::RemoteSourceStreamInfo;
 
-  class MSGListener;
+  class MTGListener;
   class TrackSink;
 
  public:
-  /**
-   * aTrackID is the MediaStreamGraph track ID for the track in aInputStream.
-   */
   MediaStreamTrack(
-      nsPIDOMWindowInner* aWindow, MediaStream* aInputStream, TrackID aTrackID,
+      nsPIDOMWindowInner* aWindow, mozilla::MediaTrack* aInputTrack,
       MediaStreamTrackSource* aSource,
       MediaStreamTrackState aReadyState = MediaStreamTrackState::Live,
+      bool aMuted = false,
       const MediaTrackConstraints& aConstraints = MediaTrackConstraints());
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
                                            DOMEventTargetHelper)
-
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrack)
 
   nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
   JSObject* WrapObject(JSContext* aCx,
@@ -475,9 +467,9 @@ class MediaStreamTrack : public DOMEventTargetHelper,
     return GetSource().GetPeerIdentity();
   }
 
-  ProcessedMediaStream* GetStream() const;
-  MediaStreamGraph* Graph() const;
-  MediaStreamGraphImpl* GraphImpl() const;
+  ProcessedMediaTrack* GetTrack() const;
+  MediaTrackGraph* Graph() const;
+  MediaTrackGraphImpl* GraphImpl() const;
 
   MediaStreamTrackSource& GetSource() const {
     MOZ_RELEASE_ASSERT(mSource,
@@ -521,34 +513,32 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   void RemoveConsumer(MediaStreamTrackConsumer* aConsumer);
 
   /**
-   * Adds a MediaStreamTrackListener to the MediaStreamGraph representation of
+   * Adds a MediaTrackListener to the MediaTrackGraph representation of
    * this track.
    */
-  virtual void AddListener(MediaStreamTrackListener* aListener);
+  virtual void AddListener(MediaTrackListener* aListener);
 
   /**
-   * Removes a MediaStreamTrackListener from the MediaStreamGraph representation
+   * Removes a MediaTrackListener from the MediaTrackGraph representation
    * of this track.
    */
-  void RemoveListener(MediaStreamTrackListener* aListener);
+  void RemoveListener(MediaTrackListener* aListener);
 
   /**
    * Attempts to add a direct track listener to this track.
    * Callers must listen to the NotifyInstalled event to know if installing
-   * the listener succeeded (tracks originating from SourceMediaStreams) or
+   * the listener succeeded (tracks originating from SourceMediaTracks) or
    * failed (e.g., WebAudio originated tracks).
    */
-  virtual void AddDirectListener(DirectMediaStreamTrackListener* aListener);
-  void RemoveDirectListener(DirectMediaStreamTrackListener* aListener);
+  virtual void AddDirectListener(DirectMediaTrackListener* aListener);
+  void RemoveDirectListener(DirectMediaTrackListener* aListener);
 
   /**
    * Sets up a MediaInputPort from the underlying track that this
-   * MediaStreamTrack represents, to aStream, and returns it.
+   * MediaStreamTrack represents, to aTrack, and returns it.
    */
   already_AddRefed<MediaInputPort> ForwardTrackContentsTo(
-      ProcessedMediaStream* aStream);
-
-  TrackID GetTrackID() const { return mTrackID; }
+      ProcessedMediaTrack* aTrack);
 
  protected:
   virtual ~MediaStreamTrack();
@@ -557,10 +547,10 @@ class MediaStreamTrack : public DOMEventTargetHelper,
    * Forces the ready state to a particular value, for instance when we're
    * cloning an already ended track.
    */
-  void SetReadyState(MediaStreamTrackState aState);
+  virtual void SetReadyState(MediaStreamTrackState aState);
 
   /**
-   * Notified by the MediaStreamGraph, through our owning MediaStream on the
+   * Notified by the MediaTrackGraph, through our owning MediaStream on the
    * main thread.
    *
    * Note that this sets the track to ended and raises the "ended" event
@@ -569,8 +559,8 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   void OverrideEnded();
 
   /**
-   * Called by the MSGListener when this track's PrincipalHandle changes on
-   * the MediaStreamGraph thread. When the PrincipalHandle matches the pending
+   * Called by the MTGListener when this track's PrincipalHandle changes on
+   * the MediaTrackGraph thread. When the PrincipalHandle matches the pending
    * principal we know that the principal change has propagated to consumers.
    */
   void NotifyPrincipalHandleChanged(const PrincipalHandle& aNewPrincipalHandle);
@@ -580,6 +570,12 @@ class MediaStreamTrack : public DOMEventTargetHelper,
    * Notifies all MediaStreamTrackConsumers that this track ended.
    */
   void NotifyEnded();
+
+  /**
+   * Called when this track's enabled state has changed.
+   * Notifies all MediaStreamTrackConsumers.
+   */
+  void NotifyEnabledChanged();
 
   /**
    * Called when mSource's principal has changed.
@@ -604,7 +600,7 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   void SetPrincipal(nsIPrincipal* aPrincipal);
 
   /**
-   * Creates a new MediaStreamTrack with the same kind, input stream, input
+   * Creates a new MediaStreamTrack with the same kind, input track, input
    * track ID and source as this MediaStreamTrack.
    */
   virtual already_AddRefed<MediaStreamTrack> CloneInternal() = 0;
@@ -617,27 +613,25 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   // We need this to track our parent object.
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
 
-  // The input MediaStream assigned us by the data producer.
+  // The input MediaTrack assigned us by the data producer.
   // Owned by the producer.
-  const RefPtr<MediaStream> mInputStream;
-  // The MediaStream representing this MediaStreamTrack in the MediaStreamGraph.
+  const RefPtr<mozilla::MediaTrack> mInputTrack;
+  // The MediaTrack representing this MediaStreamTrack in the MediaTrackGraph.
   // Set on construction if we're live. Valid until we end. Owned by us.
-  RefPtr<ProcessedMediaStream> mStream;
-  // The MediaInputPort connecting mInputStream to mStream. Set on construction
-  // if mInputStream is non-destroyed and we're live. Valid until we end. Owned
+  RefPtr<ProcessedMediaTrack> mTrack;
+  // The MediaInputPort connecting mInputTrack to mTrack. Set on construction
+  // if mInputTrack is non-destroyed and we're live. Valid until we end. Owned
   // by us.
   RefPtr<MediaInputPort> mPort;
-  // The TrackID of this track in mInputStream and mStream.
-  const TrackID mTrackID;
   RefPtr<MediaStreamTrackSource> mSource;
   const UniquePtr<TrackSink> mSink;
   nsCOMPtr<nsIPrincipal> mPrincipal;
   nsCOMPtr<nsIPrincipal> mPendingPrincipal;
-  RefPtr<MSGListener> mMSGListener;
-  // Keep tracking MediaStreamTrackListener and DirectMediaStreamTrackListener,
+  RefPtr<MTGListener> mMTGListener;
+  // Keep tracking MediaTrackListener and DirectMediaTrackListener,
   // so we can remove them in |Destory|.
-  nsTArray<RefPtr<MediaStreamTrackListener>> mTrackListeners;
-  nsTArray<RefPtr<DirectMediaStreamTrackListener>> mDirectTrackListeners;
+  nsTArray<RefPtr<MediaTrackListener>> mTrackListeners;
+  nsTArray<RefPtr<DirectMediaTrackListener>> mDirectTrackListeners;
   nsString mID;
   MediaStreamTrackState mReadyState;
   bool mEnabled;

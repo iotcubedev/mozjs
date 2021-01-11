@@ -28,9 +28,9 @@ add_task(async function() {
         true,
         true
       );
-      await ContentTask.spawn(
+      let browserIds = await SpecialPowers.spawn(
         browser,
-        { base1: BASE1, base2: BASE2 },
+        [{ base1: BASE1, base2: BASE2 }],
         async function({ base1, base2 }) {
           let top = content;
           top.name = "top";
@@ -105,19 +105,27 @@ add_task(async function() {
           // wish to confirm that targeting is able to find
           // appropriate browsing contexts.
 
-          function reachable(start, targets) {
-            for (let target of targets) {
-              is(
-                start.findWithName(target.name, start),
-                target,
-                [start.name, "can reach", target.name].join(" ")
-              );
-            }
+          // BrowsingContext.findWithName requires access checks, which
+          // can only be performed in the process of the accessor BC's
+          // docShell.
+          function findWithName(bc, name) {
+            return content.SpecialPowers.spawn(bc, [bc, name], (bc, name) => {
+              return bc.findWithName(name);
+            });
           }
 
-          function unreachable(start, target) {
+          async function reachable(start, target) {
+            info(start.name, target.name);
             is(
-              start.findWithName(target.name, start),
+              await findWithName(start, target.name),
+              target,
+              [start.name, "can reach", target.name].join(" ")
+            );
+          }
+
+          async function unreachable(start, target) {
+            is(
+              await findWithName(start, target.name),
               null,
               [start.name, "can't reach", target.name].join(" ")
             );
@@ -140,23 +148,82 @@ add_task(async function() {
           });
           info("seventh");
 
-          let frames = [
-            BrowsingContext.getFromWindow(top),
+          let origin1 = [first, second, fifth, sixth];
+          let origin2 = [third, fourth];
+
+          let topBC = BrowsingContext.getFromWindow(top);
+          let frames = new Map([
+            [topBC, [topBC, first, second, third, fourth, fifth, sixth]],
+            [first, [topBC, ...origin1, third, fourth]],
+            [second, [topBC, ...origin1, third, fourth]],
+            [third, [topBC, ...origin2, fifth, sixth]],
+            [fourth, [topBC, ...origin2, fifth, sixth]],
+            [fifth, [topBC, ...origin1, third, fourth]],
+            [sixth, [...origin1, third, fourth]],
+          ]);
+
+          for (let [start, accessible] of frames) {
+            for (let frame of frames.keys()) {
+              if (accessible.includes(frame)) {
+                await reachable(start, frame);
+              } else {
+                await unreachable(start, frame);
+              }
+            }
+            await unreachable(start, seventh);
+          }
+
+          let topBrowserId = topBC.browserId;
+          ok(topBrowserId > 0, "Should have a browser ID.");
+          for (let [name, bc] of Object.entries({
             first,
             second,
             third,
             fourth,
             fifth,
-            sixth,
-          ];
-          for (let start of frames) {
-            reachable(start, frames);
-            unreachable(start, seventh);
+          })) {
+            is(
+              bc.browserId,
+              topBrowserId,
+              `${name} frame should have the same browserId as top.`
+            );
           }
+
+          ok(sixth.browserId > 0, "sixth should have a browserId.");
+          isnot(
+            sixth.browserId,
+            topBrowserId,
+            "sixth frame should have a different browserId to top."
+          );
+
+          return [topBrowserId, sixth.browserId];
         }
       );
 
-      for (let tab of await Promise.all([sixth, seventh])) {
+      [sixth, seventh] = await Promise.all([sixth, seventh]);
+
+      is(
+        browser.browserId,
+        browserIds[0],
+        "browser should have the right browserId."
+      );
+      is(
+        browser.browsingContext.browserId,
+        browserIds[0],
+        "browser's BrowsingContext should have the right browserId."
+      );
+      is(
+        sixth.linkedBrowser.browserId,
+        browserIds[1],
+        "sixth should have the right browserId."
+      );
+      is(
+        sixth.linkedBrowser.browsingContext.browserId,
+        browserIds[1],
+        "sixth's BrowsingContext should have the right browserId."
+      );
+
+      for (let tab of [sixth, seventh]) {
         BrowserTestUtils.removeTab(tab);
       }
     }

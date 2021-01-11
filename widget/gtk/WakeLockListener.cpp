@@ -13,7 +13,16 @@
 #  include <dbus/dbus-glib-lowlevel.h>
 
 #  if defined(MOZ_X11)
+#    include "gfxPlatformGtk.h"
 #    include "prlink.h"
+#    include <gdk/gdk.h>
+#    include <gdk/gdkx.h>
+#  endif
+
+#  if defined(MOZ_WAYLAND)
+#    include "mozilla/widget/nsWaylandDisplay.h"
+#    include "nsWindow.h"
+#    include "mozilla/dom/power/PowerManagerService.h"
 #  endif
 
 #  define FREEDESKTOP_SCREENSAVER_TARGET "org.freedesktop.ScreenSaver"
@@ -27,10 +36,15 @@
 #  define DBUS_TIMEOUT (-1)
 
 using namespace mozilla;
+using namespace mozilla::widget;
 
 NS_IMPL_ISUPPORTS(WakeLockListener, nsIDOMMozWakeLockListener)
 
 StaticRefPtr<WakeLockListener> WakeLockListener::sSingleton;
+
+#  define WAKE_LOCK_LOG(...) \
+    MOZ_LOG(gLinuxWakeLockLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+static mozilla::LazyLogModule gLinuxWakeLockLog("LinuxWakeLock");
 
 enum DesktopEnvironment {
   FreeDesktop,
@@ -38,18 +52,26 @@ enum DesktopEnvironment {
 #  if defined(MOZ_X11)
   XScreenSaver,
 #  endif
+#  if defined(MOZ_WAYLAND)
+  WaylandIdleInhibit,
+#  endif
   Unsupported,
 };
 
 class WakeLockTopic {
  public:
   WakeLockTopic(const nsAString& aTopic, DBusConnection* aConnection)
-      : mTopic(NS_ConvertUTF16toUTF8(aTopic)),
+      :
+#  if defined(MOZ_WAYLAND)
+        mWaylandInhibitor(nullptr),
+#  endif
+        mTopic(NS_ConvertUTF16toUTF8(aTopic)),
         mConnection(aConnection),
         mDesktopEnvironment(FreeDesktop),
         mInhibitRequest(0),
         mShouldInhibit(false),
-        mWaitingForReply(false) {}
+        mWaitingForReply(false) {
+  }
 
   nsresult InhibitScreensaver(void);
   nsresult UninhibitScreensaver(void);
@@ -65,6 +87,13 @@ class WakeLockTopic {
 #  if defined(MOZ_X11)
   static bool CheckXScreenSaverSupport();
   static bool InhibitXScreenSaver(bool inhibit);
+#  endif
+
+#  if defined(MOZ_WAYLAND)
+  zwp_idle_inhibitor_v1* mWaylandInhibitor;
+  static bool CheckWaylandIdleInhibitSupport();
+  bool InhibitWaylandIdle();
+  bool UninhibitWaylandIdle();
 #  endif
 
   static void ReceiveInhibitReply(DBusPendingCall* aPending, void* aUserData);
@@ -168,7 +197,9 @@ bool WakeLockTopic::CheckXScreenSaverSupport() {
   }
 
   GdkDisplay* gDisplay = gdk_display_get_default();
-  if (!GDK_IS_X11_DISPLAY(gDisplay)) return false;
+  if (!gDisplay || !GDK_IS_X11_DISPLAY(gDisplay)) {
+    return false;
+  }
   Display* display = GDK_DISPLAY_XDISPLAY(gDisplay);
 
   int throwaway;
@@ -187,11 +218,57 @@ bool WakeLockTopic::CheckXScreenSaverSupport() {
 bool WakeLockTopic::InhibitXScreenSaver(bool inhibit) {
   // Should only be called if CheckXScreenSaverSupport returns true.
   // There's a couple of safety checks here nonetheless.
-  if (!_XSSSuspend) return false;
+  if (!_XSSSuspend) {
+    return false;
+  }
   GdkDisplay* gDisplay = gdk_display_get_default();
-  if (!GDK_IS_X11_DISPLAY(gDisplay)) return false;
+  if (!gDisplay || !GDK_IS_X11_DISPLAY(gDisplay)) {
+    return false;
+  }
   Display* display = GDK_DISPLAY_XDISPLAY(gDisplay);
   _XSSSuspend(display, inhibit);
+  return true;
+}
+
+#  endif
+
+#  if defined(MOZ_WAYLAND)
+
+/* static */
+bool WakeLockTopic::CheckWaylandIdleInhibitSupport() {
+  nsWaylandDisplay* waylandDisplay = WaylandDisplayGet();
+  return waylandDisplay && waylandDisplay->GetIdleInhibitManager() != nullptr;
+}
+
+bool WakeLockTopic::InhibitWaylandIdle() {
+  nsWaylandDisplay* waylandDisplay = WaylandDisplayGet();
+  if (!waylandDisplay) {
+    return false;
+  }
+
+  nsWindow* focusedWindow = nsWindow::GetFocusedWindow();
+  if (!focusedWindow) {
+    return false;
+  }
+
+  UninhibitWaylandIdle();
+
+  MozContainer* container = focusedWindow->GetMozContainer();
+  wl_surface* waylandSurface = moz_container_wayland_surface_lock(container);
+  if (waylandSurface) {
+    mWaylandInhibitor = zwp_idle_inhibit_manager_v1_create_inhibitor(
+        waylandDisplay->GetIdleInhibitManager(), waylandSurface);
+    moz_container_wayland_surface_unlock(container, &waylandSurface);
+  }
+  return true;
+}
+
+bool WakeLockTopic::UninhibitWaylandIdle() {
+  if (mWaylandInhibitor == nullptr) return false;
+
+  zwp_idle_inhibitor_v1_destroy(mWaylandInhibitor);
+  mWaylandInhibitor = nullptr;
+
   return true;
 }
 
@@ -210,6 +287,10 @@ bool WakeLockTopic::SendInhibit() {
 #  if defined(MOZ_X11)
     case XScreenSaver:
       return InhibitXScreenSaver(true);
+#  endif
+#  if defined(MOZ_WAYLAND)
+    case WaylandIdleInhibit:
+      return InhibitWaylandIdle();
 #  endif
     case Unsupported:
       return false;
@@ -237,6 +318,11 @@ bool WakeLockTopic::SendUninhibit() {
 #  if defined(MOZ_X11)
   else if (mDesktopEnvironment == XScreenSaver) {
     return InhibitXScreenSaver(false);
+  }
+#  endif
+#  if defined(MOZ_WAYLAND)
+  else if (mDesktopEnvironment == WaylandIdleInhibit) {
+    return UninhibitWaylandIdle();
   }
 #  endif
 
@@ -299,6 +385,10 @@ void WakeLockTopic::InhibitFailed() {
 #  if defined(MOZ_X11)
   } else if (mDesktopEnvironment == GNOME && CheckXScreenSaverSupport()) {
     mDesktopEnvironment = XScreenSaver;
+#  endif
+#  if defined(MOZ_WAYLAND)
+  } else if (mDesktopEnvironment == GNOME && CheckWaylandIdleInhibitSupport()) {
+    mDesktopEnvironment = WaylandIdleInhibit;
 #  endif
   } else {
     mDesktopEnvironment = Unsupported;
@@ -388,9 +478,8 @@ nsresult WakeLockListener::Callback(const nsAString& topic,
     return NS_ERROR_FAILURE;
   }
 
-  if (!topic.Equals(NS_LITERAL_STRING("screen")) &&
-      !topic.Equals(NS_LITERAL_STRING("audio-playing")) &&
-      !topic.Equals(NS_LITERAL_STRING("video-playing")))
+  if (!topic.Equals(u"screen"_ns) && !topic.Equals(u"audio-playing"_ns) &&
+      !topic.Equals(u"video-playing"_ns))
     return NS_OK;
 
   WakeLockTopic* topicLock = mTopics.Get(topic);
@@ -401,6 +490,8 @@ nsresult WakeLockListener::Callback(const nsAString& topic,
 
   // Treat "locked-background" the same as "unlocked" on desktop linux.
   bool shouldLock = state.EqualsLiteral("locked-foreground");
+  WAKE_LOCK_LOG("topic=%s, shouldLock=%d", NS_ConvertUTF16toUTF8(topic).get(),
+                shouldLock);
 
   return shouldLock ? topicLock->InhibitScreensaver()
                     : topicLock->UninhibitScreensaver();

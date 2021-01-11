@@ -135,7 +135,7 @@ impl DocumentMatchingFunction {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(url) = input.try(|input| CssUrl::parse(context, input)) {
+        if let Ok(url) = input.try_parse(|input| CssUrl::parse(context, input)) {
             return Ok(DocumentMatchingFunction::Url(url));
         }
 
@@ -144,28 +144,28 @@ impl DocumentMatchingFunction {
         match_ignore_ascii_case! { &function,
             "url-prefix" => {
                 parse_quoted_or_unquoted_string!(input, DocumentMatchingFunction::UrlPrefix)
-            }
+            },
             "domain" => {
                 parse_quoted_or_unquoted_string!(input, DocumentMatchingFunction::Domain)
-            }
+            },
             "regexp" => {
                 input.parse_nested_block(|input| {
                     Ok(DocumentMatchingFunction::Regexp(
                         input.expect_string()?.as_ref().to_owned(),
                     ))
                 })
-            }
+            },
             "media-document" => {
                 input.parse_nested_block(|input| {
                     let kind = MediaDocumentKind::parse(input)?;
                     Ok(DocumentMatchingFunction::MediaDocument(kind))
                 })
-            }
+            },
             _ => {
                 Err(location.new_custom_error(
                     StyleParseErrorKind::UnexpectedFunction(function.clone())
                 ))
-            }
+            },
         }
     }
 
@@ -262,10 +262,6 @@ impl DocumentCondition {
 
         if pref!("layout.css.moz-document.content.enabled") {
             return true;
-        }
-
-        if !pref!("layout.css.moz-document.url-prefix-hack.enabled") {
-            return false;
         }
 
         // Allow a single url-prefix() for compatibility.

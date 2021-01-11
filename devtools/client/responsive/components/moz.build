@@ -6,17 +6,15 @@
 
 DevToolsModules(
     'App.js',
-    'Browser.js',
     'Device.js',
     'DeviceForm.js',
+    'DeviceInfo.js',
     'DeviceList.js',
     'DeviceModal.js',
     'DevicePixelRatioMenu.js',
     'DeviceSelector.js',
-    'ResizableViewport.js',
     'SettingsMenu.js',
     'Toolbar.js',
     'UserAgentInput.js',
     'ViewportDimension.js',
-    'Viewports.js',
 )

@@ -6,9 +6,6 @@
 
 ChromeUtils.import("resource://gre/modules/AppConstants.jsm", this);
 ChromeUtils.import("resource://gre/modules/AsyncShutdown.jsm", this);
-const { parseKeyValuePairs } = ChromeUtils.import(
-  "resource://gre/modules/KeyValueParser.jsm"
-);
 ChromeUtils.import("resource://gre/modules/osfile.jsm", this);
 ChromeUtils.import("resource://gre/modules/Services.jsm", this);
 
@@ -17,6 +14,37 @@ var gQuitting = false;
 
 // Tracks all the running instances of the minidump-analyzer
 var gRunningProcesses = new Set();
+
+/**
+ * Run the minidump-analyzer with the given options unless we're already
+ * shutting down or the main process has been instructed to shut down in the
+ * case a content process crashes. Minidump analysis can take a while so we
+ * don't want to block shutdown waiting for it.
+ */
+async function maybeRunMinidumpAnalyzer(minidumpPath, allThreads) {
+  let env = Cc["@mozilla.org/process/environment;1"].getService(
+    Ci.nsIEnvironment
+  );
+  let shutdown = env.exists("MOZ_CRASHREPORTER_SHUTDOWN");
+
+  if (gQuitting || shutdown) {
+    return;
+  }
+
+  await runMinidumpAnalyzer(minidumpPath, allThreads).catch(e =>
+    Cu.reportError(e)
+  );
+}
+
+function getMinidumpAnalyzerPath() {
+  const binSuffix = AppConstants.platform === "win" ? ".exe" : "";
+  const exeName = "minidump-analyzer" + binSuffix;
+
+  let exe = Services.dirsvc.get("GreBinD", Ci.nsIFile);
+  exe.append(exeName);
+
+  return exe;
+}
 
 /**
  * Run the minidump analyzer tool to gather stack traces from the minidump. The
@@ -32,19 +60,7 @@ var gRunningProcesses = new Set();
 function runMinidumpAnalyzer(minidumpPath, allThreads) {
   return new Promise((resolve, reject) => {
     try {
-      const binSuffix = AppConstants.platform === "win" ? ".exe" : "";
-      const exeName = "minidump-analyzer" + binSuffix;
-
-      let exe = Services.dirsvc.get("GreBinD", Ci.nsIFile);
-
-      if (AppConstants.platform === "macosx") {
-        exe.append("crashreporter.app");
-        exe.append("Contents");
-        exe.append("MacOS");
-      }
-
-      exe.append(exeName);
-
+      let exe = getMinidumpAnalyzerPath();
       let args = [minidumpPath];
       let process = Cc["@mozilla.org/process/util;1"].createInstance(
         Ci.nsIProcess
@@ -65,7 +81,7 @@ function runMinidumpAnalyzer(minidumpPath, allThreads) {
             break;
           case "process-failed":
             gRunningProcesses.delete(process);
-            reject();
+            resolve();
             break;
           default:
             reject(new Error("Unexpected topic received " + topic));
@@ -75,7 +91,7 @@ function runMinidumpAnalyzer(minidumpPath, allThreads) {
 
       gRunningProcesses.add(process);
     } catch (e) {
-      Cu.reportError(e);
+      reject(e);
     }
   });
 }
@@ -128,19 +144,8 @@ function processExtraFile(extraPath) {
     try {
       let decoder = new TextDecoder();
       let extraData = await OS.File.read(extraPath);
-      let keyValuePairs = parseKeyValuePairs(decoder.decode(extraData));
 
-      // When reading from an .extra file literal '\\n' sequences are
-      // automatically unescaped to two backslashes plus a newline, so we need
-      // to re-escape them into '\\n' again so that the fields holding JSON
-      // strings are valid.
-      ["TelemetryEnvironment", "StackTraces"].forEach(field => {
-        if (field in keyValuePairs) {
-          keyValuePairs[field] = keyValuePairs[field].replace(/\n/g, "n");
-        }
-      });
-
-      return keyValuePairs;
+      return JSON.parse(decoder.decode(extraData));
     } catch (e) {
       Cu.reportError(e);
       return {};
@@ -159,7 +164,7 @@ this.CrashService = function() {
 
 CrashService.prototype = Object.freeze({
   classID: Components.ID("{92668367-1b17-4190-86b2-1061b2179744}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsICrashService, Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsICrashService", "nsIObserver"]),
 
   async addCrash(processType, crashType, id) {
     switch (processType) {
@@ -216,12 +221,7 @@ CrashService.prototype = Object.freeze({
     let metadata = {};
     let hash = null;
 
-    if (!gQuitting) {
-      // Minidump analysis can take a long time, don't start it if the browser
-      // is already quitting.
-      await runMinidumpAnalyzer(minidumpPath, allThreads);
-    }
-
+    await maybeRunMinidumpAnalyzer(minidumpPath, allThreads);
     metadata = await processExtraFile(extraPath);
     hash = await computeMinidumpHash(minidumpPath);
 

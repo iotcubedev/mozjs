@@ -21,6 +21,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Bookmarks: "resource://gre/modules/Bookmarks.jsm",
   History: "resource://gre/modules/History.jsm",
   PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.jsm",
+  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(this, "MOZ_ACTION_REGEX", () => {
@@ -438,14 +439,12 @@ var PlacesUtils = {
   TOPIC_INIT_COMPLETE: "places-init-complete",
   TOPIC_DATABASE_LOCKED: "places-database-locked",
   TOPIC_EXPIRATION_FINISHED: "places-expiration-finished",
-  TOPIC_FEEDBACK_UPDATED: "places-autocomplete-feedback-updated",
   TOPIC_FAVICONS_EXPIRED: "places-favicons-expired",
   TOPIC_VACUUM_STARTING: "places-vacuum-starting",
   TOPIC_BOOKMARKS_RESTORE_BEGIN: "bookmarks-restore-begin",
   TOPIC_BOOKMARKS_RESTORE_SUCCESS: "bookmarks-restore-success",
   TOPIC_BOOKMARKS_RESTORE_FAILED: "bookmarks-restore-failed",
 
-  ACTION_SCHEME: "moz-action:",
   observers: PlacesObservers,
 
   /**
@@ -577,28 +576,6 @@ var PlacesUtils = {
   },
 
   /**
-   * Makes a moz-action URI for the given action and set of parameters.
-   *
-   * @param   type
-   *          The action type.
-   * @param   params
-   *          A JS object of action params.
-   * @returns A moz-action URI as a string.
-   */
-  mozActionURI(type, params) {
-    let encodedParams = {};
-    for (let key in params) {
-      // Strip null or undefined.
-      // Regardless, don't encode them or they would be converted to a string.
-      if (params[key] === null || params[key] === undefined) {
-        continue;
-      }
-      encodedParams[key] = encodeURIComponent(params[key]);
-    }
-    return this.ACTION_SCHEME + type + "," + JSON.stringify(encodedParams);
-  },
-
-  /**
    * Parses a moz-action URL and returns its parts.
    *
    * @param url A moz-action URI.
@@ -611,7 +588,7 @@ var PlacesUtils = {
       url = url.href;
     }
     // Faster bailout.
-    if (!url.startsWith(this.ACTION_SCHEME)) {
+    if (!url.startsWith("moz-action:")) {
       return null;
     }
 
@@ -851,12 +828,12 @@ var PlacesUtils = {
   SYNC_BOOKMARK_VALIDATORS,
   SYNC_CHANGE_RECORD_VALIDATORS,
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
   _shutdownFunctions: [],
   registerShutdownFunction: function PU_registerShutdownFunction(aFunc) {
     // If this is the first registered function, add the shutdown observer.
-    if (this._shutdownFunctions.length == 0) {
+    if (!this._shutdownFunctions.length) {
       Services.obs.addObserver(this, this.TOPIC_SHUTDOWN);
     }
     this._shutdownFunctions.push(aFunc);
@@ -867,7 +844,7 @@ var PlacesUtils = {
     switch (aTopic) {
       case this.TOPIC_SHUTDOWN:
         Services.obs.removeObserver(this, this.TOPIC_SHUTDOWN);
-        while (this._shutdownFunctions.length > 0) {
+        while (this._shutdownFunctions.length) {
           this._shutdownFunctions.shift().apply(this);
         }
         break;
@@ -1223,7 +1200,7 @@ var PlacesUtils = {
         break;
       }
       default:
-        throw Cr.NS_ERROR_INVALID_ARG;
+        throw Components.Exception("", Cr.NS_ERROR_INVALID_ARG);
     }
     return nodes;
   },
@@ -1363,7 +1340,7 @@ var PlacesUtils = {
     aExpandQueries
   ) {
     if (!this.nodeIsContainer(aNode)) {
-      throw Cr.NS_ERROR_INVALID_ARG;
+      throw Components.Exception("", Cr.NS_ERROR_INVALID_ARG);
     }
 
     // excludeItems is inherited by child containers in an excludeItems view.
@@ -1500,6 +1477,9 @@ var PlacesUtils = {
    * @see promiseDBConnection
    */
   promiseLargeCacheDBConnection: () => gAsyncDBLargeCacheConnPromised,
+  get largeCacheDBConnDeferred() {
+    return gAsyncDBLargeCacheConnDeferred;
+  },
 
   /**
    * Returns a Sqlite.jsm wrapper for the main Places connection. Most callers
@@ -1546,22 +1526,30 @@ var PlacesUtils = {
   /**
    * Gets favicon data for a given page url.
    *
-   * @param aPageUrl url of the page to look favicon for.
+   * @param {string | URL | nsIURI} aPageUrl
+   *   url of the page to look favicon for.
+   * @param {number} preferredWidth
+   *   The preferred width of the favicon in pixels. The default value of 0
+   *   returns the largest icon available.
    * @resolves to an object representing a favicon entry, having the following
    *           properties: { uri, dataLen, data, mimeType }
    * @rejects JavaScript exception if the given url has no associated favicon.
    */
-  promiseFaviconData(aPageUrl) {
+  promiseFaviconData(aPageUrl, preferredWidth = 0) {
     return new Promise((resolve, reject) => {
+      if (!(aPageUrl instanceof Ci.nsIURI)) {
+        aPageUrl = PlacesUtils.toURI(aPageUrl);
+      }
       PlacesUtils.favicons.getFaviconDataForPage(
-        NetUtil.newURI(aPageUrl),
-        function(uri, dataLen, data, mimeType) {
+        aPageUrl,
+        function(uri, dataLen, data, mimeType, size) {
           if (uri) {
-            resolve({ uri, dataLen, data, mimeType });
+            resolve({ uri, dataLen, data, mimeType, size });
           } else {
             reject();
           }
-        }
+        },
+        preferredWidth
       );
     });
   },
@@ -1907,6 +1895,32 @@ var PlacesUtils = {
 
     return rootItem;
   },
+
+  /**
+   * Returns a generator that iterates over `array` and yields slices of no
+   * more than `chunkLength` elements at a time.
+   *
+   * @param  {Array} array An array containing zero or more elements.
+   * @param  {number} chunkLength The maximum number of elements in each chunk.
+   * @yields {Array} A chunk of the array.
+   * @throws if `chunkLength` is negative or not an integer.
+   */
+  *chunkArray(array, chunkLength) {
+    if (chunkLength <= 0 || !Number.isInteger(chunkLength)) {
+      throw new TypeError("Chunk length must be a positive integer");
+    }
+    if (!array.length) {
+      return;
+    }
+    if (array.length <= chunkLength) {
+      yield array;
+      return;
+    }
+    let startIndex = 0;
+    while (startIndex < array.length) {
+      yield array.slice(startIndex, (startIndex += chunkLength));
+    }
+  },
 };
 
 XPCOMUtils.defineLazyGetter(PlacesUtils, "history", function() {
@@ -2055,6 +2069,7 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBWrapperPromised", () =>
     .catch(Cu.reportError)
 );
 
+var gAsyncDBLargeCacheConnDeferred = PromiseUtils.defer();
 XPCOMUtils.defineLazyGetter(this, "gAsyncDBLargeCacheConnPromised", () =>
   Sqlite.cloneStorageConnection({
     connection: PlacesUtils.history.DBConnection,
@@ -2068,6 +2083,24 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBLargeCacheConnPromised", () =>
       // mozStorage value defined as MAX_CACHE_SIZE_BYTES in
       // storage/mozStorageConnection.cpp.
       await conn.execute("PRAGMA cache_size = -6144"); // 6MiB
+      // These should be kept in sync with nsPlacesTables.h.
+      await conn.execute(`
+        CREATE TEMP TABLE IF NOT EXISTS moz_openpages_temp (
+          url TEXT,
+          userContextId INTEGER,
+          open_count INTEGER,
+          PRIMARY KEY (url, userContextId)
+        )`);
+      await conn.execute(`
+        CREATE TEMP TRIGGER IF NOT EXISTS moz_openpages_temp_afterupdate_trigger
+        AFTER UPDATE OF open_count ON moz_openpages_temp FOR EACH ROW
+        WHEN NEW.open_count = 0
+        BEGIN
+          DELETE FROM moz_openpages_temp
+          WHERE url = NEW.url
+            AND userContextId = NEW.userContextId;
+        END`);
+      gAsyncDBLargeCacheConnDeferred.resolve(conn);
       return conn;
     })
     .catch(Cu.reportError)
@@ -2824,7 +2857,7 @@ var GuidHelper = {
           "SELECT b.id, b.guid from moz_bookmarks b WHERE b.guid = :guid LIMIT 1",
           { guid: aGuid }
         );
-        if (rows.length == 0) {
+        if (!rows.length) {
           throw new Error("no item found for the given GUID");
         }
 
@@ -2879,7 +2912,7 @@ var GuidHelper = {
           "SELECT b.id, b.guid from moz_bookmarks b WHERE b.id = :id LIMIT 1",
           { id: aItemId }
         );
-        if (rows.length == 0) {
+        if (!rows.length) {
           throw new Error("no item found for the given itemId");
         }
 
@@ -2923,49 +2956,42 @@ var GuidHelper = {
   },
 
   ensureObservingRemovedItems() {
-    if (!("observer" in this)) {
-      /**
-       * This observers serves two purposes:
-       * (1) Invalidate cached id<->GUID paris on when items are removed.
-       * (2) Cache GUIDs given us free of charge by onItemAdded/onItemRemoved.
-       *      So, for exmaple, when the NewBookmark needs the new GUID, we already
-       *      have it cached.
-       */
-      let listener = events => {
-        for (let event of events) {
-          this.updateCache(event.id, event.guid);
-          this.updateCache(event.parentId, event.parentGuid);
-        }
-      };
-      this.observer = {
-        onItemRemoved: (
-          aItemId,
-          aParentId,
-          aIndex,
-          aItemTyep,
-          aURI,
-          aGuid,
-          aParentGuid
-        ) => {
-          this.guidsForIds.delete(aItemId);
-          this.idsForGuids.delete(aGuid);
-          this.updateCache(aParentId, aParentGuid);
-        },
-
-        QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver]),
-
-        onBeginUpdateBatch() {},
-        onEndUpdateBatch() {},
-        onItemChanged() {},
-        onItemVisited() {},
-        onItemMoved() {},
-      };
-      PlacesUtils.bookmarks.addObserver(this.observer);
-      PlacesUtils.observers.addListener(["bookmark-added"], listener);
-      PlacesUtils.registerShutdownFunction(() => {
-        PlacesUtils.bookmarks.removeObserver(this.observer);
-        PlacesUtils.observers.removeListener(["bookmark-added"], listener);
-      });
+    if (this.addListeners) {
+      return;
     }
+    /**
+     * This observers serves two purposes:
+     * (1) Invalidate cached id<->GUID paris on when items are removed.
+     * (2) Cache GUIDs given us free of charge by onItemAdded/onItemRemoved.
+     *      So, for exmaple, when the NewBookmark needs the new GUID, we already
+     *      have it cached.
+     */
+    let listener = events => {
+      for (let event of events) {
+        switch (event.type) {
+          case "bookmark-added":
+            this.updateCache(event.id, event.guid);
+            this.updateCache(event.parentId, event.parentGuid);
+            break;
+          case "bookmark-removed":
+            this.guidsForIds.delete(event.id);
+            this.idsForGuids.delete(event.guid);
+            this.updateCache(event.parentId, event.parentGuid);
+            break;
+        }
+      }
+    };
+
+    this.addListeners = true;
+    PlacesUtils.observers.addListener(
+      ["bookmark-added", "bookmark-removed"],
+      listener
+    );
+    PlacesUtils.registerShutdownFunction(() => {
+      PlacesUtils.observers.removeListener(
+        ["bookmark-added", "bookmark-removed"],
+        listener
+      );
+    });
   },
 };

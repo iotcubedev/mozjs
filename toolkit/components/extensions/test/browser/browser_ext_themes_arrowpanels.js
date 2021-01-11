@@ -2,8 +2,10 @@
 
 function openIdentityPopup() {
   let promise = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    window,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   return promise;
@@ -54,10 +56,8 @@ add_task(async function test_popup_styling(browser, accDoc) {
       // Open the information arrow panel
       await openIdentityPopup();
 
-      let arrowContent = document.getAnonymousElementByAttribute(
-        gIdentityHandler._identityPopup,
-        "class",
-        "panel-arrowcontent"
+      let arrowContent = gIdentityHandler._identityPopup.shadowRoot.querySelector(
+        ".panel-arrowcontent"
       );
       let arrowContentComputedStyle = window.getComputedStyle(arrowContent);
       // Ensure popup background color was set properly

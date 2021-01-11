@@ -18,12 +18,12 @@ add_task(async function() {
   await closeTabAndToolbox(gBrowser.selectedTab);
   await waitFor(() => destroyed);
 
-  ok("We received both created and destroyed events");
+  ok(true, "We received both created and destroyed events");
 });
 
 function setupObserver() {
   const observer = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+    QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
     observe: function observe(subject, topic) {
       subject = subject.QueryInterface(Ci.nsISupportsString);

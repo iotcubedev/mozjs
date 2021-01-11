@@ -3,7 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 
 // Reps
 const {
@@ -13,27 +14,36 @@ const {
   wrapRender,
 } = require("./rep-utils");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
  * Renders a grip representing CSSStyleSheet
  */
+
 StyleSheet.propTypes = {
   object: PropTypes.object.isRequired,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function StyleSheet(props) {
   const grip = props.object;
+  const shouldRenderTooltip = props.shouldRenderTooltip;
+  const location = getLocation(grip);
+  const config = getElementConfig({ grip, shouldRenderTooltip, location });
 
   return span(
-    {
-      "data-link-actor-id": grip.actor,
-      className: "objectBox objectBox-object",
-    },
+    config,
     getTitle(grip),
-    span({ className: "objectPropValue" }, getLocation(grip))
+    span({ className: "objectPropValue" }, location)
   );
+}
+
+function getElementConfig(opts) {
+  const { grip, shouldRenderTooltip, location } = opts;
+
+  return {
+    "data-link-actor-id": grip.actor,
+    className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? `StyleSheet ${location}` : null,
+  };
 }
 
 function getTitle(grip) {

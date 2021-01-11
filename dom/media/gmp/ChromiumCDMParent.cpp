@@ -33,21 +33,22 @@ ChromiumCDMParent::ChromiumCDMParent(GMPContentParent* aContentParent,
     : mPluginId(aPluginId),
       mContentParent(aContentParent),
       mVideoShmemLimit(StaticPrefs::media_eme_chromium_api_video_shmems()) {
-  GMP_LOG(
-      "ChromiumCDMParent::ChromiumCDMParent(this=%p, contentParent=%p, id=%u)",
+  GMP_LOG_DEBUG(
+      "ChromiumCDMParent::ChromiumCDMParent(this=%p, contentParent=%p, "
+      "id=%" PRIu32 ")",
       this, aContentParent, aPluginId);
 }
 
 RefPtr<ChromiumCDMParent::InitPromise> ChromiumCDMParent::Init(
     ChromiumCDMCallback* aCDMCallback, bool aAllowDistinctiveIdentifier,
     bool aAllowPersistentState, nsIEventTarget* aMainThread) {
-  GMP_LOG(
+  GMP_LOG_DEBUG(
       "ChromiumCDMParent::Init(this=%p) shutdown=%s abormalShutdown=%s "
       "actorDestroyed=%s",
       this, mIsShutdown ? "true" : "false",
       mAbnormalShutdown ? "true" : "false", mActorDestroyed ? "true" : "false");
   if (!aCDMCallback || !aMainThread) {
-    GMP_LOG(
+    GMP_LOG_DEBUG(
         "ChromiumCDMParent::Init(this=%p) failed "
         "nullCallback=%s nullMainThread=%s",
         this, !aCDMCallback ? "true" : "false",
@@ -70,7 +71,7 @@ RefPtr<ChromiumCDMParent::InitPromise> ChromiumCDMParent::Init(
           AbstractThread::GetCurrent(), __func__,
           [self, aCDMCallback](bool aSuccess) {
             if (!aSuccess) {
-              GMP_LOG(
+              GMP_LOG_DEBUG(
                   "ChromiumCDMParent::Init() failed with callback from "
                   "child indicating CDM failed init");
               self->mInitPromise.RejectIfExists(
@@ -80,7 +81,7 @@ RefPtr<ChromiumCDMParent::InitPromise> ChromiumCDMParent::Init(
                   __func__);
               return;
             }
-            GMP_LOG(
+            GMP_LOG_DEBUG(
                 "ChromiumCDMParent::Init() succeeded with callback from child");
             self->mCDMCallback = aCDMCallback;
             self->mInitPromise.ResolveIfExists(true /* unused */, __func__);
@@ -90,7 +91,7 @@ RefPtr<ChromiumCDMParent::InitPromise> ChromiumCDMParent::Init(
                 gmp::GeckoMediaPluginService::GetGeckoMediaPluginService();
             bool xpcomWillShutdown =
                 service && service->XPCOMWillShutdownReceived();
-            GMP_LOG(
+            GMP_LOG_DEBUG(
                 "ChromiumCDMParent::Init(this=%p) failed "
                 "shutdown=%s cdmCrash=%s actorDestroyed=%s "
                 "browserShutdown=%s promiseRejectReason=%d",
@@ -120,17 +121,15 @@ void ChromiumCDMParent::CreateSession(uint32_t aCreateSessionToken,
                                       uint32_t aInitDataType,
                                       uint32_t aPromiseId,
                                       const nsTArray<uint8_t>& aInitData) {
-  GMP_LOG("ChromiumCDMParent::CreateSession(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::CreateSession(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendCreateSessionAndGenerateRequest(aPromiseId, aSessionType,
                                            aInitDataType, aInitData)) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send generateRequest to CDM process."));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send generateRequest to CDM process."_ns);
     return;
   }
   mPromiseToCreateSessionToken.Put(aPromiseId, aCreateSessionToken);
@@ -138,81 +137,72 @@ void ChromiumCDMParent::CreateSession(uint32_t aCreateSessionToken,
 
 void ChromiumCDMParent::LoadSession(uint32_t aPromiseId, uint32_t aSessionType,
                                     nsString aSessionId) {
-  GMP_LOG("ChromiumCDMParent::LoadSession(this=%p, pid=%u, type=%u, sid=%s)",
-          this, aPromiseId, aSessionType,
-          NS_ConvertUTF16toUTF8(aSessionId).get());
+  GMP_LOG_DEBUG("ChromiumCDMParent::LoadSession(this=%p, pid=%" PRIu32
+                ", type=%" PRIu32 ", sid=%s)",
+                this, aPromiseId, aSessionType,
+                NS_ConvertUTF16toUTF8(aSessionId).get());
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendLoadSession(aPromiseId, aSessionType,
                        NS_ConvertUTF16toUTF8(aSessionId))) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send loadSession to CDM process."));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send loadSession to CDM process."_ns);
     return;
   }
 }
 
 void ChromiumCDMParent::SetServerCertificate(uint32_t aPromiseId,
                                              const nsTArray<uint8_t>& aCert) {
-  GMP_LOG("ChromiumCDMParent::SetServerCertificate(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::SetServerCertificate(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendSetServerCertificate(aPromiseId, aCert)) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING(
-                      "Failed to send setServerCertificate to CDM process"));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send setServerCertificate to CDM process"_ns);
   }
 }
 
 void ChromiumCDMParent::UpdateSession(const nsCString& aSessionId,
                                       uint32_t aPromiseId,
                                       const nsTArray<uint8_t>& aResponse) {
-  GMP_LOG("ChromiumCDMParent::UpdateSession(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::UpdateSession(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendUpdateSession(aPromiseId, aSessionId, aResponse)) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send updateSession to CDM process"));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send updateSession to CDM process"_ns);
   }
 }
 
 void ChromiumCDMParent::CloseSession(const nsCString& aSessionId,
                                      uint32_t aPromiseId) {
-  GMP_LOG("ChromiumCDMParent::CloseSession(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::CloseSession(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendCloseSession(aPromiseId, aSessionId)) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send closeSession to CDM process"));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send closeSession to CDM process"_ns);
   }
 }
 
 void ChromiumCDMParent::RemoveSession(const nsCString& aSessionId,
                                       uint32_t aPromiseId) {
-  GMP_LOG("ChromiumCDMParent::RemoveSession(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RemoveSession(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   if (!SendRemoveSession(aPromiseId, aSessionId)) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send removeSession to CDM process"));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send removeSession to CDM process"_ns);
   }
 }
 
@@ -256,25 +246,28 @@ static Result<cdm::HdcpVersion, nsresult> ToCDMHdcpVersion(
 
 void ChromiumCDMParent::GetStatusForPolicy(uint32_t aPromiseId,
                                            const nsCString& aMinHdcpVersion) {
-  GMP_LOG("ChromiumCDMParent::GetStatusForPolicy(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::GetStatusForPolicy(this=%p)", this);
   if (mIsShutdown) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("CDM is shutdown."));
+    RejectPromiseShutdown(aPromiseId);
     return;
   }
   auto hdcpVersionResult = ToCDMHdcpVersion(aMinHdcpVersion);
   if (hdcpVersionResult.isErr()) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_INVALID_ARG,
-        NS_LITERAL_CSTRING(
-            "getStatusForPolicy failed due to bad hdcp version argument"));
+    ErrorResult rv;
+    // XXXbz there's no spec for this yet, and
+    // <https://github.com/WICG/hdcp-detection/blob/master/explainer.md>
+    // does not define what exceptions get thrown.  Let's assume
+    // TypeError for invalid args, as usual.
+    constexpr auto err =
+        "getStatusForPolicy failed due to bad hdcp version argument"_ns;
+    rv.ThrowTypeError(err);
+    RejectPromise(aPromiseId, std::move(rv), err);
     return;
   }
 
   if (!SendGetStatusForPolicy(aPromiseId, hdcpVersionResult.unwrap())) {
-    RejectPromise(
-        aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-        NS_LITERAL_CSTRING("Failed to send getStatusForPolicy to CDM process"));
+    RejectPromiseWithStateError(
+        aPromiseId, "Failed to send getStatusForPolicy to CDM process"_ns);
   }
 }
 
@@ -282,7 +275,7 @@ bool ChromiumCDMParent::InitCDMInputBuffer(gmp::CDMInputBuffer& aBuffer,
                                            MediaRawData* aSample) {
   const CryptoSample& crypto = aSample->mCrypto;
   if (crypto.mEncryptedSizes.Length() != crypto.mPlainSizes.Length()) {
-    GMP_LOG("InitCDMInputBuffer clear/cipher subsamples don't match");
+    GMP_LOG_DEBUG("InitCDMInputBuffer clear/cipher subsamples don't match");
     return false;
   }
 
@@ -303,7 +296,7 @@ bool ChromiumCDMParent::InitCDMInputBuffer(gmp::CDMInputBuffer& aBuffer,
       encryptionScheme = GMPEncryptionScheme::kGMPEncryptionCbcs;
       break;
     default:
-      GMP_LOG(
+      GMP_LOG_DEBUG(
           "InitCDMInputBuffer got unexpected encryption scheme with "
           "value of %" PRIu8 ". Treating as no encryption.",
           static_cast<uint8_t>(crypto.mCryptoScheme));
@@ -332,7 +325,8 @@ bool ChromiumCDMParent::InitCDMInputBuffer(gmp::CDMInputBuffer& aBuffer,
 }
 
 bool ChromiumCDMParent::SendBufferToCDM(uint32_t aSizeInBytes) {
-  GMP_LOG("ChromiumCDMParent::SendBufferToCDM() size=%" PRIu32, aSizeInBytes);
+  GMP_LOG_DEBUG("ChromiumCDMParent::SendBufferToCDM() size=%" PRIu32,
+                aSizeInBytes);
   Shmem shmem;
   if (!AllocShmem(aSizeInBytes, Shmem::SharedMemory::TYPE_BASIC, &shmem)) {
     return false;
@@ -364,7 +358,7 @@ RefPtr<DecryptPromise> ChromiumCDMParent::Decrypt(MediaRawData* aSample) {
 
   RefPtr<DecryptJob> job = new DecryptJob(aSample);
   if (!SendDecrypt(job->mId, buffer)) {
-    GMP_LOG(
+    GMP_LOG_DEBUG(
         "ChromiumCDMParent::Decrypt(this=%p) failed to send decrypt message",
         this);
     DeallocShmem(buffer.mData());
@@ -378,7 +372,7 @@ RefPtr<DecryptPromise> ChromiumCDMParent::Decrypt(MediaRawData* aSample) {
 
 ipc::IPCResult ChromiumCDMParent::Recv__delete__() {
   MOZ_ASSERT(mIsShutdown);
-  GMP_LOG("ChromiumCDMParent::Recv__delete__(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::Recv__delete__(this=%p)", this);
   if (mContentParent) {
     mContentParent->ChromiumCDMDestroyed(this);
     mContentParent = nullptr;
@@ -388,9 +382,9 @@ ipc::IPCResult ChromiumCDMParent::Recv__delete__() {
 
 ipc::IPCResult ChromiumCDMParent::RecvOnResolvePromiseWithKeyStatus(
     const uint32_t& aPromiseId, const uint32_t& aKeyStatus) {
-  GMP_LOG(
-      "ChromiumCDMParent::RecvOnResolvePromiseWithKeyStatus(this=%p, pid=%u, "
-      "keystatus=%u)",
+  GMP_LOG_DEBUG(
+      "ChromiumCDMParent::RecvOnResolvePromiseWithKeyStatus(this=%p, "
+      "pid=%" PRIu32 ", keystatus=%" PRIu32 ")",
       this, aPromiseId, aKeyStatus);
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
@@ -403,9 +397,9 @@ ipc::IPCResult ChromiumCDMParent::RecvOnResolvePromiseWithKeyStatus(
 
 ipc::IPCResult ChromiumCDMParent::RecvOnResolveNewSessionPromise(
     const uint32_t& aPromiseId, const nsCString& aSessionId) {
-  GMP_LOG(
-      "ChromiumCDMParent::RecvOnResolveNewSessionPromise(this=%p, pid=%u, "
-      "sid=%s)",
+  GMP_LOG_DEBUG(
+      "ChromiumCDMParent::RecvOnResolveNewSessionPromise(this=%p, pid=%" PRIu32
+      ", sid=%s)",
       this, aPromiseId, aSessionId.get());
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
@@ -413,8 +407,8 @@ ipc::IPCResult ChromiumCDMParent::RecvOnResolveNewSessionPromise(
 
   Maybe<uint32_t> token = mPromiseToCreateSessionToken.GetAndRemove(aPromiseId);
   if (token.isNothing()) {
-    RejectPromise(aPromiseId, NS_ERROR_DOM_INVALID_STATE_ERR,
-                  NS_LITERAL_CSTRING("Lost session token for new session."));
+    RejectPromiseWithStateError(aPromiseId,
+                                "Lost session token for new session."_ns);
     return IPC_OK();
   }
 
@@ -427,9 +421,9 @@ ipc::IPCResult ChromiumCDMParent::RecvOnResolveNewSessionPromise(
 
 ipc::IPCResult ChromiumCDMParent::RecvResolveLoadSessionPromise(
     const uint32_t& aPromiseId, const bool& aSuccessful) {
-  GMP_LOG(
-      "ChromiumCDMParent::RecvResolveLoadSessionPromise(this=%p, pid=%u, "
-      "successful=%d)",
+  GMP_LOG_DEBUG(
+      "ChromiumCDMParent::RecvResolveLoadSessionPromise(this=%p, pid=%" PRIu32
+      ", successful=%d)",
       this, aPromiseId, aSuccessful);
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
@@ -441,8 +435,8 @@ ipc::IPCResult ChromiumCDMParent::RecvResolveLoadSessionPromise(
 }
 
 void ChromiumCDMParent::ResolvePromise(uint32_t aPromiseId) {
-  GMP_LOG("ChromiumCDMParent::ResolvePromise(this=%p, pid=%u)", this,
-          aPromiseId);
+  GMP_LOG_DEBUG("ChromiumCDMParent::ResolvePromise(this=%p, pid=%" PRIu32 ")",
+                this, aPromiseId);
 
   // Note: The MediaKeys rejects all pending DOM promises when it
   // initiates shutdown.
@@ -459,46 +453,70 @@ ipc::IPCResult ChromiumCDMParent::RecvOnResolvePromise(
   return IPC_OK();
 }
 
-void ChromiumCDMParent::RejectPromise(uint32_t aPromiseId, nsresult aException,
+void ChromiumCDMParent::RejectPromise(uint32_t aPromiseId,
+                                      ErrorResult&& aException,
                                       const nsCString& aErrorMessage) {
-  GMP_LOG("ChromiumCDMParent::RejectPromise(this=%p, pid=%u)", this,
-          aPromiseId);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RejectPromise(this=%p, pid=%" PRIu32 ")",
+                this, aPromiseId);
   // Note: The MediaKeys rejects all pending DOM promises when it
   // initiates shutdown.
   if (!mCDMCallback || mIsShutdown) {
     return;
   }
 
-  mCDMCallback->RejectPromise(aPromiseId, aException, aErrorMessage);
+  mCDMCallback->RejectPromise(aPromiseId, std::move(aException), aErrorMessage);
 }
 
-static nsresult ToNsresult(uint32_t aException) {
+void ChromiumCDMParent::RejectPromiseShutdown(uint32_t aPromiseId) {
+  RejectPromiseWithStateError(aPromiseId, "CDM is shutdown"_ns);
+}
+
+void ChromiumCDMParent::RejectPromiseWithStateError(
+    uint32_t aPromiseId, const nsCString& aErrorMessage) {
+  ErrorResult rv;
+  rv.ThrowInvalidStateError(aErrorMessage);
+  RejectPromise(aPromiseId, std::move(rv), aErrorMessage);
+}
+
+static ErrorResult ToErrorResult(uint32_t aException,
+                                 const nsCString& aErrorMessage) {
+  // XXXbz could we have a CopyableErrorResult sent to us with a better error
+  // message?
+  ErrorResult rv;
   switch (static_cast<cdm::Exception>(aException)) {
     case cdm::Exception::kExceptionNotSupportedError:
-      return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
+      rv.ThrowNotSupportedError(aErrorMessage);
+      break;
     case cdm::Exception::kExceptionInvalidStateError:
-      return NS_ERROR_DOM_INVALID_STATE_ERR;
+      rv.ThrowInvalidStateError(aErrorMessage);
+      break;
     case cdm::Exception::kExceptionTypeError:
-      return NS_ERROR_DOM_TYPE_ERR;
+      rv.ThrowTypeError(aErrorMessage);
+      break;
     case cdm::Exception::kExceptionQuotaExceededError:
-      return NS_ERROR_DOM_QUOTA_EXCEEDED_ERR;
+      rv.ThrowQuotaExceededError(aErrorMessage);
+      break;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Invalid cdm::Exception enum value.");
+      // Note: Unique placeholder.
+      rv.ThrowTimeoutError(aErrorMessage);
   };
-  MOZ_ASSERT_UNREACHABLE("Invalid cdm::Exception enum value.");
-  return NS_ERROR_DOM_TIMEOUT_ERR;  // Note: Unique placeholder.
+  return rv;
 }
 
 ipc::IPCResult ChromiumCDMParent::RecvOnRejectPromise(
     const uint32_t& aPromiseId, const uint32_t& aException,
     const uint32_t& aSystemCode, const nsCString& aErrorMessage) {
-  RejectPromise(aPromiseId, ToNsresult(aException), aErrorMessage);
+  RejectPromise(aPromiseId, ToErrorResult(aException, aErrorMessage),
+                aErrorMessage);
   return IPC_OK();
 }
 
 ipc::IPCResult ChromiumCDMParent::RecvOnSessionMessage(
     const nsCString& aSessionId, const uint32_t& aMessageType,
     nsTArray<uint8_t>&& aMessage) {
-  GMP_LOG("ChromiumCDMParent::RecvOnSessionMessage(this=%p, sid=%s)", this,
-          aSessionId.get());
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvOnSessionMessage(this=%p, sid=%s)",
+                this, aSessionId.get());
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
   }
@@ -509,7 +527,7 @@ ipc::IPCResult ChromiumCDMParent::RecvOnSessionMessage(
 
 ipc::IPCResult ChromiumCDMParent::RecvOnSessionKeysChange(
     const nsCString& aSessionId, nsTArray<CDMKeyInformation>&& aKeysInfo) {
-  GMP_LOG("ChromiumCDMParent::RecvOnSessionKeysChange(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvOnSessionKeysChange(this=%p)", this);
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
   }
@@ -520,8 +538,8 @@ ipc::IPCResult ChromiumCDMParent::RecvOnSessionKeysChange(
 
 ipc::IPCResult ChromiumCDMParent::RecvOnExpirationChange(
     const nsCString& aSessionId, const double& aSecondsSinceEpoch) {
-  GMP_LOG("ChromiumCDMParent::RecvOnExpirationChange(this=%p) time=%lf", this,
-          aSecondsSinceEpoch);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvOnExpirationChange(this=%p) time=%lf",
+                this, aSecondsSinceEpoch);
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
   }
@@ -532,7 +550,7 @@ ipc::IPCResult ChromiumCDMParent::RecvOnExpirationChange(
 
 ipc::IPCResult ChromiumCDMParent::RecvOnSessionClosed(
     const nsCString& aSessionId) {
-  GMP_LOG("ChromiumCDMParent::RecvOnSessionClosed(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvOnSessionClosed(this=%p)", this);
   if (!mCDMCallback || mIsShutdown) {
     return IPC_OK();
   }
@@ -554,8 +572,9 @@ DecryptStatus ToDecryptStatus(uint32_t aStatus) {
 
 ipc::IPCResult ChromiumCDMParent::RecvDecryptFailed(const uint32_t& aId,
                                                     const uint32_t& aStatus) {
-  GMP_LOG("ChromiumCDMParent::RecvDecryptFailed(this=%p, id=%u, status=%u)",
-          this, aId, aStatus);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvDecryptFailed(this=%p, id=%" PRIu32
+                ", status=%" PRIu32 ")",
+                this, aId, aStatus);
 
   if (mIsShutdown) {
     MOZ_ASSERT(mDecrypts.IsEmpty());
@@ -575,8 +594,9 @@ ipc::IPCResult ChromiumCDMParent::RecvDecryptFailed(const uint32_t& aId,
 ipc::IPCResult ChromiumCDMParent::RecvDecrypted(const uint32_t& aId,
                                                 const uint32_t& aStatus,
                                                 ipc::Shmem&& aShmem) {
-  GMP_LOG("ChromiumCDMParent::RecvDecrypted(this=%p, id=%u, status=%u)", this,
-          aId, aStatus);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvDecrypted(this=%p, id=%" PRIu32
+                ", status=%" PRIu32 ")",
+                this, aId, aStatus);
 
   // We must deallocate the shmem once we've copied the result out of it
   // in PostResult below.
@@ -599,8 +619,8 @@ ipc::IPCResult ChromiumCDMParent::RecvDecrypted(const uint32_t& aId,
 }
 
 ipc::IPCResult ChromiumCDMParent::RecvIncreaseShmemPoolSize() {
-  GMP_LOG("%s(this=%p) limit=%" PRIu32 " active=%" PRIu32, __func__, this,
-          mVideoShmemLimit, mVideoShmemsActive);
+  GMP_LOG_DEBUG("%s(this=%p) limit=%" PRIu32 " active=%" PRIu32, __func__, this,
+                mVideoShmemLimit, mVideoShmemsActive);
 
   // Put an upper limit on the number of shmems we tolerate the CDM asking
   // for, to prevent a memory blow-out. In practice, we expect the CDM to
@@ -624,7 +644,7 @@ ipc::IPCResult ChromiumCDMParent::RecvIncreaseShmemPoolSize() {
 }
 
 bool ChromiumCDMParent::PurgeShmems() {
-  GMP_LOG(
+  GMP_LOG_DEBUG(
       "ChromiumCDMParent::PurgeShmems(this=%p) frame_size=%zu"
       " limit=%" PRIu32 " active=%" PRIu32,
       this, mVideoFrameBufferSize, mVideoShmemLimit, mVideoShmemsActive);
@@ -641,7 +661,7 @@ bool ChromiumCDMParent::PurgeShmems() {
 }
 
 bool ChromiumCDMParent::EnsureSufficientShmems(size_t aVideoFrameSize) {
-  GMP_LOG(
+  GMP_LOG_DEBUG(
       "ChromiumCDMParent::EnsureSufficientShmems(this=%p) "
       "size=%zu expected_size=%zu limit=%" PRIu32 " active=%" PRIu32,
       this, aVideoFrameSize, mVideoFrameBufferSize, mVideoShmemLimit,
@@ -703,8 +723,8 @@ bool ChromiumCDMParent::EnsureSufficientShmems(size_t aVideoFrameSize) {
 
 ipc::IPCResult ChromiumCDMParent::RecvDecodedData(const CDMVideoFrame& aFrame,
                                                   nsTArray<uint8_t>&& aData) {
-  GMP_LOG("ChromiumCDMParent::RecvDecodedData(this=%p) time=%" PRId64, this,
-          aFrame.mTimestamp());
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvDecodedData(this=%p) time=%" PRId64,
+                this, aFrame.mTimestamp());
 
   if (mIsShutdown || mDecodePromise.IsEmpty()) {
     return IPC_OK();
@@ -734,9 +754,9 @@ ipc::IPCResult ChromiumCDMParent::RecvDecodedData(const CDMVideoFrame& aFrame,
 
 ipc::IPCResult ChromiumCDMParent::RecvDecodedShmem(const CDMVideoFrame& aFrame,
                                                    ipc::Shmem&& aShmem) {
-  GMP_LOG("ChromiumCDMParent::RecvDecodedShmem(this=%p) time=%" PRId64
-          " duration=%" PRId64,
-          this, aFrame.mTimestamp(), aFrame.mDuration());
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvDecodedShmem(this=%p) time=%" PRId64
+                " duration=%" PRId64,
+                this, aFrame.mTimestamp(), aFrame.mDuration());
 
   // On failure we need to deallocate the shmem we're to return to the
   // CDM. On success we return it to the CDM to be reused.
@@ -795,25 +815,24 @@ already_AddRefed<VideoData> ChromiumCDMParent::CreateVideoFrame(
   VideoData::YCbCrBuffer b;
   MOZ_ASSERT(aData.Length() > 0);
 
-  b.mPlanes[0].mData = aData.Elements();
+  // Since we store each plane separately we can just roll the offset
+  // into our pointer to that plane and store that.
+  b.mPlanes[0].mData = aData.Elements() + aFrame.mYPlane().mPlaneOffset();
   b.mPlanes[0].mWidth = aFrame.mImageWidth();
   b.mPlanes[0].mHeight = aFrame.mImageHeight();
   b.mPlanes[0].mStride = aFrame.mYPlane().mStride();
-  b.mPlanes[0].mOffset = aFrame.mYPlane().mPlaneOffset();
   b.mPlanes[0].mSkip = 0;
 
-  b.mPlanes[1].mData = aData.Elements();
+  b.mPlanes[1].mData = aData.Elements() + aFrame.mUPlane().mPlaneOffset();
   b.mPlanes[1].mWidth = (aFrame.mImageWidth() + 1) / 2;
   b.mPlanes[1].mHeight = (aFrame.mImageHeight() + 1) / 2;
   b.mPlanes[1].mStride = aFrame.mUPlane().mStride();
-  b.mPlanes[1].mOffset = aFrame.mUPlane().mPlaneOffset();
   b.mPlanes[1].mSkip = 0;
 
-  b.mPlanes[2].mData = aData.Elements();
+  b.mPlanes[2].mData = aData.Elements() + aFrame.mVPlane().mPlaneOffset();
   b.mPlanes[2].mWidth = (aFrame.mImageWidth() + 1) / 2;
   b.mPlanes[2].mHeight = (aFrame.mImageHeight() + 1) / 2;
   b.mPlanes[2].mStride = aFrame.mVPlane().mStride();
-  b.mPlanes[2].mOffset = aFrame.mVPlane().mPlaneOffset();
   b.mPlanes[2].mSkip = 0;
 
   // We unfortunately can't know which colorspace the video is using at this
@@ -832,6 +851,9 @@ already_AddRefed<VideoData> ChromiumCDMParent::CreateVideoFrame(
 }
 
 ipc::IPCResult ChromiumCDMParent::RecvDecodeFailed(const uint32_t& aStatus) {
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvDecodeFailed(this=%p status=%" PRIu32
+                ")",
+                this, aStatus);
   if (mIsShutdown) {
     MOZ_ASSERT(mDecodePromise.IsEmpty());
     return IPC_OK();
@@ -843,20 +865,25 @@ ipc::IPCResult ChromiumCDMParent::RecvDecodeFailed(const uint32_t& aStatus) {
   }
 
   mDecodePromise.RejectIfExists(
-      MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,
-                  RESULT_DETAIL("ChromiumCDMParent::RecvDecodeFailed")),
+      MediaResult(
+          NS_ERROR_DOM_MEDIA_FATAL_ERR,
+          RESULT_DETAIL(
+              "ChromiumCDMParent::RecvDecodeFailed with status %s (%" PRIu32
+              ")",
+              CdmStatusToString(aStatus), aStatus)),
       __func__);
   return IPC_OK();
 }
 
 ipc::IPCResult ChromiumCDMParent::RecvShutdown() {
-  GMP_LOG("ChromiumCDMParent::RecvShutdown(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::RecvShutdown(this=%p)", this);
   Shutdown();
   return IPC_OK();
 }
 
 void ChromiumCDMParent::ActorDestroy(ActorDestroyReason aWhy) {
-  GMP_LOG("ChromiumCDMParent::ActorDestroy(this=%p, reason=%d)", this, aWhy);
+  GMP_LOG_DEBUG("ChromiumCDMParent::ActorDestroy(this=%p, reason=%d)", this,
+                aWhy);
   MOZ_ASSERT(!mActorDestroyed);
   mActorDestroyed = true;
   // Shutdown() will clear mCDMCallback, so let's keep a reference for later
@@ -936,8 +963,9 @@ RefPtr<MediaDataDecoder::InitPromise> ChromiumCDMParent::InitializeVideoDecoder(
 
 ipc::IPCResult ChromiumCDMParent::RecvOnDecoderInitDone(
     const uint32_t& aStatus) {
-  GMP_LOG("ChromiumCDMParent::RecvOnDecoderInitDone(this=%p, status=%u)", this,
-          aStatus);
+  GMP_LOG_DEBUG(
+      "ChromiumCDMParent::RecvOnDecoderInitDone(this=%p, status=%" PRIu32 ")",
+      this, aStatus);
   if (mIsShutdown) {
     MOZ_ASSERT(mInitVideoDecoderPromise.IsEmpty());
     return IPC_OK();
@@ -949,7 +977,8 @@ ipc::IPCResult ChromiumCDMParent::RecvOnDecoderInitDone(
     mInitVideoDecoderPromise.RejectIfExists(
         MediaResult(
             NS_ERROR_DOM_MEDIA_FATAL_ERR,
-            RESULT_DETAIL("CDM init decode failed with %" PRIu32, aStatus)),
+            RESULT_DETAIL("CDM init decode failed with status %s (%" PRIu32 ")",
+                          CdmStatusToString(aStatus), aStatus)),
         __func__);
   }
   return IPC_OK();
@@ -964,8 +993,8 @@ ChromiumCDMParent::DecryptAndDecodeFrame(MediaRawData* aSample) {
         __func__);
   }
 
-  GMP_LOG("ChromiumCDMParent::DecryptAndDecodeFrame t=%" PRId64,
-          aSample->mTime.ToMicroseconds());
+  GMP_LOG_DEBUG("ChromiumCDMParent::DecryptAndDecodeFrame t=%" PRId64,
+                aSample->mTime.ToMicroseconds());
 
   CDMInputBuffer buffer;
 
@@ -978,7 +1007,7 @@ ChromiumCDMParent::DecryptAndDecodeFrame(MediaRawData* aSample) {
   mLastStreamOffset = aSample->mOffset;
 
   if (!SendDecryptAndDecodeFrame(buffer)) {
-    GMP_LOG(
+    GMP_LOG_DEBUG(
         "ChromiumCDMParent::Decrypt(this=%p) failed to send decrypt message.",
         this);
     DeallocShmem(buffer.mData());
@@ -1065,7 +1094,7 @@ RefPtr<ShutdownPromise> ChromiumCDMParent::ShutdownVideoDecoder() {
   }
   mVideoDecoderInitialized = false;
 
-  GMP_LOG("ChromiumCDMParent::~ShutdownVideoDecoder(this=%p) ", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::~ShutdownVideoDecoder(this=%p) ", this);
 
   // The ChromiumCDMChild will purge its shmems, so if the decoder is
   // reinitialized the shmems need to be re-allocated, and they may need
@@ -1076,7 +1105,7 @@ RefPtr<ShutdownPromise> ChromiumCDMParent::ShutdownVideoDecoder() {
 }
 
 void ChromiumCDMParent::Shutdown() {
-  GMP_LOG("ChromiumCDMParent::Shutdown(this=%p)", this);
+  GMP_LOG_DEBUG("ChromiumCDMParent::Shutdown(this=%p)", this);
 
   if (mIsShutdown) {
     return;

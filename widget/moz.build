@@ -73,7 +73,10 @@ elif toolkit == 'cocoa':
         'nsINativeMenuService.h',
     ]
 
-TEST_DIRS += ['tests']
+TEST_DIRS += [
+    'tests',
+    'tests/gtest'
+]
 
 DIRS += ['headless']
 
@@ -85,9 +88,6 @@ DIRS += ['headless']
 #
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gtk':
     DIRS += ['gtk']
-
-    if CONFIG['MOZ_X11']:
-        DIRS += ['gtkxtbin']
 
     XPIDL_SOURCES += [
         'nsIGtkTaskbarProgress.idl',
@@ -109,16 +109,19 @@ XPIDL_SOURCES += [
     'nsIFormatConverter.idl',
     'nsIGfxInfo.idl',
     'nsIGfxInfoDebug.idl',
-    'nsIIdleService.idl',
-    'nsIIdleServiceInternal.idl',
-    'nsIPrinterEnumerator.idl',
+    'nsIPaper.idl',
+    'nsIPrinter.idl',
+    'nsIPrinterList.idl',
     'nsIPrintSession.idl',
     'nsIPrintSettings.idl',
     'nsIPrintSettingsService.idl',
     'nsIScreen.idl',
     'nsIScreenManager.idl',
+    'nsISharePicker.idl',
     'nsISound.idl',
     'nsITransferable.idl',
+    'nsIUserIdleService.idl',
+    'nsIUserIdleServiceInternal.idl',
 ]
 
 XPIDL_MODULE = 'widget'
@@ -134,13 +137,15 @@ EXPORTS += [
     'nsBaseScreen.h',
     'nsBaseWidget.h',
     'nsIDeviceContextSpec.h',
-    'nsIdleService.h',
     'nsIKeyEventInPluginCallback.h',
     'nsIPluginWidget.h',
     'nsIPrintDialogService.h',
     'nsIRollupListener.h',
     'nsIWidget.h',
     'nsIWidgetListener.h',
+    'nsPaper.h',
+    'nsPrinter.h',
+    'nsUserIdleService.h',
     'nsWidgetInitData.h',
     'nsWidgetsCID.h',
     'PuppetWidget.h',
@@ -172,6 +177,7 @@ EXPORTS.mozilla.widget += [
     'CompositorWidget.h',
     'IMEData.h',
     'InProcessCompositorWidget.h',
+    'MediaKeysEventSourceFactory.h',
     'nsAutoRollup.h',
     'PuppetBidiKeyboard.h',
     'Screen.h',
@@ -199,17 +205,17 @@ UNIFIED_SOURCES += [
     'nsDragServiceProxy.cpp',
     'nsFilePickerProxy.cpp',
     'nsHTMLFormatConverter.cpp',
-    'nsIdleService.cpp',
     'nsIWidgetListener.cpp',
+    'nsNativeBasicTheme.cpp',
     'nsPrimitiveHelpers.cpp',
     'nsPrintSettingsImpl.cpp',
     'nsSoundProxy.cpp',
     'nsTransferable.cpp',
+    'nsUserIdleService.cpp',
     'nsXPLookAndFeel.cpp',
     'PuppetBidiKeyboard.cpp',
     'PuppetWidget.cpp',
     'Screen.cpp',
-    'ScreenManager.cpp',
     'SharedWidgetUtils.cpp',
     'TextEventDispatcher.cpp',
     'VsyncDispatcher.cpp',
@@ -236,11 +242,19 @@ if CONFIG['MOZ_XUL'] and CONFIG['NS_PRINTING']:
         'nsPrintSettingsService.cpp',
     ]
 
+    # The Windows sub-directory has its own implemenation of these.
+    if toolkit != 'windows':
+        UNIFIED_SOURCES += [
+            'nsPaper.cpp',
+            'nsPrinter.cpp',
+        ]
+
 # nsBaseWidget.cpp needs to be built separately because of name clashes in the OS X headers
 # nsBaseDragService.cpp moved out of UNIFIED to fix xgill crash (bug 1259850) after moving widget/ContentHelper -> apz/util/TouchActionHelper
 SOURCES += [
     'nsBaseDragService.cpp',
     'nsBaseWidget.cpp',
+    'ScreenManager.cpp',
 ]
 
 if CONFIG['MOZ_INSTRUMENT_EVENT_LOOP']:
@@ -285,6 +299,11 @@ if toolkit == 'gtk':
     XPIDL_SOURCES += [
         'nsIApplicationChooser.idl',
     ]
+if toolkit in ('gtk', 'cocoa'):
+    UNIFIED_SOURCES += [
+        'CUPSPrinter.cpp',
+        'nsCUPSShim.cpp'
+    ]
 
 DEFINES['MOZ_CROSS_PROCESS_IME'] = True
 
@@ -293,6 +312,7 @@ include('/ipc/chromium/chromium-config.mozbuild')
 LOCAL_INCLUDES += [
     '/dom/base',
     '/dom/ipc',
+    '/gfx/2d',
     '/layout/base',
     '/layout/forms',
     '/layout/generic',
@@ -303,6 +323,12 @@ LOCAL_INCLUDES += [
     '/widget',
     '/widget/headless',
 ]
+
+# We use the CUPS headers on Cocoa and GTK, but on GTK we don't depend on there being system headers.
+if toolkit == 'gtk':
+    LOCAL_INCLUDES += [
+        '/third_party/cups/include'
+    ]
 
 if toolkit == 'windows':
     IPDL_SOURCES = [

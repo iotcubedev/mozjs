@@ -12,22 +12,18 @@
 #include <stdint.h>
 
 #include "builtin/SelfHostingDefines.h"
-#include "gc/Barrier.h"
 #include "js/Class.h"
 #include "vm/NativeObject.h"
-#include "vm/Runtime.h"
 
 struct UFormattedNumber;
-struct UFormattedValue;
 struct UNumberFormatter;
 
 namespace js {
 
-class ArrayObject;
-
 class NumberFormatObject : public NativeObject {
  public:
   static const JSClass class_;
+  static const JSClass& protoClass_;
 
   static constexpr uint32_t INTERNALS_SLOT = 0;
   static constexpr uint32_t UNUMBER_FORMATTER_SLOT = 1;
@@ -37,6 +33,10 @@ class NumberFormatObject : public NativeObject {
   static_assert(INTERNALS_SLOT == INTL_INTERNALS_OBJECT_SLOT,
                 "INTERNALS_SLOT must match self-hosting define for internals "
                 "object slot");
+
+  // Estimated memory use for UNumberFormatter and UFormattedNumber
+  // (see IcuMemoryUsage).
+  static constexpr size_t EstimatedMemoryUse = 750;
 
   UNumberFormatter* getNumberFormatter() const {
     const auto& slot = getFixedSlot(UNUMBER_FORMATTER_SLOT);
@@ -64,13 +64,10 @@ class NumberFormatObject : public NativeObject {
 
  private:
   static const JSClassOps classOps_;
+  static const ClassSpec classSpec_;
 
   static void finalize(JSFreeOp* fop, JSObject* obj);
 };
-
-extern JSObject* CreateNumberFormatPrototype(JSContext* cx, HandleObject Intl,
-                                             Handle<GlobalObject*> global,
-                                             MutableHandleObject constructor);
 
 /**
  * Returns a new instance of the standard built-in NumberFormat constructor.
@@ -81,18 +78,6 @@ extern JSObject* CreateNumberFormatPrototype(JSContext* cx, HandleObject Intl,
  */
 extern MOZ_MUST_USE bool intl_NumberFormat(JSContext* cx, unsigned argc,
                                            Value* vp);
-
-/**
- * Returns an object indicating the supported locales for number formatting
- * by having a true-valued property for each such locale with the
- * canonicalized language tag as the property name. The object has no
- * prototype.
- *
- * Usage: availableLocales = intl_NumberFormat_availableLocales()
- */
-extern MOZ_MUST_USE bool intl_NumberFormat_availableLocales(JSContext* cx,
-                                                            unsigned argc,
-                                                            Value* vp);
 
 /**
  * Returns the numbering system type identifier per Unicode
@@ -110,7 +95,8 @@ extern MOZ_MUST_USE bool intl_numberingSystem(JSContext* cx, unsigned argc,
  *
  * Spec: ECMAScript Internationalization API Specification, 11.3.2.
  *
- * Usage: formatted = intl_FormatNumber(numberFormat, x, formatToParts)
+ * Usage: formatted = intl_FormatNumber(numberFormat, x, formatToParts,
+ *                                      unitStyle)
  */
 extern MOZ_MUST_USE bool intl_FormatNumber(JSContext* cx, unsigned argc,
                                            Value* vp);
@@ -285,15 +271,6 @@ class MOZ_STACK_CLASS NumberFormatterSkeleton final {
    */
   MOZ_MUST_USE bool roundingModeHalfUp();
 };
-
-using FieldType = js::ImmutablePropertyNamePtr JSAtomState::*;
-
-#ifndef U_HIDE_DRAFT_API
-MOZ_MUST_USE bool FormattedNumberToParts(JSContext* cx,
-                                         const UFormattedValue* formattedValue,
-                                         HandleValue number, FieldType unitType,
-                                         MutableHandleValue result);
-#endif
 
 }  // namespace intl
 }  // namespace js

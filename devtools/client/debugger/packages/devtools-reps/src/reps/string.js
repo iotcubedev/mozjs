@@ -3,7 +3,11 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const {
+  a,
+  span,
+} = require("devtools/client/shared/vendor/react-dom-factories");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
 const {
   containsURL,
@@ -12,18 +16,15 @@ const {
   rawCropString,
   sanitizeString,
   wrapRender,
-  isGrip,
   ELLIPSIS,
   uneatLastUrlCharsRegex,
   urlRegex,
 } = require("./rep-utils");
 
-const dom = require("react-dom-factories");
-const { a, span } = dom;
-
 /**
  * Renders a string. String value is enclosed within quotes.
  */
+
 StringRep.propTypes = {
   useQuotes: PropTypes.bool,
   escapeWhitespace: PropTypes.bool,
@@ -36,6 +37,7 @@ StringRep.propTypes = {
   className: PropTypes.string,
   title: PropTypes.string,
   isInContentPage: PropTypes.bool,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function StringRep(props) {
@@ -51,9 +53,28 @@ function StringRep(props) {
     openLink,
     title,
     isInContentPage,
+    transformEmptyString = false,
+    shouldRenderTooltip,
   } = props;
 
   let text = object;
+  const config = getElementConfig({
+    className,
+    style,
+    actor: object.actor,
+    title,
+  });
+
+  if (text == "" && transformEmptyString && !useQuotes) {
+    return span(
+      {
+        ...config,
+        title: "<empty string>",
+        className: `${config.className} objectBox-empty-string`,
+      },
+      "<empty string>"
+    );
+  }
 
   const isLong = isLongString(object);
   const isOpen = member && member.open;
@@ -82,12 +103,9 @@ function StringRep(props) {
     text
   );
 
-  const config = getElementConfig({
-    className,
-    style,
-    actor: object.actor,
-    title,
-  });
+  if (shouldRenderTooltip) {
+    config.title = text;
+  }
 
   if (!isLong) {
     if (containsURL(text)) {
@@ -117,12 +135,13 @@ function StringRep(props) {
   return span(config, text);
 }
 
-function maybeCropLongString(opts, text) {
+function maybeCropLongString(opts, object) {
   const { shouldCrop, cropLimit } = opts;
 
-  const { initial, length } = text;
+  const grip = object && object.getGrip ? object.getGrip() : object;
+  const { initial, length } = grip;
 
-  text = shouldCrop ? initial.substring(0, cropLimit) : initial;
+  let text = shouldCrop ? initial.substring(0, cropLimit) : initial;
 
   if (text.length < length) {
     text += ELLIPSIS;
@@ -255,6 +274,7 @@ function getLinkifiedElements({
             // displayed in content page (e.g. in the JSONViewer).
             href: openLink || isInContentPage ? useUrl : null,
             target: "_blank",
+            rel: "noopener noreferrer",
             onClick: openLink
               ? e => {
                   e.preventDefault();
@@ -331,15 +351,22 @@ function getCroppedString(text, offset = 0, startCropIndex, endCropIndex) {
 }
 
 function isLongString(object) {
-  return object && object.type === "longString";
+  const grip = object && object.getGrip ? object.getGrip() : object;
+  return grip && grip.type === "longString";
 }
 
 function supportsObject(object, noGrip = false) {
-  if (noGrip === false && isGrip(object)) {
+  // Accept the object if the grip-type (or type for noGrip objects) is "string"
+  if (getGripType(object, noGrip) == "string") {
+    return true;
+  }
+
+  // Also accept longString objects if we're expecting grip
+  if (!noGrip) {
     return isLongString(object);
   }
 
-  return getGripType(object, noGrip) == "string";
+  return false;
 }
 
 // Exports from this module

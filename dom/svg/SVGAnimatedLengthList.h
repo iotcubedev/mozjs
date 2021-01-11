@@ -4,13 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDLENGTHLIST_H__
-#define MOZILLA_SVGANIMATEDLENGTHLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDLENGTHLIST_H_
+#define DOM_SVG_SVGANIMATEDLENGTHLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILAttr.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
 #include "SVGLengthList.h"
 
 namespace mozilla {
@@ -79,7 +78,7 @@ class SVGAnimatedLengthList {
   // the empty string (<set to="">).
 
   SVGLengthList mBaseVal;
-  nsAutoPtr<SVGLengthList> mAnimVal;
+  UniquePtr<SVGLengthList> mAnimVal;
 
   struct SMILAnimatedLengthList : public SMILAttr {
    public:
@@ -113,4 +112,4 @@ class SVGAnimatedLengthList {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDLENGTHLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDLENGTHLIST_H_

@@ -6,6 +6,7 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Likely.h"
+#include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/ScriptLoader.h"
 #include "mozilla/dom/nsCSPContext.h"
 #include "mozilla/dom/nsCSPService.h"
@@ -28,7 +29,6 @@
 #include "nsHtml5TreeBuilder.h"
 #include "nsHtml5TreeOpExecutor.h"
 #include "nsIContentSecurityPolicy.h"
-#include "nsIContentViewer.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsINestedURI.h"
@@ -176,7 +176,7 @@ nsHtml5TreeOpExecutor::DidBuildModel(bool aTerminated) {
   }
 
   if (!destroying) {
-    mDocument->TriggerInitialDocumentTranslation();
+    mDocument->OnParsingCompleted();
 
     if (!mLayoutStarted) {
       // We never saw the body, and layout never got started. Force
@@ -244,7 +244,7 @@ nsHtml5TreeOpExecutor::SetParser(nsParserBase* aParser) {
   return NS_OK;
 }
 
-void nsHtml5TreeOpExecutor::InitialDocumentTranslationCompleted() {
+void nsHtml5TreeOpExecutor::InitialTranslationCompleted() {
   nsContentSink::StartLayout(false);
 }
 
@@ -450,6 +450,16 @@ void nsHtml5TreeOpExecutor::RunFlushLoop() {
       // Now parse content left in the document.write() buffer queue if any.
       // This may generate tree ops on its own or dequeue a speculation.
       nsresult rv = GetParser()->ParseUntilBlocked();
+
+      // ParseUntilBlocked flushes operations from the stage to the OpQueue.
+      // Those operations may have accompanying speculative operations.
+      // If so, we have to flush those speculative loads so that we maintain
+      // the invariant that no speculative load starts after the corresponding
+      // normal load for the same URL. See
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=1513292#c80
+      // for a more detailed explanation of why this is necessary.
+      FlushSpeculativeLoads();
+
       if (NS_FAILED(rv)) {
         MarkAsBroken(rv);
         return;
@@ -801,27 +811,25 @@ void nsHtml5TreeOpExecutor::MaybeComplainAboutCharset(const char* aMsgId,
   // the embedded different-origin pages anyway and can't fix problems even
   // if alerted about them.
   if (!strcmp(aMsgId, "EncNoDeclaration") && mDocShell) {
-    nsCOMPtr<nsIDocShellTreeItem> parent;
-    mDocShell->GetInProcessSameTypeParent(getter_AddRefs(parent));
-    if (parent) {
+    BrowsingContext* const bc = mDocShell->GetBrowsingContext();
+    if (bc && bc->GetParent()) {
       return;
     }
   }
   mAlreadyComplainedAboutCharset = true;
   nsContentUtils::ReportToConsole(
       aError ? nsIScriptError::errorFlag : nsIScriptError::warningFlag,
-      NS_LITERAL_CSTRING("HTML parser"), mDocument,
-      nsContentUtils::eHTMLPARSER_PROPERTIES, aMsgId, nsTArray<nsString>(),
-      nullptr, EmptyString(), aLineNumber);
+      "HTML parser"_ns, mDocument, nsContentUtils::eHTMLPARSER_PROPERTIES,
+      aMsgId, nsTArray<nsString>(), nullptr, EmptyString(), aLineNumber);
 }
 
 void nsHtml5TreeOpExecutor::ComplainAboutBogusProtocolCharset(Document* aDoc) {
   NS_ASSERTION(!mAlreadyComplainedAboutCharset,
                "How come we already managed to complain?");
   mAlreadyComplainedAboutCharset = true;
-  nsContentUtils::ReportToConsole(
-      nsIScriptError::errorFlag, NS_LITERAL_CSTRING("HTML parser"), aDoc,
-      nsContentUtils::eHTMLPARSER_PROPERTIES, "EncProtocolUnsupported");
+  nsContentUtils::ReportToConsole(nsIScriptError::errorFlag, "HTML parser"_ns,
+                                  aDoc, nsContentUtils::eHTMLPARSER_PROPERTIES,
+                                  "EncProtocolUnsupported");
 }
 
 void nsHtml5TreeOpExecutor::MaybeComplainAboutDeepTree(uint32_t aLineNumber) {
@@ -830,7 +838,7 @@ void nsHtml5TreeOpExecutor::MaybeComplainAboutDeepTree(uint32_t aLineNumber) {
   }
   mAlreadyComplainedAboutDeepTree = true;
   nsContentUtils::ReportToConsole(
-      nsIScriptError::errorFlag, NS_LITERAL_CSTRING("HTML parser"), mDocument,
+      nsIScriptError::errorFlag, "HTML parser"_ns, mDocument,
       nsContentUtils::eHTMLPARSER_PROPERTIES, "errDeepTree",
       nsTArray<nsString>(), nullptr, EmptyString(), aLineNumber);
 }
@@ -968,35 +976,39 @@ void nsHtml5TreeOpExecutor::PreloadScript(
     const nsAString& aURL, const nsAString& aCharset, const nsAString& aType,
     const nsAString& aCrossOrigin, const nsAString& aIntegrity,
     dom::ReferrerPolicy aReferrerPolicy, bool aScriptFromHead, bool aAsync,
-    bool aDefer, bool aNoModule) {
+    bool aDefer, bool aNoModule, bool aLinkPreload) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYet(aURL);
   if (!uri) {
     return;
   }
   mDocument->ScriptLoader()->PreloadURI(
       uri, aCharset, aType, aCrossOrigin, aIntegrity, aScriptFromHead, aAsync,
-      aDefer, aNoModule, GetPreloadReferrerPolicy(aReferrerPolicy));
+      aDefer, aNoModule, aLinkPreload,
+      GetPreloadReferrerPolicy(aReferrerPolicy));
 }
 
 void nsHtml5TreeOpExecutor::PreloadStyle(const nsAString& aURL,
                                          const nsAString& aCharset,
                                          const nsAString& aCrossOrigin,
                                          const nsAString& aReferrerPolicy,
-                                         const nsAString& aIntegrity) {
+                                         const nsAString& aIntegrity,
+                                         bool aLinkPreload) {
   nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYet(aURL);
   if (!uri) {
     return;
   }
 
   mDocument->PreloadStyle(uri, Encoding::ForLabel(aCharset), aCrossOrigin,
-                          GetPreloadReferrerPolicy(aReferrerPolicy),
-                          aIntegrity);
+                          GetPreloadReferrerPolicy(aReferrerPolicy), aIntegrity,
+                          aLinkPreload);
 }
 
-void nsHtml5TreeOpExecutor::PreloadImage(
-    const nsAString& aURL, const nsAString& aCrossOrigin,
-    const nsAString& aSrcset, const nsAString& aSizes,
-    const nsAString& aImageReferrerPolicy) {
+void nsHtml5TreeOpExecutor::PreloadImage(const nsAString& aURL,
+                                         const nsAString& aCrossOrigin,
+                                         const nsAString& aSrcset,
+                                         const nsAString& aSizes,
+                                         const nsAString& aImageReferrerPolicy,
+                                         bool aLinkPreload) {
   nsCOMPtr<nsIURI> baseURI = BaseURIForPreload();
   bool isImgSet = false;
   nsCOMPtr<nsIURI> uri =
@@ -1005,7 +1017,7 @@ void nsHtml5TreeOpExecutor::PreloadImage(
     // use document wide referrer policy
     mDocument->MaybePreLoadImage(uri, aCrossOrigin,
                                  GetPreloadReferrerPolicy(aImageReferrerPolicy),
-                                 isImgSet);
+                                 isImgSet, aLinkPreload);
   }
 }
 
@@ -1016,6 +1028,28 @@ void nsHtml5TreeOpExecutor::PreloadPictureSource(const nsAString& aSrcset,
                                                  const nsAString& aType,
                                                  const nsAString& aMedia) {
   mDocument->PreloadPictureImageSource(aSrcset, aSizes, aType, aMedia);
+}
+
+void nsHtml5TreeOpExecutor::PreloadFont(const nsAString& aURL,
+                                        const nsAString& aCrossOrigin,
+                                        const nsAString& aReferrerPolicy) {
+  nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYet(aURL);
+  if (!uri) {
+    return;
+  }
+
+  mDocument->Preloads().PreloadFont(uri, aCrossOrigin, aReferrerPolicy);
+}
+
+void nsHtml5TreeOpExecutor::PreloadFetch(const nsAString& aURL,
+                                         const nsAString& aCrossOrigin,
+                                         const nsAString& aReferrerPolicy) {
+  nsCOMPtr<nsIURI> uri = ConvertIfNotPreloadedYet(aURL);
+  if (!uri) {
+    return;
+  }
+
+  mDocument->Preloads().PreloadFetch(uri, aCrossOrigin, aReferrerPolicy);
 }
 
 void nsHtml5TreeOpExecutor::PreloadOpenPicture() {
@@ -1043,6 +1077,8 @@ void nsHtml5TreeOpExecutor::SetSpeculationBase(const nsAString& aURL) {
   DebugOnly<nsresult> rv = NS_NewURI(getter_AddRefs(mSpeculationBaseURI), aURL,
                                      encoding, mDocument->GetDocumentURI());
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to create a URI");
+
+  mDocument->Preloads().SetSpeculationBase(mSpeculationBaseURI);
 }
 
 void nsHtml5TreeOpExecutor::UpdateReferrerInfoFromMeta(

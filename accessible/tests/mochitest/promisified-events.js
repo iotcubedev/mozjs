@@ -14,7 +14,7 @@
             EVENT_TEXT_ATTRIBUTE_CHANGED, EVENT_TEXT_CARET_MOVED,
             EVENT_DESCRIPTION_CHANGE, EVENT_NAME_CHANGE, EVENT_STATE_CHANGE,
             EVENT_VALUE_CHANGE, EVENT_TEXT_VALUE_CHANGE, EVENT_FOCUS,
-            EVENT_DOCUMENT_RELOAD, EVENT_VIRTUALCURSOR_CHANGED,
+            EVENT_DOCUMENT_RELOAD, EVENT_VIRTUALCURSOR_CHANGED, EVENT_ALERT,
             UnexpectedEvents, waitForEvent, waitForEvents, waitForOrderedEvents */
 
 const EVENT_ANNOUNCEMENT = nsIAccessibleEvent.EVENT_ANNOUNCEMENT;
@@ -39,6 +39,7 @@ const EVENT_FOCUS = nsIAccessibleEvent.EVENT_FOCUS;
 const EVENT_DOCUMENT_RELOAD = nsIAccessibleEvent.EVENT_DOCUMENT_RELOAD;
 const EVENT_VIRTUALCURSOR_CHANGED =
   nsIAccessibleEvent.EVENT_VIRTUALCURSOR_CHANGED;
+const EVENT_ALERT = nsIAccessibleEvent.EVENT_ALERT;
 
 const EventsLogger = {
   enabled: false,
@@ -66,9 +67,7 @@ function eventToString(event) {
     info += `, state: ${stateStr}, is enabled: ${event.isEnabled}`;
   } else if (event instanceof nsIAccessibleTextChangeEvent) {
     let tcType = event.isInserted ? "inserted" : "removed";
-    info += `, start: ${event.start}, length: ${
-      event.length
-    }, ${tcType} text: ${event.modifiedText}`;
+    info += `, start: ${event.start}, length: ${event.length}, ${tcType} text: ${event.modifiedText}`;
   }
 
   info += `. Target: ${prettyName(event.accessible)}`;

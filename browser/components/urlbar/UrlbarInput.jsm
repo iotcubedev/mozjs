@@ -14,12 +14,16 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   AppConstants: "resource://gre/modules/AppConstants.jsm",
   BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
   ExtensionSearchHandler: "resource://gre/modules/ExtensionSearchHandler.jsm",
+  FormHistory: "resource://gre/modules/FormHistory.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   ReaderMode: "resource://gre/modules/ReaderMode.jsm",
+  SearchEngine: "resource://gre/modules/SearchEngine.jsm",
   Services: "resource://gre/modules/Services.jsm",
+  TopSiteAttribution: "resource:///modules/TopSiteAttribution.jsm",
   UrlbarController: "resource:///modules/UrlbarController.jsm",
   UrlbarEventBufferer: "resource:///modules/UrlbarEventBufferer.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
+  UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
   UrlbarQueryContext: "resource:///modules/UrlbarUtils.jsm",
   UrlbarTokenizer: "resource:///modules/UrlbarTokenizer.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
@@ -34,34 +38,36 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsIClipboardHelper"
 );
 
+const DEFAULT_FORM_HISTORY_NAME = "searchbar-history";
+const SEARCH_BUTTON_ID = "urlbar-search-button";
+
+let getBoundsWithoutFlushing = element =>
+  element.ownerGlobal.windowUtils.getBoundsWithoutFlushing(element);
+let px = number => number.toFixed(2) + "px";
+
 /**
- * Represents the urlbar <textbox>.
- * Also forwards important textbox properties and methods.
+ * Implements the text input part of the address bar UI.
  */
 class UrlbarInput {
   /**
    * @param {object} options
    *   The initial options for UrlbarInput.
    * @param {object} options.textbox
-   *   The <textbox> element.
-   * @param {UrlbarController} [options.controller]
-   *   Optional fake controller to override the built-in UrlbarController.
-   *   Intended for use in unit tests only.
+   *   The container element.
    */
   constructor(options = {}) {
     this.textbox = options.textbox;
 
     this.window = this.textbox.ownerGlobal;
+    this.isPrivate = PrivateBrowsingUtils.isWindowPrivate(this.window);
     this.document = this.window.document;
-    this.window.addEventListener("unload", this);
 
     // Create the panel to contain results.
     this.textbox.appendChild(
       this.window.MozXULElement.parseXULToFragment(`
         <vbox class="urlbarView"
               role="group"
-              tooltip="aHTMLTooltip"
-              hidden="true">
+              tooltip="aHTMLTooltip">
           <html:div class="urlbarView-body-outer">
             <html:div class="urlbarView-body-inner">
               <html:div id="urlbar-results"
@@ -78,26 +84,24 @@ class UrlbarInput {
     );
     this.panel = this.textbox.querySelector(".urlbarView");
 
-    this.megabar = UrlbarPrefs.get("megabar");
-    if (this.megabar) {
-      this.textbox.classList.add("megabar");
+    this.searchButton = UrlbarPrefs.get("experimental.searchButton");
+    if (this.searchButton) {
+      this.textbox.classList.add("searchButton");
     }
 
-    this.controller =
-      options.controller ||
-      new UrlbarController({
-        browserWindow: this.window,
-        eventTelemetryCategory: options.eventTelemetryCategory,
-      });
-    this.controller.setInput(this);
+    this.controller = new UrlbarController({
+      input: this,
+      eventTelemetryCategory: options.eventTelemetryCategory,
+    });
     this.view = new UrlbarView(this);
     this.valueIsTyped = false;
-    this.isPrivate = PrivateBrowsingUtils.isWindowPrivate(this.window);
+    this.formHistoryName = DEFAULT_FORM_HISTORY_NAME;
     this.lastQueryContextPromise = Promise.resolve();
     this._actionOverrideKeyCount = 0;
     this._autofillPlaceholder = "";
     this._lastSearchString = "";
-    this._textValueOnLastSearch = "";
+    this._lastValidURLStr = "";
+    this._valueOnLastSearch = "";
     this._resultForCurrentValue = null;
     this._suppressStartQuery = false;
     this._suppressPrimaryAdjustment = false;
@@ -115,12 +119,7 @@ class UrlbarInput {
       "removeAttribute",
       "toggleAttribute",
     ];
-    const INPUT_METHODS = [
-      "addEventListener",
-      "blur",
-      "focus",
-      "removeEventListener",
-    ];
+    const INPUT_METHODS = ["addEventListener", "blur", "removeEventListener"];
     const READ_WRITE_PROPERTIES = [
       "placeholder",
       "readOnly",
@@ -153,9 +152,19 @@ class UrlbarInput {
     }
 
     this.inputField = this.querySelector("#urlbar-input");
-    this.dropmarker = this.querySelector(".urlbar-history-dropmarker");
     this._inputContainer = this.querySelector("#urlbar-input-container");
     this._identityBox = this.querySelector("#identity-box");
+    this._searchModeIndicator = this.querySelector(
+      "#urlbar-search-mode-indicator"
+    );
+    this._searchModeIndicatorTitle = this._searchModeIndicator.querySelector(
+      "#urlbar-search-mode-indicator-title"
+    );
+    this._searchModeIndicatorClose = this._searchModeIndicator.querySelector(
+      "#urlbar-search-mode-indicator-close"
+    );
+    this._searchModeLabel = this.querySelector("#urlbar-label-search-mode");
+    this._toolbar = this.textbox.closest("toolbar");
 
     XPCOMUtils.defineLazyGetter(this, "valueFormatter", () => {
       return new UrlbarValueFormatter(this);
@@ -175,7 +184,6 @@ class UrlbarInput {
     this.eventBufferer = new UrlbarEventBufferer(this);
 
     this._inputFieldEvents = [
-      "click",
       "compositionstart",
       "compositionend",
       "contextmenu",
@@ -187,7 +195,6 @@ class UrlbarInput {
       "input",
       "keydown",
       "keyup",
-      "mousedown",
       "mouseover",
       "overflow",
       "underflow",
@@ -199,98 +206,35 @@ class UrlbarInput {
       this.addEventListener(name, this);
     }
 
-    this.dropmarker.addEventListener("mousedown", this);
+    this.window.addEventListener("mousedown", this);
+    if (AppConstants.platform == "win") {
+      this.window.addEventListener("draggableregionleftmousedown", this);
+    }
+    this.textbox.addEventListener("mousedown", this);
+    this._inputContainer.addEventListener("click", this);
+
+    this._searchModeIndicatorClose.addEventListener("click", this);
 
     // This is used to detect commands launched from the panel, to avoid
     // recording abandonment events when the command causes a blur event.
     this.view.panel.addEventListener("command", this, true);
 
-    this._copyCutController = new CopyCutController(this);
-    this.inputField.controllers.insertControllerAt(0, this._copyCutController);
+    this.window.gBrowser.tabContainer.addEventListener("TabSelect", this);
 
+    this.window.addEventListener("customizationstarting", this);
+    this.window.addEventListener("aftercustomization", this);
+
+    this.updateLayoutBreakout();
+
+    this._initCopyCutController();
     this._initPasteAndGo();
 
     // Tracks IME composition.
     this._compositionState = UrlbarUtils.COMPOSITION.NONE;
     this._compositionClosedPopup = false;
 
-    this.editor.QueryInterface(Ci.nsIPlaintextEditor).newlineHandling =
-      Ci.nsIPlaintextEditor.eNewlinesStripSurroundingWhitespace;
-
-    this._setOpenViewOnFocus();
-    Services.prefs.addObserver("browser.urlbar.openViewOnFocus", this);
-  }
-
-  /**
-   * Uninitializes this input object, detaching it from the inputField.
-   */
-  uninit() {
-    this.window.removeEventListener("unload", this);
-    for (let name of this._inputFieldEvents) {
-      this.removeEventListener(name, this);
-    }
-    this.dropmarker.removeEventListener("mousedown", this);
-
-    this.view.panel.remove();
-    this.endLayoutBreakout(true);
-
-    // When uninit is called due to exiting the browser's customize mode,
-    // this.inputField.controllers is not the original list of controllers, and
-    // it doesn't contain CopyCutController.  That's why removeCopyCutController
-    // must be called when entering customize mode.  If uninit ends up getting
-    // called by something else though, try to remove the controller now.
-    try {
-      // If removeCopyCutController throws, then the controller isn't in the
-      // list of the input's controllers, and the consumer should have called
-      // removeCopyCutController at some earlier point, e.g., when customize
-      // mode was entered.
-      this.removeCopyCutController();
-    } catch (ex) {
-      Cu.reportError(
-        "Leaking UrlbarInput._copyCutController! You should have called removeCopyCutController!"
-      );
-    }
-
-    if (Object.getOwnPropertyDescriptor(this, "valueFormatter").get) {
-      this.valueFormatter.uninit();
-    }
-
-    Services.prefs.removeObserver("browser.urlbar.openViewOnFocus", this);
-
-    delete this.document;
-    delete this.window;
-    delete this.eventBufferer;
-    delete this.valueFormatter;
-    delete this.panel;
-    delete this.view;
-    delete this.controller;
-    delete this.textbox;
-    delete this.inputField;
-  }
-
-  /**
-   * Removes the CopyCutController from the input's controllers list.  This must
-   * be called when the browser's customize mode is entered.
-   */
-  removeCopyCutController() {
-    if (this._copyCutController) {
-      this.inputField.controllers.removeController(this._copyCutController);
-      delete this._copyCutController;
-    }
-  }
-
-  /**
-   * Shortens the given value, usually by removing http:// and trailing slashes,
-   * such that calling nsIURIFixup::createFixupURI with the result will produce
-   * the same URI.
-   *
-   * @param {string} val
-   *   The string to be trimmed if it appears to be URI
-   * @returns {string}
-   *   The trimmed string
-   */
-  trimValue(val) {
-    return UrlbarPrefs.get("trimURLs") ? BrowserUtils.trimURL(val) : val;
+    this.editor.newlineHandling =
+      Ci.nsIEditor.eNewlinesStripSurroundingWhitespace;
   }
 
   /**
@@ -303,12 +247,101 @@ class UrlbarInput {
     }
   }
 
+  focus() {
+    let beforeFocus = new CustomEvent("beforefocus", {
+      bubbles: true,
+      cancelable: true,
+    });
+    this.inputField.dispatchEvent(beforeFocus);
+    if (beforeFocus.defaultPrevented) {
+      return;
+    }
+
+    this.inputField.focus();
+  }
+
   select() {
+    let beforeSelect = new CustomEvent("beforeselect", {
+      bubbles: true,
+      cancelable: true,
+    });
+    this.inputField.dispatchEvent(beforeSelect);
+    if (beforeSelect.defaultPrevented) {
+      return;
+    }
+
     // See _on_select().  HTMLInputElement.select() dispatches a "select"
     // event but does not set the primary selection.
     this._suppressPrimaryAdjustment = true;
     this.inputField.select();
     this._suppressPrimaryAdjustment = false;
+  }
+
+  /**
+   * Sets the URI to display in the location bar.
+   *
+   * @param {nsIURI} [uri]
+   *        If this is unspecified, the current URI will be used.
+   * @param {boolean} [updatePopupNotifications]
+   *        Passed though to `setPageProxyState`.
+   */
+  setURI(uri, updatePopupNotifications) {
+    let value = this.window.gBrowser.userTypedValue;
+    let valid = false;
+
+    // Explicitly check for nulled out value. We don't want to reset the URL
+    // bar if the user has deleted the URL and we'd just put the same URL
+    // back. See bug 304198.
+    if (value === null) {
+      uri = uri || this.window.gBrowser.currentURI;
+      // Strip off usernames and passwords for the location bar
+      try {
+        uri = Services.io.createExposableURI(uri);
+      } catch (e) {}
+
+      // Replace initial page URIs with an empty string
+      // only if there's no opener (bug 370555).
+      if (
+        this.window.isInitialPage(uri) &&
+        BrowserUtils.checkEmptyPageOrigin(
+          this.window.gBrowser.selectedBrowser,
+          uri
+        )
+      ) {
+        value = "";
+      } else {
+        // We should deal with losslessDecodeURI throwing for exotic URIs
+        try {
+          value = losslessDecodeURI(uri);
+        } catch (ex) {
+          value = "about:blank";
+        }
+      }
+
+      valid =
+        !this.window.isBlankPageURL(uri.spec) || uri.schemeIs("moz-extension");
+    } else if (
+      this.window.isInitialPage(value) &&
+      BrowserUtils.checkEmptyPageOrigin(this.window.gBrowser.selectedBrowser)
+    ) {
+      value = "";
+      valid = true;
+    }
+
+    let isDifferentValidValue = valid && value != this.untrimmedValue;
+    this.value = value;
+    this.valueIsTyped = !valid;
+    this.removeAttribute("usertyping");
+    if (isDifferentValidValue) {
+      // The selection is enforced only for new values, to avoid overriding the
+      // cursor position when the user switches windows while typing.
+      this.selectionStart = this.selectionEnd = 0;
+    }
+
+    this.setPageProxyState(
+      valid ? "valid" : "invalid",
+      updatePopupNotifications
+    );
   }
 
   /**
@@ -331,24 +364,15 @@ class UrlbarInput {
     }
 
     try {
-      return Services.uriFixup.createExposableURI(uri);
+      return Services.io.createExposableURI(uri);
     } catch (ex) {}
 
     return uri;
   }
 
-  observe(subject, topic, data) {
-    switch (data) {
-      case "browser.urlbar.openViewOnFocus":
-        this._setOpenViewOnFocus();
-        break;
-    }
-  }
-
   /**
-   * Passes DOM events for the textbox to the _on_<event type> methods.
+   * Passes DOM events to the _on_<event type> methods.
    * @param {Event} event
-   *   DOM event from the <textbox>.
    */
   handleEvent(event) {
     let methodName = "_on_" + event.type;
@@ -376,6 +400,9 @@ class UrlbarInput {
       return;
     }
 
+    let element = this.view.selectedElement;
+    let result = this.view.getResultFromElement(element);
+
     // Determine whether to use the selected one-off search button.  In
     // one-off search buttons parlance, "selected" means that the button
     // has been navigated to via the keyboard.  So we want to use it if
@@ -393,22 +420,34 @@ class UrlbarInput {
         selectedOneOff.doCommand();
         return;
       }
+
+      // If the user clicked on a filter-style one-off, we want to avoid the
+      // handling below to execute a search. One-off code in this function can
+      // be simplified when update2 is on by default.
+      if (this.view.oneOffsRefresh && !result?.heuristic) {
+        selectedOneOff = null;
+      }
     }
 
-    // Use the selected result if we have one; this is usually the case
+    // Use the selected element if we have one; this is usually the case
     // when the view is open.
-    let result = this.view.selectedResult;
-    if (!selectedOneOff && result) {
-      this.pickResult(result, event);
+    let selectedPrivateResult =
+      result &&
+      result.type == UrlbarUtils.RESULT_TYPE.SEARCH &&
+      result.payload.inPrivateWindow;
+    let selectedPrivateEngineResult =
+      selectedPrivateResult && result.payload.isPrivateEngine;
+    if (element && (!selectedOneOff || selectedPrivateEngineResult)) {
+      this.pickElement(element, event);
       return;
     }
 
     let url;
-    let selType = this.controller.engagementEvent.typeFromResult(result);
-    let numChars = this.value.length;
+    let selType = this.controller.engagementEvent.typeFromElement(element);
+    let typedValue = this.value;
     if (selectedOneOff) {
       selType = "oneoff";
-      numChars = this._lastSearchString.length;
+      typedValue = this._lastSearchString;
       // If there's a selected one-off button then load a search using
       // the button's engine.
       result = this._resultForCurrentValue;
@@ -437,52 +476,123 @@ class UrlbarInput {
     );
 
     let where = openWhere || this._whereToOpen(event);
+    if (selectedPrivateResult) {
+      where = "window";
+      openParams.private = true;
+    }
     openParams.allowInheritPrincipal = false;
     url = this._maybeCanonizeURL(event, url) || url.trim();
 
     this.controller.engagementEvent.record(event, {
-      numChars,
-      selIndex: this.view.selectedIndex,
+      searchString: typedValue,
+      selIndex: this.view.selectedRowIndex,
       selType,
     });
 
+    let isValidUrl = false;
     try {
       new URL(url);
-    } catch (ex) {
-      let browser = this.window.gBrowser.selectedBrowser;
-      let lastLocationChange = browser.lastLocationChange;
+      isValidUrl = true;
+    } catch (ex) {}
+    if (isValidUrl) {
+      this._loadURL(url, where, openParams);
+      return;
+    }
 
-      UrlbarUtils.getShortcutOrURIAndPostData(url).then(data => {
+    // This is not a URL and there's no selected element, because likely the
+    // view is closed, or paste&go was used.
+    // We must act consistently here, having or not an open view should not
+    // make a difference if the search string is the same.
+
+    // If we have a result for the current value, we can just use it.
+    if (this._resultForCurrentValue) {
+      this.pickResult(this._resultForCurrentValue, event);
+      return;
+    }
+
+    // Otherwise, we must fetch the heuristic result for the current value.
+    // TODO (Bug 1604927): If the urlbar results are restricted to a specific
+    // engine, here we must search with that specific engine; indeed the
+    // docshell wouldn't know about our engine restriction.
+    // Also remember to invoke this._recordSearch, after replacing url with
+    // the appropriate engine submission url.
+    let browser = this.window.gBrowser.selectedBrowser;
+    let lastLocationChange = browser.lastLocationChange;
+    UrlbarUtils.getHeuristicResultFor(url)
+      .then(newResult => {
+        // Because this happens asynchronously, we must verify that the browser
+        // location did not change in the meanwhile.
         if (
           where != "current" ||
           browser.lastLocationChange == lastLocationChange
         ) {
-          openParams.postData = data.postData;
-          openParams.allowInheritPrincipal = data.mayInheritPrincipal;
-          this._loadURL(data.url, where, openParams, null, browser);
+          this.pickResult(newResult, event, null, browser);
+        }
+      })
+      .catch(ex => {
+        if (url) {
+          // Something went wrong, we should always have a heuristic result,
+          // otherwise it means we're not able to search at all, maybe because
+          // some parts of the profile are corrupt.
+          // The urlbar should still allow to search or visit the typed string,
+          // so that the user can look for help to resolve the problem.
+          let flags =
+            Ci.nsIURIFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS |
+            Ci.nsIURIFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
+          if (this.isPrivate) {
+            flags |= Ci.nsIURIFixup.FIXUP_FLAG_PRIVATE_CONTEXT;
+          }
+          let postData = {};
+          let uri = Services.uriFixup.createFixupURI(url, flags, postData);
+          if (
+            where != "current" ||
+            browser.lastLocationChange == lastLocationChange
+          ) {
+            openParams.postData = postData.value;
+            this._loadURL(uri.spec, where, openParams, null, browser);
+          }
         }
       });
-      return;
-    }
-
-    this._loadURL(url, where, openParams);
+    // Don't add further handling here, the catch above is our last resort.
   }
 
   handleRevert() {
     this.window.gBrowser.userTypedValue = null;
-    this.window.URLBarSetURI(null, true);
+    this.setURI(null, true);
+    this.setSearchMode(null);
     if (this.value && this.focused) {
       this.select();
     }
   }
 
   /**
-   * Called by the view when a result is picked.
+   * Called when an element of the view is picked.
+   *
+   * @param {Element} element The element that was picked.
+   * @param {Event} event The event that picked the element.
+   */
+  pickElement(element, event) {
+    let result = this.view.getResultFromElement(element);
+    if (!result) {
+      return;
+    }
+    this.pickResult(result, event, element);
+  }
+
+  /**
+   * Called when a result is picked.
    *
    * @param {UrlbarResult} result The result that was picked.
    * @param {Event} event The event that picked the result.
+   * @param {DOMElement} element the picked view element, if available.
+   * @param {object} browser The browser to use for the load.
    */
-  pickResult(result, event) {
+  pickResult(
+    result,
+    event,
+    element = null,
+    browser = this.window.gBrowser.selectedBrowser
+  ) {
     let originalUntrimmedValue = this.untrimmedValue;
     let isCanonized = this.setValueFromResult(result, event);
     let where = this._whereToOpen(event);
@@ -490,20 +600,26 @@ class UrlbarInput {
       allowInheritPrincipal: false,
     };
 
-    let selIndex = this.view.selectedIndex;
+    let selIndex = result.rowIndex;
     if (!result.payload.keywordOffer) {
-      this.view.close();
+      this.view.close(/* elementPicked */ true);
     }
 
     this.controller.recordSelectedResult(event, result);
+    if (result.payload.overriddenSearchTopSite) {
+      TopSiteAttribution.makeRequest({
+        targetURL: result.payload.url,
+        source: "urlbar",
+      });
+    }
 
     if (isCanonized) {
       this.controller.engagementEvent.record(event, {
-        numChars: this._lastSearchString.length,
+        searchString: this._lastSearchString,
         selIndex,
         selType: "canonized",
       });
-      this._loadURL(this.value, where, openParams);
+      this._loadURL(this.value, where, openParams, browser);
       return;
     }
 
@@ -560,7 +676,7 @@ class UrlbarInput {
         };
 
         this.controller.engagementEvent.record(event, {
-          numChars: this._lastSearchString.length,
+          searchString: this._lastSearchString,
           selIndex,
           selType: "tabswitch",
         });
@@ -583,7 +699,7 @@ class UrlbarInput {
           this.selectionStart = this.selectionEnd = this.value.length;
 
           this.controller.engagementEvent.record(event, {
-            numChars: this._lastSearchString.length,
+            searchString: this._lastSearchString,
             selIndex,
             selType: "keywordoffer",
           });
@@ -598,45 +714,114 @@ class UrlbarInput {
 
         if (
           result.heuristic &&
+          // If we asked the DNS earlier, avoid the post-facto check.
+          !UrlbarPrefs.get("browser.fixup.dns_first_for_single_words") &&
+          // TODO (bug 1642623): for now there is no smart heuristic to skip the
+          // DNS lookup, so any value above 0 will run it.
+          UrlbarPrefs.get("dnsResolveSingleWordsAfterSearch") > 0 &&
+          this.window.gKeywordURIFixup &&
           UrlbarUtils.looksLikeSingleWordHost(originalUntrimmedValue)
         ) {
-          // The docshell when fixes a single word to a search, also checks the
-          // dns and prompts the user whether they wanted to rather visit that
-          // as a host. On a positive answer, it adds to the domains whitelist
-          // that we use to make decisions. Because here we are directly asking
-          // for a search, bypassing the docshell, we must do it here.
-          // See URIFixupChild.jsm and keyword-uri-fixup.
-          let flags =
-            Ci.nsIURIFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS |
-            Ci.nsIURIFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
-          // Don't interrupt the load action in case of errors.
-          try {
-            let fixupInfo = Services.uriFixup.getFixupURIInfo(
-              originalUntrimmedValue.trim(),
-              flags
-            );
-            this.window.gKeywordURIFixup({
-              target: this.window.gBrowser.selectedBrowser,
-              data: fixupInfo,
-            });
-          } catch (ex) {
-            Cu.reportError(
-              `An error occured while trying to fixup "${originalUntrimmedValue.trim()}": ${ex}`
+          // When fixing a single word to a search, the docShell would also
+          // query the DNS and if resolved ask the user whether they would
+          // rather visit that as a host. On a positive answer, it adds the host
+          // to the list that we use to make decisions.
+          // Because we are directly asking for a search here, bypassing the
+          // docShell, we need to do the same ourselves.
+          // See also URIFixupChild.jsm and keyword-uri-fixup.
+          let fixupInfo = this._getURIFixupInfo(originalUntrimmedValue.trim());
+          if (fixupInfo) {
+            this.window.gKeywordURIFixup.check(
+              this.window.gBrowser.selectedBrowser,
+              fixupInfo
             );
           }
         }
 
+        if (result.payload.inPrivateWindow) {
+          where = "window";
+          openParams.private = true;
+        }
+
         const actionDetails = {
           isSuggestion: !!result.payload.suggestion,
+          isFormHistory: result.source == UrlbarUtils.RESULT_SOURCE.HISTORY,
           alias: result.payload.keyword,
         };
         const engine = Services.search.getEngineByName(result.payload.engine);
         this._recordSearch(engine, event, actionDetails);
+
+        // Add the search to form history.  This also updates any existing form
+        // history for the search.
+        // If the user types a search engine alias without a search string,
+        // we have an empty search string and we can't bump it.
+        let value = result.payload.suggestion || result.payload.query;
+        if (!this.isPrivate && !result.payload.inPrivateWindow && value) {
+          FormHistory.update(
+            {
+              op: "bump",
+              fieldname: this.formHistoryName,
+              value,
+            },
+            {
+              handleError(error) {
+                Cu.reportError(`Error saving form history: ${error}`);
+              },
+            }
+          );
+        }
         break;
+      }
+      case UrlbarUtils.RESULT_TYPE.TIP: {
+        let scalarName;
+        if (element.classList.contains("urlbarView-tip-help")) {
+          url = result.payload.helpUrl;
+          if (!url) {
+            Cu.reportError("helpUrl not specified");
+            return;
+          }
+          scalarName = `${result.payload.type}-help`;
+        } else {
+          scalarName = `${result.payload.type}-picked`;
+        }
+        Services.telemetry.keyedScalarAdd("urlbar.tips", scalarName, 1);
+        if (!url) {
+          this.handleRevert();
+          this.controller.engagementEvent.record(event, {
+            searchString: this._lastSearchString,
+            selIndex,
+            selType: "tip",
+          });
+          let provider = UrlbarProvidersManager.getProvider(
+            result.providerName
+          );
+          if (!provider) {
+            Cu.reportError(`Provider not found: ${result.providerName}`);
+            return;
+          }
+          provider.tryMethod("pickResult", result, element);
+          return;
+        }
+        break;
+      }
+      case UrlbarUtils.RESULT_TYPE.DYNAMIC: {
+        this.handleRevert();
+        this.controller.engagementEvent.record(event, {
+          selIndex,
+          numChars: this._lastSearchString.length,
+          selType: this.controller.engagementEvent.typeFromElement(element),
+        });
+        let provider = UrlbarProvidersManager.getProvider(result.providerName);
+        if (!provider) {
+          Cu.reportError(`Provider not found: ${result.providerName}`);
+          return;
+        }
+        provider.tryMethod("pickResult", result, element);
+        return;
       }
       case UrlbarUtils.RESULT_TYPE.OMNIBOX: {
         this.controller.engagementEvent.record(event, {
-          numChars: this._lastSearchString.length,
+          searchString: this._lastSearchString,
           selIndex,
           selType: "extension",
         });
@@ -671,15 +856,21 @@ class UrlbarInput {
     }
 
     this.controller.engagementEvent.record(event, {
-      numChars: this._lastSearchString.length,
+      searchString: this._lastSearchString,
       selIndex,
-      selType: this.controller.engagementEvent.typeFromResult(result),
+      selType: this.controller.engagementEvent.typeFromElement(element),
     });
 
-    this._loadURL(url, where, openParams, {
-      source: result.source,
-      type: result.type,
-    });
+    this._loadURL(
+      url,
+      where,
+      openParams,
+      {
+        source: result.source,
+        type: result.type,
+      },
+      browser
+    );
   }
 
   /**
@@ -695,11 +886,18 @@ class UrlbarInput {
   setValueFromResult(result = null, event = null) {
     let canonizedUrl;
 
+    // Usually this is set by a previous input event, but in certain cases, like
+    // when opening Top Sites on a loaded page, it wouldn't happen. To avoid
+    // confusing the user, we always enforce it when a result changes our value.
+    this.setPageProxyState("invalid", true);
+
     if (!result) {
-      // This usually happens when there's no selected results (the user cycles
-      // through results and there was no heuristic), and we reset the input
-      // value to the previous text value.
-      this.value = this._textValueOnLastSearch;
+      // This happens when there's no selection, for example when moving to the
+      // one-offs search settings button, or to the input field when Top Sites
+      // are shown; then we must reset the input value.
+      // Note that for Top Sites the last search string would be empty, thus we
+      // must restore the last text value.
+      this.value = this._lastSearchString || this._valueOnLastSearch;
     } else {
       // For autofilled results, the value that should be canonized is not the
       // autofilled value but the value that the user typed.
@@ -713,13 +911,26 @@ class UrlbarInput {
         let { value, selectionStart, selectionEnd } = result.autofill;
         this._autofillValue(value, selectionStart, selectionEnd);
       } else {
-        this.value = this._getValueFromResult(result);
+        // If the url is trimmed but it's invalid (for example it has an unknown
+        // single word host, or an unknown domain suffix), trimming
+        // it would end up executing a search instead of visiting it.
+        let allowTrim = true;
+        if (
+          result.type == UrlbarUtils.RESULT_TYPE.URL &&
+          UrlbarPrefs.get("trimURLs") &&
+          result.payload.url.startsWith(BrowserUtils.trimURLProtocol)
+        ) {
+          let fixupInfo = this._getURIFixupInfo(
+            BrowserUtils.trimURL(result.payload.url)
+          );
+          if (fixupInfo?.keywordAsSent) {
+            allowTrim = false;
+          }
+        }
+        this._setValue(this._getValueFromResult(result), allowTrim);
       }
     }
     this._resultForCurrentValue = result;
-
-    // Also update userTypedValue. See bug 287996.
-    this.window.gBrowser.userTypedValue = this.value;
 
     // The value setter clobbers the actiontype attribute, so update this after
     // that.
@@ -762,6 +973,7 @@ class UrlbarInput {
     // selection and it's the autofill placeholder value, then do autofill.
     if (
       !isPlaceholderSelected &&
+      !this._autofillIgnoresSelection &&
       (this.selectionStart != this.selectionEnd ||
         this.selectionEnd != this._lastSearchString.length)
     ) {
@@ -772,10 +984,39 @@ class UrlbarInput {
   }
 
   /**
+   * Invoked by the view when the first result is received.
+   * @param {UrlbarResult} firstResult The first result received.
+   */
+  onFirstResult(firstResult) {
+    // To prevent selection flickering, we apply autofill on input through a
+    // placeholder, without waiting for results. But, if the first result is
+    // not an autofill one, the autofill prediction was wrong and we should
+    // restore the original user typed string.
+    if (
+      this._autofillPlaceholder &&
+      !firstResult.autofill &&
+      // Avoid clobbering added spaces (for token aliases, for example).
+      !this.value.endsWith(" ")
+    ) {
+      this._setValue(this.window.gBrowser.userTypedValue, false);
+    }
+
+    // Heuristic tip results do not set the Urlbar value.
+    if (firstResult.type == UrlbarUtils.RESULT_TYPE.TIP) {
+      this._resultForCurrentValue = null;
+    } else if (firstResult.heuristic) {
+      this._resultForCurrentValue = firstResult;
+    }
+  }
+
+  /**
    * Starts a query based on the current input value.
    *
    * @param {boolean} [options.allowAutofill]
    *   Whether or not to allow providers to include autofill results.
+   * @param {boolean} [options.autofillIgnoresSelection]
+   *   Normally we autofill only if the cursor is at the end of the string,
+   *   if this is set we'll autofill regardless of selection.
    * @param {string} [options.searchString]
    *   The search string.  If not given, the current input value is used.
    *   Otherwise, the current input value must start with this value.
@@ -792,6 +1033,7 @@ class UrlbarInput {
    */
   startQuery({
     allowAutofill = true,
+    autofillIgnoresSelection = false,
     searchString = null,
     resetSearchState = true,
     event = null,
@@ -811,27 +1053,43 @@ class UrlbarInput {
       return;
     }
 
+    this._autofillIgnoresSelection = autofillIgnoresSelection;
     if (resetSearchState) {
       this._resetSearchState();
     }
 
     this._lastSearchString = searchString;
-    this._textValueOnLastSearch = this.value;
+    this._valueOnLastSearch = this.value;
+
+    let options = {
+      allowAutofill,
+      isPrivate: this.isPrivate,
+      maxResults: UrlbarPrefs.get("maxRichResults"),
+      searchString,
+      userContextId: this.window.gBrowser.selectedBrowser.getAttribute(
+        "usercontextid"
+      ),
+      currentPage: this.window.gBrowser.currentURI.spec,
+      formHistoryName: this.formHistoryName,
+      allowSearchSuggestions:
+        !event ||
+        !UrlbarUtils.isPasteEvent(event) ||
+        !event.data ||
+        event.data.length <= UrlbarPrefs.get("maxCharsForSearchSuggestions"),
+    };
+
+    if (this.searchMode) {
+      options.sources = [this.searchMode.source];
+      if (this.searchMode.engineName) {
+        options.engineName = this.searchMode.engineName;
+      }
+    }
 
     // TODO (Bug 1522902): This promise is necessary for tests, because some
     // tests are not listening for completion when starting a query through
     // other methods than startQuery (input events for example).
     this.lastQueryContextPromise = this.controller.startQuery(
-      new UrlbarQueryContext({
-        allowAutofill,
-        isPrivate: this.isPrivate,
-        maxResults: UrlbarPrefs.get("maxRichResults"),
-        muxer: "UnifiedComplete",
-        searchString,
-        userContextId: this.window.gBrowser.selectedBrowser.getAttribute(
-          "usercontextid"
-        ),
-      })
+      new UrlbarQueryContext(options)
     );
   }
 
@@ -841,13 +1099,19 @@ class UrlbarInput {
    * @param {string} value
    *   The input's value will be set to this value, and the search will
    *   use it as its query.
+   * @param {boolean} [options.focus]
+   *   If true, the urlbar will be focused.  If false, the focus will remain
+   *   unchanged.
    */
-  search(value) {
-    this.window.focusAndSelectUrlBar();
+  search(value, { focus = true } = {}) {
+    if (focus) {
+      this.focus();
+    }
 
     // If the value is a restricted token, append a space.
     if (Object.values(UrlbarTokenizer.RESTRICT).includes(value)) {
       this.inputField.value = value + " ";
+      this._revertOnBlurValue = this.value;
     } else {
       this.inputField.value = value;
     }
@@ -872,16 +1136,57 @@ class UrlbarInput {
    * This is used by Activity Stream and about:privatebrowsing for search hand-off.
    */
   setHiddenFocus() {
-    this.textbox.classList.add("hidden-focus");
-    this.focus();
+    this._hideFocus = true;
+    if (this.focused) {
+      this.removeAttribute("focused");
+    } else {
+      this.focus();
+    }
   }
 
   /**
-   * Remove the hidden focus styles.
+   * Restore focus styles.
    * This is used by Activity Stream and about:privatebrowsing for search hand-off.
    */
   removeHiddenFocus() {
-    this.textbox.classList.remove("hidden-focus");
+    this._hideFocus = false;
+    if (this.focused) {
+      this.setAttribute("focused", "true");
+      this.startLayoutExtend();
+    }
+  }
+
+  /**
+   * Sets search mode and shows the search mode indicator.
+   *
+   * @param {nsISearchEngine | string} engineOrMode
+   *   Either the search engine to restrict to or a mode described by a string.
+   *   Exits search mode if null.
+   */
+  setSearchMode(engineOrMode) {
+    if (!UrlbarPrefs.get("update2")) {
+      return;
+    }
+
+    let indicatorTitle;
+    if (!engineOrMode) {
+      this.searchMode = null;
+      this.removeAttribute("searchmode");
+    } else if (
+      engineOrMode instanceof Ci.nsISearchEngine ||
+      engineOrMode instanceof SearchEngine
+    ) {
+      this.searchMode = {
+        source: UrlbarUtils.RESULT_SOURCE.SEARCH,
+        engineName: engineOrMode.name,
+      };
+      indicatorTitle = engineOrMode.name;
+      this.toggleAttribute("searchmode", true);
+    } else {
+      // TODO: Support non-RESULT_SOURCE.SEARCH search modes (bug 1647896).
+    }
+    this._searchModeIndicatorTitle.textContent = indicatorTitle;
+    this._searchModeLabel.textContent = indicatorTitle;
   }
 
   // Getters and Setters below.
@@ -891,7 +1196,7 @@ class UrlbarInput {
   }
 
   get focused() {
-    return this.getAttribute("focused") == "true";
+    return this.document.activeElement == this.inputField;
   }
 
   get goButton() {
@@ -910,105 +1215,226 @@ class UrlbarInput {
     return this._setValue(val, true);
   }
 
-  get openViewOnFocusForCurrentTab() {
-    return (
-      this._openViewOnFocus &&
-      !["about:newtab", "about:home"].includes(
-        this.window.gBrowser.currentURI.spec
-      ) &&
-      !this.isPrivate
-    );
+  get lastSearchString() {
+    return this._lastSearchString;
   }
 
-  startLayoutBreakout() {
+  async updateLayoutBreakout() {
+    if (!this._toolbar) {
+      // Expanding requires a parent toolbar.
+      return;
+    }
+    if (this.document.fullscreenElement) {
+      // Toolbars are hidden in DOM fullscreen mode, so we can't get proper
+      // layout information and need to retry after leaving that mode.
+      this.window.addEventListener(
+        "fullscreen",
+        () => {
+          this.updateLayoutBreakout();
+        },
+        { once: true }
+      );
+      return;
+    }
+    await this._updateLayoutBreakoutDimensions();
+    this.startLayoutExtend();
+  }
+
+  startLayoutExtend() {
+    // Do not expand if:
+    // The Urlbar does not support being expanded or it is already expanded
     if (
-      this._layoutBreakoutPlaceholder ||
-      !this.megabar ||
-      !(
-        (this.focused && !this.textbox.classList.contains("hidden-focus")) ||
-        this.view.isOpen
-      )
+      !this.hasAttribute("breakout") ||
+      this.hasAttribute("breakout-extend")
+    ) {
+      return;
+    }
+    // The Urlbar is unfocused or reduce motion is on and the view is closed.
+    // gReduceMotion is accurate in most cases, but it is automatically set to
+    // true when windows are loaded. We check `prefers-reduced-motion: reduce`
+    // to ensure the user actually set prefers-reduced-motion. We check
+    // gReduceMotion first to save work in the common case of having
+    // prefers-reduced-motion disabled.
+    if (
+      !this.view.isOpen &&
+      (this.getAttribute("focused") != "true" ||
+        (this.window.gReduceMotion &&
+          this.window.matchMedia("(prefers-reduced-motion: reduce)").matches))
     ) {
       return;
     }
 
-    let getBoundsWithoutFlushing = element =>
-      this.window.windowUtils.getBoundsWithoutFlushing(element);
-    let px = number => number.toFixed(2) + "px";
+    if (UrlbarPrefs.get("disableExtendForTests")) {
+      this.setAttribute("breakout-extend-disabled", "true");
+      return;
+    }
+    this.removeAttribute("breakout-extend-disabled");
 
-    let inputRect = getBoundsWithoutFlushing(this.textbox);
-    if (inputRect.width == 0) {
-      this.window.requestAnimationFrame(() => {
-        this.startLayoutBreakout();
+    this._toolbar.setAttribute("urlbar-exceeds-toolbar-bounds", "true");
+    this.setAttribute("breakout-extend", "true");
+
+    // Enable the animation only after the first extend call to ensure it
+    // doesn't run when opening a new window.
+    if (!this.hasAttribute("breakout-extend-animate")) {
+      this.window.promiseDocumentFlushed(() => {
+        this.window.requestAnimationFrame(() => {
+          this.setAttribute("breakout-extend-animate", "true");
+        });
       });
-      return;
     }
-
-    this.textbox.style.setProperty("--urlbar-width", px(inputRect.width));
-    this.textbox.style.setProperty("--urlbar-height", px(inputRect.height));
-
-    let toolbarHeight = getBoundsWithoutFlushing(
-      this.textbox.closest("toolbar")
-    ).height;
-    this.textbox.style.setProperty(
-      "--urlbar-toolbar-height",
-      px(toolbarHeight)
-    );
-
-    this._layoutBreakoutPlaceholder = this.document.createXULElement(
-      this.textbox.nodeName
-    );
-    this._layoutBreakoutPlaceholder.setAttribute(
-      "flex",
-      this.textbox.getAttribute("flex")
-    );
-    this._layoutBreakoutPlaceholder.style.height = px(inputRect.height);
-    this.textbox.before(this._layoutBreakoutPlaceholder);
-    this.setAttribute("breakout", "true");
   }
 
-  endLayoutBreakout(force) {
+  endLayoutExtend() {
+    // If reduce motion is enabled, we want to collapse the Urlbar here so the
+    // user sees only sees two states: not expanded, and expanded with the view
+    // open.
     if (
-      !force &&
-      (this.view.isOpen ||
-        (this.focused && !this.textbox.classList.contains("hidden-focus")))
+      !this.hasAttribute("breakout-extend") ||
+      this.view.isOpen ||
+      (this.getAttribute("focused") == "true" &&
+        (!this.window.gReduceMotion ||
+          !this.window.matchMedia("(prefers-reduced-motion: reduce)").matches))
     ) {
       return;
     }
-    this.removeAttribute("breakout");
-    if (this._layoutBreakoutPlaceholder) {
-      this._layoutBreakoutPlaceholder.remove();
-      this._layoutBreakoutPlaceholder = null;
-    }
+    this.removeAttribute("breakout-extend");
+    this._toolbar.removeAttribute("urlbar-exceeds-toolbar-bounds");
   }
 
-  setPageProxyState(state) {
+  /**
+   * Updates the user interface to indicate whether the URI in the address bar
+   * is different than the loaded page, because it's being edited or because a
+   * search result is currently selected and is displayed in the location bar.
+   *
+   * @param {string} state
+   *        The string "valid" indicates that the security indicators and other
+   *        related user interface elments should be shown because the URI in
+   *        the location bar matches the loaded page. The string "invalid"
+   *        indicates that the URI in the location bar is different than the
+   *        loaded page.
+   * @param {boolean} [updatePopupNotifications]
+   *        Indicates whether we should update the PopupNotifications
+   *        visibility due to this change, otherwise avoid doing so as it is
+   *        being handled somewhere else.
+   */
+  setPageProxyState(state, updatePopupNotifications) {
+    let prevState = this.getAttribute("pageproxystate");
+
     this.setAttribute("pageproxystate", state);
     this._inputContainer.setAttribute("pageproxystate", state);
     this._identityBox.setAttribute("pageproxystate", state);
+
+    if (state == "valid") {
+      this._lastValidURLStr = this.value;
+    }
+
+    if (
+      updatePopupNotifications &&
+      prevState != state &&
+      this.window.UpdatePopupNotificationsVisibility
+    ) {
+      this.window.UpdatePopupNotificationsVisibility();
+    }
+  }
+
+  /**
+   * When switching tabs quickly, TabSelect sometimes happens before
+   * _adjustFocusAfterTabSwitch and due to the focus still being on the old
+   * tab, we end up flickering the results pane briefly.
+   */
+  afterTabSwitchFocusChange() {
+    this._gotFocusChange = true;
+    this._afterTabSelectAndFocusChange();
   }
 
   // Private methods below.
 
-  _setOpenViewOnFocus() {
-    // FIXME: Not using UrlbarPrefs because its pref observer may run after
-    // this call, so we'd get the previous openViewOnFocus value here. This
-    // can be cleaned up after bug 1560013.
-    this._openViewOnFocus = Services.prefs.getBoolPref(
-      "browser.urlbar.openViewOnFocus"
-    );
-    this.dropmarker.hidden = this._openViewOnFocus;
+  _getURIFixupInfo(searchString) {
+    let flags =
+      Ci.nsIURIFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS |
+      Ci.nsIURIFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP;
+    if (this.isPrivate) {
+      flags |= Ci.nsIURIFixup.FIXUP_FLAG_PRIVATE_CONTEXT;
+    }
+    try {
+      return Services.uriFixup.getFixupURIInfo(searchString, flags);
+    } catch (ex) {
+      Cu.reportError(
+        `An error occured while trying to fixup "${searchString}": ${ex}`
+      );
+    }
+    return null;
+  }
+
+  _afterTabSelectAndFocusChange() {
+    // We must have seen both events to proceed safely.
+    if (!this._gotFocusChange || !this._gotTabSelect) {
+      return;
+    }
+    this._gotFocusChange = this._gotTabSelect = false;
+
+    this._resetSearchState();
+
+    // Switching tabs doesn't always change urlbar focus, so we must try to
+    // reopen here too, not just on focus.
+    // We don't use the original TabSelect event because caching it causes
+    // leaks on MacOS.
+    if (this.view.autoOpen({ event: new CustomEvent("tabswitch") })) {
+      return;
+    }
+    // The input may retain focus when switching tabs in which case we
+    // need to close the view explicitly.
+    this.view.close();
+  }
+
+  async _updateLayoutBreakoutDimensions() {
+    // When this method gets called a second time before the first call
+    // finishes, we need to disregard the first one.
+    let updateKey = {};
+    this._layoutBreakoutUpdateKey = updateKey;
+
+    this.removeAttribute("breakout");
+    this.textbox.parentNode.removeAttribute("breakout");
+
+    await this.window.promiseDocumentFlushed(() => {});
+    await new Promise(resolve => {
+      this.window.requestAnimationFrame(() => {
+        if (this._layoutBreakoutUpdateKey != updateKey) {
+          return;
+        }
+
+        this.textbox.parentNode.style.setProperty(
+          "--urlbar-container-height",
+          px(getBoundsWithoutFlushing(this.textbox.parentNode).height)
+        );
+        this.textbox.style.setProperty(
+          "--urlbar-height",
+          px(getBoundsWithoutFlushing(this.textbox).height)
+        );
+        this.textbox.style.setProperty(
+          "--urlbar-toolbar-height",
+          px(getBoundsWithoutFlushing(this._toolbar).height)
+        );
+
+        this.setAttribute("breakout", "true");
+        this.textbox.parentNode.setAttribute("breakout", "true");
+
+        resolve();
+      });
+    });
   }
 
   _setValue(val, allowTrim) {
-    this._untrimmedValue = val;
-
+    // Don't expose internal about:reader URLs to the user.
     let originalUrl = ReaderMode.getOriginalUrlObjectForDisplay(val);
     if (originalUrl) {
       val = originalUrl.displaySpec;
     }
+    this._untrimmedValue = val;
 
-    val = allowTrim ? this.trimValue(val) : val;
+    if (allowTrim) {
+      val = this._trimValue(val);
+    }
 
     this.valueIsTyped = false;
     this._resultForCurrentValue = null;
@@ -1040,7 +1466,7 @@ class UrlbarInput {
     try {
       let uri = Services.io.newURI(result.payload.url);
       if (uri) {
-        return this.window.losslessDecodeURI(uri);
+        return losslessDecodeURI(uri);
       }
     } catch (ex) {}
 
@@ -1097,20 +1523,55 @@ class UrlbarInput {
     return allowAutofill;
   }
 
+  _checkForRtlText(value) {
+    let directionality = this.window.windowUtils.getDirectionFromText(value);
+    if (directionality == this.window.windowUtils.DIRECTION_RTL) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Invoked on overflow/underflow/scrollend events to update attributes
+   * related to the input text directionality. Overflow fade masks use these
+   * attributes to appear at the proper side of the urlbar.
+   */
   _updateTextOverflow() {
     if (!this._overflowing) {
       this.removeAttribute("textoverflow");
       return;
     }
 
+    let isRTL =
+      this.getAttribute("domaindir") != "ltr" &&
+      this._checkForRtlText(this.value);
+
     this.window.promiseDocumentFlushed(() => {
-      // Check overflow again to ensure it didn't change in the meantime.
+      // Check overflow again to ensure it didn't change in the meanwhile.
       let input = this.inputField;
       if (input && this._overflowing) {
-        let side =
-          input.scrollLeft && input.scrollLeft == input.scrollLeftMax
-            ? "start"
-            : "end";
+        // Normally we would overflow at the final side of text direction,
+        // though RTL domains may cause us to overflow at the opposite side.
+        // This happens dynamically as a consequence of the input field contents
+        // and the call to _ensureFormattedHostVisible, this code only reports
+        // the final state of all that scrolling into an attribute, because
+        // there's no other way to capture this in css.
+        // Note it's also possible to scroll an unfocused input field using
+        // SHIFT + mousewheel on Windows, or with just the mousewheel / touchpad
+        // scroll (without modifiers) on Mac.
+        let side = "both";
+        if (isRTL) {
+          if (input.scrollLeft == 0) {
+            side = "left";
+          } else if (input.scrollLeft == input.scrollLeftMin) {
+            side = "right";
+          }
+        } else if (input.scrollLeft == 0) {
+          side = "right";
+        } else if (input.scrollLeft == input.scrollLeftMax) {
+          side = "left";
+        }
+
         this.window.requestAnimationFrame(() => {
           // And check once again, since we might have stopped overflowing
           // since the promiseDocumentFlushed callback fired.
@@ -1162,30 +1623,20 @@ class UrlbarInput {
     if (this.getAttribute("pageproxystate") == "valid") {
       uri = this.window.gBrowser.currentURI;
     } else {
-      // We're dealing with an autocompleted value.
-      if (!this._resultForCurrentValue) {
-        throw new Error(
-          "UrlbarInput: Should have a UrlbarResult since " +
-            "pageproxystate != 'valid' and valueIsTyped == false"
-        );
-      }
-      let resultURL = this._resultForCurrentValue.payload.url;
-      if (!resultURL) {
-        return selectedVal;
-      }
-
+      // The value could be:
+      // 1. a trimmed url, set by selecting a result
+      // 2. a search string set by selecting a result
+      // 3. a url that was confirmed but didn't finish loading yet
+      // If it's an url the untrimmedValue should resolve to a valid URI,
+      // otherwise it's a search string that should be copied as-is.
       try {
-        uri = Services.uriFixup.createFixupURI(
-          resultURL,
-          Services.uriFixup.FIXUP_FLAG_NONE
-        );
-      } catch (e) {}
-      if (!uri) {
+        uri = Services.io.newURI(this._untrimmedValue);
+      } catch (ex) {
         return selectedVal;
       }
     }
-
     uri = this.makeURIReadable(uri);
+    let displaySpec = uri.displaySpec;
 
     // If the entire URL is selected, just use the actual loaded URI,
     // unless we want a decoded URI, or it's a data: or javascript: URI,
@@ -1196,19 +1647,17 @@ class UrlbarInput {
       !uri.schemeIs("data") &&
       !UrlbarPrefs.get("decodeURLsOnCopy")
     ) {
-      return uri.displaySpec;
+      return displaySpec;
     }
 
     // Just the beginning of the URL is selected, or we want a decoded
     // url. First check for a trimmed value.
-    let spec = uri.displaySpec;
-    let trimmedSpec = this.trimValue(spec);
-    if (spec != trimmedSpec) {
-      // Prepend the portion that trimValue removed from the beginning.
-      // This assumes trimValue will only truncate the URL at
-      // the beginning or end (or both).
-      let trimmedSegments = spec.split(trimmedSpec);
-      selectedVal = trimmedSegments[0] + selectedVal;
+
+    if (
+      !selectedVal.startsWith(BrowserUtils.trimURLProtocol) &&
+      displaySpec != this._trimValue(displaySpec)
+    ) {
+      selectedVal = BrowserUtils.trimURLProtocol + selectedVal;
     }
 
     return selectedVal;
@@ -1258,8 +1707,10 @@ class UrlbarInput {
    *   The details associated with this search query.
    * @param {boolean} searchActionDetails.isSuggestion
    *   True if this query was initiated from a suggestion from the search engine.
-   * @param {alias} searchActionDetails.alias
+   * @param {boolean} searchActionDetails.alias
    *   True if this query was initiated via a search alias.
+   * @param {boolean} searchActionDetails.isFormHistory
+   *   True if this query was initiated from a form history result.
    */
   _recordSearch(engine, event, searchActionDetails = {}) {
     const isOneOff = this.view.oneOffSearchButtons.maybeRecordTelemetry(event);
@@ -1280,6 +1731,18 @@ class UrlbarInput {
       "urlbar",
       details
     );
+  }
+
+  /**
+   * Shortens the given value, usually by removing http:// and trailing slashes.
+   *
+   * @param {string} val
+   *   The string to be trimmed if it appears to be URI
+   * @returns {string}
+   *   The trimmed string
+   */
+  _trimValue(val) {
+    return UrlbarPrefs.get("trimURLs") ? BrowserUtils.trimURL(val) : val;
   }
 
   /**
@@ -1365,9 +1828,9 @@ class UrlbarInput {
    * @param {nsIInputStream} [params.postData]
    *   The POST data associated with a search submission.
    * @param {boolean} [params.allowInheritPrincipal]
-   *   If the principal may be inherited
-   * @param {object} [result]
-   *   Details of the selected result, if any
+   *   Whether the principal can be inherited.
+   * @param {object} [resultDetails]
+   *   Details of the selected result, if any.
    * @param {UrlbarUtils.RESULT_TYPE} [result.type]
    *   Details of the result type, if any.
    * @param {UrlbarUtils.RESULT_SOURCE} [result.source]
@@ -1378,7 +1841,7 @@ class UrlbarInput {
     url,
     openUILinkWhere,
     params,
-    result = {},
+    resultDetails = null,
     browser = this.window.gBrowser.selectedBrowser
   ) {
     // No point in setting these because we'll handleRevert() a few rows below.
@@ -1403,14 +1866,24 @@ class UrlbarInput {
       Cu.reportError(ex);
     }
 
-    // Reset DOS mitigations for the basic auth prompt.
     // TODO: When bug 1498553 is resolved, we should be able to
     // remove the !triggeringPrincipal condition here.
     if (
       !params.triggeringPrincipal ||
       params.triggeringPrincipal.isSystemPrincipal
     ) {
+      // Reset DOS mitigations for the basic auth prompt.
       delete browser.authPromptAbuseCounter;
+
+      // Reset temporary permissions on the current tab if the user reloads
+      // the tab via the urlbar.
+      if (
+        openUILinkWhere == "current" &&
+        browser.currentURI &&
+        url === browser.currentURI.spec
+      ) {
+        this.window.SitePermissions.clearTemporaryPermissions(browser);
+      }
     }
 
     params.allowThirdPartyFixup = true;
@@ -1429,12 +1902,14 @@ class UrlbarInput {
     // area when the current tab is re-selected.
     browser.focus();
 
+    this.setSearchMode(null);
+
     if (openUILinkWhere != "current") {
       this.handleRevert();
     }
 
     // Notify about the start of navigation.
-    this._notifyStartNavigation(result);
+    this._notifyStartNavigation(resultDetails);
 
     try {
       this.window.openTrustedLinkIn(url, openUILinkWhere, params);
@@ -1459,20 +1934,18 @@ class UrlbarInput {
    * @returns {"current" | "tabshifted" | "tab" | "save" | "window"}
    */
   _whereToOpen(event) {
-    let isMouseEvent = event instanceof MouseEvent;
-    let reuseEmpty = !isMouseEvent;
+    let isKeyboardEvent = event instanceof KeyboardEvent;
+    let reuseEmpty = isKeyboardEvent;
     let where = undefined;
     if (
-      !isMouseEvent &&
-      event &&
+      isKeyboardEvent &&
       (event.altKey || event.getModifierState("AltGraph"))
     ) {
       // We support using 'alt' to open in a tab, because ctrl/shift
       // might be used for canonizing URLs:
       where = event.shiftKey ? "tabshifted" : "tab";
     } else if (
-      !isMouseEvent &&
-      event &&
+      isKeyboardEvent &&
       event.ctrlKey &&
       UrlbarPrefs.get("ctrlCanonizesURLs")
     ) {
@@ -1500,6 +1973,11 @@ class UrlbarInput {
     return where;
   }
 
+  _initCopyCutController() {
+    this._copyCutController = new CopyCutController(this);
+    this.inputField.controllers.insertControllerAt(0, this._copyCutController);
+  }
+
   _initPasteAndGo() {
     let inputBox = this.querySelector("moz-input-box");
     let contextMenu = inputBox.menupopup;
@@ -1515,6 +1993,7 @@ class UrlbarInput {
     }
 
     let pasteAndGo = this.document.createXULElement("menuitem");
+    pasteAndGo.id = "paste-and-go";
     let label = Services.strings
       .createBundle("chrome://browser/locale/browser.properties")
       .GetStringFromName("pasteAndGo.label");
@@ -1557,7 +2036,7 @@ class UrlbarInput {
    * if they aren't being used, e.g. WebNavigation.
    *
    * @param {UrlbarResult} result
-   *   The result that was selected, if any.
+   *   Details of the result that was selected, if any.
    */
   _notifyStartNavigation(result) {
     Services.obs.notifyObservers({ result }, "urlbar-user-start-navigation");
@@ -1565,19 +2044,16 @@ class UrlbarInput {
 
   /**
    * Determines if we should select all the text in the Urlbar based on the
-   * clickSelectsAll pref, Urlbar state, and whether the selection is empty.
-   * @param {boolean} [ignoreClickSelectsAllPref]
-   *        If true, the browser.urlbar.clickSelectsAll pref will be ignored.
+   *  Urlbar state, and whether the selection is empty.
    */
-  _maybeSelectAll(ignoreClickSelectsAllPref = false) {
+  _maybeSelectAll() {
     if (
       !this._preventClickSelectsAll &&
-      (ignoreClickSelectsAllPref || UrlbarPrefs.get("clickSelectsAll")) &&
       this._compositionState != UrlbarUtils.COMPOSITION.COMPOSING &&
       this.document.activeElement == this.inputField &&
       this.inputField.selectionStart == this.inputField.selectionEnd
     ) {
-      this.editor.selectAll();
+      this.select();
     }
   }
 
@@ -1590,26 +2066,32 @@ class UrlbarInput {
   }
 
   _on_blur(event) {
+    this.focusedViaMousedown = false;
     // We cannot count every blur events after a missed engagement as abandoment
     // because the user may have clicked on some view element that executes
     // a command causing a focus change. For example opening preferences from
-    // the oneoff settings button, or from a contextual tip button.
+    // the oneoff settings button.
     // For now we detect that case by discarding the event on command, but we
     // may want to figure out a more robust way to detect abandonment.
     this.controller.engagementEvent.record(event, {
-      numChars: this._lastSearchString.length,
+      searchString: this._lastSearchString,
     });
 
     this.removeAttribute("focused");
-    this.endLayoutBreakout();
+    this.endLayoutExtend();
+
+    if (this._autofillPlaceholder && this.window.gBrowser.userTypedValue) {
+      // If we were autofilling, remove the autofilled portion, by restoring
+      // the value to the last typed one.
+      this.value = this.window.gBrowser.userTypedValue;
+    } else if (this.value == this._focusUntrimmedValue) {
+      // If the value was untrimmed by _on_focus and didn't change, trim it.
+      this.value = this._focusUntrimmedValue;
+    }
+    this._focusUntrimmedValue = null;
 
     this.formatValue();
     this._resetSearchState();
-
-    // Clear selection unless we are switching application windows.
-    if (this.document.activeElement != this.inputField) {
-      this.selectionStart = this.selectionEnd = 0;
-    }
 
     // In certain cases, like holding an override key and confirming an entry,
     // we don't key a keyup event for the override key, thus we make this
@@ -1628,14 +2110,39 @@ class UrlbarInput {
       this.view.close();
     }
 
+    if (this._revertOnBlurValue == this.value) {
+      this.handleRevert();
+    }
+    this._revertOnBlurValue = null;
+
     // We may have hidden popup notifications, show them again if necessary.
-    if (this.getAttribute("pageproxystate") != "valid") {
+    if (
+      this.getAttribute("pageproxystate") != "valid" &&
+      this.window.UpdatePopupNotificationsVisibility
+    ) {
       this.window.UpdatePopupNotificationsVisibility();
     }
+
+    Services.obs.notifyObservers(null, "urlbar-blur");
   }
 
   _on_click(event) {
-    this._maybeSelectAll();
+    if (
+      event.target == this.inputField ||
+      event.target == this._inputContainer ||
+      event.target.id == SEARCH_BUTTON_ID
+    ) {
+      this._maybeSelectAll();
+    }
+
+    if (event.target == this._searchModeIndicatorClose && event.button != 2) {
+      this.setSearchMode(null);
+      if (this.view.isOpen) {
+        this.startQuery({
+          event,
+        });
+      }
+    }
   }
 
   _on_contextmenu(event) {
@@ -1644,60 +2151,122 @@ class UrlbarInput {
       return;
     }
 
-    // If the user right clicks, we select all regardless of the value of
-    // the browser.urlbar.clickSelectsAll pref.
-    this._maybeSelectAll(/* ignoreClickSelectsAllPref */ event.button == 2);
+    this._maybeSelectAll();
   }
 
   _on_focus(event) {
-    this.setAttribute("focused", "true");
-    this.startLayoutBreakout();
+    if (!this._hideFocus) {
+      this.setAttribute("focused", "true");
+    }
+
+    // If the value was trimmed, check whether we should untrim it.
+    // This is necessary when a protocol was typed, but the whole url has
+    // invalid parts, like the origin, then editing and confirming the trimmed
+    // value would execute a search instead of visiting the typed url.
+    if (this.value != this._untrimmedValue) {
+      let untrim = false;
+      let fixedURI = this._getURIFixupInfo(this.value)?.preferredURI;
+      if (fixedURI) {
+        try {
+          let expectedURI = Services.io.newURI(this._untrimmedValue);
+          untrim = fixedURI.displaySpec != expectedURI.displaySpec;
+        } catch (ex) {
+          untrim = true;
+        }
+      }
+      if (untrim) {
+        this.inputField.value = this._focusUntrimmedValue = this._untrimmedValue;
+      }
+    }
+
+    this.startLayoutExtend();
+
+    if (this.focusedViaMousedown) {
+      this.view.autoOpen({ event });
+    } else if (this.inputField.hasAttribute("refocused-by-panel")) {
+      this._maybeSelectAll();
+    }
 
     this._updateUrlTooltip();
     this.formatValue();
 
     // Hide popup notifications, to reduce visual noise.
-    if (this.getAttribute("pageproxystate") != "valid") {
+    if (
+      this.getAttribute("pageproxystate") != "valid" &&
+      this.window.UpdatePopupNotificationsVisibility
+    ) {
       this.window.UpdatePopupNotificationsVisibility();
     }
+
+    Services.obs.notifyObservers(null, "urlbar-focus");
   }
 
   _on_mouseover(event) {
     this._updateUrlTooltip();
   }
 
-  _on_mousedown(event) {
-    if (event.currentTarget == this.inputField) {
-      this._preventClickSelectsAll = this.focused;
-
-      // The rest of this handler only cares about left clicks.
-      if (event.button != 0) {
-        return;
-      }
-
-      if (event.detail == 2 && UrlbarPrefs.get("doubleClickSelectsAll")) {
-        this.editor.selectAll();
-        event.preventDefault();
-      } else if (this.openViewOnFocusForCurrentTab && !this.view.isOpen) {
-        this.startQuery({
-          allowAutofill: false,
-          event,
-        });
-      }
-      return;
+  _on_draggableregionleftmousedown(event) {
+    if (!UrlbarPrefs.get("ui.popup.disable_autohide")) {
+      this.view.close();
     }
+  }
 
-    if (event.currentTarget == this.dropmarker && event.button == 0) {
-      if (this.view.isOpen) {
-        this.view.close();
-      } else {
-        this.focus();
-        this.startQuery({
-          allowAutofill: false,
-          event,
-        });
-        this._maybeSelectAll();
-      }
+  _on_mousedown(event) {
+    switch (event.currentTarget) {
+      case this.textbox:
+        this._mousedownOnUrlbarDescendant = true;
+
+        if (
+          event.target != this.inputField &&
+          event.target != this._inputContainer &&
+          event.target.id != SEARCH_BUTTON_ID
+        ) {
+          break;
+        }
+
+        this.focusedViaMousedown = !this.focused;
+        this._preventClickSelectsAll = this.focused;
+
+        if (event.target != this.inputField) {
+          this.focus();
+        }
+
+        // The rest of this case only cares about left clicks.
+        if (event.button != 0) {
+          break;
+        }
+
+        // Clear any previous selection unless we are focused, to ensure it
+        // doesn't affect drag selection.
+        if (this.focusedViaMousedown) {
+          this.selectionStart = this.selectionEnd = 0;
+        }
+
+        if (event.target.id == SEARCH_BUTTON_ID) {
+          this._preventClickSelectsAll = true;
+          this.search(UrlbarTokenizer.RESTRICT.SEARCH);
+        } else {
+          this.view.autoOpen({ event });
+        }
+        break;
+      case this.window:
+        if (this._mousedownOnUrlbarDescendant) {
+          this._mousedownOnUrlbarDescendant = false;
+          break;
+        }
+        // Don't close the view when clicking on a tab; we may want to keep the
+        // view open on tab switch, and the TabSelect event arrived earlier.
+        if (event.target.closest("tab")) {
+          break;
+        }
+        // Close the view when clicking on toolbars and other UI pieces that
+        // might not automatically remove focus from the input.
+        // Respect the autohide preference for easier inspecting/debugging via
+        // the browser toolbox.
+        if (!UrlbarPrefs.get("ui.popup.disable_autohide")) {
+          this.view.close();
+        }
+        break;
     }
   }
 
@@ -1706,6 +2275,10 @@ class UrlbarInput {
     this.valueIsTyped = true;
     this._untrimmedValue = value;
     this.window.gBrowser.userTypedValue = value;
+    // Unset userSelectionBehavior because the user is modifying the search
+    // string, thus there's no valid selection. This is also used by the view
+    // to set "aria-activedescendant", thus it should never get stale.
+    this.controller.userSelectionBehavior = "none";
 
     let compositionState = this._compositionState;
     let compositionClosedPopup = this._compositionClosedPopup;
@@ -1723,7 +2296,21 @@ class UrlbarInput {
     }
     this.removeAttribute("actiontype");
 
-    if (!value && this.view.isOpen) {
+    if (
+      this.getAttribute("pageproxystate") == "valid" &&
+      this.value != this._lastValidURLStr
+    ) {
+      this.setPageProxyState("invalid", true);
+    }
+
+    let canShowTopSites =
+      !this.isPrivate &&
+      UrlbarPrefs.get("suggest.topsites") &&
+      !this.searchMode;
+    if (!this.view.isOpen || (!value && !canShowTopSites)) {
+      this.view.clear();
+    }
+    if (!value && !canShowTopSites) {
       this.view.close();
       return;
     }
@@ -1756,7 +2343,7 @@ class UrlbarInput {
     this.startQuery({
       searchString: value,
       allowAutofill,
-      resetSearchState: false,
+      resetSearchState: !!this.searchMode,
       event,
     });
   }
@@ -1796,9 +2383,8 @@ class UrlbarInput {
   }
 
   _on_overflow(event) {
-    const targetIsPlaceholder = !event.originalTarget.classList.contains(
-      "anonymous-div"
-    );
+    const targetIsPlaceholder =
+      event.originalTarget.implementedPseudoElement == "::placeholder";
     // We only care about the non-placeholder text.
     // This shouldn't be needed, see bug 1487036.
     if (targetIsPlaceholder) {
@@ -1809,9 +2395,8 @@ class UrlbarInput {
   }
 
   _on_underflow(event) {
-    const targetIsPlaceholder = !event.originalTarget.classList.contains(
-      "anonymous-div"
-    );
+    const targetIsPlaceholder =
+      event.originalTarget.implementedPseudoElement == "::placeholder";
     // We only care about the non-placeholder text.
     // This shouldn't be needed, see bug 1487036.
     if (targetIsPlaceholder) {
@@ -1860,7 +2445,8 @@ class UrlbarInput {
   }
 
   _on_TabSelect(event) {
-    this._resetSearchState();
+    this._gotTabSelect = true;
+    this._afterTabSelectAndFocusChange();
   }
 
   _on_keydown(event) {
@@ -1923,7 +2509,11 @@ class UrlbarInput {
       return;
     }
 
-    // Drag only if the entire value is selected and it's a loaded URI.
+    // Don't cover potential drop targets on the toolbars or in content.
+    this.view.close();
+
+    // Only customize the drag data if the entire value is selected and it's a
+    // loaded URI. Use default behavior otherwise.
     if (
       this.selectionStart != 0 ||
       this.selectionEnd != this.inputField.textLength ||
@@ -1955,7 +2545,7 @@ class UrlbarInput {
     if (droppedURL && droppedURL !== this.window.gBrowser.currentURI.spec) {
       let principal = Services.droppedLinkHandler.getTriggeringPrincipal(event);
       this.value = droppedURL;
-      this.window.SetPageProxyState("invalid");
+      this.setPageProxyState("invalid");
       this.focus();
       // To simplify tracking of events, register an initial event for event
       // telemetry, to replace the missing input event.
@@ -1964,16 +2554,22 @@ class UrlbarInput {
       // For safety reasons, in the drop case we don't want to immediately show
       // the the dropped value, instead we want to keep showing the current page
       // url until an onLocationChange happens.
-      // See the handling in URLBarSetURI for further details.
+      // See the handling in `setURI` for further details.
       this.window.gBrowser.userTypedValue = null;
-      this.window.URLBarSetURI(null, true);
+      this.setURI(null, true);
     }
   }
 
-  _on_unload() {
-    // FIXME: This is needed because uninit calls removePrefObserver. We can
-    // remove this once UrlbarPrefs has support for listeners. (bug 1560013)
-    this.uninit();
+  _on_customizationstarting() {
+    this.blur();
+
+    this.inputField.controllers.removeController(this._copyCutController);
+    delete this._copyCutController;
+  }
+
+  _on_aftercustomization() {
+    this._initCopyCutController();
+    this._initPasteAndGo();
   }
 }
 
@@ -1996,7 +2592,7 @@ function getDroppableData(event) {
   }
   // The URL bar automatically handles inputs with newline characters,
   // so we can get away with treating text/x-moz-url flavours as text/plain.
-  if (links.length > 0 && links[0].url) {
+  if (links.length && links[0].url) {
     event.preventDefault();
     let href = links[0].url;
     if (UrlbarUtils.stripUnsafeProtocolOnPaste(href) != href) {
@@ -2033,6 +2629,94 @@ function getDroppableData(event) {
   }
   // Handle as text.
   return event.dataTransfer.getData("text/unicode");
+}
+
+/**
+ * Decodes the given URI for displaying it in the address bar without losing
+ * information, such that hitting Enter again will load the same URI.
+ *
+ * @param {nsIURI} aURI
+ *   The URI to decode
+ * @returns {string}
+ *   The decoded URI
+ */
+function losslessDecodeURI(aURI) {
+  let scheme = aURI.scheme;
+  let value = aURI.displaySpec;
+
+  // Try to decode as UTF-8 if there's no encoding sequence that we would break.
+  if (!/%25(?:3B|2F|3F|3A|40|26|3D|2B|24|2C|23)/i.test(value)) {
+    let decodeASCIIOnly = !["https", "http", "file", "ftp"].includes(scheme);
+    if (decodeASCIIOnly) {
+      // This only decodes ascii characters (hex) 20-7e, except 25 (%).
+      // This avoids both cases stipulated below (%-related issues, and \r, \n
+      // and \t, which would be %0d, %0a and %09, respectively) as well as any
+      // non-US-ascii characters.
+      value = value.replace(
+        /%(2[0-4]|2[6-9a-f]|[3-6][0-9a-f]|7[0-9a-e])/g,
+        decodeURI
+      );
+    } else {
+      try {
+        value = decodeURI(value)
+          // decodeURI decodes %25 to %, which creates unintended encoding
+          // sequences. Re-encode it, unless it's part of a sequence that
+          // survived decodeURI, i.e. one for:
+          // ';', '/', '?', ':', '@', '&', '=', '+', '$', ',', '#'
+          // (RFC 3987 section 3.2)
+          .replace(
+            /%(?!3B|2F|3F|3A|40|26|3D|2B|24|2C|23)/gi,
+            encodeURIComponent
+          );
+      } catch (e) {}
+    }
+  }
+
+  // Encode potentially invisible characters:
+  //   U+0000-001F: C0/C1 control characters
+  //   U+007F-009F: commands
+  //   U+00A0, U+1680, U+2000-200A, U+202F, U+205F, U+3000: other spaces
+  //   U+2028-2029: line and paragraph separators
+  //   U+2800: braille empty pattern
+  //   U+FFFC: object replacement character
+  // Encode any trailing whitespace that may be part of a pasted URL, so that it
+  // doesn't get eaten away by the location bar (bug 410726).
+  // Encode all adjacent space chars (U+0020), to prevent spoofing attempts
+  // where they would push part of the URL to overflow the location bar
+  // (bug 1395508). A single space, or the last space if the are many, is
+  // preserved to maintain readability of certain urls. We only do this for the
+  // common space, because others may be eaten when copied to the clipboard, so
+  // it's safer to preserve them encoded.
+  value = value.replace(
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u2800\u3000\ufffc]|[\r\n\t]|\u0020(?=\u0020)|\s$/g,
+    encodeURIComponent
+  );
+
+  // Encode characters that are ignorable, can't be rendered usefully, or may
+  // confuse users.
+  //
+  // Default ignorable characters; ZWNJ (U+200C) and ZWJ (U+200D) are excluded
+  // per bug 582186:
+  //   U+00AD, U+034F, U+06DD, U+070F, U+115F-1160, U+17B4, U+17B5, U+180B-180E,
+  //   U+2060, U+FEFF, U+200B, U+2060-206F, U+3164, U+FE00-FE0F, U+FFA0,
+  //   U+FFF0-FFFB, U+1D173-1D17A (U+D834 + DD73-DD7A),
+  //   U+E0000-E0FFF (U+DB40-DB43 + U+DC00-DFFF)
+  // Bidi control characters (RFC 3987 sections 3.2 and 4.1 paragraph 6):
+  //   U+061C, U+200E, U+200F, U+202A-202E, U+2066-2069
+  // Other format characters in the Cf category that are unlikely to be rendered
+  // usefully:
+  //   U+0600-0605, U+08E2, U+110BD (U+D804 + U+DCBD),
+  //   U+110CD (U+D804 + U+DCCD), U+13430-13438 (U+D80D + U+DC30-DC38),
+  //   U+1BCA0-1BCA3 (U+D82F + U+DCA0-DCA3)
+  // Mimicking UI parts:
+  //   U+1F50F-1F513 (U+D83D + U+DD0F-DD13), U+1F6E1 (U+D83D + U+DEE1)
+  value = value.replace(
+    // eslint-disable-next-line no-misleading-character-class
+    /[\u00ad\u034f\u061c\u06dd\u070f\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u3164\u0600-\u0605\u08e2\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb]|\ud804[\udcbd\udccd]|\ud80d[\udc30-\udc38]|\ud82f[\udca0-\udca3]|\ud834[\udd73-\udd7a]|[\udb40-\udb43][\udc00-\udfff]|\ud83d[\udd0f-\udd13\udee1]/g,
+    encodeURIComponent
+  );
+  return value;
 }
 
 /**

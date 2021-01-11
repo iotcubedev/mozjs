@@ -10,7 +10,8 @@
 #include "jsfriendapi.h"
 
 #include "builtin/TestingFunctions.h"
-#include "js/CompilationAndEvaluation.h"  // JS::EvaluateDontInflate
+#include "js/CompilationAndEvaluation.h"  // JS::Evaluate
+#include "js/Exception.h"
 #include "js/SavedFrameAPI.h"
 #include "js/SourceText.h"  // JS::Source{Ownership,Text}
 #include "jsapi-tests/tests.h"
@@ -164,7 +165,7 @@ BEGIN_TEST(testSavedStacks_ErrorStackSpiderMonkey) {
       "@filename.js:7:2\n";
   JSLinearString* lin = stack->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, SpiderMonkeyStack));
+  CHECK(js::StringEqualsLiteral(lin, SpiderMonkeyStack));
 
   return true;
 }
@@ -196,7 +197,7 @@ BEGIN_TEST(testSavedStacks_ErrorStackV8) {
       "    at filename.js:7:2";
   JSLinearString* lin = stack->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, V8Stack));
+  CHECK(js::StringEqualsLiteral(lin, V8Stack));
 
   return true;
 }
@@ -238,7 +239,7 @@ BEGIN_TEST(testSavedStacks_selfHostedFrames) {
   CHECK(result == JS::SavedFrameResult::Ok);
   JSLinearString* lin = str->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, "filename.js"));
+  CHECK(js::StringEqualsLiteral(lin, "filename.js"));
 
   // Source, including self-hosted frames
   result = JS::GetSavedFrameSource(cx, principals, selfHostedFrame, &str,
@@ -246,7 +247,7 @@ BEGIN_TEST(testSavedStacks_selfHostedFrames) {
   CHECK(result == JS::SavedFrameResult::Ok);
   lin = str->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, "self-hosted"));
+  CHECK(js::StringEqualsLiteral(lin, "self-hosted"));
 
   // Line
   uint32_t line = 123;
@@ -268,7 +269,7 @@ BEGIN_TEST(testSavedStacks_selfHostedFrames) {
   CHECK(result == JS::SavedFrameResult::Ok);
   lin = str->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, "one"));
+  CHECK(js::StringEqualsLiteral(lin, "one"));
 
   // Parent
   JS::RootedObject parent(cx);
@@ -291,13 +292,13 @@ BEGIN_TEST(testSavedStacks_selfHostedFrames) {
   CHECK(result == JS::SavedFrameResult::Ok);
   lin = str->ensureLinear(cx);
   CHECK(lin);
-  CHECK(js::StringEqualsAscii(lin, "filename.js"));
+  CHECK(js::StringEqualsLiteral(lin, "filename.js"));
 
   return true;
 }
 END_TEST(testSavedStacks_selfHostedFrames)
 
-BEGIN_TEST(test_JS_GetPendingExceptionStack) {
+BEGIN_TEST(test_GetPendingExceptionStack) {
   CHECK(js::DefineTestingFunctions(cx, global, false, false));
 
   JSPrincipals* principals = cx->realm()->principals();
@@ -321,20 +322,21 @@ BEGIN_TEST(test_JS_GetPendingExceptionStack) {
                     JS::SourceOwnership::Borrowed));
 
   JS::RootedValue val(cx);
-  bool ok = JS::EvaluateDontInflate(cx, opts, srcBuf, &val);
+  bool ok = JS::Evaluate(cx, opts, srcBuf, &val);
 
   CHECK(!ok);
   CHECK(JS_IsExceptionPending(cx));
   CHECK(val.isUndefined());
 
-  JS::RootedObject stack(cx, JS::GetPendingExceptionStack(cx));
-  CHECK(stack);
-  CHECK(stack->is<js::SavedFrame>());
-  JS::Rooted<js::SavedFrame*> savedFrameStack(cx, &stack->as<js::SavedFrame>());
+  JS::ExceptionStack exnStack(cx);
+  CHECK(JS::GetPendingExceptionStack(cx, &exnStack));
+  CHECK(exnStack.stack());
+  CHECK(exnStack.stack()->is<js::SavedFrame>());
+  JS::Rooted<js::SavedFrame*> savedFrameStack(
+      cx, &exnStack.stack()->as<js::SavedFrame>());
 
-  JS_GetPendingException(cx, &val);
-  CHECK(val.isInt32());
-  CHECK(val.toInt32() == 5);
+  CHECK(exnStack.exception().isInt32());
+  CHECK(exnStack.exception().toInt32() == 5);
 
   struct {
     uint32_t line;
@@ -392,4 +394,4 @@ BEGIN_TEST(test_JS_GetPendingExceptionStack) {
 
   return true;
 }
-END_TEST(test_JS_GetPendingExceptionStack)
+END_TEST(test_GetPendingExceptionStack)

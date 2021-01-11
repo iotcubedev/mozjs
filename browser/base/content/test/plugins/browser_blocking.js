@@ -11,7 +11,7 @@ function updateAllTestPlugins(aState) {
 }
 
 function promisePluginActivated() {
-  return ContentTask.spawn(gBrowser.selectedBrowser, null, function() {
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     return ContentTaskUtils.waitForCondition(
       () => content.document.getElementById("test").activated,
       "Wait for plugin to be activated"
@@ -28,7 +28,6 @@ add_task(async function() {
       gTestRoot + "blockNoPlugins",
       gTestBrowser
     );
-    resetBlocklist();
     gBrowser.removeCurrentTab();
     window.focus();
     gTestBrowser = null;
@@ -77,7 +76,7 @@ add_task(async function() {
   );
   ok(!pluginInfo.activated, "Test 18a, Plugin should not be activated");
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let doc = content.document;
     let plugin = doc.getElementById("test");
     let overlay = plugin.openOrClosedShadowRoot.getElementById("main");
@@ -101,7 +100,7 @@ add_task(async function() {
     true
   );
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let doc = content.document;
     let plugin = doc.getElementById("test");
     let updateLink = plugin.openOrClosedShadowRoot.getElementById(
@@ -135,7 +134,7 @@ add_task(async function() {
   );
   ok(!pluginInfo.activated, "Test 18b, Plugin should not be activated");
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let doc = content.document;
     let plugin = doc.getElementById("test");
     let overlay = plugin.openOrClosedShadowRoot.getElementById("main");
@@ -177,7 +176,7 @@ add_task(async function() {
   );
   ok(!pluginInfo.activated, "Test 18c, Plugin should not be activated");
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let doc = content.document;
     let plugin = doc.getElementById("test");
     let overlay = plugin.openOrClosedShadowRoot.getElementById("main");
@@ -261,7 +260,7 @@ add_task(async function() {
     oldEventCallback = null;
   };
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let doc = content.document;
     let plugin = doc.getElementById("test");
     let bounds = plugin.getBoundingClientRect();
@@ -427,7 +426,7 @@ add_task(async function() {
     "Test 26, plugin fallback type should be PLUGIN_BLOCKLISTED"
   );
 
-  await ContentTask.spawn(gTestBrowser, null, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let plugin = content.document.getElementById("test");
     Assert.ok(!plugin.activated, "Plugin should not be activated.");
   });

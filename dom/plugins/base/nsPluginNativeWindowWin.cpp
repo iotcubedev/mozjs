@@ -93,11 +93,9 @@ void PluginWindowEvent::Init(WeakPtr<nsPluginNativeWindowWin> aRef, HWND aWnd,
  *  nsPluginNativeWindow Windows specific class declaration
  */
 
-class nsPluginNativeWindowWin
-    : public nsPluginNativeWindow,
-      public SupportsWeakPtr<nsPluginNativeWindowWin> {
+class nsPluginNativeWindowWin : public nsPluginNativeWindow,
+                                public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(nsPluginNativeWindowWin)
   nsPluginNativeWindowWin();
 
   virtual nsresult CallSetWindow(
@@ -454,10 +452,6 @@ nsPluginNativeWindowWin::nsPluginNativeWindowWin() : nsPluginNativeWindow() {
 
   mParentWnd = nullptr;
   mParentProc = 0;
-
-  if (!sWM_FLASHBOUNCEMSG) {
-    sWM_FLASHBOUNCEMSG = ::RegisterWindowMessage(NS_PLUGIN_CUSTOM_MSG_ID);
-  }
 }
 
 WNDPROC nsPluginNativeWindowWin::GetPrevWindowProc() { return mPrevWinProc; }
@@ -543,6 +537,10 @@ nsresult nsPluginNativeWindowWin::CallSetWindow(
   if (!XRE_IsParentProcess()) {
     nsPluginNativeWindow::CallSetWindow(aPluginInstance);
     return NS_OK;
+  }
+
+  if (!sWM_FLASHBOUNCEMSG) {
+    sWM_FLASHBOUNCEMSG = ::RegisterWindowMessage(NS_PLUGIN_CUSTOM_MSG_ID);
   }
 
   if (window) {

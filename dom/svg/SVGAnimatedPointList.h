@@ -4,13 +4,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDPOINTLIST_H__
-#define MOZILLA_SVGANIMATEDPOINTLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDPOINTLIST_H_
+#define DOM_SVG_SVGANIMATEDPOINTLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/SMILAttr.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
 #include "SVGPointList.h"
 
 namespace mozilla {
@@ -18,6 +17,8 @@ namespace mozilla {
 class SMILValue;
 
 namespace dom {
+class DOMSVGPoint;
+class DOMSVGPointList;
 class SVGAnimationElement;
 class SVGElement;
 }  // namespace dom
@@ -39,8 +40,8 @@ class SVGElement;
  */
 class SVGAnimatedPointList {
   // friends so that they can get write access to mBaseVal and mAnimVal
-  friend class DOMSVGPoint;
-  friend class DOMSVGPointList;
+  friend class dom::DOMSVGPoint;
+  friend class dom::DOMSVGPointList;
 
  public:
   SVGAnimatedPointList() = default;
@@ -87,7 +88,7 @@ class SVGAnimatedPointList {
   // the empty string (<set to="">).
 
   SVGPointList mBaseVal;
-  nsAutoPtr<SVGPointList> mAnimVal;
+  UniquePtr<SVGPointList> mAnimVal;
 
   struct SMILAnimatedPointList : public SMILAttr {
    public:
@@ -112,4 +113,4 @@ class SVGAnimatedPointList {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDPOINTLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDPOINTLIST_H_

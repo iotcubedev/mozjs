@@ -6,7 +6,7 @@
 
 #include "TemporaryFileBlobImpl.h"
 
-#include "IPCBlobInputStreamThread.h"
+#include "RemoteLazyInputStreamThread.h"
 #include "nsFileStreams.h"
 #include "nsIFile.h"
 #include "nsIFileStreams.h"
@@ -53,28 +53,14 @@ class TemporaryFileInputStream final : public nsFileInputStream {
   void Serialize(InputStreamParams& aParams,
                  FileDescriptorArray& aFileDescriptors, bool aDelayedStart,
                  uint32_t aMaxSize, uint32_t* aSizeUsed,
-                 ContentChild* aManager) override {
+                 ParentToChildStreamActorManager* aManager) override {
     MOZ_CRASH("This inputStream cannot be serialized.");
   }
 
   void Serialize(InputStreamParams& aParams,
                  FileDescriptorArray& aFileDescriptors, bool aDelayedStart,
                  uint32_t aMaxSize, uint32_t* aSizeUsed,
-                 PBackgroundChild* aManager) override {
-    MOZ_CRASH("This inputStream cannot be serialized.");
-  }
-
-  void Serialize(InputStreamParams& aParams,
-                 FileDescriptorArray& aFileDescriptors, bool aDelayedStart,
-                 uint32_t aMaxSize, uint32_t* aSizeUsed,
-                 ContentParent* aManager) override {
-    MOZ_CRASH("This inputStream cannot be serialized.");
-  }
-
-  void Serialize(InputStreamParams& aParams,
-                 FileDescriptorArray& aFileDescriptors, bool aDelayedStart,
-                 uint32_t aMaxSize, uint32_t* aSizeUsed,
-                 PBackgroundParent* aManager) override {
+                 ChildToParentStreamActorManager* aManager) override {
     MOZ_CRASH("This inputStream cannot be serialized.");
   }
 
@@ -90,9 +76,9 @@ class TemporaryFileInputStream final : public nsFileInputStream {
   }
 
   ~TemporaryFileInputStream() {
-    // Let's delete the file on the IPCBlob Thread.
-    RefPtr<IPCBlobInputStreamThread> thread =
-        IPCBlobInputStreamThread::GetOrCreate();
+    // Let's delete the file on the RemoteLazyInputStream Thread.
+    RefPtr<RemoteLazyInputStreamThread> thread =
+        RemoteLazyInputStreamThread::GetOrCreate();
     if (NS_WARN_IF(!thread)) {
       return;
     }
@@ -110,8 +96,7 @@ class TemporaryFileInputStream final : public nsFileInputStream {
 
 TemporaryFileBlobImpl::TemporaryFileBlobImpl(nsIFile* aFile,
                                              const nsAString& aContentType)
-    : FileBlobImpl(aFile, EmptyString(), aContentType,
-                   NS_LITERAL_STRING("TemporaryBlobImpl"))
+    : FileBlobImpl(aFile, EmptyString(), aContentType)
 #ifdef DEBUG
       ,
       mInputStreamCreated(false)

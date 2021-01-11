@@ -2,8 +2,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
-
 import os
 import re
 import sys
@@ -31,6 +29,8 @@ class BaseType(object):
                          the definition, but passed in by a consumer.
         :returns: A list of :class:`~result.Issue` objects.
         """
+        log = lintargs['log']
+
         if lintargs.get('use_filters', True):
             paths, exclude = filterpaths(
                 lintargs['root'],
@@ -44,12 +44,17 @@ class BaseType(object):
             del config['exclude']
 
         if not paths:
-            return
+            return []
+
+        log.debug("Passing the following paths:\n{paths}".format(
+            paths="  \n".join(paths),
+        ))
 
         if self.batch:
             return self._lint(paths, config, **lintargs)
 
         errors = []
+
         try:
             for p in paths:
                 result = self._lint(p, config, **lintargs)
@@ -73,7 +78,7 @@ class LineType(BaseType):
     __metaclass__ = ABCMeta
 
     @abstractmethod
-    def condition(payload, line):
+    def condition(payload, line, config):
         pass
 
     def _lint_dir(self, path, config, **lintargs):
@@ -96,12 +101,12 @@ class LineType(BaseType):
             return self._lint_dir(path, config, **lintargs)
 
         payload = config['payload']
-        with open(path, 'r') as fh:
+        with open(path, 'r', errors='replace') as fh:
             lines = fh.readlines()
 
         errors = []
         for i, line in enumerate(lines):
-            if self.condition(payload, line):
+            if self.condition(payload, line, config):
                 errors.append(result.from_config(config, path=path, lineno=i+1))
 
         return errors
@@ -110,15 +115,19 @@ class LineType(BaseType):
 class StringType(LineType):
     """Linter type that checks whether a substring is found."""
 
-    def condition(self, payload, line):
+    def condition(self, payload, line, config):
         return payload in line
 
 
 class RegexType(LineType):
     """Linter type that checks whether a regex match is found."""
 
-    def condition(self, payload, line):
-        return re.search(payload, line)
+    def condition(self, payload, line, config):
+        flags = 0
+        if config.get("ignore-case"):
+            flags |= re.IGNORECASE
+
+        return re.search(payload, line, flags)
 
 
 class ExternalType(BaseType):
@@ -146,7 +155,7 @@ class GlobalType(ExternalType):
         # Global lints are expensive to invoke.  Try to avoid running
         # them based on extensions and exclusions.
         try:
-            expand_exclusions(files, config, lintargs['root']).next()
+            next(expand_exclusions(files, config, lintargs['root']))
         except StopIteration:
             return []
 

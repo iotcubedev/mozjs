@@ -15,13 +15,12 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 XPCOMUtils.defineLazyModuleGetters(this, {
-  PlacesSearchAutocompleteProvider:
-    "resource://gre/modules/PlacesSearchAutocompleteProvider.jsm",
   Services: "resource://gre/modules/Services.jsm",
   SkippableTimer: "resource:///modules/UrlbarUtils.jsm",
   UrlbarProvider: "resource:///modules/UrlbarUtils.jsm",
   UrlbarProvidersManager: "resource:///modules/UrlbarProvidersManager.jsm",
   UrlbarResult: "resource:///modules/UrlbarResult.jsm",
+  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.jsm",
   UrlbarUtils: "resource:///modules/UrlbarUtils.jsm",
 });
 
@@ -108,17 +107,18 @@ class UrlbarProviderExtension extends UrlbarProvider {
   }
 
   /**
-   * Whether this provider wants to restrict results to just itself.  Other
-   * providers won't be invoked, unless this provider doesn't support the
-   * current query.
+   * Gets the provider's priority.
    *
    * @param {UrlbarQueryContext} context
    *   The query context object.
-   * @returns {boolean}
-   *   Whether this provider wants to restrict results.
+   * @returns {number}
+   *   The provider's priority for the given query.
    */
-  isRestricting(context) {
-    return this.behavior == "restricting";
+  getPriority(context) {
+    // We give restricting extension providers a very high priority so that they
+    // normally override all built-in providers, but not Infinity so that we can
+    // still override them if necessary.
+    return this.behavior == "restricting" ? 999 : 0;
   }
 
   /**
@@ -180,6 +180,18 @@ class UrlbarProviderExtension extends UrlbarProvider {
   }
 
   /**
+   * This is called only for dynamic result types, when the urlbar view updates
+   * the view of one of the results of the provider.  It should return an object
+   * describing the view update.  See the base UrlbarProvider class for more.
+   *
+   * @param {UrlbarResult} result The result whose view will be updated.
+   * @returns {object} An object describing the view update.
+   */
+  async getViewUpdate(result) {
+    return this._notifyListener("getViewUpdate", result);
+  }
+
+  /**
    * This method is called by the providers manager when a query starts to fetch
    * each extension provider's results.  It fires the resultsRequested event.
    *
@@ -214,23 +226,55 @@ class UrlbarProviderExtension extends UrlbarProvider {
   }
 
   /**
+   * This method is called when a result from the provider without a URL is
+   * picked, but currently only for tip results.  The provider should handle the
+   * pick.
+   *
+   * @param {UrlbarResult} result
+   *   The result that was picked.
+   * @param {Element} element
+   *   The element in the result's view that was picked.
+   */
+  pickResult(result, element) {
+    let dynamicElementName = "";
+    if (element && result.type == UrlbarUtils.RESULT_TYPE.DYNAMIC) {
+      dynamicElementName = element.getAttribute("name");
+    }
+    this._notifyListener("resultPicked", result.payload, dynamicElementName);
+  }
+
+  /**
+   * This method is called when the user starts and ends an engagement with the
+   * urlbar.
+   *
+   * @param {boolean} isPrivate
+   *   True if the engagement is in a private context.
+   * @param {string} state
+   *   The state of the engagement, one of: start, engagement, abandonment,
+   *   discard.
+   */
+  onEngagement(isPrivate, state) {
+    this._notifyListener("engagement", isPrivate, state);
+  }
+
+  /**
    * Calls a listener function set by the extension API implementation, if any.
    *
    * @param {string} eventName
    *   The name of the listener to call (i.e., the name of the event to fire).
-   * @param {UrlbarQueryContext} context
-   *   The query context relevant to the event.
+   * @param {*} args
+   *   Arguments to the listener function.
    * @returns {*}
    *   The value returned by the listener function, if any.
    */
-  async _notifyListener(eventName, context) {
+  async _notifyListener(eventName, ...args) {
     let listener = this._eventListeners.get(eventName);
     if (!listener) {
       return undefined;
     }
     let result;
     try {
-      result = listener(context);
+      result = listener(...args);
     } catch (error) {
       Cu.reportError(error);
       return undefined;
@@ -242,6 +286,7 @@ class UrlbarProviderExtension extends UrlbarProvider {
         name: "UrlbarProviderExtension notification timer",
         time: UrlbarProviderExtension.notificationTimeout,
         reportErrorOnTimeout: true,
+        logger: this.logger,
       });
       result = await Promise.race([
         timer.promise,
@@ -276,7 +321,7 @@ class UrlbarProviderExtension extends UrlbarProvider {
         engine = Services.search.getEngineByName(extResult.payload.engine);
       } else if (extResult.payload.keyword) {
         // Look up the engine by its alias.
-        engine = await PlacesSearchAutocompleteProvider.engineForAlias(
+        engine = await UrlbarSearchUtils.engineForAlias(
           extResult.payload.keyword
         );
       } else if (extResult.payload.url) {
@@ -286,9 +331,7 @@ class UrlbarProviderExtension extends UrlbarProvider {
           host = new URL(extResult.payload.url).hostname;
         } catch (err) {}
         if (host) {
-          engine = await PlacesSearchAutocompleteProvider.engineForDomainPrefix(
-            host
-          );
+          engine = await UrlbarSearchUtils.engineForDomainPrefix(host);
         }
       }
       if (!engine) {
@@ -298,7 +341,12 @@ class UrlbarProviderExtension extends UrlbarProvider {
       extResult.payload.engine = engine.name;
     }
 
-    return new UrlbarResult(
+    let type = UrlbarProviderExtension.RESULT_TYPES[extResult.type];
+    if (type == UrlbarUtils.RESULT_TYPE.TIP) {
+      extResult.payload.type = extResult.payload.type || "extension";
+    }
+
+    let result = new UrlbarResult(
       UrlbarProviderExtension.RESULT_TYPES[extResult.type],
       UrlbarProviderExtension.SOURCE_TYPES[extResult.source],
       ...UrlbarResult.payloadAndSimpleHighlights(
@@ -306,16 +354,29 @@ class UrlbarProviderExtension extends UrlbarProvider {
         extResult.payload || {}
       )
     );
+    if (extResult.heuristic && this.behavior == "restricting") {
+      // The muxer chooses the final heuristic result by taking the first one
+      // that claims to be the heuristic.  We don't want extensions to clobber
+      // UnifiedComplete's heuristic, so we allow this only if the provider is
+      // restricting.
+      result.heuristic = extResult.heuristic;
+    }
+    if (extResult.suggestedIndex !== undefined) {
+      result.suggestedIndex = extResult.suggestedIndex;
+    }
+    return result;
   }
 }
 
 // Maps extension result type enums to internal result types.
 UrlbarProviderExtension.RESULT_TYPES = {
+  dynamic: UrlbarUtils.RESULT_TYPE.DYNAMIC,
   keyword: UrlbarUtils.RESULT_TYPE.KEYWORD,
   omnibox: UrlbarUtils.RESULT_TYPE.OMNIBOX,
   remote_tab: UrlbarUtils.RESULT_TYPE.REMOTE_TAB,
   search: UrlbarUtils.RESULT_TYPE.SEARCH,
   tab: UrlbarUtils.RESULT_TYPE.TAB_SWITCH,
+  tip: UrlbarUtils.RESULT_TYPE.TIP,
   url: UrlbarUtils.RESULT_TYPE.URL,
 };
 

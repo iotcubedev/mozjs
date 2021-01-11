@@ -65,7 +65,7 @@ bool VRProcessChild::Init(int aArgc, char* aArgv[]) {
     }
   }
 
-  SharedPreferenceDeserializer deserializer;
+  ipc::SharedPreferenceDeserializer deserializer;
   if (!deserializer.DeserializeFromSharedMemory(prefsHandle, prefMapHandle,
                                                 prefsLen, prefMapSize)) {
     return false;
@@ -73,7 +73,7 @@ bool VRProcessChild::Init(int aArgc, char* aArgv[]) {
 
   sVRParent = new VRParent();
   sVRParent->Init(ParentPid(), parentBuildID, IOThreadChild::message_loop(),
-                  IOThreadChild::channel());
+                  IOThreadChild::TakeChannel());
 
   return true;
 }

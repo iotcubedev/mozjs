@@ -12,12 +12,16 @@ const {
 const Provider = createFactory(
   require("devtools/client/shared/vendor/react-redux").Provider
 );
-const App = createFactory(require("./components/App"));
-const { EVENTS } = require("./constants");
+const App = createFactory(
+  require("devtools/client/netmonitor/src/components/App")
+);
+const { EVENTS } = require("devtools/client/netmonitor/src/constants");
 
-const { getDisplayedRequestById } = require("./selectors/index");
+const {
+  getDisplayedRequestById,
+} = require("devtools/client/netmonitor/src/selectors/index");
 
-const SearchWorker = require("./workers/search/index");
+const SearchWorker = require("devtools/client/netmonitor/src/workers/search/index");
 const SEARCH_WORKER_URL =
   "resource://devtools/client/netmonitor/src/workers/search/worker.js";
 
@@ -44,7 +48,7 @@ NetMonitorApp.prototype = {
       const iframe = parentDoc.getElementById(
         "toolbox-panel-iframe-netmonitor"
       );
-      const top = iframe.ownerDocument.defaultView.top;
+      const { top } = iframe.ownerDocument.defaultView;
       top.openWebLinkIn(link, "tab");
     };
 
@@ -59,13 +63,14 @@ NetMonitorApp.prototype = {
 
     const { actions, connector, store } = this.api;
 
-    const sourceMapService = toolbox.sourceMapURLService;
+    const sourceMapURLService = toolbox.sourceMapURLService;
     const app = App({
       actions,
       connector,
       openLink,
       openSplitConsole,
-      sourceMapService,
+      sourceMapURLService,
+      toolboxDoc: toolbox.doc,
     });
 
     // Render the root Application component.

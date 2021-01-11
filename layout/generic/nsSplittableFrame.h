@@ -13,10 +13,10 @@
 #define nsSplittableFrame_h___
 
 #include "mozilla/Attributes.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 
 // Derived class that allows splitting
-class nsSplittableFrame : public nsFrame {
+class nsSplittableFrame : public nsIFrame {
  public:
   NS_DECL_ABSTRACT_FRAME(nsSplittableFrame)
 
@@ -27,11 +27,17 @@ class nsSplittableFrame : public nsFrame {
                    PostDestroyData& aPostDestroyData) override;
 
   /*
-   * Frame continuations can be either fluid or not:
+   * Frame continuations can be either fluid or non-fluid.
+   *
    * Fluid continuations ("in-flows") are the result of line breaking,
    * column breaking, or page breaking.
-   * Other (non-fluid) continuations can be the result of BiDi frame splitting.
+   *
+   * Non-fluid continuations can be the result of BiDi frame splitting,
+   * column-span splitting, or <col span="N"> where N > 1.
+   *
    * A "flow" is a chain of fluid continuations.
+   *
+   * For more information, see https://wiki.mozilla.org/Gecko:Continuation_Model
    */
 
   // Get the previous/next continuation, regardless of its type (fluid or
@@ -73,7 +79,7 @@ class nsSplittableFrame : public nsFrame {
  protected:
   nsSplittableFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                     ClassID aID)
-      : nsFrame(aStyle, aPresContext, aID),
+      : nsIFrame(aStyle, aPresContext, aID),
         mPrevContinuation(nullptr),
         mNextContinuation(nullptr) {}
 

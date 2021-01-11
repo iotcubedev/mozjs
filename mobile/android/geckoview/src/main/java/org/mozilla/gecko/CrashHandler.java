@@ -5,6 +5,7 @@
 
 package org.mozilla.gecko;
 
+import android.annotation.SuppressLint;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -15,6 +16,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 import android.util.Log;
+import org.json.JSONObject;
+import org.json.JSONException;
 
 import org.mozilla.geckoview.BuildConfig;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -247,6 +250,11 @@ public class CrashHandler implements Thread.UncaughtExceptionHandler {
         extras.putString("Android_ProcessName", getProcessName());
         extras.putString("Android_PackageName", pkgName);
 
+        final String notes = GeckoAppShell.getAppNotes();
+        if (notes != null) {
+            extras.putString("Notes", notes);
+        }
+
         if (context != null) {
             final PackageManager pkgMgr = context.getPackageManager();
             try {
@@ -374,6 +382,7 @@ public class CrashHandler implements Thread.UncaughtExceptionHandler {
      * @param exc An exception
      * @return Whether the exception was successfully reported
      */
+    @SuppressLint("SdCardPath")
     protected boolean reportException(final Thread thread, final Throwable exc) {
         final Context context = getAppContext();
         final String id = UUID.randomUUID().toString();
@@ -417,20 +426,18 @@ public class CrashHandler implements Thread.UncaughtExceptionHandler {
             final String url = getServerUrl(extras);
             extras.putString("ServerURL", url);
 
+            JSONObject json = new JSONObject();
+            for (String key : extras.keySet()) {
+                json.put(key, extras.get(key));
+            }
+
             final BufferedWriter extraWriter = new BufferedWriter(new FileWriter(extraFile));
             try {
-                for (String key : extras.keySet()) {
-                    // Each extra line is in the format, key=value, with newlines escaped.
-                    extraWriter.write(key);
-                    extraWriter.write('=');
-                    extraWriter.write(String.valueOf(extras.get(key)).replace("\n", "\\n"));
-                    extraWriter.write('\n');
-                }
+                extraWriter.write(json.toString());
             } finally {
                 extraWriter.close();
             }
-
-        } catch (final IOException e) {
+        } catch (final IOException | JSONException e) {
             Log.e(LOGTAG, "Error writing extra file", e);
             return false;
         }

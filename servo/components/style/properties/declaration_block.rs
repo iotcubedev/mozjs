@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::context::QuirksMode;
-use crate::custom_properties::{CssEnvironment, CustomPropertiesBuilder};
+use crate::custom_properties::CustomPropertiesBuilder;
 use crate::error_reporting::{ContextualParseError, ParseErrorReporter};
 use crate::parser::ParserContext;
 use crate::properties::animated_properties::{AnimationValue, AnimationValueMap};
@@ -28,21 +28,22 @@ use std::iter::{DoubleEndedIterator, Zip};
 use std::slice::Iter;
 use style_traits::{CssWriter, ParseError, ParsingMode, StyleParseErrorKind, ToCss};
 
-/// The animation rules.
-///
-/// The first one is for Animation cascade level, and the second one is for
-/// Transition cascade level.
-pub struct AnimationRules(
-    pub Option<Arc<Locked<PropertyDeclarationBlock>>>,
-    pub Option<Arc<Locked<PropertyDeclarationBlock>>>,
-);
+/// A set of property declarations including animations and transitions.
+#[derive(Default)]
+pub struct AnimationDeclarations {
+    /// Declarations for animations.
+    pub animations: Option<Arc<Locked<PropertyDeclarationBlock>>>,
+    /// Declarations for transitions.
+    pub transitions: Option<Arc<Locked<PropertyDeclarationBlock>>>,
+}
 
-impl AnimationRules {
-    /// Returns whether these animation rules represents an actual rule or not.
+impl AnimationDeclarations {
+    /// Whether or not this `AnimationDeclarations` is empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_none() && self.1.is_none()
+        self.animations.is_none() && self.transitions.is_none()
     }
 }
+
 
 /// An enum describes how a declaration should update
 /// the declaration block.
@@ -110,9 +111,17 @@ pub struct DeclarationImportanceIterator<'a> {
     iter: Zip<Iter<'a, PropertyDeclaration>, smallbitvec::Iter<'a>>,
 }
 
+impl<'a> Default for DeclarationImportanceIterator<'a> {
+    fn default() -> Self {
+        Self {
+            iter: [].iter().zip(smallbitvec::Iter::default()),
+        }
+    }
+}
+
 impl<'a> DeclarationImportanceIterator<'a> {
     /// Constructor.
-    pub fn new(declarations: &'a [PropertyDeclaration], important: &'a SmallBitVec) -> Self {
+    fn new(declarations: &'a [PropertyDeclaration], important: &'a SmallBitVec) -> Self {
         DeclarationImportanceIterator {
             iter: declarations.iter().zip(important.iter()),
         }
@@ -313,6 +322,13 @@ impl PropertyDeclarationBlock {
         self.longhands.contains_any_reset()
     }
 
+    /// Returns a `LonghandIdSet` representing the properties that are changed in
+    /// this block.
+    #[inline]
+    pub fn longhands(&self) -> &LonghandIdSet {
+        &self.longhands
+    }
+
     /// Get a declaration for a given property.
     ///
     /// NOTE: This is linear time in the case of custom properties or in the
@@ -330,6 +346,21 @@ impl PropertyDeclarationBlock {
 
         self.declaration_importance_iter()
             .find(|(declaration, _)| declaration.id() == property)
+    }
+
+    /// Get a declaration for a given property with the specified importance.
+    #[inline]
+    pub fn get_at_importance(
+        &self,
+        property: PropertyDeclarationId,
+        importance: Importance,
+    ) -> Option<&PropertyDeclaration> {
+        let (declaration, i) = self.get(property)?;
+        if i == importance {
+            Some(declaration)
+        } else {
+            None
+        }
     }
 
     /// Tries to serialize a given shorthand from the declarations in this
@@ -778,6 +809,7 @@ impl PropertyDeclarationBlock {
         dest: &mut CssStringWriter,
         computed_values: Option<&ComputedValues>,
         custom_properties_block: Option<&PropertyDeclarationBlock>,
+        device: &Device,
     ) -> fmt::Result {
         if let Ok(shorthand) = property.as_shorthand() {
             return self.shorthand_to_css(shorthand, dest);
@@ -790,19 +822,13 @@ impl PropertyDeclarationBlock {
             None => return Err(fmt::Error),
         };
 
-        // TODO(emilio): When we implement any environment variable without
-        // hard-coding the values we're going to need to get something
-        // meaningful out of here... All this code path is so terribly hacky
-        // ;_;.
-        let env = CssEnvironment;
-
         let custom_properties = if let Some(cv) = computed_values {
             // If there are extra custom properties for this declaration block,
             // factor them in too.
             if let Some(block) = custom_properties_block {
                 // FIXME(emilio): This is not super-efficient here, and all this
                 // feels like a hack anyway...
-                block.cascade_custom_properties(cv.custom_properties(), &env)
+                block.cascade_custom_properties(cv.custom_properties(), device)
             } else {
                 cv.custom_properties().cloned()
             }
@@ -825,7 +851,7 @@ impl PropertyDeclarationBlock {
                         declaration.id,
                         custom_properties.as_ref(),
                         QuirksMode::NoQuirks,
-                        &env,
+                        device,
                     )
                     .to_css(dest)
             },
@@ -873,7 +899,7 @@ impl PropertyDeclarationBlock {
     ) -> Option<Arc<crate::custom_properties::CustomPropertiesMap>> {
         self.cascade_custom_properties(
             context.style().custom_properties(),
-            context.device().environment(),
+            context.device(),
         )
     }
 
@@ -883,9 +909,9 @@ impl PropertyDeclarationBlock {
     fn cascade_custom_properties(
         &self,
         inherited_custom_properties: Option<&Arc<crate::custom_properties::CustomPropertiesMap>>,
-        environment: &CssEnvironment,
+        device: &Device,
     ) -> Option<Arc<crate::custom_properties::CustomPropertiesMap>> {
-        let mut builder = CustomPropertiesBuilder::new(inherited_custom_properties, environment);
+        let mut builder = CustomPropertiesBuilder::new(inherited_custom_properties, device);
 
         for declaration in self.normal_declaration_iter() {
             if let PropertyDeclaration::Custom(ref declaration) = *declaration {
@@ -1336,7 +1362,6 @@ impl<'a, 'b, 'i> DeclarationParser<'i> for PropertyDeclarationParser<'a, 'b> {
         let id = match PropertyId::parse(&name, self.context) {
             Ok(id) => id,
             Err(..) => {
-                self.last_parsed_property_id = None;
                 return Err(input.new_custom_error(StyleParseErrorKind::UnknownProperty(name)));
             },
         };
@@ -1346,7 +1371,7 @@ impl<'a, 'b, 'i> DeclarationParser<'i> for PropertyDeclarationParser<'a, 'b> {
         input.parse_until_before(Delimiter::Bang, |input| {
             PropertyDeclaration::parse_into(self.declarations, id, self.context, input)
         })?;
-        let importance = match input.try(parse_important) {
+        let importance = match input.try_parse(parse_important) {
             Ok(()) => Importance::Important,
             Err(_) => Importance::Normal,
         };
@@ -1433,7 +1458,7 @@ fn report_css_errors(
     selectors: Option<&SelectorList<SelectorImpl>>,
     errors: &mut SmallParseErrorVec,
 ) {
-    for (error, slice, property) in errors.drain() {
+    for (error, slice, property) in errors.drain(..) {
         report_one_css_error(context, Some(block), selectors, error, slice, property)
     }
 }
@@ -1458,6 +1483,10 @@ pub fn parse_property_declaration_list(
         match declaration {
             Ok(importance) => {
                 block.extend(iter.parser.declarations.drain(), importance);
+                // We've successfully parsed a declaration, so forget about
+                // `last_parsed_property_id`. It'd be wrong to associate any
+                // following error with this property.
+                iter.parser.last_parsed_property_id = None;
             },
             Err((error, slice)) => {
                 iter.parser.declarations.clear();

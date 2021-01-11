@@ -14,13 +14,13 @@ const {
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 
-loader.lazyGetter(this, "AutocompletePopup", function() {
+loader.lazyGetter(this, "SearchBoxAutocompletePopup", function() {
   return createFactory(
-    require("devtools/client/shared/components/AutoCompletePopup")
+    require("devtools/client/shared/components/SearchBoxAutocompletePopup")
   );
 });
 loader.lazyGetter(this, "MDNLink", function() {
-  return createFactory(require("./MdnLink"));
+  return createFactory(require("devtools/client/shared/components/MdnLink"));
 });
 
 loader.lazyRequireGetter(
@@ -46,6 +46,7 @@ class SearchBox extends PureComponent {
       summary: PropTypes.string,
       summaryTooltip: PropTypes.string,
       type: PropTypes.string,
+      value: PropTypes.string,
     };
   }
 
@@ -53,7 +54,7 @@ class SearchBox extends PureComponent {
     super(props);
 
     this.state = {
-      value: "",
+      value: props.value || "",
       focused: false,
     };
 
@@ -160,15 +161,19 @@ class SearchBox extends PureComponent {
 
     switch (e.key) {
       case "ArrowDown":
+        e.preventDefault();
         autocomplete.jumpBy(1);
         break;
       case "ArrowUp":
+        e.preventDefault();
         autocomplete.jumpBy(-1);
         break;
       case "PageDown":
+        e.preventDefault();
         autocomplete.jumpBy(5);
         break;
       case "PageUp":
+        e.preventDefault();
         autocomplete.jumpBy(-5);
         break;
       case "Enter":
@@ -181,9 +186,11 @@ class SearchBox extends PureComponent {
         this.onBlur();
         break;
       case "Home":
+        e.preventDefault();
         autocomplete.jumpToTop();
         break;
       case "End":
+        e.preventDefault();
         autocomplete.jumpToBottom();
         break;
     }
@@ -239,7 +246,7 @@ class SearchBox extends PureComponent {
         onClick: this.onClearButtonClick,
       }),
       showAutocomplete &&
-        AutocompletePopup({
+        SearchBoxAutocompletePopup({
           autocompleteProvider,
           filter: value,
           onItemSelected: itemValue => this.onChange(itemValue),

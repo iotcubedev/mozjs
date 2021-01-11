@@ -51,6 +51,14 @@
     }                                                \
   }
 
+/*1201d357-8417-4926-a694-e6408fbedcf8*/
+#define NS_SHAREPICKER_CID                           \
+  {                                                  \
+    0x1201d357, 0x8417, 0x4926, {                    \
+      0xa6, 0x94, 0xe6, 0x40, 0x8f, 0xbe, 0xdc, 0xf8 \
+    }                                                \
+  }
+
 /* XXX the following CID's are not in order. This needs
    to be fixed. */
 
@@ -295,7 +303,7 @@
     }                                                \
   }
 
-#define NS_PRINTER_ENUMERATOR_CID                    \
+#define NS_PRINTER_LIST_CID                          \
   {                                                  \
     0xa6cf9129, 0x15b3, 0x11d2, {                    \
       0x93, 0x2e, 0x00, 0x80, 0x5f, 0x8a, 0xdd, 0x32 \

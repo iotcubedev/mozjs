@@ -198,13 +198,13 @@ class SearchInput extends Component<Props, State> {
   renderSpinner() {
     const { isLoading } = this.props;
     if (isLoading) {
-      return <AccessibleImage className="loader" />;
+      return <AccessibleImage className="loader spin" />;
     }
   }
 
   renderNav() {
     const { count, handleNext, handlePrev } = this.props;
-    if ((!handleNext && !handlePrev) || (!count || count == 1)) {
+    if ((!handleNext && !handlePrev) || !count || count == 1) {
       return;
     }
 

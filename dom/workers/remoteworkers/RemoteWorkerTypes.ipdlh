@@ -8,21 +8,16 @@ include IPCServiceWorkerRegistrationDescriptor;
 include PBackgroundSharedTypes;
 include URIParams;
 include DOMTypes;
+include NeckoChannelParams;
+include ProtocolTypes;
 
-using struct IPC::Permission from "mozilla/net/NeckoMessageUtils.h";
 using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
 using mozilla::StorageAccess from "mozilla/dom/ClientIPCUtils.h";
 
 namespace mozilla {
 namespace dom {
 
-struct KeyAndPermissions {
-  nsCString key;
-  Permission[] permissions;
-};
-
 struct ServiceWorkerData {
-  KeyAndPermissions[] permissionsByKey;
   IPCServiceWorkerDescriptor descriptor;
   IPCServiceWorkerRegistrationDescriptor registrationDescriptor;
   nsString cacheName;
@@ -55,7 +50,12 @@ struct RemoteWorkerData
 
   PrincipalInfo loadingPrincipalInfo;
   PrincipalInfo principalInfo;
-  PrincipalInfo storagePrincipalInfo;
+  PrincipalInfo partitionedPrincipalInfo;
+
+  bool useRegularPrincipal;
+  bool hasStorageAccessPermissionGranted;
+
+  CookieJarSettingsArgs cookieJarSettings;
 
   nsCString domain;
 
@@ -68,6 +68,11 @@ struct RemoteWorkerData
   StorageAccess storageAccess;
 
   OptionalServiceWorkerData serviceWorkerData;
+
+  nsID agentClusterId;
+
+  // Child process remote type where the worker should only run on.
+  nsCString remoteType;
 };
 
 // ErrorData/ErrorDataNote correspond to WorkerErrorReport/WorkerErrorNote
@@ -84,9 +89,9 @@ struct ErrorDataNote {
 };
 
 struct ErrorData {
+  bool isWarning;
   uint32_t lineNumber;
   uint32_t columnNumber;
-  uint32_t flags;
   nsString message;
   nsString filename;
   nsString line;

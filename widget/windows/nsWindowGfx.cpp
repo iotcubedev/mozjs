@@ -41,13 +41,12 @@ using mozilla::plugins::PluginInstanceParent;
 #include "nsIWidgetListener.h"
 #include "mozilla/Unused.h"
 #include "nsDebug.h"
-#include "nsIXULRuntime.h"
 
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
 #include "ClientLayerManager.h"
-#include "WinCompositorWidget.h"
+#include "InProcessWinCompositorWidget.h"
 
 #include "nsUXThemeData.h"
 #include "nsUXThemeConstants.h"
@@ -228,7 +227,9 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel) {
   mLastPaintBounds = mBounds;
 
 #ifdef MOZ_XUL
-  if (!aDC && (eTransparencyTransparent == mTransparencyMode)) {
+  if (!aDC &&
+      (GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_BASIC) &&
+      (eTransparencyTransparent == mTransparencyMode)) {
     // For layered translucent windows all drawing should go to memory DC and no
     // WM_PAINT messages are normally generated. To support asynchronous
     // painting we force generation of WM_PAINT messages by invalidating window
@@ -241,7 +242,7 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel) {
 
     // We're guaranteed to have a widget proxy since we called
     // GetLayerManager().
-    aDC = mCompositorWidgetDelegate->GetTransparentDC();
+    aDC = mBasicLayersSurface->GetTransparentDC();
   }
 #endif
 
@@ -433,6 +434,27 @@ bool nsWindow::OnPaint(HDC aDC, uint32_t aNestingLevel) {
   return result;
 }
 
+// This override of CreateCompositor is to add support for sending the IPC
+// call for RequesetFxrOutput as soon as the compositor for this widget is
+// available.
+void nsWindow::CreateCompositor() {
+  nsWindowBase::CreateCompositor();
+
+  if (mRequestFxrOutputPending) {
+    GetRemoteRenderer()->SendRequestFxrOutput();
+  }
+}
+
+void nsWindow::RequestFxrOutput() {
+  if (GetRemoteRenderer() != nullptr) {
+    MOZ_CRASH("RequestFxrOutput should happen before Compositor is created.");
+  } else {
+    // The compositor isn't ready, so indicate to make the IPC call when
+    // it is available.
+    mRequestFxrOutputPending = true;
+  }
+}
+
 LayoutDeviceIntSize nsWindowGfx::GetIconMetrics(IconSizeType aSizeType) {
   int32_t width = ::GetSystemMetrics(sIconMetrics[aSizeType].xMetric);
   int32_t height = ::GetSystemMetrics(sIconMetrics[aSizeType].yMetric);
@@ -454,7 +476,8 @@ nsresult nsWindowGfx::CreateIcon(imgIContainer* aContainer, bool aIsCursor,
 
   // Get the image data
   RefPtr<SourceSurface> surface = aContainer->GetFrame(
-      imgIContainer::FRAME_CURRENT, imgIContainer::FLAG_SYNC_DECODE);
+      imgIContainer::FRAME_CURRENT,
+      imgIContainer::FLAG_SYNC_DECODE | imgIContainer::FLAG_ASYNC_NOTIFY);
   NS_ENSURE_TRUE(surface, NS_ERROR_NOT_AVAILABLE);
 
   IntSize frameSize = surface->GetSize();

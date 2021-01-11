@@ -11,8 +11,6 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_media.h"
-#include "nsIObserver.h"
-#include "nsIObserverService.h"
 #include "nsWeakReference.h"
 #include "prsystem.h"
 
@@ -54,6 +52,7 @@ MemoryBlockCache::MemoryBlockCache(int64_t aContentLength)
 }
 
 MemoryBlockCache::~MemoryBlockCache() {
+  MOZ_ASSERT(gCombinedSizes >= mBuffer.Length());
   size_t sizes = static_cast<size_t>(gCombinedSizes -= mBuffer.Length());
   LOG("~MemoryBlockCache() - destroying buffer of size %zu; combined sizes now "
       "%zu",
@@ -116,6 +115,10 @@ bool MemoryBlockCache::EnsureBufferCanContain(size_t aContentLength) {
     // possibly bypass some future growths that would fit in this new capacity.
     mBuffer.SetLength(capacity);
   }
+  const size_t newSizes = gCombinedSizes += (extra + extraCapacity);
+  LOG("EnsureBufferCanContain(%zu) - buffer size %zu + requested %zu + bonus "
+      "%zu = %zu; combined sizes %zu",
+      aContentLength, initialLength, extra, extraCapacity, capacity, newSizes);
   mHasGrown = true;
   return true;
 }

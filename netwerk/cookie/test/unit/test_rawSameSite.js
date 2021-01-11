@@ -45,7 +45,7 @@ add_task(async _ => {
   if (!inChildProcess()) {
     Services.prefs.setIntPref("network.cookie.cookieBehavior", 0);
     Services.prefs.setBoolPref(
-      "network.cookieSettings.unblocked_for_testing",
+      "network.cookieJarSettings.unblocked_for_testing",
       true
     );
     Services.prefs.setBoolPref("network.cookie.sameSite.laxByDefault", true);
@@ -67,7 +67,7 @@ add_task(async _ => {
   let channel = NetUtil.newChannel({
     uri,
     loadingPrincipal: principal,
-    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
     contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
   });
 
@@ -97,12 +97,12 @@ add_task(async _ => {
       Services.obs.addObserver(observer, "cookie-saved-on-disk");
     });
 
-    cs.setCookieStringFromHttp(uri, null, null, test.cookie, null, channel);
+    cs.setCookieStringFromHttp(uri, test.cookie, channel);
 
     await promise;
 
     conn = storage.openDatabase(dbFile);
-    Assert.equal(conn.schemaVersion, 10);
+    Assert.equal(conn.schemaVersion, 12);
 
     let stmt = conn.createStatement(
       "SELECT sameSite, rawSameSite FROM moz_cookies"

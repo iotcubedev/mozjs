@@ -16,7 +16,6 @@
 #include "nsFtpProtocolHandler.h"
 #include "nsIAuthPrompt.h"
 #include "nsIAuthPromptProvider.h"
-#include "nsIEncodedChannel.h"
 #include "nsIHttpChannelInternal.h"
 #include "nsISecureBrowserUI.h"
 #include "nsIForcePendingChannel.h"
@@ -24,7 +23,6 @@
 #include "mozilla/ipc/URIUtils.h"
 #include "mozilla/Unused.h"
 #include "SerializedLoadContext.h"
-#include "nsIContentPolicy.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/dom/ContentParent.h"
@@ -38,7 +36,7 @@ using namespace mozilla::ipc;
 namespace mozilla {
 namespace net {
 
-FTPChannelParent::FTPChannelParent(const PBrowserOrId& aIframeEmbedding,
+FTPChannelParent::FTPChannelParent(dom::BrowserParent* aIframeEmbedding,
                                    nsILoadContext* aLoadContext,
                                    PBOverrideStatus aOverrideStatus)
     : mIPCClosed(false),
@@ -48,15 +46,11 @@ FTPChannelParent::FTPChannelParent(const PBrowserOrId& aIframeEmbedding,
       mDivertingFromChild(false),
       mDivertedOnStartRequest(false),
       mSuspendedForDiversion(false),
+      mBrowserParent(aIframeEmbedding),
       mUseUTF8(false) {
   nsIProtocolHandler* handler;
   CallGetService(NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX "ftp", &handler);
   MOZ_ASSERT(handler, "no ftp handler");
-
-  if (aIframeEmbedding.type() == PBrowserOrId::TPBrowserParent) {
-    mBrowserParent =
-        static_cast<dom::BrowserParent*>(aIframeEmbedding.get_PBrowserParent());
-  }
 
   mEventQ = new ChannelEventQueue(static_cast<nsIParentChannel*>(this));
 }
@@ -171,10 +165,11 @@ bool FTPChannelParent::DoAsyncOpen(const URIParams& aURI,
   return true;
 }
 
-bool FTPChannelParent::ConnectChannel(const uint32_t& channelId) {
+bool FTPChannelParent::ConnectChannel(const uint64_t& channelId) {
   nsresult rv;
 
-  LOG(("Looking for a registered channel [this=%p, id=%d]", this, channelId));
+  LOG(("Looking for a registered channel [this=%p, id=%" PRIx64 "]", this,
+       channelId));
 
   nsCOMPtr<nsIChannel> channel;
   rv = NS_LinkRedirectChannels(channelId, this, getter_AddRefs(channel));
@@ -408,6 +403,8 @@ FTPChannelParent::OnStartRequest(nsIRequest* aRequest) {
   chan->GetContentLength(&contentLength);
   nsCString contentType;
   chan->GetContentType(contentType);
+  nsresult channelStatus = NS_OK;
+  chan->GetStatus(&channelStatus);
 
   nsCString entityID;
   nsCOMPtr<nsIResumableChannel> resChan = do_QueryInterface(aRequest);
@@ -432,8 +429,9 @@ FTPChannelParent::OnStartRequest(nsIRequest* aRequest) {
   chan->GetURI(getter_AddRefs(uri));
   SerializeURI(uri, uriparam);
 
-  if (mIPCClosed || !SendOnStartRequest(mStatus, contentLength, contentType,
-                                        lastModified, entityID, uriparam)) {
+  if (mIPCClosed ||
+      !SendOnStartRequest(channelStatus, contentLength, contentType,
+                          lastModified, entityID, uriparam)) {
     return NS_ERROR_UNEXPECTED;
   }
 
@@ -479,7 +477,10 @@ FTPChannelParent::OnDataAvailable(nsIRequest* aRequest,
   nsresult rv = NS_ReadInputStreamToString(aInputStream, data, aCount);
   if (NS_FAILED(rv)) return rv;
 
-  if (mIPCClosed || !SendOnDataAvailable(mStatus, data, aOffset, aCount))
+  nsresult channelStatus = NS_OK;
+  mChannel->GetStatus(&channelStatus);
+
+  if (mIPCClosed || !SendOnDataAvailable(channelStatus, data, aOffset, aCount))
     return NS_ERROR_UNEXPECTED;
 
   return NS_OK;
@@ -492,25 +493,6 @@ FTPChannelParent::OnDataAvailable(nsIRequest* aRequest,
 NS_IMETHODIMP
 FTPChannelParent::SetParentListener(ParentChannelListener* aListener) {
   // Do not need ptr to ParentChannelListener.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-FTPChannelParent::NotifyChannelClassifierProtectionDisabled(
-    uint32_t aAcceptedReason) {
-  // One day, this should probably be filled in.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-FTPChannelParent::NotifyCookieAllowed() {
-  // One day, this should probably be filled in.
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-FTPChannelParent::NotifyCookieBlocked(uint32_t aRejectedReason) {
-  // One day, this should probably be filled in.
   return NS_OK;
 }
 
@@ -550,6 +532,17 @@ FTPChannelParent::Delete() {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+FTPChannelParent::GetRemoteType(nsACString& aRemoteType) {
+  if (!CanSend()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  dom::PContentParent* pcp = Manager()->Manager();
+  aRemoteType = static_cast<dom::ContentParent*>(pcp)->GetRemoteType();
+  return NS_OK;
+}
+
 //-----------------------------------------------------------------------------
 // FTPChannelParent::nsIInterfaceRequestor
 //-----------------------------------------------------------------------------
@@ -565,8 +558,12 @@ FTPChannelParent::GetInterface(const nsIID& uuid, void** result) {
              uuid.Equals(NS_GET_IID(nsIAuthPrompt2))) {
     nsCOMPtr<nsIAuthPromptProvider> provider(do_QueryObject(mBrowserParent));
     if (provider) {
-      return provider->GetAuthPrompt(nsIAuthPromptProvider::PROMPT_NORMAL, uuid,
-                                     result);
+      nsresult rv = provider->GetAuthPrompt(
+          nsIAuthPromptProvider::PROMPT_NORMAL, uuid, result);
+      if (NS_FAILED(rv)) {
+        return NS_ERROR_NO_INTERFACE;
+      }
+      return NS_OK;
     }
   }
 
@@ -672,7 +669,7 @@ nsresult FTPChannelParent::SuspendMessageDiversion() {
 }
 
 nsresult FTPChannelParent::ResumeMessageDiversion() {
-  // This only need to resumes mesf<<sage queue.
+  // This only need to resumes message queue.
   mEventQ->Resume();
   return NS_OK;
 }
@@ -745,38 +742,33 @@ void FTPChannelParent::StartDiversion() {
 
 class FTPFailDiversionEvent : public Runnable {
  public:
-  FTPFailDiversionEvent(FTPChannelParent* aChannelParent, nsresult aErrorCode,
-                        bool aSkipResume)
+  FTPFailDiversionEvent(FTPChannelParent* aChannelParent, nsresult aErrorCode)
       : Runnable("net::FTPFailDiversionEvent"),
         mChannelParent(aChannelParent),
-        mErrorCode(aErrorCode),
-        mSkipResume(aSkipResume) {
+        mErrorCode(aErrorCode) {
     MOZ_RELEASE_ASSERT(aChannelParent);
     MOZ_RELEASE_ASSERT(NS_FAILED(aErrorCode));
   }
   NS_IMETHOD Run() override {
-    mChannelParent->NotifyDiversionFailed(mErrorCode, mSkipResume);
+    mChannelParent->NotifyDiversionFailed(mErrorCode);
     return NS_OK;
   }
 
  private:
   RefPtr<FTPChannelParent> mChannelParent;
   nsresult mErrorCode;
-  bool mSkipResume;
 };
 
-void FTPChannelParent::FailDiversion(nsresult aErrorCode, bool aSkipResume) {
+void FTPChannelParent::FailDiversion(nsresult aErrorCode) {
   MOZ_RELEASE_ASSERT(NS_FAILED(aErrorCode));
   MOZ_RELEASE_ASSERT(mDivertingFromChild);
   MOZ_RELEASE_ASSERT(mDivertToListener);
   MOZ_RELEASE_ASSERT(mChannel);
 
-  NS_DispatchToCurrentThread(
-      new FTPFailDiversionEvent(this, aErrorCode, aSkipResume));
+  NS_DispatchToCurrentThread(new FTPFailDiversionEvent(this, aErrorCode));
 }
 
-void FTPChannelParent::NotifyDiversionFailed(nsresult aErrorCode,
-                                             bool aSkipResume) {
+void FTPChannelParent::NotifyDiversionFailed(nsresult aErrorCode) {
   MOZ_RELEASE_ASSERT(NS_FAILED(aErrorCode));
   MOZ_RELEASE_ASSERT(mDivertingFromChild);
   MOZ_RELEASE_ASSERT(mDivertToListener);

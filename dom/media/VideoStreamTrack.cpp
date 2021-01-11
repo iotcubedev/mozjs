@@ -5,8 +5,8 @@
 
 #include "VideoStreamTrack.h"
 
-#include "MediaStreamGraph.h"
-#include "MediaStreamListener.h"
+#include "MediaTrackGraph.h"
+#include "MediaTrackListener.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
 #include "VideoOutput.h"
@@ -15,11 +15,12 @@ namespace mozilla {
 namespace dom {
 
 VideoStreamTrack::VideoStreamTrack(nsPIDOMWindowInner* aWindow,
-                                   MediaStream* aInputStream, TrackID aTrackID,
+                                   mozilla::MediaTrack* aInputTrack,
                                    MediaStreamTrackSource* aSource,
                                    MediaStreamTrackState aReadyState,
+                                   bool aMuted,
                                    const MediaTrackConstraints& aConstraints)
-    : MediaStreamTrack(aWindow, aInputStream, aTrackID, aSource, aReadyState,
+    : MediaStreamTrack(aWindow, aInputTrack, aSource, aReadyState, aMuted,
                        aConstraints) {}
 
 void VideoStreamTrack::Destroy() {
@@ -53,7 +54,7 @@ void VideoStreamTrack::AddVideoOutput(VideoOutput* aOutput) {
 }
 
 void VideoStreamTrack::RemoveVideoOutput(VideoFrameContainer* aSink) {
-  for (const auto& output : nsTArray<RefPtr<VideoOutput>>(mVideoOutputs)) {
+  for (const auto& output : mVideoOutputs.Clone()) {
     if (output->mVideoFrameContainer == aSink) {
       mVideoOutputs.RemoveElement(output);
       RemoveDirectListener(output);
@@ -63,7 +64,7 @@ void VideoStreamTrack::RemoveVideoOutput(VideoFrameContainer* aSink) {
 }
 
 void VideoStreamTrack::RemoveVideoOutput(VideoOutput* aOutput) {
-  for (const auto& output : nsTArray<RefPtr<VideoOutput>>(mVideoOutputs)) {
+  for (const auto& output : mVideoOutputs.Clone()) {
     if (output == aOutput) {
       mVideoOutputs.RemoveElement(aOutput);
       RemoveDirectListener(aOutput);
@@ -81,8 +82,8 @@ void VideoStreamTrack::GetLabel(nsAString& aLabel, CallerType aCallerType) {
 }
 
 already_AddRefed<MediaStreamTrack> VideoStreamTrack::CloneInternal() {
-  return do_AddRef(new VideoStreamTrack(mWindow, mInputStream, mTrackID,
-                                        mSource, ReadyState(), mConstraints));
+  return do_AddRef(new VideoStreamTrack(mWindow, mInputTrack, mSource,
+                                        ReadyState(), Muted(), mConstraints));
 }
 
 }  // namespace dom

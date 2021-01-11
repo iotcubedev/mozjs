@@ -12,7 +12,6 @@
 
 #include "nsMimeTypeArray.h"
 #include "Navigator.h"
-#include "nsIDocShell.h"
 #include "nsIWebNavigation.h"
 #include "nsPluginHost.h"
 #include "nsPluginTags.h"
@@ -59,8 +58,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsPluginArray)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(nsPluginArray, mWindow, mPlugins,
-                                      mCTPPlugins)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK(nsPluginArray, mWindow, mPlugins,
+                                           mCTPPlugins)
 
 static void GetPluginMimeTypes(
     const nsTArray<RefPtr<nsPluginElement>>& aPlugins,
@@ -225,8 +224,8 @@ void nsPluginArray::NotifyHiddenPluginTouched(nsPluginElement* aHiddenElement) {
   HiddenPluginEventInit init;
   init.mTag = aHiddenElement->PluginTag();
   nsCOMPtr<Document> doc = aHiddenElement->GetParentObject()->GetDoc();
-  RefPtr<HiddenPluginEvent> event = HiddenPluginEvent::Constructor(
-      doc, NS_LITERAL_STRING("HiddenPlugin"), init);
+  RefPtr<HiddenPluginEvent> event =
+      HiddenPluginEvent::Constructor(doc, u"HiddenPlugin"_ns, init);
   event->SetTarget(doc);
   event->SetTrusted(true);
   event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;

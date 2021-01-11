@@ -17,10 +17,6 @@
 #include "nsReadableUtils.h"
 #include "nsNetUtil.h"
 #include "nsWindow.h"
-#include "nsILoadContext.h"
-#include "nsIServiceManager.h"
-#include "nsIURL.h"
-#include "nsIStringBundle.h"
 #include "nsEnumeratorUtils.h"
 #include "nsCRT.h"
 #include "nsString.h"
@@ -36,7 +32,6 @@ using mozilla::mscom::EnsureMTA;
 using namespace mozilla::widget;
 
 char16_t* nsFilePicker::mLastUsedUnicodeDirectory;
-char nsFilePicker::mLastUsedDirectory[MAX_PATH + 1] = {0};
 
 static const unsigned long kDialogTimerTimeout = 300;
 
@@ -47,25 +42,6 @@ typedef DWORD FILEOPENDIALOGOPTIONS;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Helper classes
-
-// Manages matching SuppressBlurEvents calls on the parent widget.
-class AutoSuppressEvents {
- public:
-  explicit AutoSuppressEvents(nsIWidget* aWidget)
-      : mWindow(static_cast<nsWindow*>(aWidget)) {
-    SuppressWidgetEvents(true);
-  }
-
-  ~AutoSuppressEvents() { SuppressWidgetEvents(false); }
-
- private:
-  void SuppressWidgetEvents(bool aFlag) {
-    if (mWindow) {
-      mWindow->SuppressBlurEvents(aFlag);
-    }
-  }
-  RefPtr<nsWindow> mWindow;
-};
 
 // Manages the current working path.
 class AutoRestoreWorkingPath {
@@ -537,8 +513,6 @@ nsresult nsFilePicker::ShowW(int16_t* aReturnVal) {
 
   *aReturnVal = returnCancel;
 
-  AutoSuppressEvents supress(mParentWidget);
-
   nsAutoString initialDir;
   if (mDisplayDirectory) mDisplayDirectory->GetPath(initialDir);
 
@@ -729,9 +703,8 @@ bool nsFilePicker::IsDefaultPathLink() {
   NS_ConvertUTF16toUTF8 ext(mDefaultFilePath);
   ext.Trim(" .", false, true);  // watch out for trailing space and dots
   ToLowerCase(ext);
-  if (StringEndsWith(ext, NS_LITERAL_CSTRING(".lnk")) ||
-      StringEndsWith(ext, NS_LITERAL_CSTRING(".pif")) ||
-      StringEndsWith(ext, NS_LITERAL_CSTRING(".url")))
+  if (StringEndsWith(ext, ".lnk"_ns) || StringEndsWith(ext, ".pif"_ns) ||
+      StringEndsWith(ext, ".url"_ns))
     return true;
   return false;
 }

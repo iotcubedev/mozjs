@@ -11,7 +11,6 @@ add_task(async function() {
   const { panel, tab, target } = await openNewTabAndApplicationPanel(TAB_URL);
   const doc = panel.panelWin.document;
 
-  // select service worker view
   selectPage(panel, "service-workers");
 
   info("Wait until the service worker appears in the application panel");
@@ -29,7 +28,8 @@ add_task(async function() {
   ok(true, "Service worker list is empty");
 
   // just in case cleanup
-  await unregisterAllWorkers(target.client);
+  await unregisterAllWorkers(target.client, doc);
+
   // close the tab
   info("Closing the tab.");
   await BrowserTestUtils.removeTab(tab);

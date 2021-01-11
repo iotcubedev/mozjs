@@ -12,10 +12,11 @@
 
 typedef (BufferSource or Blob or USVString) BlobPart;
 
-[Constructor(optional sequence<BlobPart> blobParts,
-             optional BlobPropertyBag options = {}),
- Exposed=(Window,Worker)]
+[Exposed=(Window,Worker)]
 interface Blob {
+  [Throws]
+  constructor(optional sequence<BlobPart> blobParts,
+              optional BlobPropertyBag options = {});
 
   [GetterThrows]
   readonly attribute unsigned long long size;
@@ -30,16 +31,16 @@ interface Blob {
              optional DOMString contentType);
 
   // read from the Blob.
-  [NewObject] ReadableStream stream();
+  [NewObject, Throws] ReadableStream stream();
   [NewObject] Promise<USVString> text();
   [NewObject] Promise<ArrayBuffer> arrayBuffer();
 };
 
-enum EndingTypes { "transparent", "native" };
+enum EndingType { "transparent", "native" };
 
 dictionary BlobPropertyBag {
   DOMString type = "";
-  EndingTypes endings = "transparent";
+  EndingType endings = "transparent";
 };
 
 partial interface Blob {

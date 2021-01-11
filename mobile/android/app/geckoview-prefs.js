@@ -19,16 +19,12 @@ pref("privacy.trackingprotection.pbmode.enabled", false);
 
 pref("dom.ipc.keepProcessesAlive.web", 1);
 pref("dom.ipc.processCount", 1);
-pref("dom.ipc.processHangMonitor", true);
 pref("dom.ipc.processPrelaunch.enabled", false);
 
-// Enable hang reports
-pref("dom.ipc.reportProcessHangs", true);
-
-// Tell Telemetry that we're in GeckoView mode.
-pref("toolkit.telemetry.isGeckoViewMode", true);
 // Disable the Telemetry Event Ping
 pref("toolkit.telemetry.eventping.enabled", false);
+// Don't create the hidden window during startup.
+pref("toolkit.lazyHiddenWindow", true);
 
 pref("geckoview.console.enabled", false);
 
@@ -38,20 +34,20 @@ pref("geckoview.console.enabled", false);
   pref("geckoview.logging", "Debug");
 #endif
 
+// Enable WebShare support.
+pref("dom.webshare.enabled", true);
+
 // Enable capture attribute for file input.
 pref("dom.capture.enabled", true);
 
 // Disable Web Push until we get it working
-pref("dom.push.enabled", false);
+pref("dom.push.enabled", true);
 
 // enable external storage API
 pref("dom.storageManager.enabled", true);
 
 // enable Visual Viewport API
 pref("dom.visualviewport.enabled", true);
-
-// Use containerless scrolling.
-pref("layout.scroll.root-frame-containers", false);
 
 // Inherit locale from the OS, used for multi-locale builds
 pref("intl.locale.requested", "");
@@ -74,3 +70,22 @@ pref("ui.android.mouse_as_touch", 2);
 
 // Fenix is currently not whitelisted for Web Authentication
 pref("security.webauth.webauthn_enable_android_fido2", false);
+pref("security.webauth.webauthn", false);
+
+// Enable autoplay permission prompts
+pref("media.geckoview.autoplay.request", true);
+
+// Enable EME permission prompts
+pref("media.eme.require-app-approval", true);
+
+// Enable the Process Priority Manager
+pref("dom.ipc.processPriorityManager.enabled", true);
+
+pref("signon.debug", false);
+pref("signon.showAutoCompleteFooter", true);
+pref("security.insecure_field_warning.contextual.enabled", true);
+pref("toolkit.autocomplete.delegate", true);
+
+// Android doesn't support the new sync storage yet, we will have our own in
+// Bug 1625257.
+pref("webextensions.storage.sync.kinto", true);

@@ -6,17 +6,18 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 """ Usage:
-    make_intl_data.py langtags [ldmlSupplemental.dtd supplementalMetadata.xml likelySubtags.xml]
+    make_intl_data.py langtags [cldr_core.zip]
     make_intl_data.py tzdata
     make_intl_data.py currency
-    make_intl_data.py unicode-ext
+    make_intl_data.py units
+    make_intl_data.py numbering
 
 
     Target "langtags":
-    This script extracts information about mappings between deprecated and
-    current Unicode BCP 47 locale identifiers from CLDR and converts it to
-    JavaScript object definitions in LangTagMappingsGenerated.js. The
-    definitions are used in Intl.js.
+    This script extracts information about 1) mappings between deprecated and
+    current Unicode BCP 47 locale identifiers, and 2) deprecated and current
+    BCP 47 Unicode extension value from CLDR, and converts it to C++ mapping
+    code in LanguageTagGenerated.cpp. The code is used in LanguageTag.cpp.
 
 
     Target "tzdata":
@@ -28,21 +29,26 @@
     Target "currency":
     Generates the mapping from currency codes to decimal digits used for them.
 
-    Target "unicode-ext":
-    Generates the mapping from deprecated BCP 47 Unicode extension values to
-    their preferred values.
+
+    Target "units":
+    Generate source and test files using the list of so-called "sanctioned unit
+    identifiers" and verifies that the ICU data filter includes these units.
+
+
+    Target "numbering":
+    Generate source and test files using the list of numbering systems with
+    simple digit mappings and verifies that it's in sync with ICU/CLDR.
 """
 
 from __future__ import print_function
-import contextlib
 import os
 import re
 import io
-import shutil
-import subprocess
+import json
 import sys
 import tarfile
 import tempfile
+import yaml
 from contextlib import closing
 from functools import partial, total_ordering
 from itertools import chain, groupby, tee
@@ -50,13 +56,22 @@ from operator import attrgetter, itemgetter
 from zipfile import ZipFile
 
 if sys.version_info.major == 2:
-    from itertools import ifilter as filter, ifilterfalse as filterfalse, imap as map
+    from itertools import ifilter as filter, ifilterfalse as filterfalse, imap as map,\
+                          izip_longest as zip_longest
     from urllib2 import urlopen, Request as UrlRequest
-    from urlparse import urlsplit, urlunsplit
+    from urlparse import urlsplit
 else:
-    from itertools import filterfalse
+    from itertools import filterfalse, zip_longest
     from urllib.request import urlopen, Request as UrlRequest
-    from urllib.parse import urlsplit, urlunsplit
+    from urllib.parse import urlsplit
+
+
+# From https://docs.python.org/3/library/itertools.html
+def grouper(iterable, n, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+    args = [iter(iterable)] * n
+    return zip_longest(*args, fillvalue=fillvalue)
 
 
 def writeMappingHeader(println, description, source, url):
@@ -78,42 +93,137 @@ def writeMappingsVar(println, mapping, name, description, source, url):
     println(u"")
     writeMappingHeader(println, description, source, url)
     println(u"var {0} = {{".format(name))
-    for key in sorted(mapping):
-        if not isinstance(mapping[key], dict):
-            value = mapping[key]
-            if isinstance(value, bool):
-                value = "true" if value else "false"
-            else:
-                value = '"{0}"'.format(value)
-        else:
-            preferred = mapping[key]["preferred"]
-            prefix = mapping[key]["prefix"]
-            if key != preferred:
-                raise Exception(
-                    "Expected '{0}' matches preferred locale '{1}'".format(key, preferred))
-            value = '"{0}"'.format(prefix)
-        println(u'    "{0}": {1},'.format(key, value))
+    for (key, value) in sorted(mapping.items(), key=itemgetter(0)):
+        println(u'    "{0}": "{1}",'.format(key, value))
     println(u"};")
 
 
-def writeUpdateLocaleIdMappingsFunction(println,
-                                        complex_language_mappings,
-                                        complex_region_mappings,
-                                        description, source, url):
-    """ Writes a function definition that performs language tag mapping. """
+def writeMappingsBinarySearch(println, fn_name, type_name, name, validate_fn, validate_case_fn,
+                              mappings, tag_maxlength, description, source, url):
+    """ Emit code to perform a binary search on language tag subtags.
+
+        Uses the contents of |mapping|, which can either be a dictionary or set,
+        to emit a mapping function to find subtag replacements.
+    """
     println(u"")
     writeMappingHeader(println, description, source, url)
-    println(u"""\
-/* eslint-disable complexity */
-function updateLocaleIdMappings(tag) {
-    assert(IsObject(tag), "tag is an object");
+    println(u"""
+bool js::intl::LanguageTag::{0}({1} {2}) {{
+  MOZ_ASSERT({3}({2}.span()));
+  MOZ_ASSERT({4}({2}.span()));
+""".format(fn_name, type_name, name, validate_fn, validate_case_fn).strip())
 
-    // Replace deprecated language tags with their preferred values.
-    var language = tag.language;
-    if (hasOwn(language, languageMappings)) {
-        tag.language = languageMappings[language];
-    } else if (hasOwn(language, complexLanguageMappings)) {
-        switch (language) {""")
+    def write_array(subtags, name, length, fixed):
+        if fixed:
+            println(u"    static const char {}[{}][{}] = {{".format(name, len(subtags),
+                                                                    length + 1))
+        else:
+            println(u"    static const char* {}[{}] = {{".format(name, len(subtags)))
+
+        # Group in pairs of ten to not exceed the 80 line column limit.
+        for entries in grouper(subtags, 10):
+            entries = (u"\"{}\"".format(tag).rjust(length + 2)
+                       for tag in entries if tag is not None)
+            println(u"      {},".format(u", ".join(entries)))
+
+        println(u"    };")
+
+    trailing_return = True
+
+    # Sort the subtags by length. That enables using an optimized comparator
+    # for the binary search, which only performs a single |memcmp| for multiple
+    # of two subtag lengths.
+    mappings_keys = mappings.keys() if type(mappings) == dict else mappings
+    for (length, subtags) in groupby(sorted(mappings_keys, key=len), len):
+        # Omit the length check if the current length is the maximum length.
+        if length != tag_maxlength:
+            println(u"""
+  if ({}.length() == {}) {{
+""".format(name, length).rstrip("\n"))
+        else:
+            trailing_return = False
+            println(u"""
+  {
+""".rstrip("\n"))
+
+        # The subtags need to be sorted for binary search to work.
+        subtags = sorted(subtags)
+
+        def equals(subtag):
+            return u"""{}.equalTo("{}")""".format(name, subtag)
+
+        # Don't emit a binary search for short lists.
+        if len(subtags) == 1:
+            if type(mappings) == dict:
+                println(u"""
+    if ({}) {{
+      {}.set("{}");
+      return true;
+    }}
+    return false;
+""".format(equals(subtags[0]), name, mappings[subtags[0]]).strip("\n"))
+            else:
+                println(u"""
+    return {};
+""".format(equals(subtags[0])).strip("\n"))
+        elif len(subtags) <= 4:
+            if type(mappings) == dict:
+                for subtag in subtags:
+                    println(u"""
+    if ({}) {{
+      {}.set("{}");
+      return true;
+    }}
+""".format(equals(subtag), name, mappings[subtag]).strip("\n"))
+
+                println(u"""
+    return false;
+""".strip("\n"))
+            else:
+                cond = (equals(subtag) for subtag in subtags)
+                cond = (u" ||\n" + u" " * (4 + len("return "))).join(cond)
+                println(u"""
+    return {};
+""".format(cond).strip("\n"))
+        else:
+            write_array(subtags, name + "s", length, True)
+
+            if type(mappings) == dict:
+                write_array([mappings[k] for k in subtags], u"aliases", length, False)
+
+                println(u"""
+    if (const char* replacement = SearchReplacement({0}s, aliases, {0})) {{
+      {0}.set(mozilla::MakeStringSpan(replacement));
+      return true;
+    }}
+    return false;
+""".format(name).rstrip())
+            else:
+                println(u"""
+    return HasReplacement({0}s, {0});
+""".format(name).rstrip())
+
+        println(u"""
+  }
+""".strip("\n"))
+
+    if trailing_return:
+        println(u"""
+  return false;""")
+
+    println(u"""
+}""".lstrip("\n"))
+
+
+def writeComplexLanguageTagMappings(println, complex_language_mappings,
+                                    description, source, url):
+    println(u"")
+    writeMappingHeader(println, description, source, url)
+    println(u"""
+void js::intl::LanguageTag::performComplexLanguageMappings() {
+  MOZ_ASSERT(IsStructurallyValidLanguageTag(language().span()));
+  MOZ_ASSERT(IsCanonicallyCasedLanguageTag(language().span()));
+""".lstrip())
 
     # Merge duplicate language entries.
     language_aliases = {}
@@ -126,6 +236,7 @@ function updateLocaleIdMappings(tag) {
         else:
             language_aliases[key].append(deprecated_language)
 
+    first_language = True
     for (deprecated_language, (language, script, region)) in (
         sorted(complex_language_mappings.items(), key=itemgetter(0))
     ):
@@ -133,43 +244,48 @@ function updateLocaleIdMappings(tag) {
         if deprecated_language in language_aliases[key]:
             continue
 
-        for lang in [deprecated_language] + language_aliases[key]:
-            println(u"""
-          case "{}":
-            """.format(lang).rstrip().strip("\n"))
+        if_kind = u"if" if first_language else u"else if"
+        first_language = False
+
+        cond = (u"language().equalTo(\"{}\")".format(lang)
+                for lang in [deprecated_language] + language_aliases[key])
+        cond = (u" ||\n" + u" " * (2 + len(if_kind) + 2)).join(cond)
 
         println(u"""
-            tag.language = "{}";
-        """.format(language).rstrip().strip("\n"))
+  {} ({}) {{""".format(if_kind, cond).strip("\n"))
+
+        println(u"""
+    setLanguage("{}");""".format(language).strip("\n"))
+
         if script is not None:
             println(u"""
-            if (tag.script === undefined)
-                tag.script = "{}";
-            """.format(script).rstrip().strip("\n"))
+    if (script().missing()) {{
+      setScript("{}");
+    }}""".format(script).strip("\n"))
         if region is not None:
             println(u"""
-            if (tag.region === undefined)
-                tag.region = "{}";
-            """.format(region).rstrip().strip("\n"))
+    if (region().missing()) {{
+      setRegion("{}");
+    }}""".format(region).strip("\n"))
         println(u"""
-            break;
-        """.rstrip().strip("\n"))
+  }""".strip("\n"))
 
     println(u"""
-          default:
-            assert(false, "language not handled: " + language);
-        }
-    }
+}
+""".strip("\n"))
 
-    // No script replacements are currently present.
 
-    // Replace deprecated subtags with their preferred values.
-    var region = tag.region;
-    if (region !== undefined) {
-        if (hasOwn(region, regionMappings)) {
-            tag.region = regionMappings[region];
-        } else if (hasOwn(region, complexRegionMappings)) {
-            switch (region) {""".lstrip("\n"))
+def writeComplexRegionTagMappings(println, complex_region_mappings,
+                                  description, source, url):
+    println(u"")
+    writeMappingHeader(println, description, source, url)
+    println(u"""
+void js::intl::LanguageTag::performComplexRegionMappings() {
+  MOZ_ASSERT(IsStructurallyValidLanguageTag(language().span()));
+  MOZ_ASSERT(IsCanonicallyCasedLanguageTag(language().span()));
+  MOZ_ASSERT(IsStructurallyValidRegionTag(region().span()));
+  MOZ_ASSERT(IsCanonicallyCasedRegionTag(region().span()));
+""".lstrip())
 
     # |non_default_replacements| is a list and hence not hashable. Convert it
     # to a string to get a proper hashable value.
@@ -187,6 +303,7 @@ function updateLocaleIdMappings(tag) {
         else:
             region_aliases[key].append(deprecated_region)
 
+    first_region = True
     for (deprecated_region, (default, non_default_replacements)) in (
         sorted(complex_region_mappings.items(), key=itemgetter(0))
     ):
@@ -194,91 +311,192 @@ function updateLocaleIdMappings(tag) {
         if deprecated_region in region_aliases[key]:
             continue
 
-        for region in [deprecated_region] + region_aliases[key]:
-            println(u"""
-              case "{}":
-            """.format(region).rstrip().strip("\n"))
+        if_kind = u"if" if first_region else u"else if"
+        first_region = False
 
-        for (language, script, region) in sorted(non_default_replacements, key=itemgetter(0)):
-            if script is None:
-                println(u"""
-                if (tag.language === "{}") {{
-                """.format(language).rstrip().strip("\n"))
-            else:
-                println(u"""
-                if (tag.language === "{}" && tag.script === "{}") {{
-                """.format(language, script).rstrip().strip("\n"))
-            println(u"""
-                    tag.region = "{}";
-                    break;
-                }}
-            """.format(region).rstrip().strip("\n"))
+        cond = (u"region().equalTo(\"{}\")".format(region)
+                for region in [deprecated_region] + region_aliases[key])
+        cond = (u" ||\n" + u" " * (2 + len(if_kind) + 2)).join(cond)
 
         println(u"""
-                tag.region = "{}";
-                break;
-        """.format(default).rstrip().strip("\n"))
+  {} ({}) {{""".format(if_kind, cond).strip("\n"))
+
+        replacement_regions = sorted({region for (_, _, region) in non_default_replacements})
+
+        first_case = True
+        for replacement_region in replacement_regions:
+            replacement_language_script = sorted((language, script)
+                                                 for (language, script, region) in (
+                                                     non_default_replacements
+                                                 )
+                                                 if region == replacement_region)
+
+            if_kind = u"if" if first_case else u"else if"
+            first_case = False
+
+            def compare_tags(language, script):
+                if script is None:
+                    return u"language().equalTo(\"{}\")".format(language)
+                return u"(language().equalTo(\"{}\") && script().equalTo(\"{}\"))".format(
+                    language, script)
+
+            cond = (compare_tags(language, script)
+                    for (language, script) in replacement_language_script)
+            cond = (u" ||\n" + u" " * (4 + len(if_kind) + 2)).join(cond)
+
+            println(u"""
+    {} ({}) {{
+      setRegion("{}");
+    }}""".format(if_kind, cond, replacement_region).rstrip().strip("\n"))
+
+        println(u"""
+    else {{
+      setRegion("{}");
+    }}
+  }}""".format(default).rstrip().strip("\n"))
 
     println(u"""
-              default:
-                assert(false, "region not handled: " + region);
-            }
-        }
-
-        // No variant replacements are currently present.
-        // No extension replacements are currently present.
-        // Private use sequences are left as is.
-
-    }
 }
-/* eslint-enable complexity */
 """.strip("\n"))
 
 
-def writeGrandfatheredMappingsFunction(println,
-                                       grandfathered_mappings,
+def writeVariantTagMappings(println, variant_mappings, description, source,
+                            url):
+    """ Writes a function definition that maps variant subtags. """
+    println(u"""
+static const char* ToCharPointer(const char* str) {
+  return str;
+}
+
+static const char* ToCharPointer(const js::UniqueChars& str) {
+  return str.get();
+}
+
+template <typename T, typename U = T>
+static bool IsLessThan(const T& a, const U& b) {
+  return strcmp(ToCharPointer(a), ToCharPointer(b)) < 0;
+}
+""")
+    writeMappingHeader(println, description, source, url)
+    println(u"""
+bool js::intl::LanguageTag::performVariantMappings(JSContext* cx) {
+  // The variant subtags need to be sorted for binary search.
+  MOZ_ASSERT(std::is_sorted(variants_.begin(), variants_.end(),
+                            IsLessThan<decltype(variants_)::ElementType>));
+
+  auto insertVariantSortedIfNotPresent = [&](const char* variant) {
+    auto* p = std::lower_bound(variants_.begin(), variants_.end(), variant,
+                               IsLessThan<decltype(variants_)::ElementType,
+                                          decltype(variant)>);
+
+    // Don't insert the replacement when already present.
+    if (p != variants_.end() && strcmp(p->get(), variant) == 0) {
+      return true;
+    }
+
+    // Insert the preferred variant in sort order.
+    auto preferred = DuplicateString(cx, variant);
+    if (!preferred) {
+      return false;
+    }
+    return !!variants_.insert(p, std::move(preferred));
+  };
+
+  for (size_t i = 0; i < variants_.length(); ) {
+    auto& variant = variants_[i];
+    MOZ_ASSERT(IsCanonicallyCasedVariantTag(mozilla::MakeStringSpan(variant.get())));
+""".lstrip())
+
+    first_variant = True
+
+    for (deprecated_variant, (type, replacement)) in (
+        sorted(variant_mappings.items(), key=itemgetter(0))
+    ):
+        if_kind = u"if" if first_variant else u"else if"
+        first_variant = False
+
+        println(u"""
+    {} (strcmp(variant.get(), "{}") == 0) {{
+      variants_.erase(variants_.begin() + i);
+""".format(if_kind, deprecated_variant).strip("\n"))
+
+        if type == "language":
+            println(u"""
+      setLanguage("{}");
+""".format(replacement).strip("\n"))
+        elif type == "region":
+            println(u"""
+      setRegion("{}");
+""".format(replacement).strip("\n"))
+        else:
+            assert type == "variant"
+            println(u"""
+      if (!insertVariantSortedIfNotPresent("{}")) {{
+        return false;
+      }}
+""".format(replacement).strip("\n"))
+
+        println(u"""
+    }
+""".strip("\n"))
+
+    println(u"""
+    else {
+      i++;
+    }
+  }
+  return true;
+}
+""".strip("\n"))
+
+
+def writeGrandfatheredMappingsFunction(println, grandfathered_mappings,
                                        description, source, url):
     """ Writes a function definition that maps grandfathered language tags. """
     println(u"")
     writeMappingHeader(println, description, source, url)
     println(u"""\
-function updateGrandfatheredMappings(tag) {
-    assert(IsObject(tag), "tag is an object");
+bool js::intl::LanguageTag::updateGrandfatheredMappings(JSContext* cx) {
+  // We're mapping regular grandfathered tags to non-grandfathered form here.
+  // Other tags remain unchanged.
+  //
+  // regular       = "art-lojban"
+  //               / "cel-gaulish"
+  //               / "no-bok"
+  //               / "no-nyn"
+  //               / "zh-guoyu"
+  //               / "zh-hakka"
+  //               / "zh-min"
+  //               / "zh-min-nan"
+  //               / "zh-xiang"
+  //
+  // Therefore we can quickly exclude most tags by checking every
+  // |unicode_locale_id| subcomponent for characteristics not shared by any of
+  // the regular grandfathered (RG) tags:
+  //
+  //   * Real-world |unicode_language_subtag|s are all two or three letters,
+  //     so don't waste time running a useless |language.length > 3| fast-path.
+  //   * No RG tag has a "script"-looking component.
+  //   * No RG tag has a "region"-looking component.
+  //   * The RG tags that match |unicode_locale_id| (art-lojban, cel-gaulish,
+  //     zh-guoyu, zh-hakka, zh-xiang) have exactly one "variant". (no-bok,
+  //     no-nyn, zh-min, and zh-min-nan require BCP47's extlang subtag
+  //     that |unicode_locale_id| doesn't support.)
+  //   * No RG tag contains |extensions| or |pu_extensions|.
+  if (script().present() ||
+      region().present() ||
+      variants().length() != 1 ||
+      extensions().length() != 0 ||
+      privateuse()) {
+    return true;
+  }
 
-    // We're mapping regular grandfathered tags to non-grandfathered form here.
-    // Other tags remain unchanged.
-    //
-    // regular       = "art-lojban"
-    //               / "cel-gaulish"
-    //               / "no-bok"
-    //               / "no-nyn"
-    //               / "zh-guoyu"
-    //               / "zh-hakka"
-    //               / "zh-min"
-    //               / "zh-min-nan"
-    //               / "zh-xiang"
-    //
-    // Therefore we can quickly exclude most tags by checking every
-    // |unicode_locale_id| subcomponent for characteristics not shared by any of
-    // the regular grandfathered (RG) tags:
-    //
-    //   * Real-world |unicode_language_subtag|s are all two or three letters,
-    //     so don't waste time running a useless |language.length > 3| fast-path.
-    //   * No RG tag has a "script"-looking component.
-    //   * No RG tag has a "region"-looking component.
-    //   * The RG tags that match |unicode_locale_id| (art-lojban, cel-gaulish,
-    //     zh-guoyu, zh-hakka, zh-xiang) have exactly one "variant". (no-bok,
-    //     no-nyn, zh-min, and zh-min-nan require BCP47's extlang subtag
-    //     that |unicode_locale_id| doesn't support.)
-    //   * No RG tag contains |extensions| or |pu_extensions|.
-    if (tag.script !== undefined ||
-        tag.region !== undefined ||
-        tag.variants.length !== 1 ||
-        tag.extensions.length !== 0 ||
-        tag.privateuse !== undefined)
-    {
-        return;
-    }""")
+  MOZ_ASSERT(IsCanonicallyCasedLanguageTag(language().span()));
+  MOZ_ASSERT(IsCanonicallyCasedVariantTag(mozilla::MakeStringSpan(variants()[0].get())));
+
+  auto variantEqualTo = [this](const char* variant) {
+    return strcmp(variants()[0].get(), variant) == 0;
+  };""")
 
     # From Unicode BCP 47 locale identifier <https://unicode.org/reports/tr35/>.
     #
@@ -339,60 +557,57 @@ function updateGrandfatheredMappings(tag) {
         modern_privateuse = modern_match.group("privateuse")
 
         println(u"""
-    // {} -> {}
+  // {} -> {}
 """.format(tag, modern).rstrip())
 
         println(u"""
-    {}if (tag.language === "{}" && tag.variants[0] === "{}") {{
-        """.format("" if is_first else "else ", tag_language, tag_variant).rstrip().strip("\n"))
+  {}if (language().equalTo("{}") && variantEqualTo("{}")) {{
+        """.format("" if is_first else "else ",
+                   tag_language,
+                   tag_variant).rstrip().strip("\n"))
 
         is_first = False
 
         println(u"""
-        tag.language = "{}";
+    setLanguage("{}");
         """.format(modern_language).rstrip().strip("\n"))
 
         if modern_script is not None:
             println(u"""
-        tag.script = "{}";
-        """.format(modern_script).rstrip().strip("\n"))
+    setScript("{}");
+            """.format(modern_script).rstrip().strip("\n"))
 
         if modern_region is not None:
             println(u"""
-        tag.region = "{}";
-        """.format(modern_region).rstrip().strip("\n"))
+    setRegion("{}");
+            """.format(modern_region).rstrip().strip("\n"))
 
-        if modern_variants is not None:
-            println(u"""
-        tag.variants = {};
-        """.format(sorted(modern_variants[1:].split("-"))).rstrip().strip("\n"))
-        else:
-            println(u"""
-        tag.variants.length = 0;
+        assert modern_variants is None, (
+            "all regular grandfathered tags' modern forms do not contain variant subtags")
+
+        println(u"""
+    clearVariants();
         """.rstrip().strip("\n"))
 
         if modern_privateuse is not None:
             println(u"""
-        tag.privateuse = "{}";
-        """.format(modern_privateuse).rstrip().strip("\n"))
+    auto privateuse = DuplicateString(cx, "{}");
+    if (!privateuse) {{
+      return false;
+    }}
+    setPrivateuse(std::move(privateuse));
+        """.format(modern_privateuse).rstrip().rstrip("\n"))
 
         println(u"""
-    }""".rstrip().strip("\n"))
+    return true;
+  }""".rstrip().strip("\n"))
 
     println(u"""
-}""".lstrip("\n"))
+  return true;
+}""")
 
 
-@contextlib.contextmanager
-def TemporaryDirectory():
-    tmpDir = tempfile.mkdtemp()
-    try:
-        yield tmpDir
-    finally:
-        shutil.rmtree(tmpDir)
-
-
-def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, likely_subtags_file):
+def readSupplementalData(core_file):
     """ Reads CLDR Supplemental Data and extracts information for Intl.js.
 
         Information extracted:
@@ -402,19 +617,11 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
         - complexLanguageMappings: mappings from language subtags with complex rules
         - regionMappings: mappings from region subtags to preferred subtags
         - complexRegionMappings: mappings from region subtags with complex rules
+        - variantMappings: mappings from variant subtags to preferred subtags
         - likelySubtags: likely subtags used for generating test data only
         Returns these mappings as dictionaries.
     """
     import xml.etree.ElementTree as ET
-
-    # <!ATTLIST version cldrVersion CDATA #FIXED "36" >
-    re_cldr_version = re.compile(
-        r"""<!ATTLIST version cldrVersion CDATA #FIXED "(?P<version>[\d|\.]+)" >""")
-
-    with io.open(supplemental_dtd_file, mode="r", encoding="utf-8") as f:
-        version_match = re_cldr_version.search(f.read())
-        assert version_match is not None, "CLDR version string not found"
-        cldr_version = version_match.group("version")
 
     # From Unicode BCP 47 locale identifier <https://unicode.org/reports/tr35/>.
     re_unicode_language_id = re.compile(
@@ -451,6 +658,14 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
         ^
         # unicode_region_subtag = (alpha{2} | digit{3})
         ([a-z]{2}|[0-9]{3})
+        $
+        """, re.IGNORECASE | re.VERBOSE)
+
+    re_unicode_variant_subtag = re.compile(
+        r"""
+        ^
+        # unicode_variant_subtag = (alphanum{5,8} | digit alphanum{3})
+        ([a-z0-9]{5,8}|(?:[0-9][a-z0-9]{3}))
         $
         """, re.IGNORECASE | re.VERBOSE)
 
@@ -502,6 +717,11 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
     # replacement, e.g. "SU" -> ("RU", ["AM", "AZ", "BY", ...]).
     complex_region_mappings = {}
 
+    # Dictionary of aliased variant subtags to a tuple of preferred replacement
+    # type and replacement, e.g. "arevela" -> ("language", "hy") or
+    # "aaland" -> ("region", "AX") or "heploc" -> ("variant", "alalc97").
+    variant_mappings = {}
+
     # Dictionary of grandfathered mappings to preferred values.
     grandfathered_mappings = {}
 
@@ -521,7 +741,7 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
                 script.title() if script else None,
                 region.upper() if region else None)
 
-    tree = ET.parse(supplemental_metadata_file)
+    tree = ET.parse(core_file.open("common/supplemental/supplementalMetadata.xml"))
 
     for language_alias in tree.iterfind(".//languageAlias"):
         type = bcp47_id(language_alias.get("type"))
@@ -536,6 +756,8 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
         # entries which have additional subtags.
         if re_unicode_language_subtag.match(type) is None:
             continue
+
+        assert type.islower()
 
         if re_unicode_language_subtag.match(replacement) is not None:
             # Canonical case for language subtags is lower-case.
@@ -560,6 +782,8 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
         if re_unicode_region_subtag.match(type) is None:
             continue
 
+        assert type.isupper() or type.isdigit()
+
         if re_unicode_region_subtag.match(replacement) is not None:
             # Canonical case for region subtags is upper-case.
             region_mappings[type] = replacement.upper()
@@ -571,7 +795,34 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
             ), "{} invalid region subtags".format(replacement)
             complex_region_mappings[type] = replacements
 
-    tree = ET.parse(likely_subtags_file)
+    for variant_alias in tree.iterfind(".//variantAlias"):
+        type = variant_alias.get("type")
+        replacement = variant_alias.get("replacement")
+
+        assert re_unicode_variant_subtag.match(type) is not None, (
+               "{} invalid variant subtag".format(type))
+
+        # Normalize the case, because some variants are in upper case.
+        type = type.lower()
+
+        # The replacement can be a language, a region, or a variant subtag.
+        # Language and region subtags are case normalized, variant subtags can
+        # be in any case.
+
+        if re_unicode_language_subtag.match(replacement) is not None and replacement.islower():
+            variant_mappings[type] = ("language", replacement)
+
+        elif re_unicode_region_subtag.match(replacement) is not None:
+            assert replacement.isupper() or replacement.isdigit(), (
+                   "{} invalid variant subtag replacement".format(replacement))
+            variant_mappings[type] = ("region", replacement)
+
+        else:
+            assert re_unicode_variant_subtag.match(replacement) is not None, (
+                   "{} invalid variant subtag replacement".format(replacement))
+            variant_mappings[type] = ("variant", replacement.lower())
+
+    tree = ET.parse(core_file.open("common/supplemental/likelySubtags.xml"))
 
     likely_subtags = {}
 
@@ -632,18 +883,273 @@ def readSupplementalData(supplemental_dtd_file, supplemental_metadata_file, like
         else:
             region_mappings[deprecated_region] = default
 
-    return {"version": cldr_version,
-            "grandfatheredMappings": grandfathered_mappings,
+    return {"grandfatheredMappings": grandfathered_mappings,
             "languageMappings": language_mappings,
             "complexLanguageMappings": complex_language_mappings,
             "regionMappings": region_mappings,
             "complexRegionMappings": complex_region_mappings_final,
+            "variantMappings": variant_mappings,
             "likelySubtags": likely_subtags,
             }
 
 
+def readUnicodeExtensions(core_file):
+    import xml.etree.ElementTree as ET
+
+    # Match all xml-files in the BCP 47 directory.
+    bcpFileRE = re.compile(r"^common/bcp47/.+\.xml$")
+
+    # https://www.unicode.org/reports/tr35/#Unicode_locale_identifier
+    #
+    # type = alphanum{3,8} (sep alphanum{3,8})* ;
+    typeRE = re.compile(r"^[a-z0-9]{3,8}(-[a-z0-9]{3,8})*$")
+
+    # Mapping from Unicode extension types to dict of deprecated to
+    # preferred values.
+    mapping = {
+        # Unicode BCP 47 U Extension
+        "u": {},
+
+        # Unicode BCP 47 T Extension
+        "t": {},
+    }
+
+    def readBCP47File(file):
+        tree = ET.parse(file)
+        for keyword in tree.iterfind(".//keyword/key"):
+            extension = keyword.get("extension", "u")
+            assert extension == "u" or extension == "t", (
+                   "unknown extension type: {}".format(extension))
+
+            extension_name = keyword.get("name")
+
+            for type in keyword.iterfind("type"):
+                # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
+                #
+                # The key or type name used by Unicode locale extension with 'u' extension
+                # syntax or the 't' extensions syntax. When alias below is absent, this name
+                # can be also used with the old style "@key=type" syntax.
+                name = type.get("name")
+
+                # Ignore the special name:
+                # - <https://unicode.org/reports/tr35/#CODEPOINTS>
+                # - <https://unicode.org/reports/tr35/#REORDER_CODE>
+                # - <https://unicode.org/reports/tr35/#RG_KEY_VALUE>
+                # - <https://unicode.org/reports/tr35/#SUBDIVISION_CODE>
+                # - <https://unicode.org/reports/tr35/#PRIVATE_USE>
+                if name in ("CODEPOINTS", "REORDER_CODE", "RG_KEY_VALUE", "SUBDIVISION_CODE",
+                            "PRIVATE_USE"):
+                    continue
+
+                # All other names should match the 'type' production.
+                assert typeRE.match(name) is not None, (
+                       "{} matches the 'type' production".format(name))
+
+                # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
+                #
+                # The preferred value of the deprecated key, type or attribute element.
+                # When a key, type or attribute element is deprecated, this attribute is
+                # used for specifying a new canonical form if available.
+                preferred = type.get("preferred")
+
+                # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
+                #
+                # The BCP 47 form is the canonical form, and recommended. Other aliases are
+                # included only for backwards compatibility.
+                alias = type.get("alias")
+
+                # <https://unicode.org/reports/tr35/#Canonical_Unicode_Locale_Identifiers>
+                #
+                # Use the bcp47 data to replace keys, types, tfields, and tvalues by their
+                # canonical forms. See Section 3.6.4 U Extension Data Files) and Section
+                # 3.7.1 T Extension Data Files. The aliases are in the alias attribute
+                # value, while the canonical is in the name attribute value.
+
+                # 'preferred' contains the new preferred name, 'alias' the compatibility
+                # name, but then there's this entry where 'preferred' and 'alias' are the
+                # same. So which one to choose? Assume 'preferred' is the actual canonical
+                # name.
+                #
+                # <type name="islamicc"
+                #       description="Civil (algorithmic) Arabic calendar"
+                #       deprecated="true"
+                #       preferred="islamic-civil"
+                #       alias="islamic-civil"/>
+
+                if preferred is not None:
+                    assert typeRE.match(preferred), preferred
+                    mapping[extension].setdefault(extension_name, {})[name] = preferred
+
+                if alias is not None:
+                    for alias_name in alias.lower().split(" "):
+                        # Ignore alias entries which don't match the 'type' production.
+                        if typeRE.match(alias_name) is None:
+                            continue
+
+                        # See comment above when 'alias' and 'preferred' are both present.
+                        if (preferred is not None and
+                            name in mapping[extension][extension_name]):
+                            continue
+
+                        # Skip over entries where 'name' and 'alias' are equal.
+                        #
+                        # <type name="pst8pdt"
+                        #       description="POSIX style time zone for US Pacific Time"
+                        #       alias="PST8PDT"
+                        #       since="1.8"/>
+                        if name == alias_name:
+                            continue
+
+                        mapping[extension].setdefault(extension_name, {})[alias_name] = name
+
+    def readSupplementalMetadata(file):
+        # Find subdivision and region replacements.
+        #
+        # <https://www.unicode.org/reports/tr35/#Canonical_Unicode_Locale_Identifiers>
+        #
+        # Replace aliases in special key values:
+        #   - If there is an 'sd' or 'rg' key, replace any subdivision alias
+        #     in its value in the same way, using subdivisionAlias data.
+        tree = ET.parse(file)
+        for alias in tree.iterfind(".//subdivisionAlias"):
+            type = alias.get("type")
+            assert typeRE.match(type) is not None, (
+                   "{} matches the 'type' production".format(type))
+
+            # Take the first replacement when multiple ones are present.
+            replacement = alias.get("replacement").split(" ")[0].lower()
+
+            # Skip over invalid replacements.
+            #
+            # <subdivisionAlias type="fi01" replacement="AX" reason="overlong"/>
+            #
+            # It's not entirely clear to me if CLDR actually wants to use
+            # "axzzzz" as the replacement for this case.
+            if typeRE.match(replacement) is None:
+                continue
+
+            # 'subdivisionAlias' applies to 'rg' and 'sd' keys.
+            mapping["u"].setdefault("rg", {})[type] = replacement
+            mapping["u"].setdefault("sd", {})[type] = replacement
+
+    for name in core_file.namelist():
+        if bcpFileRE.match(name):
+            readBCP47File(core_file.open(name))
+
+    readSupplementalMetadata(core_file.open("common/supplemental/supplementalMetadata.xml"))
+
+    return {
+        "unicodeMappings": mapping["u"],
+        "transformMappings": mapping["t"],
+    }
+
+
 def writeCLDRLanguageTagData(println, data, url):
     """ Writes the language tag data to the Intl data file. """
+
+    println(generatedFileWarning)
+    println(u"// Version: CLDR-{}".format(data["version"]))
+    println(u"// URL: {}".format(url))
+
+    println(u"""
+#include "mozilla/Assertions.h"
+#include "mozilla/Span.h"
+#include "mozilla/TextUtils.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <iterator>
+#include <string>
+#include <type_traits>
+
+#include "builtin/intl/LanguageTag.h"
+#include "util/Text.h"
+#include "vm/JSContext.h"
+
+using namespace js::intl::LanguageTagLimits;
+
+template <size_t Length, size_t TagLength, size_t SubtagLength>
+static inline bool HasReplacement(
+    const char (&subtags)[Length][TagLength],
+    const js::intl::LanguageTagSubtag<SubtagLength>& subtag) {
+  MOZ_ASSERT(subtag.length() == TagLength - 1,
+             "subtag must have the same length as the list of subtags");
+
+  const char* ptr = subtag.span().data();
+  return std::binary_search(std::begin(subtags), std::end(subtags), ptr,
+                            [](const char* a, const char* b) {
+    return memcmp(a, b, TagLength - 1) < 0;
+  });
+}
+
+template <size_t Length, size_t TagLength, size_t SubtagLength>
+static inline const char* SearchReplacement(
+    const char (&subtags)[Length][TagLength],
+    const char* (&aliases)[Length],
+    const js::intl::LanguageTagSubtag<SubtagLength>& subtag) {
+  MOZ_ASSERT(subtag.length() == TagLength - 1,
+             "subtag must have the same length as the list of subtags");
+
+  const char* ptr = subtag.span().data();
+  auto p = std::lower_bound(std::begin(subtags), std::end(subtags), ptr,
+                            [](const char* a, const char* b) {
+    return memcmp(a, b, TagLength - 1) < 0;
+  });
+  if (p != std::end(subtags) && memcmp(*p, ptr, TagLength - 1) == 0) {
+    return aliases[std::distance(std::begin(subtags), p)];
+  }
+  return nullptr;
+}
+
+#ifdef DEBUG
+static bool IsAsciiLowercaseAlphanumeric(char c) {
+  return mozilla::IsAsciiLowercaseAlpha(c) || mozilla::IsAsciiDigit(c);
+}
+
+static bool IsAsciiLowercaseAlphanumericOrDash(char c) {
+  return IsAsciiLowercaseAlphanumeric(c) || c == '-';
+}
+
+static bool IsCanonicallyCasedLanguageTag(mozilla::Span<const char> span) {
+  // Tell the analysis the |std::all_of| function can't GC.
+  JS::AutoSuppressGCAnalysis nogc;
+
+  return std::all_of(span.begin(), span.end(), mozilla::IsAsciiLowercaseAlpha<char>);
+}
+
+static bool IsCanonicallyCasedRegionTag(mozilla::Span<const char> span) {
+  // Tell the analysis the |std::all_of| function can't GC.
+  JS::AutoSuppressGCAnalysis nogc;
+
+  return std::all_of(span.begin(), span.end(), mozilla::IsAsciiUppercaseAlpha<char>) ||
+         std::all_of(span.begin(), span.end(), mozilla::IsAsciiDigit<char>);
+}
+
+static bool IsCanonicallyCasedVariantTag(mozilla::Span<const char> span) {
+  // Tell the analysis the |std::all_of| function can't GC.
+  JS::AutoSuppressGCAnalysis nogc;
+
+  return std::all_of(span.begin(), span.end(), IsAsciiLowercaseAlphanumeric);
+}
+
+static bool IsCanonicallyCasedUnicodeKey(mozilla::Span<const char> key) {
+  return std::all_of(key.begin(), key.end(), IsAsciiLowercaseAlphanumeric);
+}
+
+static bool IsCanonicallyCasedUnicodeType(mozilla::Span<const char> type) {
+  return std::all_of(type.begin(), type.end(), IsAsciiLowercaseAlphanumericOrDash);
+}
+
+static bool IsCanonicallyCasedTransformKey(mozilla::Span<const char> key) {
+  return std::all_of(key.begin(), key.end(), IsAsciiLowercaseAlphanumeric);
+}
+
+static bool IsCanonicallyCasedTransformType(mozilla::Span<const char> type) {
+  return std::all_of(type.begin(), type.end(), IsAsciiLowercaseAlphanumericOrDash);
+}
+#endif
+""".rstrip())
 
     source = u"CLDR Supplemental Data, version {}".format(data["version"])
     grandfathered_mappings = data["grandfatheredMappings"]
@@ -651,31 +1157,61 @@ def writeCLDRLanguageTagData(println, data, url):
     complex_language_mappings = data["complexLanguageMappings"]
     region_mappings = data["regionMappings"]
     complex_region_mappings = data["complexRegionMappings"]
+    variant_mappings = data["variantMappings"]
+    unicode_mappings = data["unicodeMappings"]
+    transform_mappings = data["transformMappings"]
 
-    writeMappingsVar(println, grandfathered_mappings, "grandfatheredMappings",
-                     "Mappings from grandfathered tags to preferred values.", source, url)
-    writeMappingsVar(println, language_mappings, "languageMappings",
-                     "Mappings from language subtags to preferred values.", source, url)
-    writeMappingsVar(println, {key: True for key in complex_language_mappings},
-                     "complexLanguageMappings",
-                     "Language subtags with complex mappings.", source, url)
-    writeMappingsVar(println, region_mappings, "regionMappings",
-                     "Mappings from region subtags to preferred values.", source, url)
-    writeMappingsVar(println, {key: True for key in complex_region_mappings},
-                     "complexRegionMappings",
-                     "Region subtags with complex mappings.", source, url)
+    # unicode_language_subtag = alpha{2,3} | alpha{5,8} ;
+    language_maxlength = 8
 
-    writeUpdateLocaleIdMappingsFunction(println, complex_language_mappings,
-                                        complex_region_mappings,
-                                        "Canonicalize Unicode BCP 47 locale identifiers.",
-                                        source, url)
+    # unicode_region_subtag = (alpha{2} | digit{3}) ;
+    region_maxlength = 3
+
+    writeMappingsBinarySearch(println, "languageMapping",
+                              "LanguageSubtag&", "language",
+                              "IsStructurallyValidLanguageTag",
+                              "IsCanonicallyCasedLanguageTag",
+                              language_mappings, language_maxlength,
+                              "Mappings from language subtags to preferred values.", source, url)
+    writeMappingsBinarySearch(println, "complexLanguageMapping",
+                              "const LanguageSubtag&", "language",
+                              "IsStructurallyValidLanguageTag",
+                              "IsCanonicallyCasedLanguageTag",
+                              complex_language_mappings.keys(), language_maxlength,
+                              "Language subtags with complex mappings.", source, url)
+    writeMappingsBinarySearch(println, "regionMapping",
+                              "RegionSubtag&", "region",
+                              "IsStructurallyValidRegionTag",
+                              "IsCanonicallyCasedRegionTag",
+                              region_mappings, region_maxlength,
+                              "Mappings from region subtags to preferred values.", source, url)
+    writeMappingsBinarySearch(println, "complexRegionMapping",
+                              "const RegionSubtag&", "region",
+                              "IsStructurallyValidRegionTag",
+                              "IsCanonicallyCasedRegionTag",
+                              complex_region_mappings.keys(), region_maxlength,
+                              "Region subtags with complex mappings.", source, url)
+
+    writeComplexLanguageTagMappings(println, complex_language_mappings,
+                                    "Language subtags with complex mappings.", source, url)
+    writeComplexRegionTagMappings(println, complex_region_mappings,
+                                  "Region subtags with complex mappings.", source, url)
+
+    writeVariantTagMappings(println, variant_mappings,
+                            "Mappings from variant subtags to preferred values.", source, url)
+
     writeGrandfatheredMappingsFunction(println, grandfathered_mappings,
-                                       "Canonicalize grandfathered locale identifiers.",
-                                       source, url)
+                                       "Canonicalize grandfathered locale identifiers.", source,
+                                       url)
+
+    writeUnicodeExtensionsMappings(println, unicode_mappings, "Unicode")
+    writeUnicodeExtensionsMappings(println, transform_mappings, "Transform")
 
 
 def writeCLDRLanguageTagLikelySubtagsTest(println, data, url):
     """ Writes the likely-subtags test file. """
+
+    println(generatedFileWarning)
 
     source = u"CLDR Supplemental Data, version {}".format(data["version"])
     language_mappings = data["languageMappings"]
@@ -799,102 +1335,80 @@ if (typeof reportCompare === "function")
     reportCompare(0, 0);""")
 
 
+def readCLDRVersionFromICU():
+    icuDir = os.path.join(topsrcdir, "intl/icu/source")
+    if not os.path.isdir(icuDir):
+        raise RuntimeError("not a directory: {}".format(icuDir))
+
+    reVersion = re.compile(r'\s*cldrVersion\{"(\d+(?:\.\d+)?)"\}')
+
+    for line in flines(os.path.join(icuDir, "data/misc/supplementalData.txt")):
+        m = reVersion.match(line)
+        if m:
+            version = m.group(1)
+            break
+
+    if version is None:
+        raise RuntimeError("can't resolve CLDR version")
+
+    return version
+
+
 def updateCLDRLangTags(args):
-    """ Update the LangTagMappingsCLDRGenerated.js file. """
+    """ Update the LanguageTagGenerated.cpp file. """
+    version = args.version
     url = args.url
-    branch = args.branch
-    revision = args.revision
     out = args.out
-    files = args.files
+    filename = args.file
+
+    # Determine current CLDR version from ICU.
+    if version is None:
+        version = readCLDRVersionFromICU()
+
+    url = url.replace("<VERSION>", version)
 
     print("Arguments:")
+    print("\tCLDR version: %s" % version)
     print("\tDownload url: %s" % url)
-    print("\tBranch: %s" % branch)
-    print("\tRevision: %s" % revision)
-    print("\tLocal supplemental data and likely subtags: %s" % files)
+    if filename is not None:
+        print("\tLocal CLDR core.zip file: %s" % filename)
     print("\tOutput file: %s" % out)
     print("")
 
-    if files:
-        if len(files) != 3:
-            raise Exception("Expected three files, but got: {}".format(files))
+    data = {
+        "version": version,
+    }
 
-        print(("Always make sure you have the newest ldmlSupplemental.dtd, "
-               "supplementalMetadata.xml, and likelySubtags.xml!"))
+    def readFiles(cldr_file):
+        with ZipFile(cldr_file) as zip_file:
+            data.update(readSupplementalData(zip_file))
+            data.update(readUnicodeExtensions(zip_file))
 
-        supplemental_dtd_file = files[0]
-        supplemental_metadata_file = files[1]
-        likely_subtags_file = files[2]
+    print("Processing CLDR data...")
+    if filename is not None:
+        print("Always make sure you have the newest CLDR core.zip!")
+        with open(filename, "rb") as cldr_file:
+            readFiles(cldr_file)
     else:
-        print("Downloading CLDR supplemental data...")
-
-        supplemental_dtd_filename = "ldmlSupplemental.dtd"
-        supplemental_dtd_path = "common/dtd/{}".format(supplemental_dtd_filename)
-        supplemental_dtd_file = os.path.join(os.getcwd(), supplemental_dtd_filename)
-
-        supplemental_metadata_filename = "supplementalMetadata.xml"
-        supplemental_metadata_path = "common/supplemental/{}".format(
-            supplemental_metadata_filename)
-        supplemental_metadata_file = os.path.join(os.getcwd(), supplemental_metadata_filename)
-
-        likely_subtags_filename = "likelySubtags.xml"
-        likely_subtags_path = "common/supplemental/{}".format(likely_subtags_filename)
-        likely_subtags_file = os.path.join(os.getcwd(), likely_subtags_filename)
-
-        # Try to download the raw file directly from GitHub if possible.
-        split = urlsplit(url)
-        if split.netloc == "github.com" and split.path.endswith(".git") and revision == "HEAD":
-            def download(path, file):
-                urlpath = "{}/raw/{}/{}".format(urlsplit(url).path[:-4], branch, path)
-                raw_url = urlunsplit((split.scheme, split.netloc, urlpath, split.query,
-                                      split.fragment))
-
-                with closing(urlopen(raw_url)) as reader:
-                    text = reader.read().decode("utf-8")
-                with io.open(file, "w", encoding="utf-8") as saved_file:
-                    saved_file.write(text)
-
-            download(supplemental_dtd_path, supplemental_dtd_file)
-            download(supplemental_metadata_path, supplemental_metadata_file)
-            download(likely_subtags_path, likely_subtags_file)
-        else:
-            # Download the requested branch in a temporary directory.
-            with TemporaryDirectory() as inDir:
-                if revision == "HEAD":
-                    subprocess.check_call(["git", "clone", "--depth=1",
-                                           "--branch=%s" % branch, url, inDir])
-                else:
-                    subprocess.check_call(["git", "clone", "--single-branch",
-                                           "--branch=%s" % branch, url, inDir])
-                    subprocess.check_call(["git", "-C", inDir, "reset", "--hard", revision])
-
-                    shutil.copyfile(os.path.join(inDir, supplemental_dtd_path),
-                                    supplemental_dtd_file)
-                    shutil.copyfile(os.path.join(inDir, supplemental_metadata_path),
-                                    supplemental_metadata_file)
-                    shutil.copyfile(os.path.join(inDir, likely_subtags_path), likely_subtags_file)
-
-    print("Processing CLDR supplemental data...")
-    data = readSupplementalData(supplemental_dtd_file,
-                                supplemental_metadata_file,
-                                likely_subtags_file)
+        print("Downloading CLDR core.zip...")
+        with closing(urlopen(url)) as cldr_file:
+            cldr_data = io.BytesIO(cldr_file.read())
+            readFiles(cldr_data)
 
     print("Writing Intl data...")
     with io.open(out, mode="w", encoding="utf-8", newline="") as f:
         println = partial(print, file=f)
 
-        println(u"// Generated by make_intl_data.py. DO NOT EDIT.")
         writeCLDRLanguageTagData(println, data, url)
 
     print("Writing Intl test data...")
-    test_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    js_src_builtin_intl_dir = os.path.dirname(os.path.abspath(__file__))
+    test_file = os.path.join(js_src_builtin_intl_dir,
                              "../../tests/non262/Intl/Locale/likely-subtags-generated.js")
     with io.open(test_file, mode="w", encoding="utf-8", newline="") as f:
         println = partial(print, file=f)
 
-        println(u"// |reftest| skip-if(!this.hasOwnProperty('Intl')||"
-                u"(!this.Intl.Locale&&!this.hasOwnProperty('addIntlExtras')))")
-        println(u"// Generated by make_intl_data.py. DO NOT EDIT.")
+        println(u"// |reftest| skip-if(!this.hasOwnProperty('Intl'))")
         writeCLDRLanguageTagLikelySubtagsTest(println, data, url)
 
 
@@ -1591,11 +2105,38 @@ def generateTzDataTestBackzoneLinks(tzdataDir, version, ignoreBackzone, testDir)
     )
 
 
+def generateTzDataTestVersion(tzdataDir, version, testDir):
+    fileName = "timeZone_version.js"
+
+    with io.open(os.path.join(testDir, fileName), mode="w", encoding="utf-8", newline="") as f:
+        println = partial(print, file=f)
+
+        println(u'// |reftest| skip-if(!this.hasOwnProperty("Intl"))')
+        println(u"")
+        println(generatedFileWarning)
+        println(tzdataVersionComment.format(version))
+        println(u"""const tzdata = "{0}";""".format(version))
+
+        println(u"""
+if (typeof getICUOptions === "undefined") {
+    var getICUOptions = SpecialPowers.Cu.getJSTestingFunctions().getICUOptions;
+}
+
+var options = getICUOptions();
+
+assertEq(options.tzdata, tzdata);
+
+if (typeof reportCompare === "function")
+    reportCompare(0, 0, "ok");
+""")
+
+
 def generateTzDataTests(tzdataDir, version, ignoreBackzone, testDir):
     generateTzDataTestBackwardLinks(tzdataDir, version, ignoreBackzone, testDir)
     generateTzDataTestNotBackwardLinks(tzdataDir, version, ignoreBackzone, testDir)
     generateTzDataTestBackzone(tzdataDir, version, ignoreBackzone, testDir)
     generateTzDataTestBackzoneLinks(tzdataDir, version, ignoreBackzone, testDir)
+    generateTzDataTestVersion(tzdataDir, version, testDir)
 
 
 def updateTzdata(topsrcdir, args):
@@ -1747,222 +2288,685 @@ def updateCurrency(topsrcdir, args):
                 updateFrom(currencyTmpFile.name)
 
 
-def writeUnicodeExtensionsFile(version, url, mapping, out):
-    with io.open(out, mode="w", encoding="utf-8", newline="") as f:
-        println = partial(print, file=f)
+def writeUnicodeExtensionsMappings(println, mapping, extension):
+    println(u"""
+template <size_t Length>
+static inline bool Is{0}Key(
+  mozilla::Span<const char> key, const char (&str)[Length]) {{
+  static_assert(Length == {0}KeyLength + 1,
+                "{0} extension key is two characters long");
+  return memcmp(key.data(), str, Length - 1) == 0;
+}}
 
-        println(generatedFileWarning)
-        println(u"// Version: CLDR-{}".format(version))
-        println(u"// URL: {}".format(url))
+template <size_t Length>
+static inline bool Is{0}Type(
+  mozilla::Span<const char> type, const char (&str)[Length]) {{
+  static_assert(Length > {0}KeyLength + 1,
+                "{0} extension type contains more than two characters");
+  return type.size() == (Length - 1) &&
+         memcmp(type.data(), str, Length - 1) == 0;
+}}
+""".format(extension).rstrip("\n"))
 
+    linear_search_max_length = 4
+
+    needs_binary_search = any(len(replacements.items()) > linear_search_max_length
+                              for replacements in mapping.values())
+
+    if needs_binary_search:
         println(u"""
+static int32_t Compare{0}Type(const char* a, mozilla::Span<const char> b) {{
+  MOZ_ASSERT(!std::char_traits<char>::find(b.data(), b.size(), '\\0'),
+             "unexpected null-character in string");
+
+  using UnsignedChar = unsigned char;
+  for (size_t i = 0; i < b.size(); i++) {{
+    // |a| is zero-terminated and |b| doesn't contain a null-terminator. So if
+    // we've reached the end of |a|, the below if-statement will always be true.
+    // That ensures we don't read past the end of |a|.
+    if (int32_t r = UnsignedChar(a[i]) - UnsignedChar(b[i])) {{
+      return r;
+    }}
+  }}
+
+  // Return zero if both strings are equal or a negative number if |b| is a
+  // prefix of |a|.
+  return -int32_t(UnsignedChar(a[b.size()]));
+}}
+
+template <size_t Length>
+static inline const char* Search{0}Replacement(
+  const char* (&types)[Length], const char* (&aliases)[Length],
+  mozilla::Span<const char> type) {{
+
+  auto p = std::lower_bound(std::begin(types), std::end(types), type,
+                            [](const auto& a, const auto& b) {{
+    return Compare{0}Type(a, b) < 0;
+  }});
+  if (p != std::end(types) && Compare{0}Type(*p, type) == 0) {{
+    return aliases[std::distance(std::begin(types), p)];
+  }}
+  return nullptr;
+}}
+""".format(extension).rstrip("\n"))
+
+    println(u"""
 /**
- * Mapping from deprecated BCP 47 Unicode extension types to their preferred
+ * Mapping from deprecated BCP 47 {0} extension types to their preferred
  * values.
  *
  * Spec: https://www.unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files
+ * Spec: https://www.unicode.org/reports/tr35/#t_Extension
+ */
+const char* js::intl::LanguageTag::replace{0}ExtensionType(
+    mozilla::Span<const char> key, mozilla::Span<const char> type) {{
+  MOZ_ASSERT(key.size() == {0}KeyLength);
+  MOZ_ASSERT(IsCanonicallyCased{0}Key(key));
+
+  MOZ_ASSERT(type.size() > {0}KeyLength);
+  MOZ_ASSERT(IsCanonicallyCased{0}Type(type));
+""".format(extension))
+
+    def to_hash_key(replacements):
+        return str(sorted(replacements.items()))
+
+    def write_array(subtags, name, length):
+        max_entries = (80 - len("    ")) // (length + len('"", '))
+
+        println(u"    static const char* {}[{}] = {{".format(name, len(subtags)))
+
+        for entries in grouper(subtags, max_entries):
+            entries = (u"\"{}\"".format(tag).rjust(length + 2)
+                       for tag in entries if tag is not None)
+            println(u"      {},".format(u", ".join(entries)))
+
+        println(u"    };")
+
+    # Merge duplicate keys.
+    key_aliases = {}
+    for (key, replacements) in sorted(mapping.items(), key=itemgetter(0)):
+        hash_key = to_hash_key(replacements)
+        if hash_key not in key_aliases:
+            key_aliases[hash_key] = []
+        else:
+            key_aliases[hash_key].append(key)
+
+    first_key = True
+    for (key, replacements) in sorted(mapping.items(), key=itemgetter(0)):
+        hash_key = to_hash_key(replacements)
+        if key in key_aliases[hash_key]:
+            continue
+
+        cond = (u"Is{}Key(key, \"{}\")".format(extension, k)
+                for k in [key] + key_aliases[hash_key])
+
+        if_kind = u"if" if first_key else u"else if"
+        cond = (u" ||\n" + u" " * (2 + len(if_kind) + 2)).join(cond)
+        println(u"""
+  {} ({}) {{""".format(if_kind, cond).strip("\n"))
+        first_key = False
+
+        replacements = sorted(replacements.items(), key=itemgetter(0))
+
+        if len(replacements) > linear_search_max_length:
+            types = [t for (t, _) in replacements]
+            preferred = [r for (_, r) in replacements]
+            max_len = max(len(k) for k in types + preferred)
+
+            write_array(types, "types", max_len)
+            write_array(preferred, "aliases", max_len)
+            println(u"""
+    return Search{}Replacement(types, aliases, type);
+""".format(extension).strip("\n"))
+        else:
+            for (type, replacement) in replacements:
+                println(u"""
+    if (Is{}Type(type, "{}")) {{
+      return "{}";
+    }}""".format(extension, type, replacement).strip("\n"))
+
+        println(u"""
+  }""".lstrip("\n"))
+
+    println(u"""
+  return nullptr;
+}
+""".strip("\n"))
+
+
+def readICUUnitResourceFile(filepath):
+    """ Return a set of unit descriptor pairs where the first entry denotes the unit type and the
+        second entry the unit name.
+
+        Example:
+
+        root{
+            units{
+                compound{
+                }
+                coordinate{
+                }
+                length{
+                    meter{
+                    }
+                }
+            }
+            unitsNarrow:alias{"/LOCALE/unitsShort"}
+            unitsShort{
+                duration{
+                    day{
+                    }
+                    day-person:alias{"/LOCALE/unitsShort/duration/day"}
+                }
+                length{
+                    meter{
+                    }
+                }
+            }
+        }
+
+        Returns {("length", "meter"), ("duration", "day"), ("duration", "day-person")}
+    """
+
+    start_table_re = re.compile(r"^([\w\-%:\"]+)\{$")
+    end_table_re = re.compile(r"^\}$")
+    table_entry_re = re.compile(r"^([\w\-%:\"]+)\{\"(.*?)\"\}$")
+
+    # The current resource table.
+    table = {}
+
+    # List of parent tables when parsing.
+    parents = []
+
+    # Track multi-line comments state.
+    in_multiline_comment = False
+
+    for line in flines(filepath, "utf-8-sig"):
+        # Remove leading and trailing whitespace.
+        line = line.strip()
+
+        # Skip over comments.
+        if in_multiline_comment:
+            if line.endswith("*/"):
+                in_multiline_comment = False
+            continue
+
+        if line.startswith("//"):
+            continue
+
+        if line.startswith("/*"):
+            in_multiline_comment = True
+            continue
+
+        # Try to match the start of a table, e.g. `length{` or `meter{`.
+        match = start_table_re.match(line)
+        if match:
+            parents.append(table)
+            table_name = match.group(1)
+            new_table = {}
+            table[table_name] = new_table
+            table = new_table
+            continue
+
+        # Try to match the end of a table.
+        match = end_table_re.match(line)
+        if match:
+            table = parents.pop()
+            continue
+
+        # Try to match a table entry, e.g. `dnam{"meter"}`.
+        match = table_entry_re.match(line)
+        if match:
+            entry_key = match.group(1)
+            entry_value = match.group(2)
+            table[entry_key] = entry_value
+            continue
+
+        raise Exception("unexpected line: '{}' in {}".format(line, filepath))
+
+    assert len(parents) == 0, "Not all tables closed"
+    assert len(table) == 1, "More than one root table"
+
+    # Remove the top-level language identifier table.
+    (_, unit_table) = table.popitem()
+
+    # Add all units for the three display formats "units", "unitsNarrow", and "unitsShort".
+    # But exclude the pseudo-units "compound" and "ccoordinate".
+    return {(unit_type, unit_name if not unit_name.endswith(":alias") else unit_name[:-6])
+            for unit_display in ("units", "unitsNarrow", "unitsShort")
+            if unit_display in unit_table
+            for (unit_type, unit_names) in unit_table[unit_display].items()
+            if unit_type != "compound" and unit_type != "coordinate"
+            for unit_name in unit_names.keys()}
+
+
+def computeSupportedUnits(all_units, sanctioned_units):
+    """ Given the set of all possible ICU unit identifiers and the set of sanctioned unit
+        identifiers, compute the set of effectively supported ICU unit identifiers.
+    """
+
+    def find_match(unit):
+        unit_match = [(unit_type, unit_name)
+                      for (unit_type, unit_name) in all_units
+                      if unit_name == unit]
+        if unit_match:
+            assert len(unit_match) == 1
+            return unit_match[0]
+        return None
+
+    def compound_unit_identifiers():
+        for numerator in sanctioned_units:
+            for denominator in sanctioned_units:
+                yield "{}-per-{}".format(numerator, denominator)
+
+    supported_simple_units = {find_match(unit) for unit in sanctioned_units}
+    assert None not in supported_simple_units
+
+    supported_compound_units = {unit_match
+                                for unit_match in (find_match(unit)
+                                                   for unit in compound_unit_identifiers())
+                                if unit_match}
+
+    return supported_simple_units | supported_compound_units
+
+
+def readICUDataFilterForUnits(data_filter_file):
+    with io.open(data_filter_file, mode="r", encoding="utf-8") as f:
+        data_filter = json.load(f)
+
+    # Find the rule set for the "unit_tree".
+    unit_tree_rules = [entry["rules"]
+                       for entry in data_filter["resourceFilters"]
+                       if entry["categories"] == ["unit_tree"]]
+    assert len(unit_tree_rules) == 1
+
+    # Compute the list of included units from that rule set. The regular expression must match
+    # "+/*/length/meter" and mustn't match either "-/*" or "+/*/compound".
+    included_unit_re = re.compile(r"^\+/\*/(.+?)/(.+)$")
+    filtered_units = (included_unit_re.match(unit) for unit in unit_tree_rules[0])
+
+    return {(unit.group(1), unit.group(2)) for unit in filtered_units if unit}
+
+
+def writeSanctionedSimpleUnitIdentifiersFiles(all_units, sanctioned_units):
+    js_src_builtin_intl_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def find_unit_type(unit):
+        result = [unit_type for (unit_type, unit_name) in all_units if unit_name == unit]
+        assert result and len(result) == 1
+        return result[0]
+
+    sanctioned_js_file = os.path.join(js_src_builtin_intl_dir,
+                                      "SanctionedSimpleUnitIdentifiersGenerated.js")
+    with io.open(sanctioned_js_file, mode="w", encoding="utf-8", newline="") as f:
+        println = partial(print, file=f)
+
+        sanctioned_units_object = json.dumps({unit: True for unit in sorted(sanctioned_units)},
+                                             sort_keys=True, indent=4, separators=(',', ': '))
+
+        println(generatedFileWarning)
+
+        println(u"""
+/**
+ * The list of currently supported simple unit identifiers.
+ *
+ * Intl.NumberFormat Unified API Proposal
  */""")
-        println(u"var deprecatedUnicodeExtensionTypes = {")
-        for ext_name in sorted(mapping):
-            println(u"    {}: {{".format(ext_name))
-            is_first = True
-            for type in sorted(mapping[ext_name]):
-                mapped = mapping[ext_name][type]
-                has_description = mapped["description"] is not None
 
-                if not is_first and has_description:
-                    println(u"")
-                is_first = False
+        println(u"var sanctionedSimpleUnitIdentifiers = {};".format(sanctioned_units_object))
 
-                if has_description:
-                    println(u"        // {}".format(mapped["description"]))
-                println(u"        \"{}\": \"{}\",".format(type, mapped["preferred"]))
-            println(u"    },")
-        println(u"};")
+    sanctioned_cpp_file = os.path.join(js_src_builtin_intl_dir, "MeasureUnitGenerated.h")
+    with io.open(sanctioned_cpp_file, mode="w", encoding="utf-8", newline="") as f:
+        println = partial(print, file=f)
+
+        println(generatedFileWarning)
+
+        println(u"""
+struct MeasureUnit {
+  const char* const type;
+  const char* const name;
+};
+
+/**
+ * The list of currently supported simple unit identifiers.
+ *
+ * The list must be kept in alphabetical order of |name|.
+ */
+inline constexpr MeasureUnit simpleMeasureUnits[] = {
+    // clang-format off""")
+
+        for unit_name in sorted(sanctioned_units):
+            println(u'  {{"{}", "{}"}},'.format(find_unit_type(unit_name), unit_name))
+
+        println(u"""
+    // clang-format on
+};""".lstrip("\n"))
+
+    writeUnitTestFiles(all_units, sanctioned_units)
 
 
-def updateUnicodeExtensions(args):
-    """ Update the UnicodeExtensionsGenerated.js file. """
+def writeUnitTestFiles(all_units, sanctioned_units):
+    """ Generate test files for unit number formatters. """
 
-    import xml.etree.ElementTree as ET
+    js_src_builtin_intl_dir = os.path.dirname(os.path.abspath(__file__))
+    test_dir = os.path.join(js_src_builtin_intl_dir, "../../tests/non262/Intl/NumberFormat")
 
-    version = args.version
-    url = args.url
-    out = args.out
-    filename = args.file
+    def write_test(file_name, test_content, indent=4):
+        file_path = os.path.join(test_dir, file_name)
+        with io.open(file_path, mode="w", encoding="utf-8", newline="") as f:
+            println = partial(print, file=f)
 
-    url = url.replace("<VERSION>", version)
+            println(u'// |reftest| skip-if(!this.hasOwnProperty("Intl"))')
+            println(u"")
+            println(generatedFileWarning)
+            println(u"")
 
-    print("Arguments:")
-    print("\tCLDR version: %s" % version)
-    print("\tDownload url: %s" % url)
-    if filename is not None:
-        print("\tLocal CLDR core.zip file: %s" % filename)
-    print("\tOutput file: %s" % out)
-    print("")
+            sanctioned_units_array = json.dumps([unit for unit in sorted(sanctioned_units)],
+                                                indent=indent, separators=(',', ': '))
 
-    def updateFrom(data):
-        # Match all xml-files in the BCP 47 directory.
-        bcpFileRE = re.compile(r"^common/bcp47/.+\.xml$")
+            println(u"const sanctionedSimpleUnitIdentifiers = {};".format(sanctioned_units_array))
 
-        # https://www.unicode.org/reports/tr35/#Unicode_locale_identifier
-        #
-        # type = alphanum{3,8} (sep alphanum{3,8})* ;
-        typeRE = re.compile(r"^[a-z0-9]{3,8}(-[a-z0-9]{3,8})*$")
+            println(test_content)
 
-        # Mapping from Unicode extension types to dict of deprecated to
-        # preferred values.
-        mapping = {}
+            println(u"""
+if (typeof reportCompare === "function")
+{}reportCompare(true, true);""".format(" " * indent))
 
-        with ZipFile(data) as zip_file:
-            for name in zip_file.namelist():
-                if not bcpFileRE.match(name):
-                    continue
+    write_test("unit-compound-combinations.js", u"""
+// Test all simple unit identifier combinations are allowed.
 
-                tree = ET.parse(zip_file.open(name))
-                for keyword in tree.iterfind(".//keyword/key"):
-                    # Skip over keywords whose extension is not "u".
-                    if keyword.get("extension", "u") != "u":
-                        continue
+for (const numerator of sanctionedSimpleUnitIdentifiers) {
+    for (const denominator of sanctionedSimpleUnitIdentifiers) {
+        const unit = `${numerator}-per-${denominator}`;
+        const nf = new Intl.NumberFormat("en", {style: "unit", unit});
 
-                    extension_name = keyword.get("name")
+        assertEq(nf.format(1), nf.formatToParts(1).map(p => p.value).join(""));
+    }
+}""")
 
-                    for type in keyword.iterfind("type"):
-                        # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
-                        #
-                        # The key or type name used by Unicode locale extension with 'u' extension
-                        # syntax or the 't' extensions syntax. When alias below is absent, this
-                        # name can be also used with the old style "@key=type" syntax.
-                        name = type.get("name")
+    all_units_array = json.dumps(["-".join(unit) for unit in sorted(all_units)],
+                                 indent=4, separators=(',', ': '))
 
-                        # Ignore the special name:
-                        # - <https://unicode.org/reports/tr35/#CODEPOINTS>
-                        # - <https://unicode.org/reports/tr35/#REORDER_CODE>
-                        # - <https://unicode.org/reports/tr35/#RG_KEY_VALUE>
-                        # - <https://unicode.org/reports/tr35/#SUBDIVISION_CODE>
-                        # - <https://unicode.org/reports/tr35/#PRIVATE_USE>
-                        if name in ("CODEPOINTS", "REORDER_CODE", "RG_KEY_VALUE",
-                                    "SUBDIVISION_CODE", "PRIVATE_USE"):
-                            continue
+    write_test("unit-well-formed.js", u"""
+const allUnits = {};
+""".format(all_units_array) + u"""
+// Test only sanctioned unit identifiers are allowed.
 
-                        # All other names should match the 'type' production.
-                        assert typeRE.match(name) is not None, (
-                               "{} matches the 'type' production".format(name))
+for (const typeAndUnit of allUnits) {
+    const [_, type, unit] = typeAndUnit.match(/(\w+)-(.+)/);
 
-                        # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
-                        #
-                        # The preferred value of the deprecated key, type or attribute element.
-                        # When a key, type or attribute element is deprecated, this attribute is
-                        # used for specifying a new canonical form if available.
-                        preferred = type.get("preferred")
+    let allowed;
+    if (unit.includes("-per-")) {
+        const [numerator, denominator] = unit.split("-per-");
+        allowed = sanctionedSimpleUnitIdentifiers.includes(numerator) &&
+                  sanctionedSimpleUnitIdentifiers.includes(denominator);
+    } else {
+        allowed = sanctionedSimpleUnitIdentifiers.includes(unit);
+    }
 
-                        # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
-                        #
-                        # The BCP 47 form is the canonical form, and recommended. Other aliases are
-                        # included only for backwards compatibility.
-                        alias = type.get("alias")
+    if (allowed) {
+        const nf = new Intl.NumberFormat("en", {style: "unit", unit});
+        assertEq(nf.format(1), nf.formatToParts(1).map(p => p.value).join(""));
+    } else {
+        assertThrowsInstanceOf(() => new Intl.NumberFormat("en", {style: "unit", unit}),
+                               RangeError, `Missing error for "${typeAndUnit}"`);
+    }
+}""")
 
-                        # <https://unicode.org/reports/tr35/#Unicode_Locale_Extension_Data_Files>:
-                        #
-                        # The description of the key, type or attribute element.
-                        description = type.get("description")
+    write_test("unit-formatToParts-has-unit-field.js", u"""
+// Test only English and Chinese to keep the overall runtime reasonable.
+//
+// Chinese is included because it contains more than one "unit" element for
+// certain unit combinations.
+const locales = ["en", "zh"];
 
-                        # <https://unicode.org/reports/tr35/#Canonical_Unicode_Locale_Identifiers>
-                        #
-                        # Use the bcp47 data to replace keys, types, tfields, and tvalues by their
-                        # canonical forms. See Section 3.6.4 U Extension Data Files) and Section
-                        # 3.7.1 T Extension Data Files. The aliases are in the alias attribute
-                        # value, while the canonical is in the name attribute value.
+// Plural rules for English only differentiate between "one" and "other". Plural
+// rules for Chinese only use "other". That means we only need to test two values
+// per unit.
+const values = [0, 1];
 
-                        # 'preferred' contains the new preferred name, 'alias' the compatibility
-                        # name, but then there's this entry where 'preferred' and 'alias' are the
-                        # same. So which one to choose? Assume 'preferred' is the actual canonical
-                        # name.
-                        #
-                        # <type name="islamicc"
-                        #       description="Civil (algorithmic) Arabic calendar"
-                        #       deprecated="true"
-                        #       preferred="islamic-civil"
-                        #       alias="islamic-civil"/>
+// Ensure unit formatters contain at least one "unit" element.
 
-                        if preferred is not None:
-                            assert typeRE.match(preferred), preferred
-                            mapping.setdefault(extension_name, {})[name] = {
-                                "preferred": preferred,
-                                "description": description,
-                            }
+for (const locale of locales) {
+  for (const unit of sanctionedSimpleUnitIdentifiers) {
+    const nf = new Intl.NumberFormat(locale, {style: "unit", unit});
 
-                        if alias is not None:
-                            for alias_name in alias.lower().split(" "):
-                                # Ignore alias entries which don't match the 'type' production.
-                                if typeRE.match(alias_name) is None:
-                                    continue
+    for (const value of values) {
+      assertEq(nf.formatToParts(value).some(e => e.type === "unit"), true,
+               `locale=${locale}, unit=${unit}`);
+    }
+  }
 
-                                # See comment above when 'alias' and 'preferred' are both present.
-                                if (preferred is not None and
-                                    name in mapping[extension_name]):
-                                    continue
+  for (const numerator of sanctionedSimpleUnitIdentifiers) {
+    for (const denominator of sanctionedSimpleUnitIdentifiers) {
+      const unit = `${numerator}-per-${denominator}`;
+      const nf = new Intl.NumberFormat(locale, {style: "unit", unit});
 
-                                # Skip over entries where 'name' and 'alias' are equal.
-                                #
-                                # <type name="pst8pdt"
-                                #       description="POSIX style time zone for US Pacific Time"
-                                #       alias="PST8PDT"
-                                #       since="1.8"/>
-                                if name == alias_name:
-                                    continue
+      for (const value of values) {
+        assertEq(nf.formatToParts(value).some(e => e.type === "unit"), true,
+                 `locale=${locale}, unit=${unit}`);
+      }
+    }
+  }
+}""", indent=2)
 
-                                mapping.setdefault(extension_name, {})[alias_name] = {
-                                    "preferred": name,
-                                    "description": description,
-                                }
 
-            # Find subdivision and region replacements.
-            #
-            # <https://www.unicode.org/reports/tr35/#Canonical_Unicode_Locale_Identifiers>
-            #
-            # Replace aliases in special key values:
-            #   - If there is an 'sd' or 'rg' key, replace any subdivision alias
-            #     in its value in the same way, using subdivisionAlias data.
-            tree = ET.parse(zip_file.open("common/supplemental/supplementalMetadata.xml"))
-            for alias in tree.iterfind(".//subdivisionAlias"):
-                type = alias.get("type")
-                assert typeRE.match(type) is not None, (
-                       "{} matches the 'type' production".format(type))
+def updateUnits(topsrcdir, args):
+    icu_path = os.path.join(topsrcdir, "intl", "icu")
+    icu_unit_path = os.path.join(icu_path, "source", "data", "unit")
 
-                # Take the first replacement when multiple ones are present.
-                replacement = alias.get("replacement").split(" ")[0].lower()
+    with io.open("SanctionedSimpleUnitIdentifiers.yaml", mode="r", encoding="utf-8") as f:
+        sanctioned_units = yaml.safe_load(f)
 
-                # Skip over invalid replacements.
-                #
-                # <subdivisionAlias type="fi01" replacement="AX" reason="overlong"/>
-                #
-                # It's not entirely clear to me if CLDR actually wants to use
-                # "axzzzz" as the replacement for this case.
-                if typeRE.match(replacement) is None:
-                    continue
+    # Read all possible ICU unit identifiers from the "unit/root.txt" resource.
+    unit_root_file = os.path.join(icu_unit_path, "root.txt")
+    all_units = readICUUnitResourceFile(unit_root_file)
 
-                # 'subdivisionAlias' applies to 'rg' and 'sd' keys.
-                mapping.setdefault("rg", {})[type] = {
-                    "preferred": replacement,
-                    "description": None,
+    # Compute the set of effectively supported ICU unit identifiers.
+    supported_units = computeSupportedUnits(all_units, sanctioned_units)
+
+    # Read the list of units we're including into the ICU data file.
+    data_filter_file = os.path.join(icu_path, "data_filter.json")
+    filtered_units = readICUDataFilterForUnits(data_filter_file)
+
+    # Both sets must match to avoid resource loading errors at runtime.
+    if supported_units != filtered_units:
+        def units_to_string(units):
+            return ", ".join("/".join(u) for u in units)
+
+        missing = supported_units - filtered_units
+        if missing:
+            raise RuntimeError("Missing units: {}".format(units_to_string(missing)))
+
+        # Not exactly an error, but we currently don't have a use case where we need to support
+        # more units than required by ECMA-402.
+        extra = filtered_units - supported_units
+        if extra:
+            raise RuntimeError("Unnecessary units: {}".format(units_to_string(extra)))
+
+    writeSanctionedSimpleUnitIdentifiersFiles(all_units, sanctioned_units)
+
+
+def readICUNumberingSystemsResourceFile(filepath):
+    """ Returns a dictionary of numbering systems where the key denotes the numbering system name
+        and the value a dictionary with additional numbering system data.
+
+        Example:
+
+        numberingSystems:table(nofallback){
+            numberingSystems{
+                latn{
+                    algorithmic:int{0}
+                    desc{"0123456789"}
+                    radix:int{10}
                 }
-                mapping.setdefault("sd", {})[type] = {
-                    "preferred": replacement,
-                    "description": None,
+                roman{
+                    algorithmic:int{1}
+                    desc{"%roman-upper"}
+                    radix:int{10}
                 }
+            }
+        }
 
-        writeUnicodeExtensionsFile(version, url, mapping, out)
+        Returns {"latn": {"digits": "0123456789", "algorithmic": False},
+                 "roman": {"algorithmic": True}}
+    """
 
-    if filename is not None:
-        print("Always make sure you have the newest CLDR core.zip!")
-        with open(filename, "rb") as cldr_file:
-            updateFrom(cldr_file)
-    else:
-        print("Downloading CLDR core.zip...")
-        with closing(urlopen(url)) as cldr_file:
-            cldr_data = io.BytesIO(cldr_file.read())
-            updateFrom(cldr_data)
+    start_table_re = re.compile(r"^(\w+)(?:\:[\w\(\)]+)?\{$")
+    end_table_re = re.compile(r"^\}$")
+    table_entry_re = re.compile(r"^(\w+)(?:\:[\w\(\)]+)?\{(?:(?:\"(.*?)\")|(\d+))\}$")
+
+    # The current resource table.
+    table = {}
+
+    # List of parent tables when parsing.
+    parents = []
+
+    # Track multi-line comments state.
+    in_multiline_comment = False
+
+    for line in flines(filepath, "utf-8-sig"):
+        # Remove leading and trailing whitespace.
+        line = line.strip()
+
+        # Skip over comments.
+        if in_multiline_comment:
+            if line.endswith("*/"):
+                in_multiline_comment = False
+            continue
+
+        if line.startswith("//"):
+            continue
+
+        if line.startswith("/*"):
+            in_multiline_comment = True
+            continue
+
+        # Try to match the start of a table, e.g. `latn{`.
+        match = start_table_re.match(line)
+        if match:
+            parents.append(table)
+            table_name = match.group(1)
+            new_table = {}
+            table[table_name] = new_table
+            table = new_table
+            continue
+
+        # Try to match the end of a table.
+        match = end_table_re.match(line)
+        if match:
+            table = parents.pop()
+            continue
+
+        # Try to match a table entry, e.g. `desc{"0123456789"}`.
+        match = table_entry_re.match(line)
+        if match:
+            entry_key = match.group(1)
+            entry_value = match.group(2) if match.group(2) is not None else int(match.group(3))
+            table[entry_key] = entry_value
+            continue
+
+        raise Exception("unexpected line: '{}' in {}".format(line, filepath))
+
+    assert len(parents) == 0, "Not all tables closed"
+    assert len(table) == 1, "More than one root table"
+
+    # Remove the two top-level "numberingSystems" tables.
+    (_, numbering_systems) = table.popitem()
+    (_, numbering_systems) = numbering_systems.popitem()
+
+    # Assert all numbering systems use base 10.
+    assert all(ns["radix"] == 10 for ns in numbering_systems.values())
+
+    # Return the numbering systems.
+    return {key: {"digits": value["desc"], "algorithmic": False}
+            if not bool(value["algorithmic"])
+            else {"algorithmic": True}
+            for (key, value) in numbering_systems.items()}
+
+
+def writeNumberingSystemFiles(numbering_systems):
+    js_src_builtin_intl_dir = os.path.dirname(os.path.abspath(__file__))
+
+    numbering_systems_js_file = os.path.join(js_src_builtin_intl_dir,
+                                             "NumberingSystemsGenerated.h")
+    with io.open(numbering_systems_js_file, mode="w", encoding="utf-8", newline="") as f:
+        println = partial(print, file=f)
+
+        println(generatedFileWarning)
+
+        println(u"""
+/**
+ * The list of numbering systems with simple digit mappings.
+ */
+
+#ifndef builtin_intl_NumberingSystemsGenerated_h
+#define builtin_intl_NumberingSystemsGenerated_h
+""")
+
+        simple_numbering_systems = sorted(name
+                                          for (name, value) in numbering_systems.items()
+                                          if not value["algorithmic"])
+
+        println(u"// clang-format off")
+        println(u"#define NUMBERING_SYSTEMS_WITH_SIMPLE_DIGIT_MAPPINGS \\")
+        println(u"{}".format(", \\\n".join(u'  "{}"'.format(name)
+                                           for name in simple_numbering_systems)))
+        println(u"// clang-format on")
+        println(u"")
+
+        println(u"#endif  // builtin_intl_NumberingSystemsGenerated_h")
+
+    js_src_builtin_intl_dir = os.path.dirname(os.path.abspath(__file__))
+    test_dir = os.path.join(js_src_builtin_intl_dir, "../../tests/non262/Intl")
+
+    intl_shell_js_file = os.path.join(test_dir, "shell.js")
+
+    with io.open(intl_shell_js_file, mode="w", encoding="utf-8", newline="") as f:
+        println = partial(print, file=f)
+
+        println(generatedFileWarning)
+
+        println(u"""
+// source: CLDR file common/bcp47/number.xml; version CLDR {}.
+// https://github.com/unicode-org/cldr/blob/master/common/bcp47/number.xml
+// https://github.com/unicode-org/cldr/blob/master/common/supplemental/numberingSystems.xml
+""".format(readCLDRVersionFromICU()).rstrip())
+
+        numbering_systems_object = json.dumps(numbering_systems,
+                                              indent=2,
+                                              separators=(',', ': '),
+                                              sort_keys=True,
+                                              ensure_ascii=False)
+        println(u"const numberingSystems = {};".format(numbering_systems_object))
+
+
+def updateNumberingSystems(topsrcdir, args):
+    icu_path = os.path.join(topsrcdir, "intl", "icu")
+    icu_misc_path = os.path.join(icu_path, "source", "data", "misc")
+
+    with io.open("NumberingSystems.yaml", mode="r", encoding="utf-8") as f:
+        numbering_systems = yaml.safe_load(f)
+
+    # Read all possible ICU unit identifiers from the "misc/numberingSystems.txt" resource.
+    misc_ns_file = os.path.join(icu_misc_path, "numberingSystems.txt")
+    all_numbering_systems = readICUNumberingSystemsResourceFile(misc_ns_file)
+
+    all_numbering_systems_simple_digits = {name for (name, value) in all_numbering_systems.items()
+                                           if not value["algorithmic"]}
+
+    # Assert ICU includes support for all required numbering systems. If this assertion fails,
+    # something is broken in ICU.
+    assert all_numbering_systems_simple_digits.issuperset(numbering_systems), (
+           "{}".format(numbering_systems.difference(all_numbering_systems_simple_digits)))
+
+    # Assert the spec requires support for all numbering systems with simple digit mappings. If
+    # this assertion fails, file a PR at <https://github.com/tc39/ecma402> to include any new
+    # numbering systems.
+    assert all_numbering_systems_simple_digits.issubset(numbering_systems), (
+           "{}".format(all_numbering_systems_simple_digits.difference(numbering_systems)))
+
+    writeNumberingSystemFiles(all_numbering_systems)
 
 
 if __name__ == "__main__":
@@ -1985,21 +2989,20 @@ if __name__ == "__main__":
 
     parser_cldr_tags = subparsers.add_parser("langtags",
                                              help="Update CLDR language tags data")
+    parser_cldr_tags.add_argument("--version",
+                                  metavar="VERSION",
+                                  help="CLDR version number")
     parser_cldr_tags.add_argument("--url",
                                   metavar="URL",
-                                  default="https://github.com/unicode-org/cldr.git",
-                                  help="URL to git repository (default: %(default)s)")
-    parser_cldr_tags.add_argument("--branch", default="latest",
-                                  help="Git branch (default: %(default)s)")
-    parser_cldr_tags.add_argument("--revision", default="HEAD",
-                                  help="Git revision (default: %(default)s)")
+                                  default="https://unicode.org/Public/cldr/<VERSION>/core.zip",
+                                  type=EnsureHttps,
+                                  help="Download url CLDR data (default: %(default)s)")
     parser_cldr_tags.add_argument("--out",
-                                  default="LangTagMappingsGenerated.js",
+                                  default="LanguageTagGenerated.cpp",
                                   help="Output file (default: %(default)s)")
-    parser_cldr_tags.add_argument("files",
-                                  nargs="*",
-                                  help="Local ldmlSupplemental.dtd, supplementalMetadata.xml, "
-                                       "and likelySubtags.xml files, if omitted uses <URL>")
+    parser_cldr_tags.add_argument("file",
+                                  nargs="?",
+                                  help="Local cldr-core.zip file, if omitted uses <URL>")
     parser_cldr_tags.set_defaults(func=updateCLDRLangTags)
 
     parser_tz = subparsers.add_parser("tzdata", help="Update tzdata")
@@ -2035,23 +3038,14 @@ if __name__ == "__main__":
                                  help="Local currency code list file, if omitted uses <URL>")
     parser_currency.set_defaults(func=partial(updateCurrency, topsrcdir))
 
-    parser_unicode_ext = subparsers.add_parser("unicode-ext", help="Update Unicode extensions")
-    parser_unicode_ext.add_argument("--version",
-                                    metavar="VERSION",
-                                    required=True,
-                                    help="CLDR version number")
-    parser_unicode_ext.add_argument("--url",
-                                    metavar="URL",
-                                    default="https://unicode.org/Public/cldr/<VERSION>/core.zip",
-                                    type=EnsureHttps,
-                                    help="Download url CLDR data (default: %(default)s)")
-    parser_unicode_ext.add_argument("--out",
-                                    default="UnicodeExtensionsGenerated.js",
-                                    help="Output file (default: %(default)s)")
-    parser_unicode_ext.add_argument("file",
-                                    nargs="?",
-                                    help="Local cldr-core.zip file, if omitted uses <URL>")
-    parser_unicode_ext.set_defaults(func=updateUnicodeExtensions)
+    parser_units = subparsers.add_parser("units",
+                                         help="Update sanctioned unit identifiers mapping")
+    parser_units.set_defaults(func=partial(updateUnits, topsrcdir))
+
+    parser_numbering_systems = subparsers.add_parser("numbering",
+                                                     help="Update numbering systems with simple "
+                                                          "digit mappings")
+    parser_numbering_systems.set_defaults(func=partial(updateNumberingSystems, topsrcdir))
 
     args = parser.parse_args()
     args.func(args)

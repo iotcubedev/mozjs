@@ -4,10 +4,9 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
  * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
  * for tips on how to do that.
@@ -53,11 +52,10 @@ add_task(async function() {
     "about:home"
   );
 
+  await disableFxaBadge();
+
   let alreadyFocused = false;
   let inRange = (val, min, max) => min <= val && val <= max;
-  let fxaAccountsButton = document
-    .getElementById("fxa-toolbar-menu-button")
-    .getBoundingClientRect();
   let expectations = {
     expectedReflows: EXPECTED_REFLOWS,
     frames: {
@@ -100,14 +98,6 @@ add_task(async function() {
             );
           },
         },
-        {
-          name: "FxA accounts button is intentionally badged 10s after startup",
-          condition: r =>
-            r.x1 >= fxaAccountsButton.left &&
-            r.x2 <= fxaAccountsButton.right &&
-            r.y1 >= fxaAccountsButton.top &&
-            r.y2 <= fxaAccountsButton.bottom,
-        },
       ],
     },
   };
@@ -132,11 +122,15 @@ add_task(async function() {
         subject => subject == win
       );
 
-      await BrowserTestUtils.firstBrowserLoaded(win, false);
-      await BrowserTestUtils.browserStopped(
-        win.gBrowser.selectedBrowser,
-        "about:home"
-      );
+      let promises = [
+        BrowserTestUtils.firstBrowserLoaded(win, false),
+        BrowserTestUtils.browserStopped(
+          win.gBrowser.selectedBrowser,
+          "about:home"
+        ),
+      ];
+
+      await Promise.all(promises);
 
       await new Promise(resolve => {
         // 10 is an arbitrary value here, it needs to be at least 2 to avoid

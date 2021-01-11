@@ -31,8 +31,19 @@ class MobileViewportManager final : public nsIDOMEventListener,
   NS_DECL_NSIDOMEVENTLISTENER
   NS_DECL_NSIOBSERVER
 
-  explicit MobileViewportManager(mozilla::MVMContext* aContext);
+  /* The MobileViewportManager might be required to handle meta-viewport tags
+   * and changes, or it might not (e.g. if we are in a desktop-zooming setup).
+   * This enum indicates which mode the manager is in. It might make sense to
+   * split these two "modes" into two separate classes but for now they have a
+   * bunch of shared code and it's uncertain if that shared set will expand or
+   * contract. */
+  enum class ManagerType { VisualAndMetaViewport, VisualViewportOnly };
+
+  explicit MobileViewportManager(mozilla::MVMContext* aContext,
+                                 ManagerType aType);
   void Destroy();
+
+  ManagerType GetManagerType() { return mManagerType; }
 
   /* Provide a resolution to use during the first paint instead of the default
    * resolution computed from the viewport info metadata. This is in the same
@@ -63,6 +74,13 @@ class MobileViewportManager final : public nsIDOMEventListener,
   void SetRestoreResolution(float aResolution);
 
  public:
+  /* Notify the MobileViewportManager that a reflow is about to happen. This
+   * triggers the MVM to update its internal notion of display size and CSS
+   * viewport, so that code that queries those during the reflow gets an
+   * up-to-date value.
+   */
+  void UpdateSizesBeforeReflow();
+
   /* Notify the MobileViewportManager that a reflow was requested in the
    * presShell.*/
   void RequestReflow(bool aForceAdjustResolution);
@@ -84,8 +102,35 @@ class MobileViewportManager final : public nsIDOMEventListener,
    * Shrink the content to fit it to the display width if no initial-scale is
    * specified and if the content is still wider than the display width.
    */
-  void ShrinkToDisplaySizeIfNeeded(nsViewportInfo& aViewportInfo,
-                                   const mozilla::ScreenIntSize& aDisplaySize);
+  void ShrinkToDisplaySizeIfNeeded();
+
+  /*
+   * Similar to UpdateVisualViewportSize but this should be called only when we
+   * need to update visual viewport size in response to dynamic toolbar
+   * transitions.
+   * This function doesn't cause any reflows, just fires a visual viewport
+   * resize event.
+   */
+  void UpdateVisualViewportSizeByDynamicToolbar(
+      mozilla::ScreenIntCoord aToolbarHeight);
+
+  nsSize GetVisualViewportSizeUpdatedByDynamicToolbar() const {
+    return mVisualViewportSizeUpdatedByDynamicToolbar;
+  }
+
+  /*
+   * This refreshes the visual viewport size based on the most recently
+   * available information. It is intended to be called in particular after
+   * the root scrollframe does a reflow, which may make scrollbars appear or
+   * disappear if the content changed size.
+   */
+  void UpdateVisualViewportSizeForPotentialScrollbarChange();
+
+  /*
+   * Returns the composition size in CSS units when zoomed to the intrinsic
+   * scale.
+   */
+  mozilla::CSSSize GetIntrinsicCompositionSize() const;
 
  private:
   ~MobileViewportManager();
@@ -110,21 +155,22 @@ class MobileViewportManager final : public nsIDOMEventListener,
       const mozilla::CSSSize& aNewViewport,
       const mozilla::CSSSize& aOldViewport);
 
-  /* Helper enum for UpdateResolution().
-   * UpdateResolution() is called twice during RefreshViewportSize():
-   * First, to choose an initial resolution based on the viewport size.
-   * Second, after reflow when we know the content size, to make any
-   * necessary adjustments to the resolution.
-   * This enumeration discriminates between the two situations.
-   */
-  enum class UpdateType { ViewportSize, ContentSize };
+  mozilla::CSSToScreenScale ResolutionToZoom(
+      const mozilla::LayoutDeviceToLayerScale& aResolution) const;
+  mozilla::LayoutDeviceToLayerScale ZoomToResolution(
+      const mozilla::CSSToScreenScale& aZoom) const;
 
-  /* Updates the presShell resolution and the visual viewport size. */
-  void UpdateResolution(const nsViewportInfo& aViewportInfo,
-                        const mozilla::ScreenIntSize& aDisplaySize,
-                        const mozilla::CSSSize& aViewportOrContentSize,
-                        const mozilla::Maybe<float>& aDisplayWidthChangeRatio,
-                        UpdateType aType);
+  /* Updates the presShell resolution and the visual viewport size for various
+   * types of changes. */
+  void UpdateResolutionForFirstPaint(const mozilla::CSSSize& aViewportSize);
+  void UpdateResolutionForViewportSizeChange(
+      const mozilla::CSSSize& aViewportSize,
+      const mozilla::Maybe<float>& aDisplayWidthChangeRatio);
+  void UpdateResolutionForContentSizeChange(
+      const mozilla::CSSSize& aContentSize);
+
+  void ApplyNewZoom(const mozilla::ScreenIntSize& aDisplaySize,
+                    const mozilla::CSSToScreenScale& aNewZoom);
 
   void UpdateVisualViewportSize(const mozilla::ScreenIntSize& aDisplaySize,
                                 const mozilla::CSSToScreenScale& aZoom);
@@ -145,13 +191,24 @@ class MobileViewportManager final : public nsIDOMEventListener,
   mozilla::ScreenIntSize GetCompositionSize(
       const mozilla::ScreenIntSize& aDisplaySize) const;
 
+  mozilla::CSSToScreenScale GetZoom() const;
+
   RefPtr<mozilla::MVMContext> mContext;
+  ManagerType mManagerType;
   bool mIsFirstPaint;
   bool mPainted;
   mozilla::LayoutDeviceIntSize mDisplaySize;
   mozilla::CSSSize mMobileViewportSize;
   mozilla::Maybe<float> mRestoreResolution;
   mozilla::Maybe<mozilla::ScreenIntSize> mRestoreDisplaySize;
+  /*
+   * The visual viewport size updated by the dynamic toolbar transitions. This
+   * is typically used for the VisualViewport width/height APIs.
+   * NOTE: If you want to use this value, you should make sure to flush
+   * position:fixed elements layout and update
+   * FrameMetrics.mFixedLayerMargins to conform with this value.
+   */
+  nsSize mVisualViewportSizeUpdatedByDynamicToolbar;
 };
 
 #endif

@@ -19,7 +19,9 @@ add_task(async function() {
     { status: 200 },
   ];
 
-  const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL);
+  const { tab, monitor } = await initNetMonitor(CUSTOM_GET_URL, {
+    requestCount: 1,
+  });
   const { store, windowRequire, connector } = monitor.panelWin;
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
   const { getSortedRequests } = windowRequire(
@@ -41,9 +43,13 @@ add_task(async function() {
   await Promise.all(requests);
 
   EXPECTED_REQUESTS.forEach(({ status }, i) => {
-    const item = getSortedRequests(store.getState()).get(i);
+    const item = getSortedRequests(store.getState())[i];
 
-    is(item.status, status, `Request #${i} has the expected status`);
+    is(
+      parseInt(item.status, 10),
+      status,
+      `Request #${i} has the expected status`
+    );
 
     const { stacktrace } = item;
     const stackLen = stacktrace ? stacktrace.length : 0;
@@ -60,10 +66,12 @@ add_task(async function() {
   await teardown(monitor);
 
   function performRequests(count, url) {
-    return ContentTask.spawn(tab.linkedBrowser, { count, url }, async function(
-      args
-    ) {
-      content.wrappedJSObject.performRequests(args.count, args.url);
-    });
+    return SpecialPowers.spawn(
+      tab.linkedBrowser,
+      [{ count, url }],
+      async function(args) {
+        content.wrappedJSObject.performRequests(args.count, args.url);
+      }
+    );
   }
 });

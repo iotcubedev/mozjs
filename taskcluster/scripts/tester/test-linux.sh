@@ -4,11 +4,23 @@ set -x -e
 
 echo "running as" $(id)
 
-# Detect release version.
-. /etc/lsb-release
-if [ "${DISTRIB_RELEASE}" != "16.04" ]; then
-    echo "Ubuntu 16.04 required"
-    exit 1
+# Detect distribution
+. /etc/os-release
+if [ "${ID}" == "ubuntu" ]; then
+    DISTRIBUTION="Ubuntu"
+elif [ "${ID}" == "debian" ]; then
+    DISTRIBUTION="Debian"
+else
+    DISTRIBUTION="Unknown"
+fi
+
+# Detect release version if supported
+FILE="/etc/lsb-release"
+if [ -e $FILE ] ; then
+    . /etc/lsb-release
+    RELEASE="${DISTRIB_RELEASE}"
+else
+    RELEASE="unknown"
 fi
 
 ####
@@ -25,8 +37,8 @@ fi
 : MOZHARNESS_OPTIONS            ${MOZHARNESS_OPTIONS}
 : NEED_XVFB                     ${NEED_XVFB:=true}
 : NEED_WINDOW_MANAGER           ${NEED_WINDOW_MANAGER:=false}
-: NEED_COMPIZ                   ${NEED_COMPIZ}
 : NEED_PULSEAUDIO               ${NEED_PULSEAUDIO:=false}
+: NEED_COMPIZ                   ${NEED_COPMPIZ:=false}
 : START_VNC                     ${START_VNC:=false}
 : TASKCLUSTER_INTERACTIVE       ${TASKCLUSTER_INTERACTIVE:=false}
 : mozharness args               "${@}"
@@ -43,10 +55,13 @@ fail() {
     exit 1
 }
 
+# start pulseaudio
 maybe_start_pulse() {
     if $NEED_PULSEAUDIO; then
-        pulseaudio --fail --daemonize --start
-        pactl load-module module-null-sink
+        # call pulseaudio for Ubuntu only
+        if [ $DISTRIBUTION == "Ubuntu" ]; then
+            pulseaudio --daemonize --log-level=4 --log-time=1 --log-target=stderr --start --fail -vvvvv --exit-idle-time=-1 --cleanup-shm --dump-conf
+        fi
     fi
 }
 
@@ -131,7 +146,15 @@ fi
 
 if $NEED_WINDOW_MANAGER; then
     # This is read by xsession to select the window manager
-    echo DESKTOP_SESSION=ubuntu > $HOME/.xsessionrc
+    . /etc/lsb-release
+    if [ $DISTRIBUTION == "Ubuntu" ] && [ $RELEASE == "16.04" ]; then
+        echo DESKTOP_SESSION=ubuntu > $HOME/.xsessionrc
+    elif [ $DISTRIBUTION == "Ubuntu" ] && [ $RELEASE == "18.04" ]; then
+        echo export DESKTOP_SESSION=gnome > $HOME/.xsessionrc
+        echo export XDG_SESSION_TYPE=x11 >> $HOME/.xsessionrc
+    else
+        :
+    fi
 
     # DISPLAY has already been set above
     # XXX: it would be ideal to add a semaphore logic to make sure that the
@@ -142,18 +165,29 @@ if $NEED_WINDOW_MANAGER; then
     gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
     gsettings set org.gnome.desktop.screensaver lock-enabled false
     gsettings set org.gnome.desktop.screensaver lock-delay 3600
+
     # Disable the screen saver
     xset s off s reset
 
     # This starts the gnome-keyring-daemon with an unlocked login keyring. libsecret uses this to
     # store secrets. Firefox uses libsecret to store a key that protects sensitive information like
     # credit card numbers.
-    eval `dbus-launch --sh-syntax`
+    if test -z "$DBUS_SESSION_BUS_ADDRESS" ; then
+        # if not found, launch a new one
+        eval `dbus-launch --sh-syntax`
+    fi
     eval `echo '' | /usr/bin/gnome-keyring-daemon -r -d --unlock --components=secrets`
 fi
 
-if $NEED_COMPIZ; then
+if [[ $NEED_COMPIZ == true ]]  && [[ $RELEASE == 16.04 ]]; then
     compiz 2>&1 &
+elif [[ $NEED_COMPIZ == true ]] && [[ $RELEASE == 18.04 ]]; then
+    compiz --replace 2>&1 &
+fi
+
+# Bug 1607713 - set cursor position to 0,0 to avoid odd libx11 interaction
+if [ $NEED_WINDOW_MANAGER ] && [ $DISPLAY == ':0' ]; then
+    xwit -root -warp 0 0
 fi
 
 maybe_start_pulse
@@ -178,7 +212,7 @@ fi
 
 # Use |mach python| if a source checkout exists so in-tree packages are
 # available.
-[[ -x "${GECKO_PATH}/mach" ]] && python="${GECKO_PATH}/mach python" || python="python2.7"
+[[ -x "${GECKO_PATH}/mach" ]] && python="python2.7 ${GECKO_PATH}/mach python" || python="python2.7"
 
 # Save the computed mozharness command to a binary which is useful for
 # interactive mode.
@@ -204,6 +238,6 @@ fi
 # Run a custom mach command (this is typically used by action tasks to run
 # harnesses in a particular way)
 if [ "$CUSTOM_MACH_COMMAND" ]; then
-    eval "'$WORKSPACE/build/tests/mach' ${CUSTOM_MACH_COMMAND}"
+    eval "'$WORKSPACE/build/tests/mach' ${CUSTOM_MACH_COMMAND} ${@}"
     exit $?
 fi

@@ -11,7 +11,7 @@
 
 <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
-    <meta http-equiv="Content-Security-Policy" content="default-src chrome:" />
+    <meta http-equiv="Content-Security-Policy" content="default-src chrome:; object-src 'none'" />
     <title data-l10n-id="page-title"/>
 
     <link rel="icon" type="image/png" id="favicon"
@@ -24,6 +24,9 @@
     <link rel="localization" href="toolkit/about/aboutSupport.ftl"/>
     <link rel="localization" href="toolkit/global/resetProfile.ftl"/>
     <link rel="localization" href="toolkit/global/processTypes.ftl"/>
+#ifndef ANDROID
+    <link rel="localization" href="toolkit/featuregates/features.ftl"/>
+#endif
   </head>
 
   <body class="wide-container">
@@ -37,6 +40,10 @@
       <div id="safe-mode-box">
         <h3 data-l10n-id="safe-mode-title"/>
         <button id="restart-in-safe-mode-button" data-l10n-id="restart-in-safe-mode-label"/>
+      </div>
+      <div id="clear-startup-cache-box">
+        <h3 data-l10n-id="clear-startup-cache-title"/>
+        <button id="clear-startup-cache-button" data-l10n-id="clear-startup-cache-label"/>
       </div>
     </div>
 #endif
@@ -79,6 +86,11 @@
             <td id="buildid-box"></td>
           </tr>
 
+          <tr>
+            <th class="column" data-l10n-id="app-basics-distribution-id"/>
+            <td id="distributionid-box"></td>
+          </tr>
+
 #ifndef ANDROID
 #ifdef MOZ_UPDATER
           <tr id="update-row" class="no-copy">
@@ -86,7 +98,7 @@
 
             <td>
               <button id="update-dir-button" data-l10n-id="show-dir-label"/>
-               <span id="update-dir-box">
+               <span id="update-dir-box" dir="ltr">
                </span>
             </td>
           </tr>
@@ -125,7 +137,7 @@
           <tr class="no-copy">
             <th class="column" data-l10n-id="app-basics-binary"/>
 
-            <td id="binary-box">
+            <td id="binary-box" dir="ltr">
             </td>
           </tr>
 
@@ -134,7 +146,7 @@
 
             <td>
               <button id="profile-dir-button" data-l10n-id="show-dir-label"/>
-               <span id="profile-dir-box">
+               <span id="profile-dir-box" dir="ltr">
                </span>
             </td>
           </tr>
@@ -308,18 +320,19 @@
 
       <!-- - - - - - - - - - - - - - - - - - - - - -->
 
-      <h2 class="major-section" data-l10n-id="extensions-title"/>
+      <h2 class="major-section" data-l10n-id="support-addons-title"/>
 
       <table>
         <thead>
           <tr>
-            <th data-l10n-id="extensions-name"/>
-            <th data-l10n-id="extensions-version"/>
-            <th data-l10n-id="extensions-enabled"/>
-            <th data-l10n-id="extensions-id"/>
+            <th data-l10n-id="support-addons-name"/>
+            <th data-l10n-id="support-addons-type"/>
+            <th data-l10n-id="support-addons-version"/>
+            <th data-l10n-id="support-addons-enabled"/>
+            <th data-l10n-id="support-addons-id"/>
           </tr>
         </thead>
-        <tbody id="extensions-tbody">
+        <tbody id="addons-tbody">
         </tbody>
       </table>
 
@@ -453,8 +466,36 @@
           </tr>
         </tbody>
 
+        <tbody id="media-capabilities-tbody">
+          <tr>
+            <th colspan="9" class="title-column" data-l10n-id="media-capabilities-title"/>
+          </tr>
+          <tr>
+            <td colspan="9">
+              <button id="enumerate-database-button" data-l10n-id="media-capabilities-enumerate"/>
+              <pre id="enumerate-database-result" class="hidden no-copy"></pre>
+            </td>
+          </tr>
+        </tbody>
+
       </table>
 
+#ifndef ANDROID
+      <!-- - - - - - - - - - - - - - - - - - - - - -->
+
+      <h2 class="major-section" data-l10n-id="experimental-features-title"/>
+
+      <table class="prefs-table">
+        <thead class="no-copy">
+          <th class="name" data-l10n-id="experimental-features-name"/>
+
+          <th class="value" data-l10n-id="experimental-features-value"/>
+        </thead>
+
+        <tbody id="experimental-features-tbody">
+        </tbody>
+      </table>
+#endif
       <!-- - - - - - - - - - - - - - - - - - - - - -->
 
       <h2 class="major-section" data-l10n-id="modified-key-prefs-title"/>
@@ -508,20 +549,6 @@
         </tr>
       </table>
 #endif
-
-      <!-- - - - - - - - - - - - - - - - - - - - - -->
-      <h2 class="major-section" data-l10n-id="js-title"/>
-
-      <table>
-        <tbody>
-          <tr>
-            <th class="column" data-l10n-id="js-incremental-gc"/>
-
-            <td id="javascript-incremental-gc">
-            </td>
-          </tr>
-        </tbody>
-      </table>
 
       <!-- - - - - - - - - - - - - - - - - - - - - -->
       <h2 class="major-section" data-l10n-id="a11y-title"/>
@@ -596,6 +623,37 @@
 #endif
 #endif
 
+      <h2 class="major-section" data-l10n-id="startup-cache-title"/>
+
+      <table>
+        <tbody>
+          <tr>
+            <th class="column" data-l10n-id="startup-cache-disk-cache-path"/>
+
+            <td id="startup-cache-disk-cache-path">
+            </td>
+          </tr>
+          <tr>
+            <th class="column" data-l10n-id="startup-cache-ignore-disk-cache"/>
+
+            <td id="startup-cache-ignore-disk-cache">
+            </td>
+          </tr>
+          <tr>
+            <th class="column" data-l10n-id="startup-cache-found-disk-cache-on-init"/>
+
+            <td id="startup-cache-found-disk-cache-on-init">
+            </td>
+          </tr>
+          <tr>
+            <th class="column" data-l10n-id="startup-cache-wrote-to-disk-cache"/>
+
+            <td id="startup-cache-wrote-to-disk-cache">
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
       <h2 class="major-section" data-l10n-id="intl-title"/>
 
       <table>
@@ -645,7 +703,25 @@
           </tr>
         </tbody>
       </table>
+
       <!-- - - - - - - - - - - - - - - - - - - - - -->
+
+#if defined(ENABLE_REMOTE_AGENT)
+      <h2 class="major-section" data-l10n-id="remote-debugging-title"/>
+
+      <table>
+        <tbody>
+          <tr>
+            <th class="column" data-l10n-id="remote-debugging-accepting-connections"/>
+            <td id="remote-debugging-accepting-connections"></td>
+          </tr>
+          <tr>
+            <th class="column" data-l10n-id="remote-debugging-url"/>
+            <td id="remote-debugging-url"></td>
+          </tr>
+        </tbody>
+      </table>
+#endif
 
     </div>
 

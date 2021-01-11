@@ -6,7 +6,6 @@
 #ifndef TRANSFRMX_TXMOZILLAXSLTPROCESSOR_H
 #define TRANSFRMX_TXMOZILLAXSLTPROCESSOR_H
 
-#include "nsAutoPtr.h"
 #include "nsStubMutationObserver.h"
 #include "nsIDocumentTransformer.h"
 #include "txExpandedNameMap.h"
@@ -16,10 +15,12 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/ReferrerPolicyBinding.h"
 #include "mozilla/dom/XSLTProcessorBinding.h"
 
 class nsINode;
 class nsIURI;
+class nsIVariant;
 class txStylesheet;
 class txResultRecycler;
 class txIGlobalParameter;
@@ -84,7 +85,7 @@ class txMozillaXSLTProcessor final : public nsIDocumentTransformer,
   mozilla::dom::DocGroup* GetDocGroup() const;
 
   static already_AddRefed<txMozillaXSLTProcessor> Constructor(
-      const mozilla::dom::GlobalObject& aGlobal, mozilla::ErrorResult& aRv);
+      const mozilla::dom::GlobalObject& aGlobal);
 
   void ImportStylesheet(nsINode& stylesheet, mozilla::ErrorResult& aRv);
   already_AddRefed<mozilla::dom::DocumentFragment> TransformToFragment(

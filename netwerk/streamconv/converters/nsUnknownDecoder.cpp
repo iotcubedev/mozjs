@@ -8,7 +8,6 @@
 #include "nsIInputStream.h"
 #include "nsIOutputStream.h"
 #include "nsMimeTypes.h"
-#include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 
 #include "nsCRT.h"
@@ -142,6 +141,12 @@ nsUnknownDecoder::AsyncConvertData(const char* aFromType, const char* aToType,
   MutexAutoLock lock(mMutex);
   mNextListener = aListener;
   return (aListener) ? NS_OK : NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
+nsUnknownDecoder::GetConvertedType(const nsACString& aFromType,
+                                   nsIChannel* aChannel, nsACString& aToType) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 // ----
@@ -408,7 +413,7 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
     if (!mContentType.IsEmpty()) return;
   }
 
-  nsCOMPtr<nsIHttpChannel> channel(do_QueryInterface(aRequest));
+  nsCOMPtr<nsIChannel> channel(do_QueryInterface(aRequest));
   if (channel) {
     nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
     if (loadInfo->GetSkipContentSniffing()) {
@@ -432,8 +437,7 @@ void nsUnknownDecoder::DetermineContentType(nsIRequest* aRequest) {
           spec.AppendLiteral("...");
         }
         httpChannel->LogMimeTypeMismatch(
-            NS_LITERAL_CSTRING("XTCOWithMIMEValueMissing"), false,
-            NS_ConvertUTF8toUTF16(spec),
+            "XTCOWithMIMEValueMissing"_ns, false, NS_ConvertUTF8toUTF16(spec),
             // Type is not used in the Error Message but required
             NS_ConvertUTF8toUTF16(type));
       }
@@ -656,7 +660,9 @@ bool nsUnknownDecoder::LastDitchSniff(nsIRequest* aRequest) {
   uint32_t testDataLen;
   if (mDecodedData.IsEmpty()) {
     testData = mBuffer;
-    testDataLen = mBufferLen;
+    // Since some legacy text files end with 0x1A, reading the entire buffer
+    // will lead misdetection.
+    testDataLen = std::min<uint32_t>(mBufferLen, MAX_BUFFER_SIZE);
   } else {
     testData = mDecodedData.get();
     testDataLen = std::min(mDecodedData.Length(), MAX_BUFFER_SIZE);
@@ -878,8 +884,7 @@ void nsBinaryDetector::DetermineContentType(nsIRequest* aRequest) {
   }
   // It's an HTTP channel.  Check for the text/plain mess
   nsAutoCString contentTypeHdr;
-  Unused << httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("Content-Type"),
-                                           contentTypeHdr);
+  Unused << httpChannel->GetResponseHeader("Content-Type"_ns, contentTypeHdr);
   nsAutoCString contentType;
   httpChannel->GetContentType(contentType);
 
@@ -903,8 +908,8 @@ void nsBinaryDetector::DetermineContentType(nsIRequest* aRequest) {
   // XXXbz we could improve this by doing a local decompress if we
   // wanted, I'm sure.
   nsAutoCString contentEncoding;
-  Unused << httpChannel->GetResponseHeader(
-      NS_LITERAL_CSTRING("Content-Encoding"), contentEncoding);
+  Unused << httpChannel->GetResponseHeader("Content-Encoding"_ns,
+                                           contentEncoding);
   if (!contentEncoding.IsEmpty()) {
     return;
   }

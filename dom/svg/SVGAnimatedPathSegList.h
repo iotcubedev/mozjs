@@ -4,14 +4,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_SVGANIMATEDPATHSEGLIST_H__
-#define MOZILLA_SVGANIMATEDPATHSEGLIST_H__
+#ifndef DOM_SVG_SVGANIMATEDPATHSEGLIST_H_
+#define DOM_SVG_SVGANIMATEDPATHSEGLIST_H_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/SMILAttr.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
 #include "SVGPathData.h"
 
 namespace mozilla {
@@ -40,8 +39,8 @@ class SVGElement;
  */
 class SVGAnimatedPathSegList final {
   // friends so that they can get write access to mBaseVal and mAnimVal
-  friend class DOMSVGPathSeg;
-  friend class DOMSVGPathSegList;
+  friend class dom::DOMSVGPathSeg;
+  friend class dom::DOMSVGPathSegList;
 
  public:
   SVGAnimatedPathSegList() = default;
@@ -95,7 +94,7 @@ class SVGAnimatedPathSegList final {
   // the empty string (<set to="">).
 
   SVGPathData mBaseVal;
-  nsAutoPtr<SVGPathData> mAnimVal;
+  UniquePtr<SVGPathData> mAnimVal;
 
   struct SMILAnimatedPathSegList : public SMILAttr {
    public:
@@ -121,4 +120,4 @@ class SVGAnimatedPathSegList final {
 
 }  // namespace mozilla
 
-#endif  // MOZILLA_SVGANIMATEDPATHSEGLIST_H__
+#endif  // DOM_SVG_SVGANIMATEDPATHSEGLIST_H_

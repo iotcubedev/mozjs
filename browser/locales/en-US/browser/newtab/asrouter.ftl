@@ -36,6 +36,15 @@ cfr-doorhanger-extension-author = by { $name }
 # This is a notification displayed in the address bar.
 # When clicked it opens a panel with a message for the user.
 cfr-doorhanger-extension-notification = Recommendation
+cfr-doorhanger-extension-notification2 = Recommendation
+  .tooltiptext = Extension recommendation
+  .a11y-announcement = Extension recommendation available
+
+# This is a notification displayed in the address bar.
+# When clicked it opens a panel with a message for the user.
+cfr-doorhanger-feature-notification = Recommendation
+  .tooltiptext = Feature recommendation
+  .a11y-announcement = Feature recommendation available
 
 ## Add-on statistics
 ## These strings are used to display the total number of
@@ -86,11 +95,13 @@ cfr-protections-panel-link-text = Learn more
 
 ## What's New toolbar button and panel
 
+# This string is used by screen readers to offer a text based alternative for
+# the notification icon
+cfr-badge-reader-label-newfeature = New feature:
+
 cfr-whatsnew-button =
   .label = What’s New
   .tooltiptext = What’s New
-
-cfr-whatsnew-panel-header = What’s New
 
 cfr-whatsnew-release-notes-link-text = Read the release notes
 
@@ -128,6 +139,40 @@ cfr-whatsnew-lockwise-take-body =
    backed up passwords from anywhere.
 cfr-whatsnew-lockwise-take-link-text = Get the app
 
+## Search Bar
+
+cfr-whatsnew-searchbar-title = Type less, find more with the address bar
+cfr-whatsnew-searchbar-body-topsites = Now, just select the address bar, and a box will expand with links to your top sites.
+cfr-whatsnew-searchbar-icon-alt-text = Magnifying glass icon
+
+## Picture-in-Picture
+
+cfr-whatsnew-pip-header = Watch videos while you browse
+cfr-whatsnew-pip-body = Picture-in-picture pops video into a floating window so you can watch while working in other tabs.
+cfr-whatsnew-pip-cta = Learn more
+
+## Permission Prompt
+
+cfr-whatsnew-permission-prompt-header = Fewer annoying site pop-ups
+cfr-whatsnew-permission-prompt-body = { -brand-shorter-name } now blocks sites from automatically asking to send you pop-up messages.
+cfr-whatsnew-permission-prompt-cta = Learn more
+
+## Fingerprinter Counter
+
+# This string is displayed before a large numeral that indicates the total
+# number of tracking elements blocked. Don’t add $fingerprinterCount to your
+# localization, because it would result in the number showing twice.
+cfr-whatsnew-fingerprinter-counter-header =
+  { $fingerprinterCount ->
+    [one] Fingerprinter blocked
+   *[other] Fingerprinters blocked
+  }
+cfr-whatsnew-fingerprinter-counter-body = { -brand-shorter-name } blocks many fingerprinters that secretly gather information about your device and actions to create an advertising profile of you.
+
+# Message variation when fingerprinters count is less than 10
+cfr-whatsnew-fingerprinter-counter-header-alt = Fingerprinters
+cfr-whatsnew-fingerprinter-counter-body-alt = { -brand-shorter-name } can block fingerprinters that secretly gather information about your device and actions to create an advertising profile of you.
+
 ## Bookmark Sync
 
 cfr-doorhanger-sync-bookmarks-header = Get this bookmark on your phone
@@ -156,3 +201,79 @@ cfr-doorhanger-firefox-send-header = Share this PDF securely
 cfr-doorhanger-firefox-send-body = Keep your sensitive documents safe from prying eyes with end-to-end encryption and a link that disappears when you’re done.
 cfr-doorhanger-firefox-send-ok-button = Try { -send-brand-name }
   .accesskey = T
+
+## Social Tracking Protection
+
+cfr-doorhanger-socialtracking-ok-button = See Protections
+  .accesskey = P
+cfr-doorhanger-socialtracking-close-button = Close
+  .accesskey = C
+cfr-doorhanger-socialtracking-dont-show-again = Don’t show me messages like this again
+  .accesskey = D
+cfr-doorhanger-socialtracking-heading = { -brand-short-name } stopped a social network from tracking you here
+cfr-doorhanger-socialtracking-description = Your privacy matters. { -brand-short-name } now blocks common social media trackers, limiting how much data they can collect about what you do online.
+cfr-doorhanger-fingerprinters-heading = { -brand-short-name } blocked a fingerprinter on this page
+cfr-doorhanger-fingerprinters-description = Your privacy matters. { -brand-short-name } now blocks fingerprinters, which collect pieces of uniquely identifiable information about your device to track you.
+cfr-doorhanger-cryptominers-heading = { -brand-short-name } blocked a cryptominer on this page
+cfr-doorhanger-cryptominers-description = Your privacy matters. { -brand-short-name } now blocks cryptominers, which use your system’s computing power to mine digital money.
+
+## Enhanced Tracking Protection Milestones
+
+# Variables:
+#   $blockedCount (Number) - The total count of blocked trackers. This number will always be greater than 1.
+#   $date (String) - The date we began recording the count of blocked trackers
+cfr-doorhanger-milestone-heading =
+  { $blockedCount ->
+   *[other] { -brand-short-name } blocked over <b>{ $blockedCount }</b> trackers since { $date }!
+  }
+cfr-doorhanger-milestone-ok-button = See All
+  .accesskey = S
+cfr-doorhanger-milestone-close-button = Close
+  .accesskey = C
+
+## What’s New Panel Content for Firefox 76
+
+## Lockwise message
+
+cfr-whatsnew-lockwise-header = Easily create secure passwords
+cfr-whatsnew-lockwise-body = It’s difficult to think of unique, secure passwords for every account. When creating a password, select the password field to use a secure, generated password from { -brand-shorter-name }.
+cfr-whatsnew-lockwise-icon-alt = { -lockwise-brand-short-name } icon
+
+## Vulnerable Passwords message
+
+cfr-whatsnew-passwords-header = Get alerts about vulnerable passwords
+cfr-whatsnew-passwords-body = Hackers know people reuse the same passwords. If you used the same password on multiple sites, and one of those sites was in a data breach, you’ll see an alert in { -lockwise-brand-short-name } to change your password on those sites.
+cfr-whatsnew-passwords-icon-alt = Vulnerable password key icon
+
+## Picture-in-Picture fullscreen message
+
+cfr-whatsnew-pip-fullscreen-header = Take picture-in-picture fullscreen
+cfr-whatsnew-pip-fullscreen-body = When you pop a video into a floating window, you can now double-click on that window to go fullscreen.
+cfr-whatsnew-pip-fullscreen-icon-alt = Picture-in-picture icon
+
+## Protections Dashboard message
+
+cfr-whatsnew-protections-header = Protections at a glance
+cfr-whatsnew-protections-body = The Protections Dashboard includes summary reports about data breaches and password management. You can now track how many breaches you’ve resolved, and see if any of your saved passwords may have been exposed in a data breach.
+cfr-whatsnew-protections-cta-link = View Protections Dashboard
+cfr-whatsnew-protections-icon-alt = Shield icon
+
+## Better PDF message
+
+cfr-whatsnew-better-pdf-header = Better PDF experience
+cfr-whatsnew-better-pdf-body = PDF documents now open directly in { -brand-short-name }, keeping your workflow within easy reach.
+
+## DOH Message
+
+cfr-doorhanger-doh-body = Your privacy matters. { -brand-short-name } now securely routes your DNS requests whenever possible to a partner service to protect you while you browse.
+cfr-doorhanger-doh-header = More secure, encrypted DNS lookups
+cfr-doorhanger-doh-primary-button = OK, Got it
+  .accesskey = O
+cfr-doorhanger-doh-secondary-button = Disable
+  .accesskey = D
+
+## What's new: Cookies message
+
+cfr-whatsnew-clear-cookies-header = Automatic protection from sneaky tracking tactics
+cfr-whatsnew-clear-cookies-body = Some trackers redirect you to other websites that secretly set cookies. { -brand-short-name } now automatically clears those cookies so you can’t be followed.
+cfr-whatsnew-clear-cookies-image-alt = Cookie blocked illustration

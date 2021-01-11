@@ -8,13 +8,21 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   SessionStore: "resource:///modules/sessionstore/SessionStore.jsm",
 });
 
-function UpdateSessionStore(aBrowser, aFlushId, aIsFinal, aEpoch, aData) {
+function UpdateSessionStore(
+  aBrowser,
+  aFlushId,
+  aIsFinal,
+  aEpoch,
+  aData,
+  aCollectSHistory
+) {
   return SessionStoreFuncInternal.updateSessionStore(
     aBrowser,
     aFlushId,
     aIsFinal,
     aEpoch,
-    aData
+    aData,
+    aCollectSHistory
   );
 }
 
@@ -349,12 +357,41 @@ var SessionStoreFuncInternal = {
     return null;
   },
 
+  updateStorage: function SSF_updateStorage(aOrigins, aKeys, aValues) {
+    let data = {};
+    for (let i = 0; i < aOrigins.length; i++) {
+      // If the key isn't defined, then .clear() was called, and we send
+      // up null for this domain to indicate that storage has been cleared
+      // for it.
+      if (aKeys[i] == "") {
+        while (aOrigins[i + 1] == aOrigins[i]) {
+          i++;
+        }
+        data[aOrigins[i]] = null;
+      } else {
+        let hostData = {};
+        hostData[aKeys[i]] = aValues[i];
+        while (aOrigins[i + 1] == aOrigins[i]) {
+          i++;
+          hostData[aKeys[i]] = aValues[i];
+        }
+        data[aOrigins[i]] = hostData;
+      }
+    }
+    if (aOrigins.length) {
+      return data;
+    }
+
+    return null;
+  },
+
   updateSessionStore: function SSF_updateSessionStore(
     aBrowser,
     aFlushId,
     aIsFinal,
     aEpoch,
-    aData
+    aData,
+    aCollectSHistory
   ) {
     let currentData = {};
     if (aData.docShellCaps != undefined) {
@@ -388,12 +425,25 @@ var SessionStoreFuncInternal = {
         aData.numXPath
       );
     }
+    if (aData.isFullStorage != undefined) {
+      let storage = this.updateStorage(
+        aData.storageOrigins,
+        aData.storageKeys,
+        aData.storageValues
+      );
+      if (aData.isFullStorage) {
+        currentData.storage = storage;
+      } else {
+        currentData.storagechange = storage;
+      }
+    }
 
     SessionStore.updateSessionStoreFromTablistener(aBrowser, {
       data: currentData,
       flushID: aFlushId,
       isFinal: aIsFinal,
       epoch: aEpoch,
+      sHistoryNeeded: aCollectSHistory,
     });
     this._formDataId = [];
     this._formDataIdValue = [];

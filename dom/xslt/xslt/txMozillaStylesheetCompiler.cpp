@@ -7,13 +7,11 @@
 #include "nsIAuthPrompt.h"
 #include "mozilla/dom/Document.h"
 #include "nsIExpatSink.h"
-#include "nsIChannelEventSink.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsILoadGroup.h"
 #include "nsIParser.h"
 #include "nsCharsetSource.h"
 #include "nsIRequestObserver.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsContentPolicyUtils.h"
 #include "nsIStreamConverterService.h"
 #include "nsSyncLoadService.h"
@@ -31,7 +29,6 @@
 #include "txXMLUtils.h"
 #include "nsAttrName.h"
 #include "nsIScriptError.h"
-#include "nsIURL.h"
 #include "nsError.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/Element.h"
@@ -41,6 +38,7 @@
 #include "ReferrerInfo.h"
 
 using namespace mozilla;
+using mozilla::dom::Document;
 using mozilla::dom::ReferrerPolicy;
 
 static NS_DEFINE_CID(kCParserCID, NS_PARSER_CID);
@@ -92,7 +90,7 @@ class txStylesheetSink final : public nsIXMLContentSink,
   bool mCheckedForXML;
 
  protected:
-  ~txStylesheetSink() {}
+  ~txStylesheetSink() = default;
 
   // This exists solely to suppress a warning from nsDerivedSafe
   txStylesheetSink();
@@ -346,7 +344,7 @@ class txCompileObserver final : public txACompileObserver {
   txCompileObserver();
 
   // Private destructor, to discourage deletion outside of Release():
-  ~txCompileObserver() {}
+  ~txCompileObserver() = default;
 };
 
 txCompileObserver::txCompileObserver(txMozillaXSLTProcessor* aProcessor,
@@ -401,22 +399,21 @@ nsresult txCompileObserver::startLoad(nsIURI* aUri,
   nsresult rv = NS_NewChannelWithTriggeringPrincipal(
       getter_AddRefs(channel), aUri, mLoaderDocument,
       aReferrerPrincipal,  // triggeringPrincipal
-      nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS, nsIContentPolicy::TYPE_XSLT,
+      nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT,
+      nsIContentPolicy::TYPE_XSLT,
       nullptr,  // aPerformanceStorage
       loadGroup);
 
   NS_ENSURE_SUCCESS(rv, rv);
 
-  channel->SetContentType(NS_LITERAL_CSTRING("text/xml"));
+  channel->SetContentType("text/xml"_ns);
 
   nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(channel));
   if (httpChannel) {
-    nsCOMPtr<nsIURI> referrerURI;
-    aReferrerPrincipal->GetURI(getter_AddRefs(referrerURI));
-    if (referrerURI) {
-      DebugOnly<nsresult> rv;
-      nsCOMPtr<nsIReferrerInfo> referrerInfo =
-          new dom::ReferrerInfo(referrerURI, aReferrerPolicy);
+    nsCOMPtr<nsIReferrerInfo> referrerInfo;
+    nsresult rv = aReferrerPrincipal->CreateReferrerInfo(
+        aReferrerPolicy, getter_AddRefs(referrerInfo));
+    if (NS_SUCCEEDED(rv)) {
       rv = httpChannel->SetReferrerInfoWithoutClone(referrerInfo);
       MOZ_ASSERT(NS_SUCCEEDED(rv));
     }
@@ -524,7 +521,7 @@ class txSyncCompileObserver final : public txACompileObserver {
 
  private:
   // Private destructor, to discourage deletion outside of Release():
-  ~txSyncCompileObserver() {}
+  ~txSyncCompileObserver() = default;
 
   RefPtr<txMozillaXSLTProcessor> mProcessor;
 };
@@ -558,13 +555,13 @@ nsresult txSyncCompileObserver::loadURI(const nsAString& aUri,
   if (mProcessor) {
     source = mProcessor->GetSourceContentModel();
   }
-  nsAutoSyncOperation sync(source ? source->OwnerDoc() : nullptr);
+  dom::nsAutoSyncOperation sync(source ? source->OwnerDoc() : nullptr);
   nsCOMPtr<Document> document;
 
   rv = nsSyncLoadService::LoadDocument(
       uri, nsIContentPolicy::TYPE_XSLT, referrerPrincipal,
-      nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS, nullptr,
-      source ? source->OwnerDoc()->CookieSettings() : nullptr, false,
+      nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT, nullptr,
+      source ? source->OwnerDoc()->CookieJarSettings() : nullptr, false,
       aReferrerPolicy, getter_AddRefs(document));
   NS_ENSURE_SUCCESS(rv, rv);
 

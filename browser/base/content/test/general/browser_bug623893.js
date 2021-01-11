@@ -20,7 +20,7 @@ add_task(async function test() {
 });
 
 function promiseGetIndex(browser) {
-  return ContentTask.spawn(browser, null, function() {
+  return SpecialPowers.spawn(browser, [], function() {
     let shistory = docShell
       .QueryInterface(Ci.nsIInterfaceRequestor)
       .getInterface(Ci.nsISHistory);
@@ -33,8 +33,7 @@ let duplicate = async function(delta, msg, cb) {
 
   duplicateTabIn(gBrowser.selectedTab, "tab", delta);
 
-  let tab = gBrowser.selectedTab;
-  await BrowserTestUtils.waitForEvent(tab, "SSTabRestored");
+  await BrowserTestUtils.waitForEvent(gBrowser.tabContainer, "SSTabRestored");
 
   let endIndex = await promiseGetIndex(gBrowser.selectedBrowser);
   is(endIndex, startIndex + delta, msg);

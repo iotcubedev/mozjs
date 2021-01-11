@@ -9,6 +9,8 @@
 #define mozilla_net_ClassifierDummyChannel_h
 
 #include "nsIChannel.h"
+#include "nsIClassifiedChannel.h"
+#include "nsIHttpChannelInternal.h"
 #include <functional>
 
 #define CLASSIFIER_DUMMY_CHANNEL_IID                 \
@@ -17,9 +19,6 @@
       0xb7, 0x08, 0xe1, 0xb4, 0x4a, 0x1e, 0x0e, 0x9a \
     }                                                \
   }
-
-class nsIChannel;
-class nsIPrincipal;
 
 namespace mozilla {
 namespace net {
@@ -46,7 +45,8 @@ namespace net {
  * hack in particular.
  */
 class ClassifierDummyChannel final : public nsIChannel,
-                                     public nsIHttpChannelInternal {
+                                     public nsIHttpChannelInternal,
+                                     public nsIClassifiedChannel {
  public:
   NS_DECLARE_STATIC_IID_ACCESSOR(CLASSIFIER_DUMMY_CHANNEL_IID)
 
@@ -54,6 +54,7 @@ class ClassifierDummyChannel final : public nsIChannel,
   NS_DECL_NSIREQUEST
   NS_DECL_NSICHANNEL
   NS_DECL_NSIHTTPCHANNELINTERNAL
+  NS_DECL_NSICLASSIFIEDCHANNEL
 
   enum StorageAllowedState {
     eStorageGranted,
@@ -65,12 +66,9 @@ class ClassifierDummyChannel final : public nsIChannel,
       nsIChannel* aChannel, const std::function<void(bool)>& aCallback);
 
   ClassifierDummyChannel(nsIURI* aURI, nsIURI* aTopWindowURI,
-                         nsIPrincipal* aContentBlockingAllowListPrincipal,
                          nsresult aTopWindowURIResult, nsILoadInfo* aLoadInfo);
 
-  uint32_t ClassificationFlags() const;
-
-  void AddClassificationFlags(uint32_t);
+  void AddClassificationFlags(uint32_t aClassificationFlags, bool aThirdParty);
 
  private:
   ~ClassifierDummyChannel();
@@ -78,10 +76,10 @@ class ClassifierDummyChannel final : public nsIChannel,
   nsCOMPtr<nsILoadInfo> mLoadInfo;
   nsCOMPtr<nsIURI> mURI;
   nsCOMPtr<nsIURI> mTopWindowURI;
-  nsCOMPtr<nsIPrincipal> mContentBlockingAllowListPrincipal;
   nsresult mTopWindowURIResult;
 
-  uint32_t mClassificationFlags;
+  uint32_t mFirstPartyClassificationFlags;
+  uint32_t mThirdPartyClassificationFlags;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(ClassifierDummyChannel,

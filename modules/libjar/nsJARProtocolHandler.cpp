@@ -4,14 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ClearOnShutdown.h"
-#include "nsAutoPtr.h"
 #include "nsJARProtocolHandler.h"
-#include "nsIIOService.h"
 #include "nsCRT.h"
-#include "nsIComponentManager.h"
-#include "nsIServiceManager.h"
 #include "nsJARURI.h"
-#include "nsIURL.h"
 #include "nsJARChannel.h"
 #include "nsString.h"
 #include "nsNetCID.h"

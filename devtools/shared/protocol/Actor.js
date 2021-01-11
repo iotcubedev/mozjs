@@ -5,7 +5,7 @@
 "use strict";
 
 const { extend } = require("devtools/shared/extend");
-var { Pool } = require("./Pool");
+var { Pool } = require("devtools/shared/protocol/Pool");
 
 /**
  * Keep track of which actorSpecs have been created. If a replica of a spec
@@ -20,7 +20,7 @@ exports.actorSpecs = actorSpecs;
  * An actor in the actor tree.
  *
  * @param optional conn
- *   Either a DebuggerServerConnection or a DebuggerClient.  Must have
+ *   Either a DevToolsServerConnection or a DevToolsClient.  Must have
  *   addActorPool, removeActorPool, and poolFor.
  *   conn can be null if the subclass provides a conn property.
  * @constructor
@@ -95,10 +95,18 @@ class Actor extends Pool {
     if (error.stack) {
       console.error(error.stack);
     }
+
     this.conn.send({
       from: this.actorID,
-      error: error.error || "unknownError",
+      // error.error -> errors created using the throwError() helper
+      // error.name -> errors created using `new Error` or Components.exception
+      error: error.error || error.name || "unknownError",
       message: error.message,
+      // error.fileName -> regular Error instances
+      // error.filename -> errors created using Components.exception
+      fileName: error.fileName || error.filename,
+      lineNumber: error.lineNumber,
+      columnNumber: error.columnNumber,
     });
   }
 

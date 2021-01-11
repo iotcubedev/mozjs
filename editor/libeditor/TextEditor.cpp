@@ -5,10 +5,12 @@
 
 #include "mozilla/TextEditor.h"
 
+#include <algorithm>
+
 #include "EditAggregateTransaction.h"
-#include "HTMLEditRules.h"
+#include "HTMLEditUtils.h"
 #include "InternetCiter.h"
-#include "TextEditUtils.h"
+#include "PlaceholderTransaction.h"
 #include "gfxFontUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ContentIterator.h"
@@ -21,7 +23,6 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_editor.h"
-#include "mozilla/TextEditRules.h"
 #include "mozilla/TextComposition.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TextServicesDocument.h"
@@ -29,6 +30,7 @@
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Selection.h"
+#include "mozilla/dom/StaticRange.h"
 #include "nsAString.h"
 #include "nsCRT.h"
 #include "nsCaret.h"
@@ -41,7 +43,6 @@
 #include "nsDependentSubstring.h"
 #include "nsError.h"
 #include "nsGkAtoms.h"
-#include "nsIAbsorbingTransaction.h"
 #include "nsIClipboard.h"
 #include "nsIContent.h"
 #include "nsIDocumentEncoder.h"
@@ -69,16 +70,10 @@ namespace mozilla {
 
 using namespace dom;
 
+using ChildBlockBoundary = HTMLEditUtils::ChildBlockBoundary;
+
 TextEditor::TextEditor()
-    : mWrapColumn(0),
-      mMaxTextLength(-1),
-      mInitTriggerCounter(0),
-      mNewlineHandling(nsIPlaintextEditor::eNewlinesPasteToFirst),
-#ifdef XP_WIN
-      mCaretStyle(1),
-#else
-      mCaretStyle(0),
-#endif
+    : mMaxTextLength(-1),
       mUnmaskedStart(UINT32_MAX),
       mUnmaskedLength(0),
       mIsMaskingPassword(true) {
@@ -86,26 +81,17 @@ TextEditor::TextEditor()
   static_assert(
       sizeof(TextEditor) <= 512,
       "TextEditor instance should be allocatable in the quantum class bins");
-
-  // check the "single line editor newline handling"
-  // and "caret behaviour in selection" prefs
-  GetDefaultEditorPrefs(mNewlineHandling, mCaretStyle);
 }
 
 TextEditor::~TextEditor() {
   // Remove event listeners. Note that if we had an HTML editor,
   //  it installed its own instead of these
   RemoveEventListeners();
-
-  if (mRules) mRules->DetachEditor();
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(TextEditor)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(TextEditor, EditorBase)
-  if (tmp->mRules) {
-    tmp->mRules->DetachEditor();
-  }
   if (tmp->mMaskTimer) {
     tmp->mMaskTimer->Cancel();
   }
@@ -122,7 +108,6 @@ NS_IMPL_ADDREF_INHERITED(TextEditor, EditorBase)
 NS_IMPL_RELEASE_INHERITED(TextEditor, EditorBase)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(TextEditor)
-  NS_INTERFACE_MAP_ENTRY(nsIPlaintextEditor)
   NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
   NS_INTERFACE_MAP_ENTRY(nsINamed)
 NS_INTERFACE_MAP_END_INHERITING(EditorBase)
@@ -130,77 +115,39 @@ NS_INTERFACE_MAP_END_INHERITING(EditorBase)
 nsresult TextEditor::Init(Document& aDoc, Element* aRoot,
                           nsISelectionController* aSelCon, uint32_t aFlags,
                           const nsAString& aInitialValue) {
-  if (mRules) {
-    mRules->DetachEditor();
-  }
+  MOZ_ASSERT(!AsHTMLEditor());
+  MOZ_ASSERT(!mInitSucceeded,
+             "TextEditor::Init() called again without calling PreDestroy()?");
 
-  nsresult rulesRv = NS_OK;
-  {
-    // block to scope AutoEditInitRulesTrigger
-    AutoEditInitRulesTrigger rulesTrigger(this, rulesRv);
-
-    // Init the base editor
-    nsresult rv = EditorBase::Init(aDoc, aRoot, aSelCon, aFlags, aInitialValue);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-  }
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rulesRv), "Failed to initialize us");
-  return EditorBase::ToGenericNSResult(rulesRv);
-}
-
-static int32_t sNewlineHandlingPref = -1, sCaretStylePref = -1;
-
-static void EditorPrefsChangedCallback(const char* aPrefName, void*) {
-  if (!nsCRT::strcmp(aPrefName, "editor.singleLine.pasteNewlines")) {
-    sNewlineHandlingPref =
-        Preferences::GetInt("editor.singleLine.pasteNewlines",
-                            nsIPlaintextEditor::eNewlinesPasteToFirst);
-  } else if (!nsCRT::strcmp(aPrefName, "layout.selection.caret_style")) {
-    sCaretStylePref = Preferences::GetInt("layout.selection.caret_style",
-#ifdef XP_WIN
-                                          1);
-    if (!sCaretStylePref) {
-      sCaretStylePref = 1;
-    }
-#else
-                                          0);
-#endif
-  }
-}
-
-// static
-void TextEditor::GetDefaultEditorPrefs(int32_t& aNewlineHandling,
-                                       int32_t& aCaretStyle) {
-  if (sNewlineHandlingPref == -1) {
-    Preferences::RegisterCallbackAndCall(EditorPrefsChangedCallback,
-                                         "editor.singleLine.pasteNewlines");
-    Preferences::RegisterCallbackAndCall(EditorPrefsChangedCallback,
-                                         "layout.selection.caret_style");
-  }
-
-  aNewlineHandling = sNewlineHandlingPref;
-  aCaretStyle = sCaretStylePref;
-}
-
-void TextEditor::BeginEditorInit() { mInitTriggerCounter++; }
-
-nsresult TextEditor::EndEditorInit() {
-  MOZ_ASSERT(mInitTriggerCounter > 0, "ended editor init before we began?");
-  mInitTriggerCounter--;
-  if (mInitTriggerCounter) {
-    return NS_OK;
-  }
-
-  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  nsresult rv = InitRules();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  // Init the base editor
+  nsresult rv = EditorBase::Init(aDoc, aRoot, aSelCon, aFlags, aInitialValue);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::Init() failed");
     return rv;
   }
+
+  // XXX `eNotEditing` is a lie since InitEditorContentAndSelection() may
+  //     insert padding `<br>`.
+  AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
+  if (NS_WARN_IF(!editActionData.CanHandle())) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // We set mInitSucceeded here rather than at the end of the function,
+  // since InitEditorContentAndSelection() can perform some transactions
+  // and can warn if mInitSucceeded is still false.
+  MOZ_ASSERT(!mInitSucceeded, "TextEditor::Init() shouldn't be nested");
+  mInitSucceeded = true;
+
+  rv = InitEditorContentAndSelection();
+  if (NS_FAILED(rv)) {
+    NS_WARNING("TextEditor::InitEditorContentAndSelection() failed");
+    // XXX Sholdn't we expose `NS_ERROR_EDITOR_DESTROYED` even though this
+    //     is a public method?
+    mInitSucceeded = false;
+    return EditorBase::ToGenericNSResult(rv);
+  }
+
   // Throw away the old transaction manager if this is not the first time that
   // we're initializing the editor.
   ClearUndoRedo();
@@ -208,43 +155,50 @@ nsresult TextEditor::EndEditorInit() {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-TextEditor::SetDocumentCharacterSet(const nsACString& characterSet) {
+NS_IMETHODIMP TextEditor::SetDocumentCharacterSet(
+    const nsACString& characterSet) {
   AutoEditActionDataSetter editActionData(*this, EditAction::eSetCharacterSet);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
-  nsresult rv = EditorBase::SetDocumentCharacterSet(characterSet);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  rv = EditorBase::SetDocumentCharacterSet(characterSet);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::SetDocumentCharacterSet() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
 
   // Update META charset element.
-  RefPtr<Document> doc = GetDocument();
-  if (NS_WARN_IF(!doc)) {
+  RefPtr<Document> document = GetDocument();
+  if (NS_WARN_IF(!document)) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  if (UpdateMetaCharset(*doc, characterSet)) {
+  if (UpdateMetaCharset(*document, characterSet)) {
     return NS_OK;
   }
 
-  RefPtr<nsContentList> headList =
-      doc->GetElementsByTagName(NS_LITERAL_STRING("head"));
-  if (NS_WARN_IF(!headList)) {
+  RefPtr<nsContentList> headElementList =
+      document->GetElementsByTagName(u"head"_ns);
+  if (NS_WARN_IF(!headElementList)) {
     return NS_OK;
   }
 
-  nsCOMPtr<nsIContent> headNode = headList->Item(0);
-  if (NS_WARN_IF(!headNode)) {
+  nsCOMPtr<nsIContent> primaryHeadElement = headElementList->Item(0);
+  if (NS_WARN_IF(!primaryHeadElement)) {
     return NS_OK;
   }
 
   // Create a new meta charset tag
-  RefPtr<Element> metaElement =
-      CreateNodeWithTransaction(*nsGkAtoms::meta, EditorDOMPoint(headNode, 0));
-  if (NS_WARN_IF(!metaElement)) {
+  RefPtr<Element> metaElement = CreateNodeWithTransaction(
+      *nsGkAtoms::meta, EditorDOMPoint(primaryHeadElement, 0));
+  if (!metaElement) {
+    NS_WARNING(
+        "EditorBase::CreateNodeWithTransaction(nsGkAtoms::meta) failed, but "
+        "ignored");
     return NS_OK;
   }
 
@@ -254,74 +208,64 @@ TextEditor::SetDocumentCharacterSet(const nsACString& characterSet) {
   }
 
   // not undoable, undo should undo CreateNodeWithTransaction().
-  metaElement->SetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv,
-                       NS_LITERAL_STRING("Content-Type"), true);
-  metaElement->SetAttr(kNameSpaceID_None, nsGkAtoms::content,
-                       NS_LITERAL_STRING("text/html;charset=") +
-                           NS_ConvertASCIItoUTF16(characterSet),
-                       true);
+  DebugOnly<nsresult> rvIgnored = NS_OK;
+  rvIgnored = metaElement->SetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv,
+                                   u"Content-Type"_ns, true);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                       "Element::SetAttr(nsGkAtoms::httpEquiv, Content-Type) "
+                       "failed, but ignored");
+  rvIgnored = metaElement->SetAttr(
+      kNameSpaceID_None, nsGkAtoms::content,
+      u"text/html;charset="_ns + NS_ConvertASCIItoUTF16(characterSet), true);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "Element::SetAttr(nsGkAtoms::content) failed, but ignored");
   return NS_OK;
 }
 
 bool TextEditor::UpdateMetaCharset(Document& aDocument,
                                    const nsACString& aCharacterSet) {
   // get a list of META tags
-  RefPtr<nsContentList> metaList =
-      aDocument.GetElementsByTagName(NS_LITERAL_STRING("meta"));
-  if (NS_WARN_IF(!metaList)) {
+  RefPtr<nsContentList> metaElementList =
+      aDocument.GetElementsByTagName(u"meta"_ns);
+  if (NS_WARN_IF(!metaElementList)) {
     return false;
   }
 
-  for (uint32_t i = 0; i < metaList->Length(true); ++i) {
-    nsCOMPtr<nsIContent> metaNode = metaList->Item(i);
-    MOZ_ASSERT(metaNode);
-
-    if (!metaNode->IsElement()) {
-      continue;
-    }
+  for (uint32_t i = 0; i < metaElementList->Length(true); ++i) {
+    RefPtr<Element> metaElement = metaElementList->Item(i)->AsElement();
+    MOZ_ASSERT(metaElement);
 
     nsAutoString currentValue;
-    metaNode->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv,
-                                   currentValue);
+    metaElement->GetAttr(kNameSpaceID_None, nsGkAtoms::httpEquiv, currentValue);
 
-    if (!FindInReadable(NS_LITERAL_STRING("content-type"), currentValue,
-                        nsCaseInsensitiveStringComparator())) {
+    if (!FindInReadable(u"content-type"_ns, currentValue,
+                        nsCaseInsensitiveStringComparator)) {
       continue;
     }
 
-    metaNode->AsElement()->GetAttr(kNameSpaceID_None, nsGkAtoms::content,
-                                   currentValue);
+    metaElement->GetAttr(kNameSpaceID_None, nsGkAtoms::content, currentValue);
 
-    NS_NAMED_LITERAL_STRING(charsetEquals, "charset=");
+    constexpr auto charsetEquals = u"charset="_ns;
     nsAString::const_iterator originalStart, start, end;
     originalStart = currentValue.BeginReading(start);
     currentValue.EndReading(end);
     if (!FindInReadable(charsetEquals, start, end,
-                        nsCaseInsensitiveStringComparator())) {
+                        nsCaseInsensitiveStringComparator)) {
       continue;
     }
 
     // set attribute to <original prefix> charset=text/html
-    RefPtr<Element> metaElement = metaNode->AsElement();
-    MOZ_ASSERT(metaElement);
     nsresult rv = SetAttributeWithTransaction(
         *metaElement, *nsGkAtoms::content,
         Substring(originalStart, start) + charsetEquals +
             NS_ConvertASCIItoUTF16(aCharacterSet));
+    NS_WARNING_ASSERTION(
+        NS_SUCCEEDED(rv),
+        "EditorBase::SetAttributeWithTransaction(nsGkAtoms::content) failed");
     return NS_SUCCEEDED(rv);
   }
   return false;
-}
-
-nsresult TextEditor::InitRules() {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  if (!mRules) {
-    // instantiate the rules for this text editor
-    mRules = new TextEditRules();
-  }
-  RefPtr<TextEditRules> textEditRules(mRules);
-  return textEditRules->Init(this);
 }
 
 nsresult TextEditor::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
@@ -332,7 +276,7 @@ nsresult TextEditor::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
   // And also when you add new key handling, you need to change the subclass's
   // HandleKeyPressEvent()'s switch statement.
 
-  if (IsReadonly() || IsDisabled()) {
+  if (IsReadonly()) {
     // When we're not editable, the events handled on EditorBase.
     return EditorBase::HandleKeyPressEvent(aKeyboardEvent);
   }
@@ -356,8 +300,12 @@ nsresult TextEditor::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
           aKeyboardEvent->IsMeta() || aKeyboardEvent->IsOS()) {
         return NS_OK;
       }
-      DeleteSelectionAsAction(nsIEditor::ePrevious, nsIEditor::eStrip);
-      aKeyboardEvent->PreventDefault();  // consumed
+      DebugOnly<nsresult> rvIgnored =
+          DeleteSelectionAsAction(nsIEditor::ePrevious, nsIEditor::eStrip);
+      aKeyboardEvent->PreventDefault();
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rvIgnored),
+          "EditorBase::DeleteSelectionAsAction() failed, but ignored");
       return NS_OK;
     }
     case NS_VK_DELETE: {
@@ -369,8 +317,12 @@ nsresult TextEditor::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
           aKeyboardEvent->IsOS()) {
         return NS_OK;
       }
-      DeleteSelectionAsAction(nsIEditor::eNext, nsIEditor::eStrip);
-      aKeyboardEvent->PreventDefault();  // consumed
+      DebugOnly<nsresult> rvIgnored =
+          DeleteSelectionAsAction(nsIEditor::eNext, nsIEditor::eStrip);
+      aKeyboardEvent->PreventDefault();
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rvIgnored),
+          "EditorBase::DeleteSelectionAsAction() failed, but ignored");
       return NS_OK;
     }
     case NS_VK_TAB: {
@@ -386,663 +338,187 @@ nsresult TextEditor::HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent) {
 
       // else we insert the tab straight through
       aKeyboardEvent->PreventDefault();
-      return OnInputText(NS_LITERAL_STRING("\t"));
+      nsresult rv = OnInputText(u"\t"_ns);
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                           "TextEditor::OnInputText(\\t) failed");
+      return rv;
     }
-    case NS_VK_RETURN:
-      if (IsSingleLineEditor() || !aKeyboardEvent->IsInputtingLineBreak()) {
+    case NS_VK_RETURN: {
+      if (!aKeyboardEvent->IsInputtingLineBreak()) {
         return NS_OK;
       }
-      aKeyboardEvent->PreventDefault();
-      return InsertLineBreakAsAction();
+      if (!IsSingleLineEditor()) {
+        aKeyboardEvent->PreventDefault();
+      }
+      // We need to dispatch "beforeinput" event at least even if we're a
+      // single line text editor.
+      nsresult rv = InsertLineBreakAsAction();
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                           "TextEditor::InsertLineBreakAsAction() failed");
+      return rv;
+    }
   }
 
   if (!aKeyboardEvent->IsInputtingText()) {
     // we don't PreventDefault() here or keybindings like control-x won't work
     return NS_OK;
   }
+  // Our widget shouldn't set `\r` to `mCharCode`, but it may be synthesized
+  // keyboard event and its value may be `\r`.  In such case, we should treat
+  // it as `\n` for the backward compatibility because we stopped converting
+  // `\r` and `\r\n` to `\n` at getting `HTMLInputElement.value` and
+  // `HTMLTextAreaElement.value` for the performance (i.e., we don't need to
+  // take care in `HTMLEditor`).
+  char16_t charCode =
+      static_cast<char16_t>(aKeyboardEvent->mCharCode) == nsCRT::CR
+          ? nsCRT::LF
+          : static_cast<char16_t>(aKeyboardEvent->mCharCode);
   aKeyboardEvent->PreventDefault();
-  nsAutoString str(aKeyboardEvent->mCharCode);
-  return OnInputText(str);
+  nsAutoString str(charCode);
+  nsresult rv = OnInputText(str);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "TextEditor::OnInputText() failed");
+  return rv;
 }
 
 nsresult TextEditor::OnInputText(const nsAString& aStringToInsert) {
   AutoEditActionDataSetter editActionData(*this, EditAction::eInsertText);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
   MOZ_ASSERT(!aStringToInsert.IsVoid());
   editActionData.SetData(aStringToInsert);
-
-  AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::TypingTxnName);
-  nsresult rv = InsertTextAsSubAction(aStringToInsert);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  // FYI: For conforming to current UI Events spec, we should dispatch
+  //      "beforeinput" event before "keypress" event, but here is in a
+  //      "keypress" event listener.  However, the other browsers dispatch
+  //      "beforeinput" event after "keypress" event.  Therefore, it makes
+  //      sense to follow the other browsers.  Spec issue:
+  //      https://github.com/w3c/uievents/issues/220
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
-  return NS_OK;
+
+  AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::TypingTxnName);
+  rv = InsertTextAsSubAction(aStringToInsert);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::InsertTextAsSubAction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::InsertLineBreakAsAction(nsIPrincipal* aPrincipal) {
   AutoEditActionDataSetter editActionData(*this, EditAction::eInsertLineBreak,
                                           aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
+  }
+
+  if (IsSingleLineEditor()) {
+    return NS_OK;
   }
 
   // XXX This may be called by execCommand() with "insertParagraph".
   //     In such case, naming the transaction "TypingTxnName" is odd.
   AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::TypingTxnName);
-  nsresult rv = InsertLineBreakAsSubAction();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
-}
-
-nsresult TextEditor::ExtendSelectionForDelete(nsIEditor::EDirection* aAction) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  bool bCollapsed = SelectionRefPtr()->IsCollapsed();
-
-  if (*aAction == eNextWord || *aAction == ePreviousWord ||
-      (*aAction == eNext && bCollapsed) ||
-      (*aAction == ePrevious && bCollapsed) || *aAction == eToBeginningOfLine ||
-      *aAction == eToEndOfLine) {
-    nsCOMPtr<nsISelectionController> selCont;
-    GetSelectionController(getter_AddRefs(selCont));
-    NS_ENSURE_TRUE(selCont, NS_ERROR_NO_INTERFACE);
-
-    switch (*aAction) {
-      case eNextWord: {
-        nsresult rv = selCont->WordExtendForDelete(true);
-        // DeleteSelectionWithTransaction() doesn't handle these actions
-        // because it's inside batching, so don't confuse it:
-        *aAction = eNone;
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-        return NS_OK;
-      }
-      case ePreviousWord: {
-        nsresult rv = selCont->WordExtendForDelete(false);
-        *aAction = eNone;
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-        return NS_OK;
-      }
-      case eNext: {
-        nsresult rv = selCont->CharacterExtendForDelete();
-        // Don't set aAction to eNone (see Bug 502259)
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-        return NS_OK;
-      }
-      case ePrevious: {
-        // Only extend the selection where the selection is after a UTF-16
-        // surrogate pair or a variation selector.
-        // For other cases we don't want to do that, in order
-        // to make sure that pressing backspace will only delete the last
-        // typed character.
-        EditorRawDOMPoint atStartOfSelection =
-            EditorBase::GetStartPoint(*SelectionRefPtr());
-        if (NS_WARN_IF(!atStartOfSelection.IsSet())) {
-          return NS_ERROR_FAILURE;
-        }
-
-        // node might be anonymous DIV, so we find better text node
-        EditorRawDOMPoint insertionPoint =
-            FindBetterInsertionPoint(atStartOfSelection);
-
-        if (insertionPoint.IsInTextNode()) {
-          const nsTextFragment* data =
-              &insertionPoint.GetContainerAsText()->TextFragment();
-          uint32_t offset = insertionPoint.Offset();
-          if ((offset > 1 &&
-               data->IsLowSurrogateFollowingHighSurrogateAt(offset - 1)) ||
-              (offset > 0 &&
-               gfxFontUtils::IsVarSelector(data->CharAt(offset - 1)))) {
-            nsresult rv = selCont->CharacterExtendForBackspace();
-            if (NS_WARN_IF(NS_FAILED(rv))) {
-              return rv;
-            }
-          }
-        }
-        return NS_OK;
-      }
-      case eToBeginningOfLine: {
-        // Select to beginning
-        nsresult rv = selCont->IntraLineMove(false, true);
-        *aAction = eNone;
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-        return NS_OK;
-      }
-      case eToEndOfLine: {
-        nsresult rv = selCont->IntraLineMove(true, true);
-        *aAction = eNext;
-        if (NS_WARN_IF(NS_FAILED(rv))) {
-          return rv;
-        }
-        return NS_OK;
-      }
-      // For avoiding several compiler warnings
-      default:
-        return NS_OK;
-    }
-  }
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextEditor::DeleteSelection(EDirection aAction, EStripWrappers aStripWrappers) {
-  nsresult rv = DeleteSelectionAsAction(aAction, aStripWrappers);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to do delete selection");
-  return rv;
-}
-
-nsresult TextEditor::DeleteSelectionAsAction(EDirection aDirection,
-                                             EStripWrappers aStripWrappers,
-                                             nsIPrincipal* aPrincipal) {
-  MOZ_ASSERT(aStripWrappers == eStrip || aStripWrappers == eNoStrip);
-  // Showing this assertion is fine if this method is called by outside via
-  // mutation event listener or something.  Otherwise, this is called by
-  // wrong method.
-  NS_ASSERTION(!mPlaceholderBatch,
-               "Should be called only when this is the only edit action of the "
-               "operation "
-               "unless mutation event listener nests some operations");
-
-  EditAction editAction = EditAction::eDeleteSelection;
-  switch (aDirection) {
-    case nsIEditor::ePrevious:
-      editAction = EditAction::eDeleteBackward;
-      break;
-    case nsIEditor::eNext:
-      editAction = EditAction::eDeleteForward;
-      break;
-    case nsIEditor::ePreviousWord:
-      editAction = EditAction::eDeleteWordBackward;
-      break;
-    case nsIEditor::eNextWord:
-      editAction = EditAction::eDeleteWordForward;
-      break;
-    case nsIEditor::eToBeginningOfLine:
-      editAction = EditAction::eDeleteToBeginningOfSoftLine;
-      break;
-    case nsIEditor::eToEndOfLine:
-      editAction = EditAction::eDeleteToEndOfSoftLine;
-      break;
-  }
-
-  AutoEditActionDataSetter editActionData(*this, editAction, aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  // If there is an existing selection when an extended delete is requested,
-  // platforms that use "caret-style" caret positioning collapse the
-  // selection to the  start and then create a new selection.
-  // Platforms that use "selection-style" caret positioning just delete the
-  // existing selection without extending it.
-  if (!SelectionRefPtr()->IsCollapsed()) {
-    switch (aDirection) {
-      case eNextWord:
-      case ePreviousWord:
-      case eToBeginningOfLine:
-      case eToEndOfLine: {
-        if (mCaretStyle != 1) {
-          aDirection = eNone;
-          break;
-        }
-        ErrorResult error;
-        SelectionRefPtr()->CollapseToStart(error);
-        if (NS_WARN_IF(error.Failed())) {
-          return EditorBase::ToGenericNSResult(error.StealNSResult());
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  // If Selection is still NOT collapsed, it does not important removing
-  // range of the operation since we'll remove the selected content.  However,
-  // information of direction (backward or forward) may be important for
-  // web apps.  E.g., web apps may want to mark selected range as "deleted"
-  // and move caret before or after the range.  Therefore, we should forget
-  // only the range information but keep range information.  See discussion
-  // of the spec issue for the detail:
-  // https://github.com/w3c/input-events/issues/82
-  if (!SelectionRefPtr()->IsCollapsed()) {
-    switch (editAction) {
-      case EditAction::eDeleteWordBackward:
-      case EditAction::eDeleteToBeginningOfSoftLine:
-        editActionData.UpdateEditAction(EditAction::eDeleteBackward);
-        break;
-      case EditAction::eDeleteWordForward:
-      case EditAction::eDeleteToEndOfSoftLine:
-        editActionData.UpdateEditAction(EditAction::eDeleteForward);
-        break;
-      default:
-        break;
-    }
-  }
-
-  // delete placeholder txns merge.
-  AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::DeleteTxnName);
-  nsresult rv = DeleteSelectionAsSubAction(aDirection, aStripWrappers);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
-}
-
-nsresult TextEditor::DeleteSelectionAsSubAction(EDirection aDirection,
-                                                EStripWrappers aStripWrappers) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-  MOZ_ASSERT(mPlaceholderBatch);
-
-  MOZ_ASSERT(aStripWrappers == eStrip || aStripWrappers == eNoStrip);
-
-  if (!mRules) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
-
-  AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eDeleteSelectedContent, aDirection);
-  EditSubActionInfo subActionInfo(EditSubAction::eDeleteSelectedContent);
-  subActionInfo.collapsedAction = aDirection;
-  subActionInfo.stripWrappers = aStripWrappers;
-  bool cancel, handled;
-  nsresult rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  if (!cancel && !handled) {
-    rv = DeleteSelectionWithTransaction(aDirection, aStripWrappers);
-  }
-  if (!cancel) {
-    // post-process
-    rv = rules->DidDoAction(subActionInfo, rv);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                         "TextEditRules::DidDoAction() failed");
-  }
-  return rv;
-}
-
-nsresult TextEditor::DeleteSelectionWithTransaction(
-    EDirection aDirection, EStripWrappers aStripWrappers) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  MOZ_ASSERT(aStripWrappers == eStrip || aStripWrappers == eNoStrip);
-
-  RefPtr<EditAggregateTransaction> deleteSelectionTransaction;
-  nsCOMPtr<nsINode> deleteNode;
-  int32_t deleteCharOffset = 0, deleteCharLength = 0;
-  if (!SelectionRefPtr()->IsCollapsed() || aDirection != eNone) {
-    deleteSelectionTransaction =
-        CreateTxnForDeleteSelection(aDirection, getter_AddRefs(deleteNode),
-                                    &deleteCharOffset, &deleteCharLength);
-    if (NS_WARN_IF(!deleteSelectionTransaction)) {
-      return NS_ERROR_FAILURE;
-    }
-  }
-
-  RefPtr<CharacterData> deleteCharData =
-      CharacterData::FromNodeOrNull(deleteNode);
-  AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eDeleteSelectedContent, aDirection);
-
-  if (mRules && mRules->AsHTMLEditRules()) {
-    if (!deleteNode) {
-      RefPtr<HTMLEditRules> htmlEditRules = mRules->AsHTMLEditRules();
-      htmlEditRules->WillDeleteSelection();
-    } else if (!deleteCharData) {
-      RefPtr<HTMLEditRules> htmlEditRules = mRules->AsHTMLEditRules();
-      htmlEditRules->WillDeleteNode(*deleteNode);
-    }
-  }
-
-  // Notify nsIEditActionListener::WillDelete[Selection|Text]
-  if (!mActionListeners.IsEmpty()) {
-    if (!deleteNode) {
-      AutoActionListenerArray listeners(mActionListeners);
-      for (auto& listener : listeners) {
-        listener->WillDeleteSelection(SelectionRefPtr());
-      }
-    } else if (deleteCharData) {
-      AutoActionListenerArray listeners(mActionListeners);
-      for (auto& listener : listeners) {
-        listener->WillDeleteText(deleteCharData, deleteCharOffset, 1);
-      }
-    }
-  }
-
-  // Delete the specified amount
-  nsresult rv = DoTransactionInternal(deleteSelectionTransaction);
-
-  if (mRules && mRules->AsHTMLEditRules() && deleteCharData) {
-    MOZ_ASSERT(deleteNode);
-    RefPtr<HTMLEditRules> htmlEditRules = mRules->AsHTMLEditRules();
-    htmlEditRules->DidDeleteText(*deleteNode, deleteCharOffset, 1);
-  }
-
-  if (mTextServicesDocument && NS_SUCCEEDED(rv) && deleteNode &&
-      !deleteCharData) {
-    RefPtr<TextServicesDocument> textServicesDocument = mTextServicesDocument;
-    textServicesDocument->DidDeleteNode(deleteNode);
-  }
-
-  // Notify nsIEditActionListener::DidDelete[Selection|Text|Node]
-  {
-    AutoActionListenerArray listeners(mActionListeners);
-    if (!deleteNode) {
-      for (auto& listener : mActionListeners) {
-        listener->DidDeleteSelection(SelectionRefPtr());
-      }
-    } else if (deleteCharData) {
-      for (auto& listener : mActionListeners) {
-        listener->DidDeleteText(deleteCharData, deleteCharOffset, 1, rv);
-      }
-    } else {
-      for (auto& listener : mActionListeners) {
-        listener->DidDeleteNode(deleteNode, rv);
-      }
-    }
-  }
-
-  return rv;
-}
-
-already_AddRefed<Element> TextEditor::DeleteSelectionAndCreateElement(
-    nsAtom& aTag) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  nsresult rv = DeleteSelectionAndPrepareToCreateNode();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return nullptr;
-  }
-
-  EditorDOMPoint pointToInsert(SelectionRefPtr()->AnchorRef());
-  if (!pointToInsert.IsSet()) {
-    return nullptr;
-  }
-  RefPtr<Element> newElement = CreateNodeWithTransaction(aTag, pointToInsert);
-
-  // We want the selection to be just after the new node
-  EditorRawDOMPoint afterNewElement(newElement);
-  MOZ_ASSERT(afterNewElement.IsSetAndValid());
-  DebugOnly<bool> advanced = afterNewElement.AdvanceOffset();
-  NS_WARNING_ASSERTION(advanced,
-                       "Failed to move offset next to the new element");
-  ErrorResult error;
-  SelectionRefPtr()->Collapse(afterNewElement, error);
-  if (NS_WARN_IF(error.Failed())) {
-    // XXX Even if it succeeded to create new element, this returns error
-    //     when Selection.Collapse() fails something.  This could occur with
-    //     mutation observer or mutation event listener.
-    error.SuppressException();
-    return nullptr;
-  }
-  return newElement.forget();
-}
-
-nsresult TextEditor::DeleteSelectionAndPrepareToCreateNode() {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  if (NS_WARN_IF(!SelectionRefPtr()->GetAnchorFocusRange())) {
-    return NS_OK;
-  }
-
-  if (!SelectionRefPtr()->GetAnchorFocusRange()->Collapsed()) {
-    nsresult rv = DeleteSelectionAsSubAction(eNone, eStrip);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-    MOZ_ASSERT(SelectionRefPtr()->GetAnchorFocusRange() &&
-                   SelectionRefPtr()->GetAnchorFocusRange()->Collapsed(),
-               "Selection not collapsed after delete");
-  }
-
-  // If the selection is a chardata node, split it if necessary and compute
-  // where to put the new node
-  EditorDOMPoint atAnchor(SelectionRefPtr()->AnchorRef());
-  if (NS_WARN_IF(!atAnchor.IsSet()) || !atAnchor.IsInDataNode()) {
-    return NS_OK;
-  }
-
-  if (NS_WARN_IF(!atAnchor.GetContainer()->GetParentNode())) {
-    return NS_ERROR_FAILURE;
-  }
-
-  if (atAnchor.IsStartOfContainer()) {
-    EditorRawDOMPoint atAnchorContainer(atAnchor.GetContainer());
-    if (NS_WARN_IF(!atAnchorContainer.IsSetAndValid())) {
-      return NS_ERROR_FAILURE;
-    }
-    ErrorResult error;
-    SelectionRefPtr()->Collapse(atAnchorContainer, error);
-    if (NS_WARN_IF(error.Failed())) {
-      return error.StealNSResult();
-    }
-    return NS_OK;
-  }
-
-  if (atAnchor.IsEndOfContainer()) {
-    EditorRawDOMPoint afterAnchorContainer(atAnchor.GetContainer());
-    if (NS_WARN_IF(!afterAnchorContainer.AdvanceOffset())) {
-      return NS_ERROR_FAILURE;
-    }
-    ErrorResult error;
-    SelectionRefPtr()->Collapse(afterAnchorContainer, error);
-    if (NS_WARN_IF(error.Failed())) {
-      return error.StealNSResult();
-    }
-    return NS_OK;
-  }
-
-  ErrorResult error;
-  nsCOMPtr<nsIContent> newLeftNode = SplitNodeWithTransaction(atAnchor, error);
-  if (NS_WARN_IF(error.Failed())) {
-    return error.StealNSResult();
-  }
-
-  EditorRawDOMPoint atRightNode(atAnchor.GetContainer());
-  if (NS_WARN_IF(!atRightNode.IsSet())) {
-    return NS_ERROR_FAILURE;
-  }
-  MOZ_ASSERT(atRightNode.IsSetAndValid());
-  SelectionRefPtr()->Collapse(atRightNode, error);
-  if (NS_WARN_IF(error.Failed())) {
-    return error.StealNSResult();
-  }
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextEditor::InsertText(const nsAString& aStringToInsert) {
-  nsresult rv = InsertTextAsAction(aStringToInsert);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to insert text");
-  return rv;
-}
-
-nsresult TextEditor::InsertTextAsAction(const nsAString& aStringToInsert,
-                                        nsIPrincipal* aPrincipal) {
-  // Showing this assertion is fine if this method is called by outside via
-  // mutation event listener or something.  Otherwise, this is called by
-  // wrong method.
-  NS_ASSERTION(!mPlaceholderBatch,
-               "Should be called only when this is the only edit action of the "
-               "operation "
-               "unless mutation event listener nests some operations");
-
-  AutoEditActionDataSetter editActionData(*this, EditAction::eInsertText,
-                                          aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-  // Note that we don't need to replace native line breaks with XP line breaks
-  // here because Chrome does not do it.
-  MOZ_ASSERT(!aStringToInsert.IsVoid());
-  editActionData.SetData(aStringToInsert);
-
-  AutoPlaceholderBatch treatAsOneTransaction(*this);
-  nsresult rv = InsertTextAsSubAction(aStringToInsert);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
-}
-
-nsresult TextEditor::InsertTextAsSubAction(const nsAString& aStringToInsert) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-  MOZ_ASSERT(mPlaceholderBatch);
-
-  if (!mRules) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  // Protect the edit rules object from dying.
-  RefPtr<TextEditRules> rules(mRules);
-
-  EditSubAction editSubAction = ShouldHandleIMEComposition()
-                                    ? EditSubAction::eInsertTextComingFromIME
-                                    : EditSubAction::eInsertText;
-
-  AutoEditSubActionNotifier startToHandleEditSubAction(*this, editSubAction,
-                                                       nsIEditor::eNext);
-
-  nsAutoString resultString;
-  // XXX can we trust instring to outlive subActionInfo,
-  // XXX and subActionInfo not to refer to instring in its dtor?
-  // nsAutoString instring(aStringToInsert);
-  EditSubActionInfo subActionInfo(editSubAction);
-  subActionInfo.inString = &aStringToInsert;
-  subActionInfo.outString = &resultString;
-  subActionInfo.maxLength = mMaxTextLength;
-
-  bool cancel, handled;
-  nsresult rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  if (!cancel && !handled) {
-    // we rely on rules code for now - no default implementation
-  }
-  if (cancel) {
-    return NS_OK;
-  }
-  // post-process
-  rv = rules->DidDoAction(subActionInfo, NS_OK);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextEditor::InsertLineBreak() {
-  if (NS_WARN_IF(IsSingleLineEditor())) {
-    return NS_ERROR_FAILURE;
-  }
-
-  AutoEditActionDataSetter editActionData(*this, EditAction::eInsertLineBreak);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  AutoPlaceholderBatch treatAsOneTransaction(*this);
-  nsresult rv = InsertLineBreakAsSubAction();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
-}
-
-nsresult TextEditor::InsertLineBreakAsSubAction() {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  if (!mRules) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
-
-  AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eInsertLineBreak, nsIEditor::eNext);
-
-  EditSubActionInfo subActionInfo(EditSubAction::eInsertLineBreak);
-  subActionInfo.maxLength = mMaxTextLength;
-  bool cancel, handled;
-  nsresult rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (cancel) {
-    return rv;  // We don't need to call DidDoAction() if canceled.
-  }
-  // XXX DidDoAction() does nothing for eInsertParagraphSeparator.  However,
-  //     we should call it until we keep using this style.  Perhaps, each
-  //     editor method should call necessary method of
-  //     TextEditRules/HTMLEditRules directly.
-  rv = rules->DidDoAction(subActionInfo, rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
+  rv = InsertLineBreakAsSubAction();
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::InsertLineBreakAsSubAction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::SetTextAsAction(const nsAString& aString,
                                      nsIPrincipal* aPrincipal) {
-  MOZ_ASSERT(aString.FindChar(static_cast<char16_t>('\r')) == kNotFound);
+  MOZ_ASSERT(aString.FindChar(nsCRT::CR) == kNotFound);
+  MOZ_ASSERT(!AsHTMLEditor());
 
   AutoEditActionDataSetter editActionData(*this, EditAction::eSetText,
                                           aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
   AutoPlaceholderBatch treatAsOneTransaction(*this);
-  nsresult rv = SetTextAsSubAction(aString);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
+  rv = SetTextAsSubAction(aString);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::SetTextAsSubAction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::ReplaceTextAsAction(const nsAString& aString,
                                          nsRange* aReplaceRange,
                                          nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(aString.FindChar(nsCRT::CR) == kNotFound);
+
   AutoEditActionDataSetter editActionData(*this, EditAction::eReplaceText,
                                           aPrincipal);
   if (NS_WARN_IF(!editActionData.CanHandle())) {
     return NS_ERROR_NOT_INITIALIZED;
   }
+
   if (!AsHTMLEditor()) {
     editActionData.SetData(aString);
   } else {
     editActionData.InitializeDataTransfer(aString);
+    RefPtr<StaticRange> targetRange;
+    if (aReplaceRange) {
+      // Compute offset of the range before dispatching `beforeinput` event
+      // because it may be referred after the DOM tree is changed and the
+      // range may have not computed the offset yet.
+      targetRange = StaticRange::Create(
+          aReplaceRange->GetStartContainer(), aReplaceRange->StartOffset(),
+          aReplaceRange->GetEndContainer(), aReplaceRange->EndOffset(),
+          IgnoreErrors());
+      NS_WARNING_ASSERTION(targetRange && targetRange->IsPositioned(),
+                           "StaticRange::Create() failed");
+    } else {
+      Element* editingHost = AsHTMLEditor()->GetActiveEditingHost();
+      NS_WARNING_ASSERTION(editingHost,
+                           "No active editing host, no target ranges");
+      if (editingHost) {
+        targetRange = StaticRange::Create(
+            editingHost, 0, editingHost, editingHost->Length(), IgnoreErrors());
+        NS_WARNING_ASSERTION(targetRange && targetRange->IsPositioned(),
+                             "StaticRange::Create() failed");
+      }
+    }
+    if (targetRange && targetRange->IsPositioned()) {
+      editActionData.AppendTargetRange(*targetRange);
+    }
+  }
+
+  nsresult rv = editActionData.MaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "MaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
   AutoPlaceholderBatch treatAsOneTransaction(*this);
 
   // This should emulates inserting text for better undo/redo behavior.
+  IgnoredErrorResult ignoredError;
   AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eInsertText, nsIEditor::eNext);
+      *this, EditSubAction::eInsertText, nsIEditor::eNext, ignoredError);
+  if (NS_WARN_IF(ignoredError.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+    return EditorBase::ToGenericNSResult(ignoredError.StealNSResult());
+  }
+  NS_WARNING_ASSERTION(
+      !ignoredError.Failed(),
+      "TextEditor::OnStartToHandleTopLevelEditSubAction() failed, but ignored");
 
   if (!aReplaceRange) {
     nsresult rv = SetTextAsSubAction(aString);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return EditorBase::ToGenericNSResult(rv);
-    }
-    return NS_OK;
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "TextEditor::SetTextAsSubAction() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
-  if (NS_WARN_IF(aString.IsEmpty() && aReplaceRange->Collapsed())) {
+  if (aString.IsEmpty() && aReplaceRange->Collapsed()) {
+    NS_WARNING("Setting value was empty and replaced range was empty");
     return NS_OK;
   }
 
@@ -1053,52 +529,54 @@ nsresult TextEditor::ReplaceTextAsAction(const nsAString& aString,
 
   // Select the range but as far as possible, we should not create new range
   // even if it's part of special Selection.
-  nsresult rv = SelectionRefPtr()->RemoveAllRangesTemporarily();
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
   ErrorResult error;
-  SelectionRefPtr()->AddRangeAndSelectFramesAndNotifyListeners(*aReplaceRange,
-                                                               error);
-  if (NS_WARN_IF(error.Failed())) {
+  SelectionRefPtr()->RemoveAllRanges(error);
+  if (error.Failed()) {
+    NS_WARNING("Selection::RemoveAllRanges() failed");
+    return error.StealNSResult();
+  }
+  MOZ_KnownLive(SelectionRefPtr())
+      ->AddRangeAndSelectFramesAndNotifyListeners(*aReplaceRange, error);
+  if (error.Failed()) {
+    NS_WARNING("Selection::AddRangeAndSelectFramesAndNotifyListeners() failed");
     return error.StealNSResult();
   }
 
   rv = ReplaceSelectionAsSubAction(aString);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::ReplaceSelectionAsSubAction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::SetTextAsSubAction(const nsAString& aString) {
   MOZ_ASSERT(IsEditActionDataAvailable());
   MOZ_ASSERT(mPlaceholderBatch);
 
-  if (NS_WARN_IF(!mRules)) {
+  if (NS_WARN_IF(!mInitSucceeded)) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
-
+  IgnoredErrorResult ignoredError;
   AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eSetText, nsIEditor::eNext);
-
-  EditSubActionInfo subActionInfo(EditSubAction::eSetText);
-  subActionInfo.inString = &aString;
-  subActionInfo.maxLength = mMaxTextLength;
-
-  bool cancel;
-  bool handled;
-  nsresult rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+      *this, EditSubAction::eSetText, nsIEditor::eNext, ignoredError);
+  if (NS_WARN_IF(ignoredError.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+    return ignoredError.StealNSResult();
   }
-  if (cancel) {
-    return NS_OK;
+  NS_WARNING_ASSERTION(
+      !ignoredError.Failed(),
+      "TextEditor::OnStartToHandleTopLevelEditSubAction() failed, but ignored");
+
+  if (IsPlaintextEditor() && !IsIMEComposing() && !IsUndoRedoEnabled() &&
+      GetEditAction() != EditAction::eReplaceText && mMaxTextLength < 0) {
+    EditActionResult result = SetTextWithoutTransaction(aString);
+    if (result.Failed() || result.Canceled() || result.Handled()) {
+      NS_WARNING_ASSERTION(result.Succeeded(),
+                           "TextEditor::SetTextWithoutTransaction() failed");
+      return result.Rv();
+    }
   }
-  if (!handled) {
+
+  {
     // Note that do not notify selectionchange caused by selecting all text
     // because it's preparation of our delete implementation so web apps
     // shouldn't receive such selectionchange before the first mutation.
@@ -1109,49 +587,55 @@ nsresult TextEditor::SetTextAsSubAction(const nsAString& aString) {
       return NS_ERROR_FAILURE;
     }
 
-    // We want to select trailing BR node to remove all nodes to replace all,
-    // but TextEditor::SelectEntireDocument doesn't select that BR node.
-    if (rules->DocumentIsEmpty()) {
+    // We want to select trailing `<br>` element to remove all nodes to replace
+    // all, but TextEditor::SelectEntireDocument() doesn't select such `<br>`
+    // elements.
+    // XXX We should make ReplaceSelectionAsSubAction() take range.  Then,
+    //     we can saving the expensive cost of modifying `Selection` here.
+    nsresult rv;
+    if (IsEmpty()) {
       rv = SelectionRefPtr()->Collapse(rootElement, 0);
-      NS_WARNING_ASSERTION(
-          NS_SUCCEEDED(rv),
-          "Failed to move caret to start of the editor root element");
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                           "Selection::Collapse() failed, but ignored");
     } else {
+      // XXX Oh, we shouldn't select padding `<br>` element for empty last
+      //     line here since we will need to recreate it in multiline
+      //     text editor.
       ErrorResult error;
       SelectionRefPtr()->SelectAllChildren(*rootElement, error);
       NS_WARNING_ASSERTION(
           !error.Failed(),
-          "Failed to select all children of the editor root element");
+          "Selection::SelectAllChildren() failed, but ignored");
       rv = error.StealNSResult();
     }
     if (NS_SUCCEEDED(rv)) {
-      rv = ReplaceSelectionAsSubAction(aString);
-      NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                           "Failed to replace selection with new string");
+      DebugOnly<nsresult> rvIgnored = ReplaceSelectionAsSubAction(aString);
+      NS_WARNING_ASSERTION(
+          NS_SUCCEEDED(rvIgnored),
+          "TextEditor::ReplaceSelectionAsSubAction() failed, but ignored");
     }
   }
-  // post-process
-  rv = rules->DidDoAction(subActionInfo, rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
+
+  // Destroying AutoUpdateViewBatch may cause destroying us.
+  return NS_WARN_IF(Destroyed()) ? NS_ERROR_EDITOR_DESTROYED : NS_OK;
 }
 
 nsresult TextEditor::ReplaceSelectionAsSubAction(const nsAString& aString) {
+  // TODO: Move this method to `EditorBase`.
   if (aString.IsEmpty()) {
-    nsresult rv = DeleteSelectionAsSubAction(eNone, eStrip);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-    return NS_OK;
+    nsresult rv = DeleteSelectionAsSubAction(
+        nsIEditor::eNone,
+        IsTextEditor() ? nsIEditor::eNoStrip : nsIEditor::eStrip);
+    NS_WARNING_ASSERTION(
+        NS_SUCCEEDED(rv),
+        "EditorBase::DeleteSelectionAsSubAction(eNone) failed");
+    return rv;
   }
 
   nsresult rv = InsertTextAsSubAction(aString);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::InsertTextAsSubAction() failed");
+  return rv;
 }
 
 bool TextEditor::EnsureComposition(WidgetCompositionEvent& aCompositionEvent) {
@@ -1172,10 +656,12 @@ bool TextEditor::EnsureComposition(WidgetCompositionEvent& aCompositionEvent) {
 
 nsresult TextEditor::OnCompositionStart(
     WidgetCompositionEvent& aCompositionStartEvent) {
-  if (NS_WARN_IF(mComposition)) {
+  if (mComposition) {
+    NS_WARNING("There was a composition at receiving compositionstart event");
     return NS_OK;
   }
 
+  // "beforeinput" event shouldn't be fired before "compositionstart".
   AutoEditActionDataSetter editActionData(*this, EditAction::eStartComposition);
   if (NS_WARN_IF(!editActionData.CanHandle())) {
     return NS_ERROR_NOT_INITIALIZED;
@@ -1191,7 +677,9 @@ nsresult TextEditor::OnCompositionChange(
   MOZ_ASSERT(aCompositionChangeEvent.mMessage == eCompositionChange,
              "The event should be eCompositionChange");
 
-  if (NS_WARN_IF(!mComposition)) {
+  if (!mComposition) {
+    NS_WARNING(
+        "There is no composition, but receiving compositionchange event");
     return NS_ERROR_FAILURE;
   }
 
@@ -1222,7 +710,42 @@ nsresult TextEditor::OnCompositionChange(
     editActionData.SetData(aCompositionChangeEvent.mData);
   }
 
+  // If we're an `HTMLEditor` and this is second or later composition change,
+  // we should set target range to the range of composition string.
+  // Otherwise, set target ranges to selection ranges (will be done by
+  // editActionData itself before dispatching `beforeinput` event).
+  if (AsHTMLEditor() && mComposition->GetContainerTextNode()) {
+    RefPtr<StaticRange> targetRange = StaticRange::Create(
+        mComposition->GetContainerTextNode(),
+        mComposition->XPOffsetInTextNode(),
+        mComposition->GetContainerTextNode(),
+        mComposition->XPEndOffsetInTextNode(), IgnoreErrors());
+    NS_WARNING_ASSERTION(targetRange && targetRange->IsPositioned(),
+                         "StaticRange::Create() failed");
+    if (targetRange && targetRange->IsPositioned()) {
+      editActionData.AppendTargetRange(*targetRange);
+    }
+  }
+
+  // TODO: We need to use different EditAction value for beforeinput event
+  //       if the event is followed by "compositionend" because corresponding
+  //       "input" event will be fired from OnCompositionEnd() later with
+  //       different EditAction value.
+  // TODO: If Input Events Level 2 is enabled, "beforeinput" event may be
+  //       actually canceled if edit action is eDeleteByComposition. In such
+  //       case, we might need to keep selected text, but insert composition
+  //       string before or after the selection.  However, the spec is still
+  //       unstable.  We should keep handling the composition since other
+  //       parts including widget may not be ready for such complicated
+  //       behavior.
+  nsresult rv = editActionData.MaybeDispatchBeforeInputEvent();
+  if (rv != NS_ERROR_EDITOR_ACTION_CANCELED && NS_FAILED(rv)) {
+    NS_WARNING("MaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
+  }
+
   if (!EnsureComposition(aCompositionChangeEvent)) {
+    NS_WARNING("TextEditor::EnsureComposition() failed");
     return NS_OK;
   }
 
@@ -1247,16 +770,19 @@ nsresult TextEditor::OnCompositionChange(
 
   RefPtr<nsCaret> caret = GetCaret();
 
-  nsresult rv;
   {
     AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::IMETxnName);
 
     MOZ_ASSERT(
         mIsInEditSubAction,
         "AutoPlaceholderBatch should've notified the observes of before-edit");
-    rv = InsertTextAsSubAction(aCompositionChangeEvent.mData);
+    nsString data(aCompositionChangeEvent.mData);
+    if (!AsTextEditor()) {
+      nsContentUtils::PlatformToDOMLineBreaks(data);
+    }
+    rv = InsertTextAsSubAction(data);
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
-                         "Failed to insert new composition string");
+                         "EditorBase::InsertTextAsSubAction() failed");
 
     if (caret) {
       caret->SetSelection(SelectionRefPtr());
@@ -1272,15 +798,13 @@ nsresult TextEditor::OnCompositionChange(
     NotifyEditorObservers(eNotifyEditorObserversOfEnd);
   }
 
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 void TextEditor::OnCompositionEnd(
     WidgetCompositionEvent& aCompositionEndEvent) {
-  if (NS_WARN_IF(!mComposition)) {
+  if (!mComposition) {
+    NS_WARNING("There is no composition, but receiving compositionend event");
     return;
   }
 
@@ -1288,9 +812,6 @@ void TextEditor::OnCompositionEnd(
                               ? EditAction::eCancelComposition
                               : EditAction::eCommitComposition;
   AutoEditActionDataSetter editActionData(*this, editAction);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return;
-  }
   // If Input Events Level 2 is enabled, EditAction::eCancelComposition is
   // mapped to EditorInputType::eDeleteCompositionText and it requires null
   // for InputEvent.data.  Therefore, only otherwise, we should set data.
@@ -1305,14 +826,29 @@ void TextEditor::OnCompositionEnd(
   // commit the IME transaction..we can get at it via the transaction mgr.
   // Note that this means IME won't work without an undo stack!
   if (mTransactionManager) {
-    nsCOMPtr<nsITransaction> txn = mTransactionManager->PeekUndoStack();
-    nsCOMPtr<nsIAbsorbingTransaction> plcTxn = do_QueryInterface(txn);
-    if (plcTxn) {
-      DebugOnly<nsresult> rv = plcTxn->Commit();
-      NS_ASSERTION(NS_SUCCEEDED(rv),
-                   "nsIAbsorbingTransaction::Commit() failed");
+    if (nsCOMPtr<nsITransaction> transaction =
+            mTransactionManager->PeekUndoStack()) {
+      if (RefPtr<EditTransactionBase> transactionBase =
+              transaction->GetAsEditTransactionBase()) {
+        if (PlaceholderTransaction* placeholderTransaction =
+                transactionBase->GetAsPlaceholderTransaction()) {
+          placeholderTransaction->Commit();
+        }
+      }
     }
   }
+
+  // Note that this just marks as that we've already handled "beforeinput" for
+  // preventing assertions in FireInputEvent().  Note that corresponding
+  // "beforeinput" event for the following "input" event should've already
+  // been dispatched from `OnCompositionChange()`.
+  DebugOnly<nsresult> rvIgnored =
+      editActionData.MaybeDispatchBeforeInputEvent();
+  MOZ_ASSERT(rvIgnored != NS_ERROR_EDITOR_ACTION_CANCELED,
+             "Why beforeinput event was canceled in this case?");
+  MOZ_ASSERT(NS_SUCCEEDED(rvIgnored),
+             "MaybeDispatchBeforeInputEvent() should just mark the instance as "
+             "handled it");
 
   // Composition string may have hidden the caret.  Therefore, we need to
   // cancel it here.
@@ -1325,57 +861,44 @@ void TextEditor::OnCompositionEnd(
   mComposition = nullptr;
 
   // notify editor observers of action
+  // FYI: With current draft, "input" event should be fired from
+  //      OnCompositionChange(), however, it requires a lot of our UI code
+  //      change and does not make sense.  See spec issue:
+  //      https://github.com/w3c/uievents/issues/202
   NotifyEditorObservers(eNotifyEditorObserversOfEnd);
 }
 
-already_AddRefed<Element> TextEditor::GetInputEventTargetElement() {
+already_AddRefed<Element> TextEditor::GetInputEventTargetElement() const {
   nsCOMPtr<Element> target = do_QueryInterface(mEventTarget);
   return target.forget();
 }
 
-nsresult TextEditor::IsEmpty(bool* aIsEmpty) const {
-  if (NS_WARN_IF(!mRules)) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  *aIsEmpty = true;
-
+bool TextEditor::IsEmpty() const {
   if (mPaddingBRElementForEmptyEditor) {
-    return NS_OK;
+    return true;
   }
 
   // Even if there is no padding <br> element for empty editor, we should be
   // detected as empty editor if all the children are text nodes and these
   // have no content.
-  Element* rootElement = GetRoot();
-  if (!rootElement) {
-    // XXX Why don't we return an error in such case??
-    return NS_OK;
+  Element* anonymousDivElement = GetRoot();
+  if (!anonymousDivElement) {
+    return true;  // Don't warn it, this is possible, e.g., 997805.html
   }
 
-  for (nsIContent* child = rootElement->GetFirstChild(); child;
-       child = child->GetNextSibling()) {
-    if (!EditorBase::IsTextNode(child) ||
-        static_cast<nsTextNode*>(child)->TextDataLength()) {
-      *aIsEmpty = false;
-      return NS_OK;
-    }
-  }
+  // Only when there is non-empty text node, we are not empty.
+  return !anonymousDivElement->GetFirstChild() ||
+         !anonymousDivElement->GetFirstChild()->IsText() ||
+         !anonymousDivElement->GetFirstChild()->Length();
+}
 
+NS_IMETHODIMP TextEditor::GetDocumentIsEmpty(bool* aDocumentIsEmpty) {
+  MOZ_ASSERT(aDocumentIsEmpty);
+  *aDocumentIsEmpty = IsEmpty();
   return NS_OK;
 }
 
-NS_IMETHODIMP
-TextEditor::GetDocumentIsEmpty(bool* aDocumentIsEmpty) {
-  nsresult rv = IsEmpty(aDocumentIsEmpty);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextEditor::GetTextLength(int32_t* aCount) {
+NS_IMETHODIMP TextEditor::GetTextLength(int32_t* aCount) {
   MOZ_ASSERT(aCount);
 
   // initialize out params
@@ -1383,12 +906,10 @@ TextEditor::GetTextLength(int32_t* aCount) {
 
   // special-case for empty document, to account for the padding <br> element
   // for empty editor.
-  bool isEmpty = false;
-  nsresult rv = IsEmpty(&isEmpty);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  if (isEmpty) {
+  // XXX This should be overridden by `HTMLEditor` and we should return the
+  //     first text node's length from `TextEditor` instead.  The following
+  //     code is too expensive.
+  if (IsEmpty()) {
     return NS_OK;
   }
 
@@ -1399,10 +920,14 @@ TextEditor::GetTextLength(int32_t* aCount) {
 
   uint32_t totalLength = 0;
   PostContentIterator postOrderIter;
-  postOrderIter.Init(rootElement);
+  DebugOnly<nsresult> rvIgnored = postOrderIter.Init(rootElement);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                       "PostContentIterator::Init() failed, but ignored");
+  EditorType editorType = GetEditorType();
   for (; !postOrderIter.IsDone(); postOrderIter.Next()) {
-    nsCOMPtr<nsINode> currentNode = postOrderIter.GetCurrentNode();
-    if (IsTextNode(currentNode) && IsEditable(currentNode)) {
+    nsINode* currentNode = postOrderIter.GetCurrentNode();
+    if (currentNode && currentNode->IsText() &&
+        EditorUtils::IsEditableContent(*currentNode->AsText(), editorType)) {
       totalLength += currentNode->Length();
     }
   }
@@ -1411,108 +936,8 @@ TextEditor::GetTextLength(int32_t* aCount) {
   return NS_OK;
 }
 
-NS_IMETHODIMP
-TextEditor::GetWrapWidth(int32_t* aWrapColumn) {
-  if (NS_WARN_IF(!aWrapColumn)) {
-    return NS_ERROR_INVALID_ARG;
-  }
-  *aWrapColumn = WrapWidth();
-  return NS_OK;
-}
-
-//
-// See if the style value includes this attribute, and if it does,
-// cut out everything from the attribute to the next semicolon.
-//
-static void CutStyle(const char* stylename, nsString& styleValue) {
-  // Find the current wrapping type:
-  int32_t styleStart = styleValue.Find(stylename, true);
-  if (styleStart >= 0) {
-    int32_t styleEnd = styleValue.Find(";", false, styleStart);
-    if (styleEnd > styleStart) {
-      styleValue.Cut(styleStart, styleEnd - styleStart + 1);
-    } else {
-      styleValue.Cut(styleStart, styleValue.Length() - styleStart);
-    }
-  }
-}
-
-NS_IMETHODIMP
-TextEditor::SetWrapWidth(int32_t aWrapColumn) {
-  AutoEditActionDataSetter editActionData(*this, EditAction::eSetWrapWidth);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  SetWrapColumn(aWrapColumn);
-
-  // Make sure we're a plaintext editor, otherwise we shouldn't
-  // do the rest of this.
-  if (!IsPlaintextEditor()) {
-    return NS_OK;
-  }
-
-  // Ought to set a style sheet here ...
-  // Probably should keep around an mPlaintextStyleSheet for this purpose.
-  dom::Element* rootElement = GetRoot();
-  NS_ENSURE_TRUE(rootElement, NS_ERROR_NULL_POINTER);
-
-  // Get the current style for this root element:
-  nsAutoString styleValue;
-  rootElement->GetAttr(kNameSpaceID_None, nsGkAtoms::style, styleValue);
-
-  // We'll replace styles for these values:
-  CutStyle("white-space", styleValue);
-  CutStyle("width", styleValue);
-  CutStyle("font-family", styleValue);
-
-  // If we have other style left, trim off any existing semicolons
-  // or whitespace, then add a known semicolon-space:
-  if (!styleValue.IsEmpty()) {
-    styleValue.Trim("; \t", false, true);
-    styleValue.AppendLiteral("; ");
-  }
-
-  // Make sure we have fixed-width font.  This should be done for us,
-  // but it isn't, see bug 22502, so we have to add "font: -moz-fixed;".
-  // Only do this if we're wrapping.
-  if (IsWrapHackEnabled() && aWrapColumn >= 0) {
-    styleValue.AppendLiteral("font-family: -moz-fixed; ");
-  }
-
-  // and now we're ready to set the new whitespace/wrapping style.
-  if (aWrapColumn > 0) {
-    // Wrap to a fixed column.
-    styleValue.AppendLiteral("white-space: pre-wrap; width: ");
-    styleValue.AppendInt(aWrapColumn);
-    styleValue.AppendLiteral("ch;");
-  } else if (!aWrapColumn) {
-    styleValue.AppendLiteral("white-space: pre-wrap;");
-  } else {
-    styleValue.AppendLiteral("white-space: pre;");
-  }
-
-  return rootElement->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleValue,
-                              true);
-}
-
-NS_IMETHODIMP
-TextEditor::GetNewlineHandling(int32_t* aNewlineHandling) {
-  NS_ENSURE_ARG_POINTER(aNewlineHandling);
-
-  *aNewlineHandling = mNewlineHandling;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TextEditor::SetNewlineHandling(int32_t aNewlineHandling) {
-  mNewlineHandling = aNewlineHandling;
-
-  return NS_OK;
-}
-
 nsresult TextEditor::UndoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
-  if (aCount == 0 || IsReadonly() || IsDisabled()) {
+  if (aCount == 0 || IsReadonly()) {
     return NS_OK;
   }
 
@@ -1532,8 +957,11 @@ nsresult TextEditor::UndoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
   }
 
   AutoEditActionDataSetter editActionData(*this, EditAction::eUndo, aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
   AutoUpdateViewBatch preventSelectionChangeEvent(*this);
@@ -1543,20 +971,29 @@ nsresult TextEditor::UndoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
     return NS_ERROR_FAILURE;
   }
 
-  nsresult rv = NS_OK;
+  rv = NS_OK;
   {
+    IgnoredErrorResult ignoredError;
     AutoEditSubActionNotifier startToHandleEditSubAction(
-        *this, EditSubAction::eUndo, nsIEditor::eNone);
+        *this, EditSubAction::eUndo, nsIEditor::eNone, ignoredError);
+    if (NS_WARN_IF(ignoredError.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+      return EditorBase::ToGenericNSResult(ignoredError.StealNSResult());
+    }
+    NS_WARNING_ASSERTION(!ignoredError.Failed(),
+                         "TextEditor::OnStartToHandleTopLevelEditSubAction() "
+                         "failed, but ignored");
 
     RefPtr<TransactionManager> transactionManager(mTransactionManager);
     for (uint32_t i = 0; i < aCount; ++i) {
-      if (NS_WARN_IF(NS_FAILED(transactionManager->Undo()))) {
+      if (NS_FAILED(transactionManager->Undo())) {
+        NS_WARNING("TransactionManager::Undo() failed");
         break;
       }
       DoAfterUndoTransaction();
     }
 
     if (NS_WARN_IF(!mRootElement)) {
+      NS_WARNING("Failed to handle padding BR Element due to no root element");
       rv = NS_ERROR_FAILURE;
     } else {
       // The idea here is to see if the magic empty node has suddenly
@@ -1565,11 +1002,12 @@ nsresult TextEditor::UndoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
       // at redo, or doing it everywhere else that might care.  Since undo
       // and redo are relatively rare, it makes sense to take the (small)
       // performance hit here.
-      nsIContent* leftMostChild = GetLeftmostChild(mRootElement);
-      if (leftMostChild &&
-          EditorBase::IsPaddingBRElementForEmptyEditor(*leftMostChild)) {
+      nsIContent* firstLeafChild = HTMLEditUtils::GetFirstLeafChild(
+          *mRootElement, ChildBlockBoundary::Ignore);
+      if (firstLeafChild &&
+          EditorUtils::IsPaddingBRElementForEmptyEditor(*firstLeafChild)) {
         mPaddingBRElementForEmptyEditor =
-            static_cast<HTMLBRElement*>(leftMostChild);
+            static_cast<HTMLBRElement*>(firstLeafChild);
       } else {
         mPaddingBRElementForEmptyEditor = nullptr;
       }
@@ -1577,14 +1015,11 @@ nsresult TextEditor::UndoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
   }
 
   NotifyEditorObservers(eNotifyEditorObserversOfEnd);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::RedoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
-  if (aCount == 0 || IsReadonly() || IsDisabled()) {
+  if (aCount == 0 || IsReadonly()) {
     return NS_OK;
   }
 
@@ -1604,8 +1039,11 @@ nsresult TextEditor::RedoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
   }
 
   AutoEditActionDataSetter editActionData(*this, EditAction::eRedo, aPrincipal);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
   }
 
   AutoUpdateViewBatch preventSelectionChangeEvent(*this);
@@ -1615,20 +1053,29 @@ nsresult TextEditor::RedoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
     return NS_ERROR_FAILURE;
   }
 
-  nsresult rv = NS_OK;
+  rv = NS_OK;
   {
+    IgnoredErrorResult ignoredError;
     AutoEditSubActionNotifier startToHandleEditSubAction(
-        *this, EditSubAction::eRedo, nsIEditor::eNone);
+        *this, EditSubAction::eRedo, nsIEditor::eNone, ignoredError);
+    if (NS_WARN_IF(ignoredError.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+      return ignoredError.StealNSResult();
+    }
+    NS_WARNING_ASSERTION(!ignoredError.Failed(),
+                         "TextEditor::OnStartToHandleTopLevelEditSubAction() "
+                         "failed, but ignored");
 
     RefPtr<TransactionManager> transactionManager(mTransactionManager);
     for (uint32_t i = 0; i < aCount; ++i) {
-      if (NS_WARN_IF(NS_FAILED(transactionManager->Redo()))) {
+      if (NS_FAILED(transactionManager->Redo())) {
+        NS_WARNING("TransactionManager::Redo() failed");
         break;
       }
       DoAfterRedoTransaction();
     }
 
     if (NS_WARN_IF(!mRootElement)) {
+      NS_WARNING("Failed to handle padding BR element due to no root element");
       rv = NS_ERROR_FAILURE;
     } else {
       // We may take empty <br> element for empty editor back with this redo.
@@ -1636,12 +1083,12 @@ nsresult TextEditor::RedoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
       // XXX Looks like that this is too slow if there are a lot of nodes.
       //     Shouldn't we just scan children in the root?
       nsCOMPtr<nsIHTMLCollection> nodeList =
-          mRootElement->GetElementsByTagName(NS_LITERAL_STRING("br"));
+          mRootElement->GetElementsByTagName(u"br"_ns);
       MOZ_ASSERT(nodeList);
       Element* brElement =
           nodeList->Length() == 1 ? nodeList->Item(0) : nullptr;
       if (brElement &&
-          EditorBase::IsPaddingBRElementForEmptyEditor(*brElement)) {
+          EditorUtils::IsPaddingBRElementForEmptyEditor(*brElement)) {
         mPaddingBRElementForEmptyEditor =
             static_cast<HTMLBRElement*>(brElement);
       } else {
@@ -1651,10 +1098,7 @@ nsresult TextEditor::RedoAsAction(uint32_t aCount, nsIPrincipal* aPrincipal) {
   }
 
   NotifyEditorObservers(eNotifyEditorObserversOfEnd);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return EditorBase::ToGenericNSResult(rv);
-  }
-  return NS_OK;
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 bool TextEditor::IsCopyToClipboardAllowedInternal() const {
@@ -1712,21 +1156,34 @@ bool TextEditor::FireClipboardEvent(EventMessage aEventMessage,
 }
 
 nsresult TextEditor::CutAsAction(nsIPrincipal* aPrincipal) {
+  // TODO: Move this method to `EditorBase`.
   AutoEditActionDataSetter editActionData(*this, EditAction::eCut, aPrincipal);
   if (NS_WARN_IF(!editActionData.CanHandle())) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
   bool actionTaken = false;
-  if (FireClipboardEvent(eCut, nsIClipboard::kGlobalClipboard, &actionTaken)) {
-    // XXX This transaction name is referred by PlaceholderTransaction::Merge()
-    //     so that we need to keep using it here.
-    AutoPlaceholderBatch treatAsOneTransaction(*this,
-                                               *nsGkAtoms::DeleteTxnName);
-    DeleteSelectionAsSubAction(eNone, eStrip);
+  if (!FireClipboardEvent(eCut, nsIClipboard::kGlobalClipboard, &actionTaken)) {
+    return EditorBase::ToGenericNSResult(
+        actionTaken ? NS_OK : NS_ERROR_EDITOR_ACTION_CANCELED);
   }
-  return EditorBase::ToGenericNSResult(
-      actionTaken ? NS_OK : NS_ERROR_EDITOR_ACTION_CANCELED);
+
+  // Dispatch "beforeinput" event after dispatching "cut" event.
+  nsresult rv = editActionData.MaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "MaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
+  }
+  // XXX This transaction name is referred by PlaceholderTransaction::Merge()
+  //     so that we need to keep using it here.
+  AutoPlaceholderBatch treatAsOneTransaction(*this, *nsGkAtoms::DeleteTxnName);
+  rv = DeleteSelectionAsSubAction(
+      eNone, IsTextEditor() ? nsIEditor::eNoStrip : nsIEditor::eStrip);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rv),
+      "EditorBase::DeleteSelectionAsSubAction(eNone) failed, but ignored");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 bool TextEditor::IsCutCommandEnabled() const {
@@ -1746,8 +1203,7 @@ bool TextEditor::IsCutCommandEnabled() const {
   return IsModifiable() && IsCopyToClipboardAllowedInternal();
 }
 
-NS_IMETHODIMP
-TextEditor::Copy() {
+NS_IMETHODIMP TextEditor::Copy() {
   AutoEditActionDataSetter editActionData(*this, EditAction::eCopy);
   if (NS_WARN_IF(!editActionData.CanHandle())) {
     return NS_ERROR_NOT_INITIALIZED;
@@ -1812,25 +1268,30 @@ already_AddRefed<nsIDocumentEncoder> TextEditor::GetAndInitDocEncoder(
   nsresult rv = docEncoder->NativeInit(
       doc, aFormatType,
       aDocumentEncoderFlags | nsIDocumentEncoder::RequiresReinitAfterOutput);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("nsIDocumentEncoder::NativeInit() failed");
     return nullptr;
   }
 
   if (!aCharset.IsEmpty() && !aCharset.EqualsLiteral("null")) {
-    docEncoder->SetCharset(aCharset);
+    DebugOnly<nsresult> rvIgnored = docEncoder->SetCharset(aCharset);
+    NS_WARNING_ASSERTION(
+        NS_SUCCEEDED(rvIgnored),
+        "nsIDocumentEncoder::SetCharset() failed, but ignored");
   }
 
-  int32_t wrapWidth = WrapWidth();
-  if (wrapWidth >= 0) {
-    Unused << docEncoder->SetWrapColumn(wrapWidth);
-  }
+  const int32_t wrapWidth = std::max(WrapWidth(), 0);
+  DebugOnly<nsresult> rvIgnored = docEncoder->SetWrapColumn(wrapWidth);
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rvIgnored),
+      "nsIDocumentEncoder::SetWrapColumn() failed, but ignored");
 
   // Set the selection, if appropriate.
   // We do this either if the OutputSelectionOnly flag is set,
   // in which case we use our existing selection ...
   if (aDocumentEncoderFlags & nsIDocumentEncoder::OutputSelectionOnly) {
-    rv = docEncoder->SetSelection(SelectionRefPtr());
-    if (NS_WARN_IF(NS_FAILED(rv))) {
+    if (NS_FAILED(docEncoder->SetSelection(SelectionRefPtr()))) {
+      NS_WARNING("nsIDocumentEncoder::SetSelection() failed");
       return nullptr;
     }
   }
@@ -1842,8 +1303,8 @@ already_AddRefed<nsIDocumentEncoder> TextEditor::GetAndInitDocEncoder(
       return nullptr;
     }
     if (!rootElement->IsHTMLElement(nsGkAtoms::body)) {
-      rv = docEncoder->SetContainerNode(rootElement);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
+      if (NS_FAILED(docEncoder->SetContainerNode(rootElement))) {
+        NS_WARNING("nsIDocumentEncoder::SetContainerNode() failed");
         return nullptr;
       }
     }
@@ -1852,10 +1313,9 @@ already_AddRefed<nsIDocumentEncoder> TextEditor::GetAndInitDocEncoder(
   return docEncoder.forget();
 }
 
-NS_IMETHODIMP
-TextEditor::OutputToString(const nsAString& aFormatType,
-                           uint32_t aDocumentEncoderFlags,
-                           nsAString& aOutputString) {
+NS_IMETHODIMP TextEditor::OutputToString(const nsAString& aFormatType,
+                                         uint32_t aDocumentEncoderFlags,
+                                         nsAString& aOutputString) {
   AutoEditActionDataSetter editActionData(*this, EditAction::eNotEditing);
   if (NS_WARN_IF(!editActionData.CanHandle())) {
     return NS_ERROR_NOT_INITIALIZED;
@@ -1863,12 +1323,11 @@ TextEditor::OutputToString(const nsAString& aFormatType,
 
   nsresult rv =
       ComputeValueInternal(aFormatType, aDocumentEncoderFlags, aOutputString);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    // This is low level API for XUL applcation.  So, we should return raw
-    // error code here.
-    return rv;
-  }
-  return NS_OK;
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::ComputeValueInternal() failed");
+  // This is low level API for XUL application.  So, we should return raw
+  // error code here.
+  return rv;
 }
 
 nsresult TextEditor::ComputeValueInternal(const nsAString& aFormatType,
@@ -1876,43 +1335,43 @@ nsresult TextEditor::ComputeValueInternal(const nsAString& aFormatType,
                                           nsAString& aOutputString) const {
   MOZ_ASSERT(IsEditActionDataAvailable());
 
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
-
-  EditSubActionInfo subActionInfo(EditSubAction::eComputeTextToOutput);
-  subActionInfo.outString = &aOutputString;
-  subActionInfo.flags = aDocumentEncoderFlags;
-  subActionInfo.outputFormat = &aFormatType;
-
-  bool cancel{false};
-  bool handled{false};
-  nsresult rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (NS_FAILED(rv) || cancel) {
-    return rv;
-  }
-  if (handled) {
-    // This case will get triggered by password fields or single text node only.
-    return rv;
+  // First, let's try to get the value simply only from text node if the
+  // caller wants plaintext value.
+  if (aFormatType.LowerCaseEqualsLiteral("text/plain")) {
+    // If it's necessary to check selection range or the editor wraps hard,
+    // we need some complicated handling.  In such case, we need to use the
+    // expensive path.
+    // XXX Anything else what we cannot return the text node data simply?
+    if (!(aDocumentEncoderFlags & (nsIDocumentEncoder::OutputSelectionOnly |
+                                   nsIDocumentEncoder::OutputWrap))) {
+      EditActionResult result =
+          ComputeValueFromTextNodeAndPaddingBRElement(aOutputString);
+      if (result.Failed() || result.Canceled() || result.Handled()) {
+        NS_WARNING_ASSERTION(
+            result.Succeeded(),
+            "TextEditor::ComputeValueFromTextNodeAndPaddingBRElement() failed");
+        return result.Rv();
+      }
+    }
   }
 
   nsAutoCString charset;
-  rv = GetDocumentCharsetInternal(charset);
+  nsresult rv = GetDocumentCharsetInternal(charset);
   if (NS_FAILED(rv) || charset.IsEmpty()) {
     charset.AssignLiteral("windows-1252");
   }
 
   nsCOMPtr<nsIDocumentEncoder> encoder =
       GetAndInitDocEncoder(aFormatType, aDocumentEncoderFlags, charset);
-  if (NS_WARN_IF(!encoder)) {
+  if (!encoder) {
+    NS_WARNING("TextEditor::GetAndInitDocEncoder() failed");
     return NS_ERROR_FAILURE;
   }
 
-  // XXX Why don't we call TextEditRules::DidDoAction() here?
   rv = encoder->EncodeToString(aOutputString);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "nsIDocumentEncoder::EncodeToString() failed");
+  return rv;
 }
 
 nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
@@ -1931,7 +1390,8 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
   nsresult rv;
   nsCOMPtr<nsIClipboard> clipboard =
       do_GetService("@mozilla.org/widget/clipboard;1", &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to get nsIClipboard service");
     return rv;
   }
 
@@ -1940,7 +1400,8 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
   // Get the nsITransferable interface for getting the data from the clipboard
   nsCOMPtr<nsITransferable> trans;
   rv = PrepareTransferable(getter_AddRefs(trans));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("TextEditor::PrepareTransferable() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
   if (!trans) {
@@ -1956,7 +1417,8 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
   nsCOMPtr<nsISupports> genericDataObj;
   nsAutoCString flav;
   rv = trans->GetAnyTransferData(flav, getter_AddRefs(genericDataObj));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("nsITransferable::GetAnyTransferData() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
 
@@ -1965,32 +1427,50 @@ nsresult TextEditor::PasteAsQuotationAsAction(int32_t aClipboardType,
     return NS_OK;
   }
 
-  if (nsCOMPtr<nsISupportsString> text = do_QueryInterface(genericDataObj)) {
-    nsAutoString stuffToPaste;
-    text->GetData(stuffToPaste);
-    editActionData.SetData(stuffToPaste);
-    if (!stuffToPaste.IsEmpty()) {
-      AutoPlaceholderBatch treatAsOneTransaction(*this);
-      rv = InsertWithQuotationsAsSubAction(stuffToPaste);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return EditorBase::ToGenericNSResult(rv);
-      }
-    }
+  nsCOMPtr<nsISupportsString> text = do_QueryInterface(genericDataObj);
+  if (!text) {
+    return NS_OK;
   }
-  return NS_OK;
+
+  nsString stuffToPaste;
+  DebugOnly<nsresult> rvIgnored = text->GetData(stuffToPaste);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                       "nsISupportsString::GetData() failed, but ignored");
+  if (stuffToPaste.IsEmpty()) {
+    return NS_OK;
+  }
+
+  editActionData.SetData(stuffToPaste);
+  if (!stuffToPaste.IsEmpty()) {
+    nsContentUtils::PlatformToDOMLineBreaks(stuffToPaste);
+  }
+  rv = editActionData.MaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "MaybeDispatchBeforeInputEvent() failed");
+    return EditorBase::ToGenericNSResult(rv);
+  }
+
+  AutoPlaceholderBatch treatAsOneTransaction(*this);
+  rv = InsertWithQuotationsAsSubAction(stuffToPaste);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::InsertWithQuotationsAsSubAction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::InsertWithQuotationsAsSubAction(
     const nsAString& aQuotedText) {
   MOZ_ASSERT(IsEditActionDataAvailable());
 
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
+  if (IsReadonly()) {
+    return NS_OK;
+  }
 
   // Let the citer quote it for us:
   nsString quotedStuff;
   nsresult rv = InternetCiter::GetCiteString(aQuotedText, quotedStuff);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("InternetCiter::GetCiteString() failed");
     return rv;
   }
 
@@ -2000,29 +1480,34 @@ nsresult TextEditor::InsertWithQuotationsAsSubAction(
     quotedStuff.Append(char16_t('\n'));
   }
 
+  IgnoredErrorResult ignoredError;
   AutoEditSubActionNotifier startToHandleEditSubAction(
-      *this, EditSubAction::eInsertText, nsIEditor::eNext);
+      *this, EditSubAction::eInsertText, nsIEditor::eNext, ignoredError);
+  if (NS_WARN_IF(ignoredError.ErrorCodeIs(NS_ERROR_EDITOR_DESTROYED))) {
+    return ignoredError.StealNSResult();
+  }
+  NS_WARNING_ASSERTION(
+      !ignoredError.Failed(),
+      "TextEditor::OnStartToHandleTopLevelEditSubAction() failed, but ignored");
 
-  EditSubActionInfo subActionInfo(EditSubAction::eInsertQuotedText);
-  bool cancel, handled;
-  rv = rules->WillDoAction(subActionInfo, &cancel, &handled);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  // XXX Do we need to support paste-as-quotation in password editor (and
+  //     also in single line editor)?
+  MaybeDoAutoPasswordMasking();
+
+  rv = EnsureNoPaddingBRElementForEmptyEditor();
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::EnsureNoPaddingBRElementForEmptyEditor() failed");
     return rv;
   }
-  if (cancel) {
-    return NS_OK;  // Rules canceled the operation.
-  }
-  MOZ_ASSERT(!handled, "WillDoAction() shouldn't handle in this case");
+
   rv = InsertTextAsSubAction(quotedStuff);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  // XXX Why don't we call TextEditRules::DidDoAction()?
-  return NS_OK;
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::InsertTextAsSubAction() failed");
+  return rv;
 }
 
 nsresult TextEditor::SharedOutputString(uint32_t aFlags, bool* aIsCollapsed,
-                                        nsAString& aResult) {
+                                        nsAString& aResult) const {
   MOZ_ASSERT(IsEditActionDataAvailable());
 
   *aIsCollapsed = SelectionRefPtr()->IsCollapsed();
@@ -2031,128 +1516,67 @@ nsresult TextEditor::SharedOutputString(uint32_t aFlags, bool* aIsCollapsed,
     aFlags |= nsIDocumentEncoder::OutputSelectionOnly;
   }
   // If the selection isn't collapsed, we'll use the whole document.
-  return ComputeValueInternal(NS_LITERAL_STRING("text/plain"), aFlags, aResult);
-}
-
-void TextEditor::OnStartToHandleTopLevelEditSubAction(
-    EditSubAction aEditSubAction, nsIEditor::EDirection aDirection) {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
-
-  EditorBase::OnStartToHandleTopLevelEditSubAction(aEditSubAction, aDirection);
-  if (!rules) {
-    return;
-  }
-
-  MOZ_ASSERT(GetTopLevelEditSubAction() == aEditSubAction);
-  MOZ_ASSERT(GetDirectionOfTopLevelEditSubAction() == aDirection);
-
-  if (aEditSubAction == EditSubAction::eSetText) {
-    // SetText replaces all text, so spell checker handles starting from the
-    // start of new value.
-    SetSpellCheckRestartPoint(EditorDOMPoint(mRootElement, 0));
-  } else {
-    bool useSelectionAnchor = true;
-    if (aEditSubAction == EditSubAction::eInsertText ||
-        aEditSubAction == EditSubAction::eInsertTextComingFromIME) {
-      // For spell checker, previous selected node should be text node if
-      // possible. If anchor is root of editor, it may become invalid offset
-      // after inserting text.
-      EditorRawDOMPoint point = FindBetterInsertionPoint(
-          EditorRawDOMPoint(SelectionRefPtr()->AnchorRef()));
-      if (point.IsSet()) {
-        SetSpellCheckRestartPoint(point);
-        useSelectionAnchor = false;
-      }
-    }
-    if (useSelectionAnchor && SelectionRefPtr()->AnchorRef().IsSet()) {
-      SetSpellCheckRestartPoint(
-          EditorRawDOMPoint(SelectionRefPtr()->AnchorRef()));
-    }
-  }
-
-  DebugOnly<nsresult> rv = rules->BeforeEdit();
-  NS_WARNING_ASSERTION(
-      NS_SUCCEEDED(rv),
-      "TextEditRules::BeforeEdit() failed to handle something");
-}
-
-void TextEditor::OnEndHandlingTopLevelEditSubAction() {
-  MOZ_ASSERT(IsEditActionDataAvailable());
-
-  if (mRules) {
-    // Protect the edit rules object from dying
-    RefPtr<TextEditRules> rules(mRules);
-
-    // post processing
-    DebugOnly<nsresult> rv = rules->AfterEdit();
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "TextEditRules::AfterEdit() failed to handle something");
-  }
-  EditorBase::OnEndHandlingTopLevelEditSubAction();
-  MOZ_ASSERT(!GetTopLevelEditSubAction());
-  MOZ_ASSERT(GetDirectionOfTopLevelEditSubAction() == eNone);
+  nsresult rv = ComputeValueInternal(u"text/plain"_ns, aFlags, aResult);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::ComputeValueInternal(text/plain) failed");
+  return rv;
 }
 
 nsresult TextEditor::SelectEntireDocument() {
   MOZ_ASSERT(IsEditActionDataAvailable());
+  MOZ_ASSERT(!AsHTMLEditor());
 
-  if (!mRules) {
-    return NS_ERROR_NULL_POINTER;
-  }
-
-  Element* rootElement = GetRoot();
-  if (NS_WARN_IF(!rootElement)) {
+  if (NS_WARN_IF(!mInitSucceeded)) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  // Protect the edit rules object from dying
-  RefPtr<TextEditRules> rules(mRules);
+  Element* anonymousDivElement = GetRoot();
+  if (NS_WARN_IF(!anonymousDivElement)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
 
   // If we're empty, don't select all children because that would select the
   // padding <br> element for empty editor.
-  if (rules->DocumentIsEmpty()) {
-    nsresult rv = SelectionRefPtr()->Collapse(rootElement, 0);
-    NS_WARNING_ASSERTION(
-        NS_SUCCEEDED(rv),
-        "Failed to move caret to start of the editor root element");
+  if (IsEmpty()) {
+    nsresult rv = SelectionRefPtr()->Collapse(anonymousDivElement, 0);
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Selection::Collapse() failed");
     return rv;
   }
+
+  // XXX We just need to select all of first text node (if there is).
+  //     Why do we do this kind of complicated things?
 
   // Don't select the trailing BR node if we have one
   nsCOMPtr<nsIContent> childNode;
   nsresult rv = EditorBase::GetEndChildNode(*SelectionRefPtr(),
                                             getter_AddRefs(childNode));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  if (NS_FAILED(rv)) {
+    NS_WARNING("EditorBase::GetEndChildNode() failed");
     return rv;
   }
   if (childNode) {
     childNode = childNode->GetPreviousSibling();
   }
 
-  if (childNode && EditorBase::IsPaddingBRElementForEmptyLastLine(*childNode)) {
+  if (childNode &&
+      EditorUtils::IsPaddingBRElementForEmptyLastLine(*childNode)) {
     ErrorResult error;
     MOZ_KnownLive(SelectionRefPtr())
-        ->SetStartAndEndInLimiter(RawRangeBoundary(rootElement, 0),
+        ->SetStartAndEndInLimiter(RawRangeBoundary(anonymousDivElement, 0u),
                                   EditorRawDOMPoint(childNode), error);
     NS_WARNING_ASSERTION(!error.Failed(),
-                         "Failed to select all children of the editor root "
-                         "element except the padding <br> element");
+                         "Selection::SetStartAndEndInLimiter() failed");
     return error.StealNSResult();
   }
 
   ErrorResult error;
-  SelectionRefPtr()->SelectAllChildren(*rootElement, error);
-  NS_WARNING_ASSERTION(
-      !error.Failed(),
-      "Failed to select all children of the editor root element");
+  SelectionRefPtr()->SelectAllChildren(*anonymousDivElement, error);
+  NS_WARNING_ASSERTION(!error.Failed(),
+                       "Selection::SelectAllChildren() failed");
   return error.StealNSResult();
 }
 
-EventTarget* TextEditor::GetDOMEventTarget() { return mEventTarget; }
+EventTarget* TextEditor::GetDOMEventTarget() const { return mEventTarget; }
 
 nsresult TextEditor::SetAttributeOrEquivalent(Element* aElement,
                                               nsAtom* aAttribute,
@@ -2163,15 +1587,17 @@ nsresult TextEditor::SetAttributeOrEquivalent(Element* aElement,
   }
 
   AutoEditActionDataSetter editActionData(*this, EditAction::eSetAttribute);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  nsresult rv = SetAttributeWithTransaction(*aElement, *aAttribute, aValue);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
-  return NS_OK;
+
+  rv = SetAttributeWithTransaction(*aElement, *aAttribute, aValue);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::SetAttributeWithTransaction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::RemoveAttributeOrEquivalent(Element* aElement,
@@ -2182,15 +1608,17 @@ nsresult TextEditor::RemoveAttributeOrEquivalent(Element* aElement,
   }
 
   AutoEditActionDataSetter editActionData(*this, EditAction::eRemoveAttribute);
-  if (NS_WARN_IF(!editActionData.CanHandle())) {
-    return NS_ERROR_NOT_INITIALIZED;
-  }
-
-  nsresult rv = RemoveAttributeWithTransaction(*aElement, *aAttribute);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  nsresult rv = editActionData.CanHandleAndMaybeDispatchBeforeInputEvent();
+  if (NS_FAILED(rv)) {
+    NS_WARNING_ASSERTION(rv == NS_ERROR_EDITOR_ACTION_CANCELED,
+                         "CanHandleAndMaybeDispatchBeforeInputEvent() failed");
     return EditorBase::ToGenericNSResult(rv);
   }
-  return NS_OK;
+
+  rv = RemoveAttributeWithTransaction(*aElement, *aAttribute);
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "EditorBase::RemoveAttributeWithTransaction() failed");
+  return EditorBase::ToGenericNSResult(rv);
 }
 
 nsresult TextEditor::EnsurePaddingBRElementForEmptyEditor() {
@@ -2209,7 +1637,7 @@ nsresult TextEditor::EnsurePaddingBRElementForEmptyEditor() {
     nsresult rv = MaybeCreatePaddingBRElementForEmptyEditor();
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rv),
-        "Failed to create padding <br> element for empty editor");
+        "EditorBase::MaybeCreatePaddingBRElementForEmptyEditor() failed");
     return rv;
   }
 
@@ -2222,7 +1650,7 @@ nsresult TextEditor::EnsurePaddingBRElementForEmptyEditor() {
     nsresult rv = MaybeCreatePaddingBRElementForEmptyEditor();
     NS_WARNING_ASSERTION(
         NS_SUCCEEDED(rv),
-        "Failed to create padding <br> element for empty editor");
+        "EditorBase::MaybeCreatePaddingBRElementForEmptyEditor() failed");
     return rv;
   }
 
@@ -2233,7 +1661,7 @@ nsresult TextEditor::EnsurePaddingBRElementForEmptyEditor() {
   RefPtr<HTMLBRElement> brElement =
       HTMLBRElement::FromNodeOrNull(mRootElement->GetFirstChild());
   if (!brElement ||
-      !EditorBase::IsPaddingBRElementForEmptyLastLine(*brElement)) {
+      !EditorUtils::IsPaddingBRElementForEmptyLastLine(*brElement)) {
     return NS_OK;
   }
 
@@ -2328,7 +1756,8 @@ nsresult TextEditor::SetUnmaskRangeInternal(uint32_t aStart, uint32_t aLength,
       return NS_ERROR_NOT_INITIALIZED;
     }
     // Notify nsTextFrame of masking range change.
-    if (PresShell* presShell = document->GetObservingPresShell()) {
+    if (RefPtr<PresShell> presShell = document->GetObservingPresShell()) {
+      nsAutoScriptBlocker blockRunningScript;
       uint32_t valueLength = text->Length();
       CharacterDataChangeInfo changeInfo = {false, 0, valueLength, valueLength,
                                             nullptr};
@@ -2337,17 +1766,20 @@ nsresult TextEditor::SetUnmaskRangeInternal(uint32_t aStart, uint32_t aLength,
 
     // Scroll caret into the view since masking or unmasking character may
     // move caret to outside of the view.
-    ScrollSelectionIntoView(false);
-
-    if (NS_WARN_IF(Destroyed())) {
-      return NS_ERROR_EDITOR_DESTROYED;
+    nsresult rv = ScrollSelectionFocusIntoView();
+    if (NS_FAILED(rv)) {
+      NS_WARNING("EditorBase::ScrollSelectionFocusIntoView() failed");
+      return rv;
     }
   }
 
   if (!IsAllMasked() && aTimeout != 0) {
     // Initialize the timer to mask the range automatically.
     MOZ_ASSERT(mMaskTimer);
-    mMaskTimer->InitWithCallback(this, aTimeout, nsITimer::TYPE_ONE_SHOT);
+    DebugOnly<nsresult> rvIgnored =
+        mMaskTimer->InitWithCallback(this, aTimeout, nsITimer::TYPE_ONE_SHOT);
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                         "nsITimer::InitWithCallback() failed, but ignored");
   }
 
   return NS_OK;
@@ -2362,9 +1794,7 @@ char16_t TextEditor::PasswordMask() {
   return ret;
 }
 
-MOZ_CAN_RUN_SCRIPT_BOUNDARY
-NS_IMETHODIMP
-TextEditor::Notify(nsITimer* aTimer) {
+MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHODIMP TextEditor::Notify(nsITimer* aTimer) {
   // Check whether our text editor's password flag was changed before this
   // "hide password character" timer actually fires.
   if (!IsPasswordEditor()) {
@@ -2382,22 +1812,25 @@ TextEditor::Notify(nsITimer* aTimer) {
 
   // Mask all characters.
   nsresult rv = MaskAllCharactersAndNotify();
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Failed to mask all characters");
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::MaskAllCharactersAndNotify() failed");
 
   if (StaticPrefs::editor_password_testing_mask_delay()) {
     if (RefPtr<Element> target = GetInputEventTargetElement()) {
       RefPtr<Document> document = target->OwnerDoc();
-      nsContentUtils::DispatchTrustedEvent(
-          document, target, NS_LITERAL_STRING("MozLastInputMasked"),
-          CanBubble::eYes, Cancelable::eNo);
+      DebugOnly<nsresult> rvIgnored = nsContentUtils::DispatchTrustedEvent(
+          document, target, u"MozLastInputMasked"_ns, CanBubble::eYes,
+          Cancelable::eNo);
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                           "nsContentUtils::DispatchTrustedEvent("
+                           "MozLastInputMasked) failed, but ignored");
     }
   }
 
   return EditorBase::ToGenericNSResult(rv);
 }
 
-NS_IMETHODIMP
-TextEditor::GetName(nsACString& aName) {
+NS_IMETHODIMP TextEditor::GetName(nsACString& aName) {
   aName.AssignLiteral("TextEditor");
   return NS_OK;
 }
@@ -2417,7 +1850,8 @@ void TextEditor::WillDeleteText(uint32_t aCurrentLength,
   // If we need to mask automatically, mask all now.
   if (mIsMaskingPassword) {
     DebugOnly<nsresult> rvIgnored = MaskAllCharacters();
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "MaskAllCharacters() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                         "TextEditor::MaskAllCharacters() failed, but ignored");
     return;
   }
 
@@ -2426,7 +1860,8 @@ void TextEditor::WillDeleteText(uint32_t aCurrentLength,
     if (aRemoveStartOffset + aRemoveLength <= mUnmaskedStart) {
       DebugOnly<nsresult> rvIgnored =
           SetUnmaskRange(mUnmaskedStart - aRemoveLength, mUnmaskedLength);
-      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "SetUnmaskRange() failed");
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                           "TextEditor::SetUnmaskRange() failed, but ignored");
       return;
     }
 
@@ -2437,14 +1872,16 @@ void TextEditor::WillDeleteText(uint32_t aCurrentLength,
           aRemoveStartOffset + aRemoveLength - mUnmaskedStart;
       DebugOnly<nsresult> rvIgnored = SetUnmaskRange(
           aRemoveStartOffset, mUnmaskedLength - unmaskedLengthInRemovingRange);
-      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "SetUnmaskRange() failed");
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                           "TextEditor::SetUnmaskRange() failed, but ignored");
       return;
     }
 
     // If removing range includes all unmasked range, collapse it to the
     // remove offset.
     DebugOnly<nsresult> rvIgnored = SetUnmaskRange(aRemoveStartOffset, 0);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "SetUnmaskRange() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                         "TextEditor::SetUnmaskRange() failed, but ignored");
     return;
   }
 
@@ -2453,7 +1890,8 @@ void TextEditor::WillDeleteText(uint32_t aCurrentLength,
     if (aRemoveStartOffset + aRemoveLength <= UnmaskedEnd()) {
       DebugOnly<nsresult> rvIgnored =
           SetUnmaskRange(mUnmaskedStart, mUnmaskedLength - aRemoveLength);
-      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "SetUnmaskRange() failed");
+      NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                           "TextEditor::SetUnmaskRange() failed, but ignored");
       return;
     }
 
@@ -2461,7 +1899,8 @@ void TextEditor::WillDeleteText(uint32_t aCurrentLength,
     // shrink it.
     DebugOnly<nsresult> rvIgnored =
         SetUnmaskRange(mUnmaskedStart, aRemoveStartOffset - mUnmaskedStart);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored), "SetUnmaskRange() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
+                         "TextEditor::SetUnmaskRange() failed, but ignored");
     return;
   }
 
@@ -2480,7 +1919,8 @@ nsresult TextEditor::DidInsertText(uint32_t aNewLength,
   if (mIsMaskingPassword) {
     // If we need to mask password, mask all right now.
     nsresult rv = MaskAllCharactersAndNotify();
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "MaskAllCharacters() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "TextEditor::MaskAllCharacters() failed");
     return rv;
   }
 
@@ -2489,7 +1929,8 @@ nsresult TextEditor::DidInsertText(uint32_t aNewLength,
     // to include the new text.
     nsresult rv = SetUnmaskRangeAndNotify(
         aInsertedOffset, UnmaskedEnd() + aInsertedLength - aInsertedOffset);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "SetUnmaskRange() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "TextEditor::SetUnmaskRangeAndNotify() failed");
     return rv;
   }
 
@@ -2497,7 +1938,8 @@ nsresult TextEditor::DidInsertText(uint32_t aNewLength,
     // If insertion point is in unmasked range, unmask new text.
     nsresult rv = SetUnmaskRangeAndNotify(mUnmaskedStart,
                                           mUnmaskedLength + aInsertedLength);
-    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "SetUnmaskRange() failed");
+    NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                         "TextEditor::SetUnmaskRangeAndNotify() failed");
     return rv;
   }
 
@@ -2505,7 +1947,8 @@ nsresult TextEditor::DidInsertText(uint32_t aNewLength,
   // include the new text.
   nsresult rv = SetUnmaskRangeAndNotify(
       mUnmaskedStart, aInsertedOffset + aInsertedLength - mUnmaskedStart);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "SetUnmaskRange() failed");
+  NS_WARNING_ASSERTION(NS_SUCCEEDED(rv),
+                       "TextEditor::SetUnmaskRangeAndNotify() failed");
   return rv;
 }
 

@@ -50,6 +50,7 @@ PartitionedStorageHelper.runTest(
 
 PartitionedStorageHelper.runPartitioningTest(
   "Partitioned tabs - IndexedDB",
+  "indexeddb",
 
   // getDataCallback
   async win => {
@@ -83,7 +84,7 @@ PartitionedStorageHelper.runPartitioningTest(
         db
           .transaction("foobar", "readwrite")
           .objectStore("foobar")
-          .add({ id: 1, value }).onsuccess = _ => {
+          .put({ id: 1, value }).onsuccess = _ => {
           resolve(true);
         };
       };

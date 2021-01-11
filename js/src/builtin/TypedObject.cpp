@@ -9,7 +9,7 @@
 #include "mozilla/Casting.h"
 #include "mozilla/CheckedInt.h"
 
-#include "jsutil.h"
+#include <algorithm>
 
 #include "gc/Marking.h"
 #include "js/CharacterEncoding.h"
@@ -19,6 +19,7 @@
 #include "vm/GlobalObject.h"
 #include "vm/JSFunction.h"
 #include "vm/JSObject.h"
+#include "vm/PlainObject.h"  // js::PlainObject
 #include "vm/Realm.h"
 #include "vm/SelfHosting.h"
 #include "vm/StringType.h"
@@ -40,8 +41,10 @@ using mozilla::PointerRangeSize;
 using namespace js;
 
 const JSClass js::TypedObjectModuleObject::class_ = {
-    "TypedObject", JSCLASS_HAS_RESERVED_SLOTS(SlotCount) |
-                       JSCLASS_HAS_CACHED_PROTO(JSProto_TypedObject)};
+    "TypedObject",
+    JSCLASS_HAS_RESERVED_SLOTS(SlotCount) |
+        JSCLASS_HAS_CACHED_PROTO(JSProto_TypedObject),
+    JS_NULL_CLASS_OPS, &classSpec_};
 
 static const JSFunctionSpec TypedObjectMethods[] = {
     JS_SELF_HOSTED_FN("objectType", "TypeOfTypedObject", 1, 0), JS_FS_END};
@@ -205,14 +208,19 @@ const JSClass js::TypedProto::class_ = {
  * distinguish which scalar type object this actually is.
  */
 
-static const JSClassOps ScalarTypeDescrClassOps = {nullptr, /* addProperty */
-                                                   nullptr, /* delProperty */
-                                                   nullptr, /* enumerate */
-                                                   nullptr, /* newEnumerate */
-                                                   nullptr, /* resolve */
-                                                   nullptr, /* mayResolve */
-                                                   TypeDescr::finalize,
-                                                   ScalarTypeDescr::call};
+static const JSClassOps ScalarTypeDescrClassOps = {
+    nullptr,                // addProperty
+    nullptr,                // delProperty
+    nullptr,                // enumerate
+    nullptr,                // newEnumerate
+    nullptr,                // resolve
+    nullptr,                // mayResolve
+    TypeDescr::finalize,    // finalize
+    ScalarTypeDescr::call,  // call
+    nullptr,                // hasInstance
+    nullptr,                // construct
+    nullptr,                // trace
+};
 
 const JSClass js::ScalarTypeDescr::class_ = {
     "Scalar",
@@ -240,6 +248,7 @@ uint32_t ScalarTypeDescr::alignment(Type t) {
     JS_FOR_EACH_SCALAR_TYPE_REPR(NUMERIC_TYPE_TO_STRING)
 #undef NUMERIC_TYPE_TO_STRING
     case Scalar::Int64:
+    case Scalar::Simd128:
     case Scalar::MaxTypedArrayViewType:
       break;
   }
@@ -288,6 +297,7 @@ bool ScalarTypeDescr::call(JSContext* cx, unsigned argc, Value* vp) {
     JS_FOR_EACH_SCALAR_BIGINT_TYPE_REPR(BIGINT_CALL)
 #undef BIGINT_CALL
     case Scalar::Int64:
+    case Scalar::Simd128:
     case Scalar::MaxTypedArrayViewType:
       MOZ_CRASH();
   }
@@ -359,14 +369,18 @@ TypeDescr* GlobalObject::getOrCreateReferenceTypeDescr(
  */
 
 static const JSClassOps ReferenceTypeDescrClassOps = {
-    nullptr, /* addProperty */
-    nullptr, /* delProperty */
-    nullptr, /* enumerate */
-    nullptr, /* newEnumerate */
-    nullptr, /* resolve */
-    nullptr, /* mayResolve */
-    TypeDescr::finalize,
-    ReferenceTypeDescr::call};
+    nullptr,                   // addProperty
+    nullptr,                   // delProperty
+    nullptr,                   // enumerate
+    nullptr,                   // newEnumerate
+    nullptr,                   // resolve
+    nullptr,                   // mayResolve
+    TypeDescr::finalize,       // finalize
+    ReferenceTypeDescr::call,  // call
+    nullptr,                   // hasInstance
+    nullptr,                   // construct
+    nullptr,                   // trace
+};
 
 const JSClass js::ReferenceTypeDescr::class_ = {
     "Reference",
@@ -495,20 +509,23 @@ static TypedProto* CreatePrototypeObjectForComplexTypeInstance(
     return nullptr;
   }
 
-  return NewObjectWithGivenProto<TypedProto>(cx, ctorPrototypePrototype,
-                                             SingletonObject);
+  return NewSingletonObjectWithGivenProto<TypedProto>(cx,
+                                                      ctorPrototypePrototype);
 }
 
-static const JSClassOps ArrayTypeDescrClassOps = {nullptr, /* addProperty */
-                                                  nullptr, /* delProperty */
-                                                  nullptr, /* enumerate */
-                                                  nullptr, /* newEnumerate */
-                                                  nullptr, /* resolve */
-                                                  nullptr, /* mayResolve */
-                                                  TypeDescr::finalize,
-                                                  nullptr, /* call */
-                                                  nullptr, /* hasInstance */
-                                                  TypedObject::construct};
+static const JSClassOps ArrayTypeDescrClassOps = {
+    nullptr,                 // addProperty
+    nullptr,                 // delProperty
+    nullptr,                 // enumerate
+    nullptr,                 // newEnumerate
+    nullptr,                 // resolve
+    nullptr,                 // mayResolve
+    TypeDescr::finalize,     // finalize
+    nullptr,                 // call
+    nullptr,                 // hasInstance
+    TypedObject::construct,  // construct
+    nullptr,                 // trace
+};
 
 const JSClass ArrayTypeDescr::class_ = {
     "ArrayType",
@@ -590,8 +607,8 @@ ArrayTypeDescr* ArrayMetaTypeDescr::create(JSContext* cx,
                                            int32_t length) {
   MOZ_ASSERT(arrayTypePrototype);
   Rooted<ArrayTypeDescr*> obj(cx);
-  obj = NewObjectWithGivenProto<ArrayTypeDescr>(cx, arrayTypePrototype,
-                                                SingletonObject);
+  obj =
+      NewSingletonObjectWithGivenProto<ArrayTypeDescr>(cx, arrayTypePrototype);
   if (!obj) {
     return nullptr;
   }
@@ -736,28 +753,23 @@ bool ArrayMetaTypeDescr::construct(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-bool js::IsTypedObjectArray(JSObject& obj) {
-  if (!obj.is<TypedObject>()) {
-    return false;
-  }
-  TypeDescr& d = obj.as<TypedObject>().typeDescr();
-  return d.is<ArrayTypeDescr>();
-}
-
 /*********************************
  * StructType class
  */
 
-static const JSClassOps StructTypeDescrClassOps = {nullptr, /* addProperty */
-                                                   nullptr, /* delProperty */
-                                                   nullptr, /* enumerate */
-                                                   nullptr, /* newEnumerate */
-                                                   nullptr, /* resolve */
-                                                   nullptr, /* mayResolve */
-                                                   TypeDescr::finalize,
-                                                   StructTypeDescr::call,
-                                                   nullptr, /* hasInstance */
-                                                   TypedObject::construct};
+static const JSClassOps StructTypeDescrClassOps = {
+    nullptr,                 // addProperty
+    nullptr,                 // delProperty
+    nullptr,                 // enumerate
+    nullptr,                 // newEnumerate
+    nullptr,                 // resolve
+    nullptr,                 // mayResolve
+    TypeDescr::finalize,     // finalize
+    StructTypeDescr::call,   // call
+    nullptr,                 // hasInstance
+    TypedObject::construct,  // construct
+    nullptr,                 // trace
+};
 
 const JSClass StructTypeDescr::class_ = {
     "StructType",
@@ -783,7 +795,7 @@ const JSFunctionSpec StructMetaTypeDescr::typedObjectMethods[] = {JS_FS_END};
 CheckedInt32 StructMetaTypeDescr::Layout::addField(int32_t fieldAlignment,
                                                    int32_t fieldSize) {
   // Alignment of the struct is the max of the alignment of its fields.
-  structAlignment = js::Max(structAlignment, fieldAlignment);
+  structAlignment = std::max(structAlignment, fieldAlignment);
 
   // Align the pointer.
   CheckedInt32 offset = RoundUpToAlignment(sizeSoFar, fieldAlignment);
@@ -901,12 +913,12 @@ StructTypeDescr* StructMetaTypeDescr::createFromArrays(
   RootedObject userFieldTypes(cx);     // User-exposed {f:descr} object.
   Layout layout;                       // Field offsetter
 
-  userFieldOffsets = NewBuiltinClassInstance<PlainObject>(cx, TenuredObject);
+  userFieldOffsets = NewTenuredBuiltinClassInstance<PlainObject>(cx);
   if (!userFieldOffsets) {
     return nullptr;
   }
 
-  userFieldTypes = NewBuiltinClassInstance<PlainObject>(cx, TenuredObject);
+  userFieldTypes = NewTenuredBuiltinClassInstance<PlainObject>(cx);
   if (!userFieldTypes) {
     return nullptr;
   }
@@ -949,10 +961,16 @@ StructTypeDescr* StructMetaTypeDescr::createFromArrays(
       return nullptr;
     }
 
-    CheckedInt32 offset = layout.addField(
-        fieldProps[i].alignAsInt64 ? ScalarTypeDescr::alignment(Scalar::Int64)
-                                   : fieldType->alignment(),
-        fieldType->size());
+    CheckedInt32 offset;
+    if (fieldProps[i].alignAsInt64) {
+      offset = layout.addField(ScalarTypeDescr::alignment(Scalar::Int64),
+                               fieldType->size());
+    } else if (fieldProps[i].alignAsV128) {
+      offset = layout.addField(ScalarTypeDescr::alignment(Scalar::Simd128),
+                               fieldType->size());
+    } else {
+      offset = layout.addField(fieldType->alignment(), fieldType->size());
+    }
     if (!offset.isValid()) {
       JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                                 JSMSG_TYPEDOBJECT_TOO_BIG);
@@ -995,8 +1013,8 @@ StructTypeDescr* StructMetaTypeDescr::createFromArrays(
   // Now create the resulting type descriptor.
 
   Rooted<StructTypeDescr*> descr(cx);
-  descr = NewObjectWithGivenProto<StructTypeDescr>(cx, structTypePrototype,
-                                                   SingletonObject);
+  descr = NewSingletonObjectWithGivenProto<StructTypeDescr>(
+      cx, structTypePrototype);
   if (!descr) {
     return nullptr;
   }
@@ -1249,8 +1267,7 @@ static bool DefineSimpleTypeDescr(JSContext* cx, Handle<GlobalObject*> global,
     return false;
   }
 
-  Rooted<T*> descr(cx);
-  descr = NewObjectWithGivenProto<T>(cx, funcProto, SingletonObject);
+  Rooted<T*> descr(cx, NewSingletonObjectWithGivenProto<T>(cx, funcProto));
   if (!descr) {
     return false;
   }
@@ -1276,7 +1293,7 @@ static bool DefineSimpleTypeDescr(JSContext* cx, Handle<GlobalObject*> global,
   // Create the typed prototype for the scalar type. This winds up
   // not being user accessible, but we still create one for consistency.
   Rooted<TypedProto*> proto(cx);
-  proto = NewObjectWithGivenProto<TypedProto>(cx, objProto, TenuredObject);
+  proto = NewTenuredObjectWithGivenProto<TypedProto>(cx, objProto);
   if (!proto) {
     return false;
   }
@@ -1319,7 +1336,7 @@ static JSObject* DefineMetaTypeDescr(JSContext* cx, const char* name,
   // Create ctor.prototype, which inherits from Function.__proto__
 
   RootedObject proto(
-      cx, NewObjectWithGivenProto<PlainObject>(cx, funcProto, SingletonObject));
+      cx, NewSingletonObjectWithGivenProto<PlainObject>(cx, funcProto));
   if (!proto) {
     return nullptr;
   }
@@ -1332,8 +1349,7 @@ static JSObject* DefineMetaTypeDescr(JSContext* cx, const char* name,
     return nullptr;
   }
   RootedObject protoProto(cx);
-  protoProto =
-      NewObjectWithGivenProto<PlainObject>(cx, objProto, SingletonObject);
+  protoProto = NewSingletonObjectWithGivenProto<PlainObject>(cx, objProto);
   if (!protoProto) {
     return nullptr;
   }
@@ -1363,31 +1379,28 @@ static JSObject* DefineMetaTypeDescr(JSContext* cx, const char* name,
   return ctor;
 }
 
+static JSObject* CreateTypedObjectModuleObject(JSContext* cx, JSProtoKey key) {
+  Handle<GlobalObject*> global = cx->global();
+  RootedObject objProto(cx,
+                        GlobalObject::getOrCreateObjectPrototype(cx, global));
+  if (!objProto) {
+    return nullptr;
+  }
+
+  return NewSingletonObjectWithGivenProto<TypedObjectModuleObject>(cx,
+                                                                   objProto);
+}
+
 /*  The initialization strategy for TypedObjects is mildly unusual
  * compared to other classes. Because all of the types are members
  * of a single global, `TypedObject`, we basically make the
  * initializer for the `TypedObject` class populate the
  * `TypedObject` global (which is referred to as "module" herein).
  */
-/* static */
-bool GlobalObject::initTypedObjectModule(JSContext* cx,
-                                         Handle<GlobalObject*> global) {
-  RootedObject objProto(cx,
-                        GlobalObject::getOrCreateObjectPrototype(cx, global));
-  if (!objProto) {
-    return false;
-  }
-
-  Rooted<TypedObjectModuleObject*> module(cx);
-  module = NewObjectWithGivenProto<TypedObjectModuleObject>(cx, objProto,
-                                                            SingletonObject);
-  if (!module) {
-    return false;
-  }
-
-  if (!JS_DefineFunctions(cx, module, TypedObjectMethods)) {
-    return false;
-  }
+static bool TypedObjectModuleObjectClassFinish(JSContext* cx, HandleObject ctor,
+                                               HandleObject proto) {
+  Handle<TypedObjectModuleObject*> module = ctor.as<TypedObjectModuleObject>();
+  Handle<GlobalObject*> global = cx->global();
 
   // uint8, uint16, any, etc
 
@@ -1475,22 +1488,17 @@ bool GlobalObject::initTypedObjectModule(JSContext* cx,
     return false;
   }
 
-  // Everything is setup, install module on the global object:
-  RootedValue moduleValue(cx, ObjectValue(*module));
-  if (!DefineDataProperty(cx, global, cx->names().TypedObject, moduleValue,
-                          JSPROP_RESOLVING)) {
-    return false;
-  }
-
-  global->setConstructor(JSProto_TypedObject, moduleValue);
-
-  return module;
+  return true;
 }
 
-JSObject* js::InitTypedObjectModuleObject(JSContext* cx,
-                                          Handle<GlobalObject*> global) {
-  return GlobalObject::getOrCreateTypedObjectModule(cx, global);
-}
+const ClassSpec TypedObjectModuleObject::classSpec_ = {
+    CreateTypedObjectModuleObject,
+    nullptr,
+    TypedObjectMethods,
+    nullptr,
+    nullptr,
+    nullptr,
+    TypedObjectModuleObjectClassFinish};
 
 /******************************************************************************
  * Typed objects
@@ -1508,8 +1516,6 @@ uint32_t TypedObject::length() const {
 }
 
 uint8_t* TypedObject::typedMem() const {
-  MOZ_ASSERT(isAttached());
-
   if (is<InlineTypedObject>()) {
     return as<InlineTypedObject>().inlineTypedMem();
   }
@@ -1517,7 +1523,6 @@ uint8_t* TypedObject::typedMem() const {
 }
 
 uint8_t* TypedObject::typedMemBase() const {
-  MOZ_ASSERT(isAttached());
   MOZ_ASSERT(is<OutlineTypedObject>());
 
   JSObject& owner = as<OutlineTypedObject>().owner();
@@ -1525,39 +1530,6 @@ uint8_t* TypedObject::typedMemBase() const {
     return owner.as<ArrayBufferObject>().dataPointer();
   }
   return owner.as<InlineTypedObject>().inlineTypedMem();
-}
-
-bool TypedObject::isAttached() const {
-  if (is<InlineTransparentTypedObject>()) {
-    ObjectWeakMap* table = ObjectRealm::get(this).lazyArrayBuffers.get();
-    if (table) {
-      JSObject* buffer = table->lookup(this);
-      if (buffer) {
-        return !buffer->as<ArrayBufferObject>().isDetached();
-      }
-    }
-    return true;
-  }
-  if (is<InlineOpaqueTypedObject>()) {
-    return true;
-  }
-  if (!as<OutlineTypedObject>().outOfLineTypedMem()) {
-    return false;
-  }
-  JSObject& owner = as<OutlineTypedObject>().owner();
-  if (owner.is<ArrayBufferObject>() &&
-      owner.as<ArrayBufferObject>().isDetached()) {
-    return false;
-  }
-  return true;
-}
-
-/* static */
-bool TypedObject::GetByteOffset(JSContext* cx, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  args.rval().setInt32(
-      AssertedCast<int32_t>(args[0].toObject().as<TypedObject>().offset()));
-  return true;
 }
 
 /******************************************************************************
@@ -1568,13 +1540,10 @@ bool TypedObject::GetByteOffset(JSContext* cx, unsigned argc, Value* vp) {
 OutlineTypedObject* OutlineTypedObject::createUnattached(JSContext* cx,
                                                          HandleTypeDescr descr,
                                                          gc::InitialHeap heap) {
-  if (descr->opaque()) {
-    return createUnattachedWithClass(cx, &OutlineOpaqueTypedObject::class_,
-                                     descr, heap);
-  } else {
-    return createUnattachedWithClass(cx, &OutlineTransparentTypedObject::class_,
-                                     descr, heap);
-  }
+  const JSClass* clasp = descr->opaque()
+                             ? &OutlineOpaqueTypedObject::class_
+                             : &OutlineTransparentTypedObject::class_;
+  return createUnattachedWithClass(cx, clasp, descr, heap);
 }
 
 void OutlineTypedObject::setOwnerAndData(JSObject* owner, uint8_t* data) {
@@ -1631,29 +1600,17 @@ OutlineTypedObject* OutlineTypedObject::createUnattachedWithClass(
   return obj;
 }
 
-void OutlineTypedObject::attach(JSContext* cx, ArrayBufferObject& buffer,
-                                uint32_t offset) {
-  MOZ_ASSERT(!isAttached());
+void OutlineTypedObject::attach(ArrayBufferObject& buffer, uint32_t offset) {
   MOZ_ASSERT(offset <= buffer.byteLength());
   MOZ_ASSERT(size() <= buffer.byteLength() - offset);
-
-  buffer.setHasTypedObjectViews();
-
-  {
-    AutoEnterOOMUnsafeRegion oomUnsafe;
-    if (!buffer.addView(cx, this)) {
-      oomUnsafe.crash("TypedObject::attach");
-    }
-  }
+  MOZ_ASSERT(buffer.hasTypedObjectViews());
+  MOZ_ASSERT(!buffer.isDetached());
 
   setOwnerAndData(&buffer, buffer.dataPointer() + offset);
 }
 
 void OutlineTypedObject::attach(JSContext* cx, TypedObject& typedObj,
                                 uint32_t offset) {
-  MOZ_ASSERT(!isAttached());
-  MOZ_ASSERT(typedObj.isAttached());
-
   JSObject* owner = &typedObj;
   if (typedObj.is<OutlineTypedObject>()) {
     owner = &typedObj.as<OutlineTypedObject>().owner();
@@ -1662,13 +1619,36 @@ void OutlineTypedObject::attach(JSContext* cx, TypedObject& typedObj,
   }
 
   if (owner->is<ArrayBufferObject>()) {
-    attach(cx, owner->as<ArrayBufferObject>(), offset);
+    attach(owner->as<ArrayBufferObject>(), offset);
   } else {
     MOZ_ASSERT(owner->is<InlineTypedObject>());
     JS::AutoCheckCannotGC nogc(cx);
     setOwnerAndData(
         owner, owner->as<InlineTypedObject>().inlineTypedMem(nogc) + offset);
   }
+}
+
+/*static*/
+OutlineTypedObject* OutlineTypedObject::createZeroed(JSContext* cx,
+                                                     HandleTypeDescr descr,
+                                                     gc::InitialHeap heap) {
+  // Create unattached wrapper object.
+  Rooted<OutlineTypedObject*> obj(
+      cx, OutlineTypedObject::createUnattached(cx, descr, heap));
+  if (!obj) {
+    return nullptr;
+  }
+
+  // Allocate and initialize the memory for this instance.
+  size_t totalSize = descr->size();
+  Rooted<ArrayBufferObject*> buffer(cx);
+  buffer = ArrayBufferObject::createForTypedObject(cx, totalSize);
+  if (!buffer) {
+    return nullptr;
+  }
+  descr->initInstance(cx->runtime(), buffer->dataPointer());
+  obj->attach(*buffer, 0);
+  return obj;
 }
 
 /*static*/
@@ -1692,6 +1672,21 @@ OutlineTypedObject* OutlineTypedObject::createDerived(
 }
 
 /*static*/
+OutlineTypedObject* OutlineTypedObject::createOpaque(JSContext* cx,
+                                                     HandleTypeDescr descr,
+                                                     HandleTypedObject target,
+                                                     uint32_t offset) {
+  Rooted<OutlineTypedObject*> obj(cx);
+  obj = createUnattachedWithClass(cx, &OutlineOpaqueTypedObject::class_, descr);
+  if (!obj) {
+    return nullptr;
+  }
+
+  obj->attach(cx, *target, offset);
+  return obj;
+}
+
+/*static*/
 TypedObject* TypedObject::createZeroed(JSContext* cx, HandleTypeDescr descr,
                                        gc::InitialHeap heap) {
   // If possible, create an object with inline data.
@@ -1703,27 +1698,11 @@ TypedObject* TypedObject::createZeroed(JSContext* cx, HandleTypeDescr descr,
       return nullptr;
     }
     JS::AutoCheckCannotGC nogc(cx);
-    descr->initInstances(cx->runtime(), obj->inlineTypedMem(nogc), 1);
+    descr->initInstance(cx->runtime(), obj->inlineTypedMem(nogc));
     return obj;
   }
 
-  // Create unattached wrapper object.
-  Rooted<OutlineTypedObject*> obj(
-      cx, OutlineTypedObject::createUnattached(cx, descr, heap));
-  if (!obj) {
-    return nullptr;
-  }
-
-  // Allocate and initialize the memory for this instance.
-  size_t totalSize = descr->size();
-  Rooted<ArrayBufferObject*> buffer(cx);
-  buffer = ArrayBufferObject::createZeroed(cx, totalSize);
-  if (!buffer) {
-    return nullptr;
-  }
-  descr->initInstances(cx->runtime(), buffer->dataPointer(), 1);
-  obj->attach(cx, *buffer, 0);
-  return obj;
+  return OutlineTypedObject::createZeroed(cx, descr, heap);
 }
 
 /* static */
@@ -1733,8 +1712,10 @@ void OutlineTypedObject::obj_trace(JSTracer* trc, JSObject* object) {
   TraceEdge(trc, typedObj.shapePtr(), "OutlineTypedObject_shape");
 
   if (!typedObj.owner_) {
+    MOZ_ASSERT(!typedObj.data_);
     return;
   }
+  MOZ_ASSERT(typedObj.data_);
 
   TypeDescr& descr = typedObj.typeDescr();
 
@@ -1761,11 +1742,11 @@ void OutlineTypedObject::obj_trace(JSTracer* trc, JSObject* object) {
     }
   }
 
-  if (!descr.opaque() || !typedObj.isAttached()) {
+  if (!descr.opaque()) {
     return;
   }
 
-  descr.traceInstances(trc, newData, 1);
+  descr.traceInstance(trc, newData);
 }
 
 bool TypeDescr::hasProperty(const JSAtomState& names, jsid id) {
@@ -1883,12 +1864,6 @@ bool TypedObject::obj_getProperty(JSContext* cx, HandleObject obj,
 
     case type::Array:
       if (JSID_IS_ATOM(id, cx->names().length)) {
-        if (!typedObj->isAttached()) {
-          JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                                    JSMSG_TYPEDOBJECT_HANDLE_UNATTACHED);
-          return false;
-        }
-
         vp.setInt32(typedObj->length());
         return true;
       }
@@ -2040,12 +2015,6 @@ bool TypedObject::obj_getOwnPropertyDescriptor(
     JSContext* cx, HandleObject obj, HandleId id,
     MutableHandle<PropertyDescriptor> desc) {
   Rooted<TypedObject*> typedObj(cx, &obj->as<TypedObject>());
-  if (!typedObj->isAttached()) {
-    JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
-                              JSMSG_TYPEDOBJECT_HANDLE_UNATTACHED);
-    return false;
-  }
-
   Rooted<TypeDescr*> descr(cx, &typedObj->typeDescr());
   switch (descr->kind()) {
     case type::Scalar:
@@ -2176,10 +2145,6 @@ bool TypedObject::obj_newEnumerate(JSContext* cx, HandleObject obj,
   return true;
 }
 
-void OutlineTypedObject::notifyBufferDetached(void* newData) {
-  setData(reinterpret_cast<uint8_t*>(newData));
-}
-
 /******************************************************************************
  * Inline typed objects
  */
@@ -2236,7 +2201,7 @@ void InlineTypedObject::obj_trace(JSTracer* trc, JSObject* object) {
     return;
   }
 
-  typedObj.typeDescr().traceInstances(trc, typedObj.inlineTypedMem(), 1);
+  typedObj.typeDescr().traceInstance(trc, typedObj.inlineTypedMem());
 }
 
 /* static */
@@ -2269,15 +2234,15 @@ size_t InlineTypedObject::obj_moved(JSObject* dst, JSObject* src) {
  */
 
 const ObjectOps TypedObject::objectOps_ = {
-    TypedObject::obj_lookupProperty,
-    TypedObject::obj_defineProperty,
-    TypedObject::obj_hasProperty,
-    TypedObject::obj_getProperty,
-    TypedObject::obj_setProperty,
-    TypedObject::obj_getOwnPropertyDescriptor,
-    TypedObject::obj_deleteProperty,
-    nullptr, /* getElements */
-    nullptr, /* thisValue */
+    TypedObject::obj_lookupProperty,            // lookupProperty
+    TypedObject::obj_defineProperty,            // defineProperty
+    TypedObject::obj_hasProperty,               // hasProperty
+    TypedObject::obj_getProperty,               // getProperty
+    TypedObject::obj_setProperty,               // setProperty
+    TypedObject::obj_getOwnPropertyDescriptor,  // getOwnPropertyDescriptor
+    TypedObject::obj_deleteProperty,            // deleteProperty
+    nullptr,                                    // getElements
+    nullptr,                                    // funToString
 };
 
 #define DEFINE_TYPEDOBJ_CLASS(Name, Trace, Moved)                            \
@@ -2388,7 +2353,7 @@ bool TypedObject::construct(JSContext* cx, unsigned int argc, Value* vp) {
   MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
   cx->realm()->setObjectPendingMetadata(cx, tobj);
 
-  js::gc::gcTracer.traceCreateObject(tobj);
+  js::gc::gcprobes::CreateObject(tobj);
 
   return tobj;
 }
@@ -2399,16 +2364,19 @@ bool TypedObject::construct(JSContext* cx, unsigned int argc, Value* vp) {
 
 bool js::NewOpaqueTypedObject(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 1);
+  MOZ_ASSERT(args.length() == 3);
   MOZ_ASSERT(args[0].isObject() && args[0].toObject().is<TypeDescr>());
+  MOZ_RELEASE_ASSERT(args[2].isInt32());
 
   Rooted<TypeDescr*> descr(cx, &args[0].toObject().as<TypeDescr>());
-  Rooted<OutlineTypedObject*> obj(cx);
-  obj = OutlineTypedObject::createUnattachedWithClass(
-      cx, &OutlineOpaqueTypedObject::class_, descr);
+  Rooted<TypedObject*> target(cx, &args[1].toObject().as<TypedObject>());
+  uint32_t offset = AssertedCast<uint32_t>(args[2].toInt32());
+
+  auto* obj = OutlineTypedObject::createOpaque(cx, descr, target, offset);
   if (!obj) {
     return false;
   }
+
   args.rval().setObject(*obj);
   return true;
 }
@@ -2434,36 +2402,6 @@ bool js::NewDerivedTypedObject(JSContext* cx, unsigned argc, Value* vp) {
   return true;
 }
 
-bool js::AttachTypedObject(JSContext* cx, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 3);
-  MOZ_RELEASE_ASSERT(args[2].isInt32());
-
-  OutlineTypedObject& handle = args[0].toObject().as<OutlineTypedObject>();
-  TypedObject& target = args[1].toObject().as<TypedObject>();
-  MOZ_ASSERT(!handle.isAttached());
-  uint32_t offset = AssertedCast<uint32_t>(args[2].toInt32());
-
-  handle.attach(cx, target, offset);
-
-  return true;
-}
-
-bool js::SetTypedObjectOffset(JSContext*, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 2);
-  MOZ_ASSERT(args[0].isObject() && args[0].toObject().is<TypedObject>());
-  MOZ_RELEASE_ASSERT(args[1].isInt32());
-
-  OutlineTypedObject& typedObj = args[0].toObject().as<OutlineTypedObject>();
-  int32_t offset = args[1].toInt32();
-
-  MOZ_ASSERT(typedObj.isAttached());
-  typedObj.resetOffset(offset);
-  args.rval().setUndefined();
-  return true;
-}
-
 bool js::ObjectIsTypeDescr(JSContext*, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
   MOZ_ASSERT(args.length() == 1);
@@ -2477,24 +2415,6 @@ bool js::ObjectIsTypedObject(JSContext*, unsigned argc, Value* vp) {
   MOZ_ASSERT(args.length() == 1);
   MOZ_ASSERT(args[0].isObject());
   args.rval().setBoolean(args[0].toObject().is<TypedObject>());
-  return true;
-}
-
-bool js::ObjectIsOpaqueTypedObject(JSContext*, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 1);
-  JSObject& obj = args[0].toObject();
-  args.rval().setBoolean(obj.is<TypedObject>() &&
-                         obj.as<TypedObject>().opaque());
-  return true;
-}
-
-bool js::ObjectIsTransparentTypedObject(JSContext*, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  MOZ_ASSERT(args.length() == 1);
-  JSObject& obj = args[0].toObject();
-  args.rval().setBoolean(obj.is<TypedObject>() &&
-                         !obj.as<TypedObject>().opaque());
   return true;
 }
 
@@ -2514,13 +2434,6 @@ bool js::TypeDescrIsArrayType(JSContext*, unsigned argc, Value* vp) {
   MOZ_ASSERT(args[0].toObject().is<js::TypeDescr>());
   JSObject& obj = args[0].toObject();
   args.rval().setBoolean(obj.is<js::ArrayTypeDescr>());
-  return true;
-}
-
-bool js::TypedObjectIsAttached(JSContext* cx, unsigned argc, Value* vp) {
-  CallArgs args = CallArgsFromVp(argc, vp);
-  TypedObject& typedObj = args[0].toObject().as<TypedObject>();
-  args.rval().setBoolean(typedObj.isAttached());
   return true;
 }
 
@@ -2791,7 +2704,8 @@ JS_FOR_EACH_REFERENCE_TYPE_REPR(JS_LOAD_REFERENCE_CLASS_IMPL)
 // Walking memory
 
 template <typename V>
-static void visitReferences(TypeDescr& descr, uint8_t* mem, V& visitor) {
+static void VisitReferences(TypeDescr& descr, uint8_t* base, V& visitor,
+                            size_t offset) {
   if (descr.transparent()) {
     return;
   }
@@ -2801,15 +2715,15 @@ static void visitReferences(TypeDescr& descr, uint8_t* mem, V& visitor) {
       return;
 
     case type::Reference:
-      visitor.visitReference(descr.as<ReferenceTypeDescr>(), mem);
+      visitor.visitReference(descr.as<ReferenceTypeDescr>(), base, offset);
       return;
 
     case type::Array: {
       ArrayTypeDescr& arrayDescr = descr.as<ArrayTypeDescr>();
       TypeDescr& elementDescr = arrayDescr.elementType();
       for (uint32_t i = 0; i < arrayDescr.length(); i++) {
-        visitReferences(elementDescr, mem, visitor);
-        mem += elementDescr.size();
+        VisitReferences(elementDescr, base, visitor, offset);
+        offset += elementDescr.size();
       }
       return;
     }
@@ -2818,8 +2732,8 @@ static void visitReferences(TypeDescr& descr, uint8_t* mem, V& visitor) {
       StructTypeDescr& structDescr = descr.as<StructTypeDescr>();
       for (size_t i = 0; i < structDescr.fieldCount(); i++) {
         TypeDescr& descr = structDescr.fieldDescr(i);
-        size_t offset = structDescr.fieldOffset(i);
-        visitReferences(descr, mem + offset, visitor);
+        VisitReferences(descr, base, visitor,
+                        offset + structDescr.fieldOffset(i));
       }
       return;
     }
@@ -2839,29 +2753,32 @@ class MemoryInitVisitor {
  public:
   explicit MemoryInitVisitor(const JSRuntime* rt) : rt_(rt) {}
 
-  void visitReference(ReferenceTypeDescr& descr, uint8_t* mem);
+  void visitReference(ReferenceTypeDescr& descr, uint8_t* base, size_t offset);
 };
 
 }  // namespace
 
-void MemoryInitVisitor::visitReference(ReferenceTypeDescr& descr,
-                                       uint8_t* mem) {
+void MemoryInitVisitor::visitReference(ReferenceTypeDescr& descr, uint8_t* base,
+                                       size_t offset) {
   switch (descr.type()) {
     case ReferenceType::TYPE_ANY: {
-      js::GCPtrValue* heapValue = reinterpret_cast<js::GCPtrValue*>(mem);
+      js::GCPtrValue* heapValue =
+          reinterpret_cast<js::GCPtrValue*>(base + offset);
       heapValue->init(UndefinedValue());
       return;
     }
 
     case ReferenceType::TYPE_WASM_ANYREF:
     case ReferenceType::TYPE_OBJECT: {
-      js::GCPtrObject* objectPtr = reinterpret_cast<js::GCPtrObject*>(mem);
+      js::GCPtrObject* objectPtr =
+          reinterpret_cast<js::GCPtrObject*>(base + offset);
       objectPtr->init(nullptr);
       return;
     }
 
     case ReferenceType::TYPE_STRING: {
-      js::GCPtrString* stringPtr = reinterpret_cast<js::GCPtrString*>(mem);
+      js::GCPtrString* stringPtr =
+          reinterpret_cast<js::GCPtrString*>(base + offset);
       stringPtr->init(rt_->emptyString);
       return;
     }
@@ -2870,23 +2787,13 @@ void MemoryInitVisitor::visitReference(ReferenceTypeDescr& descr,
   MOZ_CRASH("Invalid kind");
 }
 
-void TypeDescr::initInstances(const JSRuntime* rt, uint8_t* mem,
-                              size_t length) {
-  MOZ_ASSERT(length >= 1);
-
+void TypeDescr::initInstance(const JSRuntime* rt, uint8_t* mem) {
   MemoryInitVisitor visitor(rt);
 
-  // Initialize the 0th instance
+  // Initialize the instance
   memset(mem, 0, size());
   if (opaque()) {
-    visitReferences(*this, mem, visitor);
-  }
-
-  // Stamp out N copies of later instances
-  uint8_t* target = mem;
-  for (size_t i = 1; i < length; i++) {
-    target += size();
-    memcpy(target, mem, size());
+    VisitReferences(*this, mem, visitor, 0);
   }
 }
 
@@ -2901,16 +2808,16 @@ class MemoryTracingVisitor {
  public:
   explicit MemoryTracingVisitor(JSTracer* trace) : trace_(trace) {}
 
-  void visitReference(ReferenceTypeDescr& descr, uint8_t* mem);
+  void visitReference(ReferenceTypeDescr& descr, uint8_t* base, size_t offset);
 };
 
 }  // namespace
 
 void MemoryTracingVisitor::visitReference(ReferenceTypeDescr& descr,
-                                          uint8_t* mem) {
+                                          uint8_t* base, size_t offset) {
   switch (descr.type()) {
     case ReferenceType::TYPE_ANY: {
-      GCPtrValue* heapValue = reinterpret_cast<js::GCPtrValue*>(mem);
+      GCPtrValue* heapValue = reinterpret_cast<js::GCPtrValue*>(base + offset);
       TraceEdge(trace_, heapValue, "reference-val");
       return;
     }
@@ -2919,13 +2826,15 @@ void MemoryTracingVisitor::visitReference(ReferenceTypeDescr& descr,
       // TODO/AnyRef-boxing: With boxed immediates and strings the tracing code
       // will be more complicated.  For now, tracing as an object is fine.
     case ReferenceType::TYPE_OBJECT: {
-      GCPtrObject* objectPtr = reinterpret_cast<js::GCPtrObject*>(mem);
+      GCPtrObject* objectPtr =
+          reinterpret_cast<js::GCPtrObject*>(base + offset);
       TraceNullableEdge(trace_, objectPtr, "reference-obj");
       return;
     }
 
     case ReferenceType::TYPE_STRING: {
-      GCPtrString* stringPtr = reinterpret_cast<js::GCPtrString*>(mem);
+      GCPtrString* stringPtr =
+          reinterpret_cast<js::GCPtrString*>(base + offset);
       TraceNullableEdge(trace_, stringPtr, "reference-str");
       return;
     }
@@ -2934,30 +2843,32 @@ void MemoryTracingVisitor::visitReference(ReferenceTypeDescr& descr,
   MOZ_CRASH("Invalid kind");
 }
 
-void TypeDescr::traceInstances(JSTracer* trace, uint8_t* mem, size_t length) {
+void TypeDescr::traceInstance(JSTracer* trace, uint8_t* mem) {
   MemoryTracingVisitor visitor(trace);
 
-  for (size_t i = 0; i < length; i++) {
-    visitReferences(*this, mem, visitor);
-    mem += size();
-  }
+  VisitReferences(*this, mem, visitor, 0);
 }
 
 namespace {
 
 struct TraceListVisitor {
-  typedef Vector<int32_t, 0, SystemAllocPolicy> VectorType;
-  VectorType stringOffsets, objectOffsets, valueOffsets;
+  using OffsetVector = Vector<uint32_t, 0, SystemAllocPolicy>;
+  OffsetVector stringOffsets;
+  OffsetVector objectOffsets;
+  OffsetVector valueOffsets;
 
-  void visitReference(ReferenceTypeDescr& descr, uint8_t* mem);
+  void visitReference(ReferenceTypeDescr& descr, uint8_t* base, size_t offset);
 
   bool fillList(Vector<uint32_t>& entries);
 };
 
 }  // namespace
 
-void TraceListVisitor::visitReference(ReferenceTypeDescr& descr, uint8_t* mem) {
-  VectorType* offsets;
+void TraceListVisitor::visitReference(ReferenceTypeDescr& descr, uint8_t* base,
+                                      size_t offset) {
+  MOZ_ASSERT(!base);
+
+  OffsetVector* offsets;
   // TODO/AnyRef-boxing: Once a WasmAnyRef is no longer just a JSObject*
   // we must revisit this structure.
   switch (descr.type()) {
@@ -2978,7 +2889,9 @@ void TraceListVisitor::visitReference(ReferenceTypeDescr& descr, uint8_t* mem) {
   }
 
   AutoEnterOOMUnsafeRegion oomUnsafe;
-  if (!offsets->append((uintptr_t)mem)) {
+
+  MOZ_ASSERT(offset <= UINT32_MAX);
+  if (!offsets->append(offset)) {
     oomUnsafe.crash("TraceListVisitor::visitReference");
   }
 }
@@ -3001,7 +2914,7 @@ static bool CreateTraceList(JSContext* cx, HandleTypeDescr descr) {
   }
 
   TraceListVisitor visitor;
-  visitReferences(*descr, nullptr, visitor);
+  VisitReferences(*descr, nullptr, visitor, 0);
 
   Vector<uint32_t> entries(cx);
   if (!visitor.fillList(entries)) {

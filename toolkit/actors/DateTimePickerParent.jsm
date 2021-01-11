@@ -87,10 +87,10 @@ class DateTimePickerParent extends JSWindowActorParent {
       );
     }
 
-    this._anchor.left = rect.left;
-    this._anchor.top = rect.top;
-    this._anchor.width = rect.width;
-    this._anchor.height = rect.height;
+    this._anchor.style.left = rect.left + "px";
+    this._anchor.style.top = rect.top + "px";
+    this._anchor.style.width = rect.width + "px";
+    this._anchor.style.height = rect.height + "px";
     this._anchor.hidden = false;
 
     debug("Opening picker with details: " + JSON.stringify(detail));
@@ -106,11 +106,17 @@ class DateTimePickerParent extends JSWindowActorParent {
       return;
     }
 
-    if (!aBrowser.dateTimePicker) {
+    let panel;
+    if (tabbrowser) {
+      panel = tabbrowser._getAndMaybeCreateDateTimePickerPanel();
+    } else {
+      panel = aBrowser.dateTimePicker;
+    }
+    if (!panel) {
       debug("aBrowser.dateTimePicker not found, exiting now.");
       return;
     }
-    this._picker = new DateTimePickerPanel(aBrowser.dateTimePicker);
+    this._picker = new DateTimePickerPanel(panel);
     // The arrow panel needs an anchor to work. The popupAnchor (this._anchor)
     // is a transparent div that the arrow can point to.
     this._picker.openPicker(type, this._anchor, detail);

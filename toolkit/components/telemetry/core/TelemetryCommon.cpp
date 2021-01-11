@@ -9,16 +9,16 @@
 #include <cstring>
 #include "mozilla/TimeStamp.h"
 #include "mozilla/StaticPrefs_toolkit.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIConsoleService.h"
 #include "nsITelemetry.h"
+#include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsVersionComparator.h"
 #include "TelemetryProcessData.h"
 #include "Telemetry.h"
 
-namespace mozilla {
-namespace Telemetry {
-namespace Common {
+namespace mozilla::Telemetry::Common {
 
 bool IsExpiredVersion(const char* aExpiration) {
   MOZ_ASSERT(aExpiration);
@@ -78,7 +78,9 @@ bool CanRecordInProcess(RecordedProcessType processes, ProcessID processId) {
 }
 
 bool CanRecordProduct(SupportedProduct aProducts) {
-  return !!(aProducts & GetCurrentProduct());
+  return mozilla::StaticPrefs::
+             toolkit_telemetry_testing_overrideProductsCheck() ||
+         !!(aProducts & GetCurrentProduct());
 }
 
 nsresult MsSinceProcessStart(double* aResult) {
@@ -183,16 +185,14 @@ SupportedProduct GetCurrentProduct() {
 #if defined(MOZ_WIDGET_ANDROID)
   if (mozilla::StaticPrefs::toolkit_telemetry_geckoview_streaming()) {
     return SupportedProduct::GeckoviewStreaming;
-  } else if (mozilla::StaticPrefs::toolkit_telemetry_isGeckoViewMode()) {
-    return SupportedProduct::Geckoview;
   } else {
     return SupportedProduct::Fennec;
   }
+#elif defined(MOZ_THUNDERBIRD)
+  return SupportedProduct::Thunderbird;
 #else
   return SupportedProduct::Firefox;
 #endif
 }
 
-}  // namespace Common
-}  // namespace Telemetry
-}  // namespace mozilla
+}  // namespace mozilla::Telemetry::Common

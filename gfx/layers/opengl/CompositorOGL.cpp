@@ -53,21 +53,17 @@
 #include "HeapCopyOfStackArray.h"
 #include "GLBlitHelper.h"
 #include "mozilla/gfx/Swizzle.h"
-
-#if MOZ_WIDGET_ANDROID
-#  include "GeneratedJNIWrappers.h"
+#ifdef MOZ_WAYLAND
+#  include "mozilla/widget/GtkCompositorWidget.h"
 #endif
-
-#ifdef XP_MACOSX
-#  include "GLContextCGL.h"
-#  include "mozilla/layers/NativeLayerCA.h"
+#if MOZ_WIDGET_ANDROID
+#  include "mozilla/java/GeckoSurfaceTextureWrappers.h"
 #endif
 
 #include "GeckoProfiler.h"
 
 namespace mozilla {
 
-using namespace std;
 using namespace gfx;
 
 namespace layers {
@@ -246,14 +242,12 @@ already_AddRefed<mozilla::gl::GLContext> CompositorOGL::CreateContext() {
 
   // Allow to create offscreen GL context for main Layer Manager
   if (!context && gfxEnv::LayersPreferOffscreen()) {
-    SurfaceCaps caps = SurfaceCaps::ForRGB();
-    caps.preserve = false;
-    caps.bpp16 = gfxVars::OffscreenFormat() == SurfaceFormat::R5G6B5_UINT16;
-
     nsCString discardFailureId;
-    context = GLContextProvider::CreateOffscreen(
-        mSurfaceSize, caps, CreateContextFlags::REQUIRE_COMPAT_PROFILE,
-        &discardFailureId);
+    context = GLContextProvider::CreateHeadless(
+        {CreateContextFlags::REQUIRE_COMPAT_PROFILE}, &discardFailureId);
+    if (!context->CreateOffscreenDefaultFb(mSurfaceSize)) {
+      context = nullptr;
+    }
   }
 
   if (!context) {
@@ -290,6 +284,11 @@ void CompositorOGL::Destroy() {
 
 void CompositorOGL::CleanupResources() {
   if (!mGLContext) return;
+
+  if (mSurfacePoolHandle) {
+    mSurfacePoolHandle->Pool()->DestroyGLResourcesForContext(mGLContext);
+    mSurfacePoolHandle = nullptr;
+  }
 
   RefPtr<GLContext> ctx = mGLContext->GetSharedContext();
   if (!ctx) {
@@ -395,7 +394,8 @@ bool CompositorOGL::Initialize(nsCString* const out_failureReason) {
   mGLContext->fEnable(LOCAL_GL_BLEND);
 
   // initialise a common shader to check that we can actually compile a shader
-  RefPtr<EffectSolidColor> effect = new EffectSolidColor(Color(0, 0, 0, 0));
+  RefPtr<EffectSolidColor> effect =
+      new EffectSolidColor(DeviceColor(0, 0, 0, 0));
   ShaderConfigOGL config = GetShaderConfigFor(effect);
   if (!GetShaderProgramFor(config)) {
     *out_failureReason = "FEATURE_FAILURE_OPENGL_COMPILE_SHADER";
@@ -516,21 +516,21 @@ bool CompositorOGL::Initialize(nsCString* const out_failureReason) {
 
   if (console) {
     nsString msg;
-    msg += NS_LITERAL_STRING(
-        "OpenGL compositor Initialized Succesfully.\nVersion: ");
+    msg += nsLiteralString(
+        u"OpenGL compositor Initialized Succesfully.\nVersion: ");
     msg += NS_ConvertUTF8toUTF16(nsDependentCString(
         (const char*)mGLContext->fGetString(LOCAL_GL_VERSION)));
-    msg += NS_LITERAL_STRING("\nVendor: ");
+    msg += u"\nVendor: "_ns;
     msg += NS_ConvertUTF8toUTF16(nsDependentCString(
         (const char*)mGLContext->fGetString(LOCAL_GL_VENDOR)));
-    msg += NS_LITERAL_STRING("\nRenderer: ");
+    msg += u"\nRenderer: "_ns;
     msg += NS_ConvertUTF8toUTF16(nsDependentCString(
         (const char*)mGLContext->fGetString(LOCAL_GL_RENDERER)));
-    msg += NS_LITERAL_STRING("\nFBO Texture Target: ");
+    msg += u"\nFBO Texture Target: "_ns;
     if (mFBOTextureTarget == LOCAL_GL_TEXTURE_2D)
-      msg += NS_LITERAL_STRING("TEXTURE_2D");
+      msg += u"TEXTURE_2D"_ns;
     else
-      msg += NS_LITERAL_STRING("TEXTURE_RECTANGLE");
+      msg += u"TEXTURE_RECTANGLE"_ns;
     console->LogStringMessage(msg.get());
   }
 
@@ -573,9 +573,9 @@ gfx::Rect CompositorOGL::GetTextureCoordinates(gfx::Rect textureRect,
 void CompositorOGL::PrepareViewport(CompositingRenderTargetOGL* aRenderTarget) {
   MOZ_ASSERT(aRenderTarget);
   // Logical surface size.
-  const gfx::IntSize& size = aRenderTarget->mInitParams.mSize;
+  const gfx::IntSize& size = aRenderTarget->GetSize();
   // Physical surface size.
-  const gfx::IntSize& phySize = aRenderTarget->mInitParams.mPhySize;
+  const gfx::IntSize& phySize = aRenderTarget->GetPhysicalSize();
 
   // Set the viewport correctly.
   mGLContext->fViewport(mSurfaceOrigin.x, mSurfaceOrigin.y, phySize.width,
@@ -593,29 +593,17 @@ void CompositorOGL::PrepareViewport(CompositingRenderTargetOGL* aRenderTarget) {
     // Matrix to transform (0, 0, aWidth, aHeight) to viewport space (-1.0, 1.0,
     // 2, 2) and flip the contents.
     Matrix viewMatrix;
-    if (mGLContext->IsOffscreen() && !gIsGtest) {
-      // In case of rendering via GL Offscreen context, disable Y-Flipping
-      viewMatrix.PreTranslate(-1.0, -1.0);
-      viewMatrix.PreScale(2.0f / float(size.width), 2.0f / float(size.height));
-    } else {
-      viewMatrix.PreTranslate(-1.0, 1.0);
-      viewMatrix.PreScale(2.0f / float(size.width), 2.0f / float(size.height));
-      viewMatrix.PreScale(1.0f, -1.0f);
-    }
+    viewMatrix.PreTranslate(-1.0, 1.0);
+    viewMatrix.PreScale(2.0f / float(size.width), 2.0f / float(size.height));
+    viewMatrix.PreScale(1.0f, -1.0f);
 
     MOZ_ASSERT(mCurrentRenderTarget, "No destination");
-    // If we're drawing directly to the window then we want to offset
-    // drawing by the render offset.
-    if (!mTarget && mCurrentRenderTarget->IsWindow()) {
-      viewMatrix.PreTranslate(mRenderOffset.x, mRenderOffset.y);
-    }
 
     Matrix4x4 matrix3d = Matrix4x4::From2D(viewMatrix);
     matrix3d._33 = 0.0f;
     mProjMatrix = matrix3d;
     mGLContext->fDepthRange(0.0f, 1.0f);
   } else {
-    // XXX take into account mRenderOffset
     bool depthEnable;
     float zNear, zFar;
     aRenderTarget->GetProjection(mProjMatrix, depthEnable, zNear, zFar);
@@ -640,12 +628,11 @@ already_AddRefed<CompositingRenderTarget> CompositorOGL::CreateRenderTarget(
   GLuint tex = 0;
   GLuint fbo = 0;
   IntRect rect = aRect;
-  IntSize FBOSize;
-  CreateFBOWithTexture(rect, false, 0, &fbo, &tex, &FBOSize);
-  RefPtr<CompositingRenderTargetOGL> surface = new CompositingRenderTargetOGL(
-      this, aRect.TopLeft(), aRect.TopLeft(), tex, fbo);
-  surface->Initialize(aRect.Size(), FBOSize, mFBOTextureTarget, aInit);
-  return surface.forget();
+  IntSize fboSize;
+  CreateFBOWithTexture(rect, false, 0, &fbo, &tex, &fboSize);
+  return CompositingRenderTargetOGL::CreateForNewFBOAndTakeOwnership(
+      this, tex, fbo, aRect, aRect.TopLeft(), aRect.Size(), mFBOTextureTarget,
+      aInit);
 }
 
 already_AddRefed<CompositingRenderTarget>
@@ -671,11 +658,9 @@ CompositorOGL::CreateRenderTargetFromSource(
   IntRect sourceRect(aSourcePoint, aRect.Size());
   CreateFBOWithTexture(sourceRect, true, sourceSurface->GetFBO(), &fbo, &tex);
 
-  RefPtr<CompositingRenderTargetOGL> surface = new CompositingRenderTargetOGL(
-      this, aRect.TopLeft(), aRect.TopLeft(), tex, fbo);
-  surface->Initialize(aRect.Size(), sourceRect.Size(), mFBOTextureTarget,
-                      INIT_MODE_NONE);
-  return surface.forget();
+  return CompositingRenderTargetOGL::CreateForNewFBOAndTakeOwnership(
+      this, tex, fbo, aRect, aRect.TopLeft(), sourceRect.Size(),
+      mFBOTextureTarget, INIT_MODE_NONE);
 }
 
 void CompositorOGL::SetRenderTarget(CompositingRenderTarget* aSurface) {
@@ -763,105 +748,27 @@ void CompositorOGL::ClearRect(const gfx::Rect& aRect) {
   mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT | LOCAL_GL_DEPTH_BUFFER_BIT);
 }
 
-#ifdef XP_MACOSX
-class SurfaceRegistryWrapperAroundCompositorOGL
-    : public layers::IOSurfaceRegistry {
- public:
-  explicit SurfaceRegistryWrapperAroundCompositorOGL(CompositorOGL* aCompositor)
-      : mCompositor(aCompositor) {}
-  void RegisterSurface(CFTypeRefPtr<IOSurfaceRef> aSurface) override {
-    mCompositor->RegisterIOSurface((IOSurfacePtr)aSurface.get());
-  }
-  void UnregisterSurface(CFTypeRefPtr<IOSurfaceRef> aSurface) override {
-    mCompositor->UnregisterIOSurface((IOSurfacePtr)aSurface.get());
-  }
-  RefPtr<CompositorOGL> mCompositor;
-};
-
-void CompositorOGL::RegisterIOSurface(IOSurfacePtr aSurface) {
-  MOZ_RELEASE_ASSERT(mRegisteredIOSurfaceRenderTargets.find(aSurface) ==
-                         mRegisteredIOSurfaceRenderTargets.end(),
-                     "double-registering IOSurface");
-
-  IOSurfaceRef surface = (IOSurfaceRef)aSurface;
-  auto glContextCGL = GLContextCGL::Cast(mGLContext);
-  MOZ_RELEASE_ASSERT(glContextCGL, "Unexpected GLContext type");
-
-  IntSize size(IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
-
-  mGLContext->MakeCurrent();
-  GLuint tex = mGLContext->CreateTexture();
-  {
-    const ScopedBindTexture bindTex(mGLContext, tex,
-                                    LOCAL_GL_TEXTURE_RECTANGLE_ARB);
-    CGLTexImageIOSurface2D(glContextCGL->GetCGLContext(),
-                           LOCAL_GL_TEXTURE_RECTANGLE_ARB, LOCAL_GL_RGBA,
-                           size.width, size.height, LOCAL_GL_BGRA,
-                           LOCAL_GL_UNSIGNED_INT_8_8_8_8_REV, surface, 0);
-  }
-
-  GLuint fbo = mGLContext->CreateFramebuffer();
-  {
-    const ScopedBindFramebuffer bindFB(mGLContext, fbo);
-    mGLContext->fFramebufferTexture2D(LOCAL_GL_FRAMEBUFFER,
-                                      LOCAL_GL_COLOR_ATTACHMENT0,
-                                      LOCAL_GL_TEXTURE_RECTANGLE_ARB, tex, 0);
-  }
-
-  RefPtr<CompositingRenderTargetOGL> rt = new CompositingRenderTargetOGL(
-      this, gfx::IntPoint(), gfx::IntPoint(), tex, fbo);
-  rt->Initialize(size, size, LOCAL_GL_TEXTURE_RECTANGLE_ARB, INIT_MODE_NONE);
-
-  mRegisteredIOSurfaceRenderTargets.insert({aSurface, rt});
-}
-
-void CompositorOGL::UnregisterIOSurface(IOSurfacePtr aSurface) {
-  size_t removeCount = mRegisteredIOSurfaceRenderTargets.erase(aSurface);
-  MOZ_RELEASE_ASSERT(removeCount == 1,
-                     "Unregistering IOSurface that's not registered");
-}
-#endif
-
 already_AddRefed<CompositingRenderTargetOGL>
 CompositorOGL::RenderTargetForNativeLayer(NativeLayer* aNativeLayer,
-                                          IntRegion& aInvalidRegion) {
+                                          const IntRegion& aInvalidRegion) {
   if (aInvalidRegion.IsEmpty()) {
     return nullptr;
   }
 
-#ifdef XP_MACOSX
-  NativeLayerCA* nativeLayer = aNativeLayer->AsNativeLayerCA();
-  MOZ_RELEASE_ASSERT(nativeLayer, "Unexpected native layer type");
-  nativeLayer->SetSurfaceIsFlipped(true);
-  auto glContextCGL = GLContextCGL::Cast(mGLContext);
-  MOZ_RELEASE_ASSERT(glContextCGL, "Unexpected GLContext type");
-  RefPtr<layers::IOSurfaceRegistry> currentRegistry =
-      nativeLayer->GetSurfaceRegistry();
-  if (!currentRegistry) {
-    nativeLayer->SetSurfaceRegistry(
-        MakeAndAddRef<SurfaceRegistryWrapperAroundCompositorOGL>(this));
-  } else {
-    MOZ_RELEASE_ASSERT(static_cast<SurfaceRegistryWrapperAroundCompositorOGL*>(
-                           currentRegistry.get())
-                           ->mCompositor == this);
-  }
-  CFTypeRefPtr<IOSurfaceRef> surf = nativeLayer->NextSurface();
-  if (!surf) {
+  aNativeLayer->SetSurfaceIsFlipped(true);
+
+  IntRect layerRect = aNativeLayer->GetRect();
+  IntRegion invalidRelativeToLayer =
+      aInvalidRegion.MovedBy(-layerRect.TopLeft());
+  Maybe<GLuint> fbo = aNativeLayer->NextSurfaceAsFramebuffer(
+      gfx::IntRect({}, aNativeLayer->GetSize()), invalidRelativeToLayer, false);
+  if (!fbo) {
     return nullptr;
   }
 
-  IntRect layerRect = nativeLayer->GetRect();
-  IntRegion invalidRelativeToLayer =
-      aInvalidRegion.MovedBy(-layerRect.TopLeft());
-  nativeLayer->InvalidateRegionThroughoutSwapchain(invalidRelativeToLayer);
-  invalidRelativeToLayer = nativeLayer->CurrentSurfaceInvalidRegion();
-  aInvalidRegion = invalidRelativeToLayer.MovedBy(layerRect.TopLeft());
-
-  auto match = mRegisteredIOSurfaceRenderTargets.find((IOSurfacePtr)surf.get());
-  MOZ_RELEASE_ASSERT(match != mRegisteredIOSurfaceRenderTargets.end(),
-                     "IOSurface has not been registered with this Compositor");
-  RefPtr<CompositingRenderTargetOGL> rt = match->second;
-  rt->SetOrigin(layerRect.TopLeft());
+  RefPtr<CompositingRenderTargetOGL> rt =
+      CompositingRenderTargetOGL::CreateForExternallyOwnedFBO(
+          this, *fbo, layerRect, IntPoint());
 
   // Clip the render target to the invalid rect. This conserves memory bandwidth
   // and power.
@@ -869,9 +776,6 @@ CompositorOGL::RenderTargetForNativeLayer(NativeLayer* aNativeLayer,
   rt->SetClipRect(invalidRect == layerRect ? Nothing() : Some(invalidRect));
 
   return rt.forget();
-#else
-  MOZ_CRASH("Unexpected native layer on this platform");
-#endif
 }
 
 Maybe<IntRect> CompositorOGL::BeginFrameForWindow(
@@ -945,7 +849,6 @@ Maybe<gfx::IntRect> CompositorOGL::BeginRenderingToNativeLayer(
   }
   SetRenderTarget(rt);
   mCurrentNativeLayer = aNativeLayer;
-  mPixelsPerFrame += rect.Area();
 
   mGLContext->fClearColor(mClearColor.r, mClearColor.g, mClearColor.b,
                           mClearColor.a);
@@ -966,8 +869,10 @@ Maybe<gfx::IntRect> CompositorOGL::BeginRenderingToNativeLayer(
                                         clearRect.Width(), clearRect.Height());
       mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT | LOCAL_GL_DEPTH_BUFFER_BIT);
     }
+    mPixelsPerFrame += rtClip->Area();
   } else {
     mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT | LOCAL_GL_DEPTH_BUFFER_BIT);
+    mPixelsPerFrame += rect.Area();
   }
 
   return Some(rect);
@@ -1028,11 +933,12 @@ void CompositorOGL::EndRenderingToNativeLayer() {
                      "BeginRenderingToNativeLayer?");
 
   if (StaticPrefs::nglayout_debug_widget_update_flashing()) {
-    float r = float(rand()) / RAND_MAX;
-    float g = float(rand()) / RAND_MAX;
-    float b = float(rand()) / RAND_MAX;
+    float r = float(rand()) / float(RAND_MAX);
+    float g = float(rand()) / float(RAND_MAX);
+    float b = float(rand()) / float(RAND_MAX);
     EffectChain effectChain;
-    effectChain.mPrimaryEffect = new EffectSolidColor(Color(r, g, b, 0.2f));
+    effectChain.mPrimaryEffect =
+        new EffectSolidColor(DeviceColor(r, g, b, 0.2f));
     // If we're clipping the render target to the invalid rect, then the
     // current render target is still clipped, so just fill the bounds.
     IntRect rect = mCurrentRenderTarget->GetRect();
@@ -1043,14 +949,8 @@ void CompositorOGL::EndRenderingToNativeLayer() {
   mCurrentRenderTarget->SetClipRect(Nothing());
   SetRenderTarget(mNativeLayersReferenceRT);
 
-#ifdef XP_MACOSX
-  NativeLayerCA* nativeLayer = mCurrentNativeLayer->AsNativeLayerCA();
-  MOZ_RELEASE_ASSERT(nativeLayer, "Unexpected native layer type");
-  nativeLayer->NotifySurfaceReady();
+  mCurrentNativeLayer->NotifySurfaceReady();
   mCurrentNativeLayer = nullptr;
-#else
-  MOZ_CRASH("Unexpected native layer on this platform");
-#endif
 }
 
 Maybe<IntRect> CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
@@ -1081,6 +981,11 @@ Maybe<IntRect> CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
     MakeCurrent(ForceMakeCurrent);
 
     mWidgetSize = LayoutDeviceIntSize::FromUnknownSize(rect.Size());
+#ifdef MOZ_WAYLAND
+    if (mWidget && mWidget->AsX11()) {
+      mWidget->AsX11()->SetEGLNativeWindowSize(mWidgetSize);
+    }
+#endif
   } else {
     MakeCurrent();
   }
@@ -1100,7 +1005,7 @@ Maybe<IntRect> CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
 
   RefPtr<CompositingRenderTarget> rt;
   if (mCanRenderToDefaultFramebuffer) {
-    rt = CompositingRenderTargetOGL::RenderTargetForWindow(this, rect.Size());
+    rt = CompositingRenderTargetOGL::CreateForWindow(this, rect.Size());
   } else if (mTarget) {
     rt = CreateRenderTarget(rect, INIT_MODE_CLEAR);
   } else {
@@ -1133,6 +1038,12 @@ Maybe<IntRect> CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
                           mClearColor.a);
 #endif  // defined(MOZ_WIDGET_ANDROID)
   mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT | LOCAL_GL_DEPTH_BUFFER_BIT);
+
+  for (auto iter = aInvalidRegion.RectIter(); !iter.Done(); iter.Next()) {
+    const IntRect& r = iter.Get();
+    mCurrentFrameInvalidRegion.OrWith(
+        IntRect(r.X(), FlipY(r.YMost()), r.Width(), r.Height()));
+  }
 
   return Some(rect);
 }
@@ -1323,7 +1234,11 @@ ShaderConfigOGL CompositorOGL::GetShaderConfigFor(Effect* aEffect,
     }
     case EffectTypes::NV12:
       config.SetNV12(true);
-      config.SetTextureTarget(LOCAL_GL_TEXTURE_RECTANGLE_ARB);
+      if (gl()->IsExtensionSupported(gl::GLContext::ARB_texture_rectangle)) {
+        config.SetTextureTarget(LOCAL_GL_TEXTURE_RECTANGLE_ARB);
+      } else {
+        config.SetTextureTarget(LOCAL_GL_TEXTURE_2D);
+      }
       break;
     case EffectTypes::COMPONENT_ALPHA: {
       config.SetComponentAlpha(true);
@@ -1546,13 +1461,8 @@ void CompositorOGL::DrawGeometry(const Geometry& aGeometry,
   IntPoint offset = mCurrentRenderTarget->GetOrigin();
   clipRect -= offset;
 
-  // clipRect is in destination coordinate space (after all
-  // transforms and offsets have been applied) so if our
-  // drawing is going to be shifted by mRenderOffset then we need
-  // to shift the clip rect by the same amount.
   if (!mTarget && mCurrentRenderTarget->IsWindow()) {
-    clipRect.MoveBy(mRenderOffset.x + mSurfaceOrigin.x,
-                    mRenderOffset.y - mSurfaceOrigin.y);
+    clipRect.MoveBy(mSurfaceOrigin.x, -mSurfaceOrigin.y);
   }
 
   ScopedGLState scopedScissorTestState(mGLContext, LOCAL_GL_SCISSOR_TEST, true);
@@ -1581,7 +1491,7 @@ void CompositorOGL::DrawGeometry(const Geometry& aGeometry,
 
   // Determine the color if this is a color shader and fold the opacity into
   // the color since color shaders don't have an opacity uniform.
-  Color color;
+  DeviceColor color;
   if (aEffectChain.mPrimaryEffect->mType == EffectTypes::SOLID_COLOR) {
     EffectSolidColor* effectSolidColor =
         static_cast<EffectSolidColor*>(aEffectChain.mPrimaryEffect.get());
@@ -2122,6 +2032,7 @@ void CompositorOGL::EndFrame() {
 
   InsertFrameDoneSync();
 
+  mGLContext->SetDamage(mCurrentFrameInvalidRegion);
   mGLContext->SwapBuffers();
   mGLContext->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, 0);
 
@@ -2134,6 +2045,8 @@ void CompositorOGL::EndFrame() {
     }
   }
 
+  mCurrentFrameInvalidRegion.SetEmpty();
+
   Compositor::EndFrame();
 }
 
@@ -2141,13 +2054,11 @@ void CompositorOGL::InsertFrameDoneSync() {
 #ifdef XP_MACOSX
   // Only do this on macOS.
   // On other platforms, SwapBuffers automatically applies back-pressure.
-  if (StaticPrefs::gfx_core_animation_enabled_AtStartup()) {
-    if (mThisFrameDoneSync) {
-      mGLContext->fDeleteSync(mThisFrameDoneSync);
-    }
-    mThisFrameDoneSync =
-        mGLContext->fFenceSync(LOCAL_GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (mThisFrameDoneSync) {
+    mGLContext->fDeleteSync(mThisFrameDoneSync);
   }
+  mThisFrameDoneSync =
+      mGLContext->fFenceSync(LOCAL_GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 #endif
 }
 
@@ -2161,6 +2072,15 @@ void CompositorOGL::WaitForGPU() {
   }
   mPreviousFrameDoneSync = mThisFrameDoneSync;
   mThisFrameDoneSync = nullptr;
+}
+
+RefPtr<SurfacePoolHandle> CompositorOGL::GetSurfacePoolHandle() {
+#ifdef XP_MACOSX
+  if (!mSurfacePoolHandle) {
+    mSurfacePoolHandle = SurfacePool::Create(0)->GetHandleForGL(mGLContext);
+  }
+#endif
+  return mSurfacePoolHandle;
 }
 
 bool CompositorOGL::NeedToRecreateFullWindowRenderTarget() const {
@@ -2225,16 +2145,17 @@ void CompositorOGL::CopyToTarget(DrawTarget* aTarget,
 void CompositorOGL::Pause() {
 #ifdef MOZ_WIDGET_ANDROID
   if (!gl() || gl()->IsDestroyed()) return;
-  gl()->MakeCurrent();
-  java::GeckoSurfaceTexture::DestroyUnused((int64_t)mGLContext.get());
-  java::GeckoSurfaceTexture::DetachAllFromGLContext((int64_t)mGLContext.get());
+  // ReleaseSurface internally calls MakeCurrent
+  gl()->ReleaseSurface();
+#elif defined(MOZ_WAYLAND)
   // ReleaseSurface internally calls MakeCurrent
   gl()->ReleaseSurface();
 #endif
 }
 
 bool CompositorOGL::Resume() {
-#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_UIKIT)
+#if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_UIKIT) || \
+    defined(MOZ_WAYLAND)
   if (!gl() || gl()->IsDestroyed()) return false;
 
   // RenewSurface internally calls MakeCurrent.

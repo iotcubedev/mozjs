@@ -4,67 +4,57 @@
 
 const port = browser.runtime.connectNative("browser");
 
+const APIS = {
+  AddHistogram({ id, value }) {
+    browser.test.addHistogram(id, value);
+  },
+  SetScalar({ id, value }) {
+    browser.test.setScalar(id, value);
+  },
+  GetRequestedLocales() {
+    return browser.test.getRequestedLocales();
+  },
+  GetLinkColor({ uri, selector }) {
+    return browser.test.getLinkColor(uri, selector);
+  },
+  GetPidForTab({ tab }) {
+    return browser.test.getPidForTab(tab.id);
+  },
+  GetPrefs({ prefs }) {
+    return browser.test.getPrefs(prefs);
+  },
+  RemoveCertOverride({ host, port }) {
+    browser.test.removeCertOverride(host, port);
+  },
+  RestorePrefs({ oldPrefs }) {
+    return browser.test.restorePrefs(oldPrefs);
+  },
+  SetPrefs({ oldPrefs, newPrefs }) {
+    return browser.test.setPrefs(oldPrefs, newPrefs);
+  },
+  SetResolutionAndScaleTo({ resolution }) {
+    return browser.test.setResolutionAndScaleTo(resolution);
+  },
+};
+
 port.onMessage.addListener(async message => {
-  switch (message.type) {
-    case "SetPrefs":
-      {
-        const {
-          id,
-          args: { oldPrefs, newPrefs },
-        } = message;
-        sendResponse(id, browser.test.setPrefs(oldPrefs, newPrefs));
-      }
-      break;
-
-    case "RestorePrefs":
-      {
-        const {
-          id,
-          args: { oldPrefs },
-        } = message;
-        sendResponse(id, browser.test.restorePrefs(oldPrefs));
-      }
-      break;
-
-    case "GetPrefs":
-      {
-        const {
-          id,
-          args: { prefs },
-        } = message;
-        sendResponse(id, browser.test.getPrefs(prefs));
-      }
-      break;
-
-    case "GetLinkColor":
-      {
-        const {
-          id,
-          args: { uri, selector },
-        } = message;
-        sendResponse(id, browser.test.getLinkColor(uri, selector));
-      }
-      break;
-
-    case "GetRequestedLocales":
-      {
-        const { id } = message;
-        sendResponse(id, browser.test.getRequestedLocales());
-      }
-      break;
-
-    case "AddHistogram":
-      {
-        const {
-          id,
-          args: { id: histogramId, value },
-        } = message;
-        browser.test.addHistogram(histogramId, value);
-        sendResponse(id, null);
-      }
-      break;
-  }
+  const impl = APIS[message.type];
+  apiCall(message, impl);
 });
+
+browser.runtime.onConnect.addListener(contentPort => {
+  contentPort.onMessage.addListener(message => {
+    message.args.tab = contentPort.sender.tab;
+
+    const impl = APIS[message.type];
+    apiCall(message, impl);
+  });
+});
+
+function apiCall(message, impl) {
+  const { id, args } = message;
+  sendResponse(id, impl(args));
+}
 
 function sendResponse(id, response, exception) {
   Promise.resolve(response).then(

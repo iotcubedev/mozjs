@@ -7,11 +7,6 @@
 // the network panel.
 
 add_task(async function() {
-  // TODO: This test tries to verify the normal behavior of the netmonitor and
-  // therefore needs to avoid the explicit check for tests. Bug 1167188 will
-  // allow us to remove this workaround.
-  await pushPref("devtools.testing", false);
-
   let tab = await addTab(URL_ROOT + "doc_viewsource.html");
   let target = await TargetFactory.forTab(tab);
   let toolbox = await gDevTools.showToolbox(target, "styleeditor");
@@ -23,7 +18,7 @@ add_task(async function() {
   const { store } = monitor.panelWin;
 
   is(
-    store.getState().requests.requests.size,
+    store.getState().requests.requests.length,
     0,
     "No network requests appear in the network panel"
   );

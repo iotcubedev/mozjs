@@ -8,37 +8,39 @@
 
 #include "DOMSVGPointList.h"
 #include "gfx2DGlue.h"
+#include "mozAutoDocUpdate.h"
 #include "nsCOMPtr.h"
 #include "nsError.h"
 #include "SVGPoint.h"
+#include "mozilla/dom/DOMMatrix.h"
 #include "mozilla/dom/SVGElement.h"
-#include "mozilla/dom/SVGMatrix.h"
 
 // See the architecture comment in DOMSVGPointList.h.
 
-using namespace mozilla;
 using namespace mozilla::gfx;
 
 namespace mozilla {
+namespace dom {
 
 //----------------------------------------------------------------------
 // Helper class: AutoChangePointNotifier
 // Stack-based helper class to pair calls to WillChangePointList and
 // DidChangePointList.
-class MOZ_RAII AutoChangePointNotifier {
+class MOZ_RAII AutoChangePointNotifier : public mozAutoDocUpdate {
  public:
   explicit AutoChangePointNotifier(
       DOMSVGPoint* aPoint MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mPoint(aPoint) {
+      : mozAutoDocUpdate(aPoint->Element()->GetComposedDoc(), true),
+        mPoint(aPoint) {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     MOZ_ASSERT(mPoint, "Expecting non-null point");
     MOZ_ASSERT(mPoint->HasOwner(),
                "Expecting list to have an owner for notification");
-    mEmptyOrOldValue = mPoint->Element()->WillChangePointList();
+    mEmptyOrOldValue = mPoint->Element()->WillChangePointList(*this);
   }
 
   ~AutoChangePointNotifier() {
-    mPoint->Element()->DidChangePointList(mEmptyOrOldValue);
+    mPoint->Element()->DidChangePointList(mEmptyOrOldValue, *this);
     // Null check mPoint->mList, since DidChangePointList can run script,
     // potentially removing mPoint from its list.
     if (mPoint->mList && mPoint->mList->AttrIsAnimating()) {
@@ -51,8 +53,6 @@ class MOZ_RAII AutoChangePointNotifier {
   nsAttrValue mEmptyOrOldValue;
   MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
-
-}  // namespace mozilla
 
 float DOMSVGPoint::X() {
   if (mIsAnimValItem && HasOwner()) {
@@ -103,11 +103,21 @@ void DOMSVGPoint::SetY(float aY, ErrorResult& rv) {
 }
 
 already_AddRefed<nsISVGPoint> DOMSVGPoint::MatrixTransform(
-    dom::SVGMatrix& matrix) {
-  float x = HasOwner() ? InternalItem().mX : mPt.mX;
-  float y = HasOwner() ? InternalItem().mY : mPt.mY;
-
-  Point pt = ToMatrix(matrix.GetMatrix()).TransformPoint(Point(x, y));
-  nsCOMPtr<nsISVGPoint> newPoint = new DOMSVGPoint(pt);
+    const DOMMatrix2DInit& aMatrix, ErrorResult& aRv) {
+  RefPtr<DOMMatrixReadOnly> matrix =
+      DOMMatrixReadOnly::FromMatrix(GetParentObject(), aMatrix, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+  const auto* matrix2D = matrix->GetInternal2D();
+  if (!matrix2D->IsFinite()) {
+    aRv.ThrowTypeError<MSG_NOT_FINITE>("MatrixTransform matrix");
+    return nullptr;
+  }
+  auto pt = matrix2D->TransformPoint(HasOwner() ? InternalItem() : mPt);
+  nsCOMPtr<nsISVGPoint> newPoint = new DOMSVGPoint(ToPoint(pt));
   return newPoint.forget();
 }
+
+}  // namespace dom
+}  // namespace mozilla

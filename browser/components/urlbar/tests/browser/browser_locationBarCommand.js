@@ -11,7 +11,10 @@ const START_VALUE = "example.org";
 
 add_task(async function setup() {
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.altClickSave", true], ["browser.urlbar.autoFill", false]],
+    set: [
+      ["browser.altClickSave", true],
+      ["browser.urlbar.autoFill", false],
+    ],
   });
 });
 
@@ -278,7 +281,7 @@ function promiseCheckChildNoFocusedElement(browser) {
     return null;
   }
 
-  return ContentTask.spawn(browser, {}, async function() {
+  return ContentTask.spawn(browser, null, async function() {
     Assert.equal(
       Services.focus.focusedElement,
       null,

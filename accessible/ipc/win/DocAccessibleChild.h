@@ -9,6 +9,7 @@
 
 #include "mozilla/a11y/COMPtrTypes.h"
 #include "mozilla/a11y/DocAccessibleChildBase.h"
+#include "mozilla/dom/BrowserBridgeChild.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/mscom/Ptr.h"
 
@@ -31,6 +32,8 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   virtual ipc::IPCResult RecvEmulatedWindow(
       const WindowsHandle& aEmulatedWindowHandle,
       const IDispatchHolder& aEmulatedWindowCOMProxy) override;
+  virtual ipc::IPCResult RecvTopLevelDocCOMProxy(
+      const IAccessibleHolder& aCOMProxy) override;
   virtual ipc::IPCResult RecvRestoreFocus() override;
 
   HWND GetNativeWindowHandle() const;
@@ -39,15 +42,20 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   }
 
   IDispatch* GetParentIAccessible() const { return mParentProxy.get(); }
+  IAccessible* GetTopLevelDocIAccessible() const {
+    return mTopLevelDocProxy.get();
+  }
 
   bool SendEvent(const uint64_t& aID, const uint32_t& type);
   bool SendHideEvent(const uint64_t& aRootID, const bool& aFromUser);
   bool SendStateChangeEvent(const uint64_t& aID, const uint64_t& aState,
                             const bool& aEnabled);
-  bool SendCaretMoveEvent(const uint64_t& aID, const int32_t& aOffset);
+  bool SendCaretMoveEvent(const uint64_t& aID, const int32_t& aOffset,
+                          const bool& aIsSelectionCollapsed);
   bool SendCaretMoveEvent(const uint64_t& aID,
                           const LayoutDeviceIntRect& aCaretRect,
-                          const int32_t& aOffset);
+                          const int32_t& aOffset,
+                          const bool& aIsSelectionCollapsed);
   bool SendFocusEvent(const uint64_t& aID);
   bool SendFocusEvent(const uint64_t& aID,
                       const LayoutDeviceIntRect& aCaretRect);
@@ -69,15 +77,20 @@ class DocAccessibleChild : public DocAccessibleChildBase {
   bool SendBindChildDoc(DocAccessibleChild* aChildDoc,
                         const uint64_t& aNewParentID);
 
+  /**
+   * Set the embedder accessible on a BrowserBridgeChild to an accessible in
+   * this document.
+   * Sending this will be deferred if this DocAccessibleChild hasn't been
+   * constructed in the parent process yet.
+   */
+  void SetEmbedderOnBridge(dom::BrowserBridgeChild* aBridge, uint64_t aID);
+
  protected:
   virtual void MaybeSendShowEvent(ShowEventData& aData,
                                   bool aFromUser) override;
 
  private:
   void RemoveDeferredConstructor();
-
-  bool IsConstructedInParentProcess() const { return mIsRemoteConstructed; }
-  void SetConstructedInParentProcess() { mIsRemoteConstructed = true; }
 
   LayoutDeviceIntRect GetCaretRectFor(const uint64_t& aID);
 
@@ -159,19 +172,23 @@ class DocAccessibleChild : public DocAccessibleChildBase {
 
   struct SerializedCaretMove final : public DeferredEvent {
     SerializedCaretMove(DocAccessibleChild* aTarget, uint64_t aID,
-                        const LayoutDeviceIntRect& aCaretRect, int32_t aOffset)
+                        const LayoutDeviceIntRect& aCaretRect, int32_t aOffset,
+                        bool aIsSelectionCollapsed)
         : DeferredEvent(aTarget),
           mID(aID),
           mCaretRect(aCaretRect),
-          mOffset(aOffset) {}
+          mOffset(aOffset),
+          mIsSelectionCollapsed(aIsSelectionCollapsed) {}
 
     void Dispatch(DocAccessibleChild* aIPCDoc) override {
-      Unused << aIPCDoc->SendCaretMoveEvent(mID, mCaretRect, mOffset);
+      Unused << aIPCDoc->SendCaretMoveEvent(mID, mCaretRect, mOffset,
+                                            mIsSelectionCollapsed);
     }
 
     uint64_t mID;
     LayoutDeviceIntRect mCaretRect;
     int32_t mOffset;
+    bool mIsSelectionCollapsed;
   };
 
   struct SerializedFocus final : public DeferredEvent {
@@ -326,9 +343,22 @@ class DocAccessibleChild : public DocAccessibleChildBase {
     void Dispatch(DocAccessibleChild* aIPCDoc) override { aIPCDoc->Shutdown(); }
   };
 
-  bool mIsRemoteConstructed;
+  struct SerializedSetEmbedder final : public DeferredEvent {
+    SerializedSetEmbedder(dom::BrowserBridgeChild* aBridge,
+                          DocAccessibleChild* aDoc, uint64_t aID)
+        : DeferredEvent(aDoc), mBridge(aBridge), mID(aID) {}
+
+    void Dispatch(DocAccessibleChild* aDoc) override {
+      Unused << mBridge->SendSetEmbedderAccessible(aDoc, mID);
+    }
+
+    RefPtr<dom::BrowserBridgeChild> mBridge;
+    uint64_t mID;
+  };
+
   mscom::ProxyUniquePtr<IDispatch> mParentProxy;
   mscom::ProxyUniquePtr<IDispatch> mEmulatedWindowProxy;
+  mscom::ProxyUniquePtr<IAccessible> mTopLevelDocProxy;
   nsTArray<UniquePtr<DeferredEvent>> mDeferredEvents;
   HWND mEmulatedWindowHandle;
 };

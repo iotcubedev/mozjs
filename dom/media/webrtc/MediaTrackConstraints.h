@@ -13,18 +13,12 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
-#include "mozilla/dom/MediaTrackConstraintSetBinding.h"
 #include "mozilla/dom/MediaTrackSupportedConstraintsBinding.h"
 
 namespace mozilla {
 
 class MediaDevice;
 class MediaEngineSource;
-
-template <class EnumValuesStrings, class Enum>
-static const char* EnumToASCII(const EnumValuesStrings& aStrings, Enum aValue) {
-  return aStrings[uint32_t(aValue)].value;
-}
 
 template <class EnumValuesStrings, class Enum>
 static Enum StringToEnum(const EnumValuesStrings& aStrings,
@@ -233,7 +227,6 @@ class NormalizedConstraintSet {
   StringRange mFacingMode;
   StringRange mMediaSource;
   LongLongRange mBrowserWindow;
-  BooleanRange mScrollWithPage;
   StringRange mDeviceId;
   StringRange mGroupId;
   LongRange mViewportOffsetX, mViewportOffsetY, mViewportWidth, mViewportHeight;
@@ -260,11 +253,6 @@ class NormalizedConstraintSet {
                            ? aOther.mBrowserWindow.Value()
                            : 0,
                        aList),
-        mScrollWithPage(&T::mScrollWithPage, "scrollWithPage",
-                        aOther.mScrollWithPage.WasPassed()
-                            ? aOther.mScrollWithPage.Value()
-                            : false,
-                        aList),
         mDeviceId(&T::mDeviceId, "deviceId", aOther.mDeviceId, advanced, aList),
         mGroupId(&T::mGroupId, "groupId", aOther.mGroupId, advanced, aList),
         mViewportOffsetX(&T::mViewportOffsetX, "viewportOffsetX",

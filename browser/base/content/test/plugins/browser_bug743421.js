@@ -16,7 +16,6 @@ add_task(async function() {
       gTestRoot + "blockNoPlugins",
       gTestBrowser
     );
-    resetBlocklist();
     gBrowser.removeCurrentTab();
     window.focus();
     gTestBrowser = null;
@@ -58,7 +57,7 @@ add_task(async function() {
   );
   ok(!notification, "Test 1a, Should not have a click-to-play notification");
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     new XPCNativeWrapper(XPCNativeWrapper.unwrap(content).addPlugin());
   });
 
@@ -66,7 +65,7 @@ add_task(async function() {
 });
 
 add_task(async function() {
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let plugin = content.document.getElementsByTagName("embed")[0];
     Assert.ok(!plugin.activated, "Test 1b, Plugin should not be activated");
   });
@@ -81,7 +80,7 @@ add_task(async function() {
 
   PopupNotifications.panel.firstElementChild.button.click();
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let plugin = content.document.getElementsByTagName("embed")[0];
     Assert.ok(plugin.activated, "Test 1b, Plugin should be activated");
   });
@@ -94,7 +93,7 @@ add_task(async function() {
   );
   ok(notification, "Test 1c, Should still have a click-to-play notification");
 
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     new XPCNativeWrapper(XPCNativeWrapper.unwrap(content).addPlugin());
     let plugin = content.document.getElementsByTagName("embed")[1];
     Assert.ok(
@@ -105,7 +104,7 @@ add_task(async function() {
 });
 
 add_task(async function() {
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let plugin = content.document.getElementsByTagName("embed")[1];
     Assert.ok(plugin.activated, "Test 1d, Plugin should be activated");
 
@@ -116,7 +115,7 @@ add_task(async function() {
 });
 
 add_task(async function() {
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     new XPCNativeWrapper(XPCNativeWrapper.unwrap(content).addPlugin());
     let plugin = content.document.getElementsByTagName("embed")[2];
     Assert.ok(plugin.activated, "Test 1e, Plugin should be activated");
@@ -124,7 +123,7 @@ add_task(async function() {
 });
 
 add_task(async function() {
-  await ContentTask.spawn(gTestBrowser, {}, async function() {
+  await SpecialPowers.spawn(gTestBrowser, [], async function() {
     let plugin = content.document.getElementsByTagName("embed")[2];
     Assert.ok(plugin.activated, "Test 1f, Plugin should be activated");
 

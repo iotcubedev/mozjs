@@ -44,11 +44,11 @@ function failsafe() {
 async function* test() {
   let iframeElement = document.getElementById("testframe");
 
-  let iframeResponse = await FissionTestHelper.sendToOopif(iframeElement, code_for_oopif_to_run.toSource() + "()");
+  let iframeResponse = await FissionTestHelper.sendToOopif(iframeElement, `(${code_for_oopif_to_run})()`);
   dump("OOPIF response: " + JSON.stringify(iframeResponse) + "\n");
   ok(iframeResponse, "code_for_oopif_to_run successfully installed");
 
-  iframePromise = promiseOneEvent("OOPIF:ClickData", null);
+  iframePromise = promiseOneEvent(window, "OOPIF:ClickData", null);
   synthesizeNativeClick(document.body, 400, 400, function() {
     dump("Finished synthesizing click, waiting for OOPIF message...\n");
   });

@@ -10,7 +10,7 @@ const { Actor, ActorClassWithSpec } = require("devtools/shared/protocol");
 const { accessibleWalkerSpec } = require("devtools/shared/specs/accessibility");
 const {
   simulation: { COLOR_TRANSFORMATION_MATRICES },
-} = require("./constants");
+} = require("devtools/server/actors/accessibility/constants");
 
 loader.lazyRequireGetter(
   this,
@@ -83,6 +83,12 @@ loader.lazyRequireGetter(
   this,
   "accessibility",
   "devtools/shared/constants",
+  true
+);
+loader.lazyRequireGetter(
+  this,
+  "isRemoteFrame",
+  "devtools/shared/layout/utils",
   true
 );
 
@@ -233,6 +239,7 @@ class AuditProgress {
       progress: {
         total: this.size,
         percentage: this.percentage,
+        completed: this.completed,
       },
     });
   }
@@ -351,24 +358,20 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     this.cancelPick();
 
     // Clean up accessible actors cache.
-    if (this.refMap.size > 0) {
-      try {
-        if (this.rootDoc) {
-          this.purgeSubtree(
-            this.getRawAccessibleFor(this.rootDoc),
-            this.rootDoc
-          );
-        }
-      } catch (e) {
-        // Accessibility service might be already destroyed.
-      } finally {
-        this.refMap.clear();
-      }
-    }
+    this.clearRefs();
 
     this._childrenPromise = null;
     delete this.a11yService;
     this.setA11yServiceGetter();
+  },
+
+  /**
+   * Remove existing cache (of accessible actors) from tree.
+   */
+  clearRefs() {
+    for (const actor of this.refMap.values()) {
+      actor.destroy();
+    }
   },
 
   destroy() {
@@ -396,6 +399,8 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     }
 
     actor = new AccessibleActor(this, rawAccessible);
+    // Add the accessible actor as a child of this accessible walker actor,
+    // assigning it an actorID.
     this.manage(actor);
     this.refMap.set(rawAccessible, actor);
 
@@ -406,15 +411,13 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    * Clean up accessible actors cache for a given accessible's subtree.
    *
    * @param  {null|nsIAccessible} rawAccessible
-   * @param  {null|Object}   rawNode
    */
-  purgeSubtree(rawAccessible, rawNode) {
+  purgeSubtree(rawAccessible) {
     if (!rawAccessible) {
       return;
     }
 
-    const actor = this.getRef(rawAccessible);
-    if (actor && rawAccessible && !actor.isDefunct) {
+    try {
       for (
         let child = rawAccessible.firstChild;
         child;
@@ -422,19 +425,21 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
       ) {
         this.purgeSubtree(child);
       }
+    } catch (e) {
+      // rawAccessible or its descendants are defunct.
     }
 
-    this.refMap.delete(rawAccessible);
-
+    const actor = this.getRef(rawAccessible);
     if (actor) {
-      events.emit(this, "accessible-destroy", actor);
       actor.destroy();
     }
+  },
 
-    // If corresponding DOMNode is a top level document, clear entire cache.
-    if (rawNode && rawNode === this.rootDoc) {
-      this.refMap.clear();
+  unmanage: function(actor) {
+    if (actor instanceof AccessibleActor) {
+      this.refMap.delete(actor.rawAccessible);
     }
+    Actor.prototype.unmanage.call(this, actor);
   },
 
   /**
@@ -469,7 +474,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     }
 
     const doc = this.getRawAccessibleFor(this.rootDoc);
-    if (isStale(doc)) {
+    if (!doc || isStale(doc)) {
       return this.once("document-ready").then(docAcc => this.addRef(docAcc));
     }
 
@@ -486,9 +491,17 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    */
   getAccessibleFor(domNode) {
     // We need to make sure that the document is loaded processed by a11y first.
-    return this.getDocument().then(() =>
-      this.addRef(this.getRawAccessibleFor(domNode.rawNode))
-    );
+    return this.getDocument().then(() => {
+      const rawAccessible = this.getRawAccessibleFor(domNode.rawNode);
+      // Not all DOM nodes have corresponding accessible objects. It's usually
+      // the case where there is no semantics or relevance to the accessibility
+      // client.
+      if (!rawAccessible) {
+        return null;
+      }
+
+      return this.addRef(rawAccessible);
+    });
   },
 
   /**
@@ -614,7 +627,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    * @param {Ci.nsIAccessibleEvent} subject
    *                                      accessible event object.
    */
-  /* eslint-disable complexity */
+  // eslint-disable-next-line complexity
   observe(subject) {
     const event = subject.QueryInterface(Ci.nsIAccessibleEvent);
     const rawAccessible = event.accessible;
@@ -623,7 +636,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     if (rawAccessible instanceof Ci.nsIAccessibleDocument && !accessible) {
       const rootDocAcc = this.getRawAccessibleFor(this.rootDoc);
       if (rawAccessible === rootDocAcc && !isStale(rawAccessible)) {
-        this.purgeSubtree(rawAccessible, event.DOMNode);
+        this.clearRefs();
         // If it's a top level document notify listeners about the document
         // being ready.
         events.emit(this, "document-ready", rawAccessible);
@@ -640,8 +653,8 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
           // Only propagate state change events for active accessibles.
           if (isBusy && isEnabled) {
             if (rawAccessible instanceof Ci.nsIAccessibleDocument) {
-              // Remove its existing cache from tree.
-              this.purgeSubtree(rawAccessible, event.DOMNode);
+              // Remove existing cache from tree.
+              this.clearRefs();
             }
             return;
           }
@@ -657,8 +670,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
             rawAccessible.name,
             event.DOMNode == this.rootDoc
               ? undefined
-              : this.getRef(rawAccessible.parent),
-            this
+              : this.getRef(rawAccessible.parent)
           );
         }
         break;
@@ -683,11 +695,15 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
             .forEach(child =>
               events.emit(child, "index-in-parent-change", child.indexInParent)
             );
-          events.emit(accessible, "reorder", rawAccessible.childCount, this);
+          events.emit(accessible, "reorder", rawAccessible.childCount);
         }
         break;
       case EVENT_HIDE:
-        this.purgeSubtree(rawAccessible);
+        if (event.DOMNode == this.rootDoc) {
+          this.clearRefs();
+        } else {
+          this.purgeSubtree(rawAccessible);
+        }
         break;
       case EVENT_DEFACTION_CHANGE:
       case EVENT_ACTION_CHANGE:
@@ -699,7 +715,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
       case EVENT_TEXT_INSERTED:
       case EVENT_TEXT_REMOVED:
         if (accessible) {
-          events.emit(accessible, "text-change", this);
+          events.emit(accessible, "text-change");
           if (NAME_FROM_SUBTREE_RULE_ROLES.has(rawAccessible.role)) {
             events.emit(
               accessible,
@@ -707,8 +723,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
               rawAccessible.name,
               event.DOMNode == this.rootDoc
                 ? undefined
-                : this.getRef(rawAccessible.parent),
-              this
+                : this.getRef(rawAccessible.parent)
             );
           }
         }
@@ -734,7 +749,6 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
         break;
     }
   },
-  /* eslint-enable complexity */
 
   /**
    * Ensure that nothing interferes with the audit for an accessible object
@@ -874,7 +888,26 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     );
   },
 
+  /**
+   * Check if the DOM event received when picking shold be ignored.
+   * @param {Event} event
+   */
+  _ignoreEventWhenPicking(event) {
+    return (
+      !this._isPicking ||
+      // If the DOM event is about a remote frame, only the WalkerActor for that
+      // remote frame target should emit RDP events (hovered/picked/...). And
+      // all other WalkerActor for intermediate iframe and top level document
+      // targets should stay silent.
+      isRemoteFrame(event.originalTarget || event.target)
+    );
+  },
+
   _preventContentEvent(event) {
+    if (this._ignoreEventWhenPicking(event)) {
+      return;
+    }
+
     event.stopPropagation();
     event.preventDefault();
 
@@ -904,7 +937,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    *         Current click event.
    */
   onPick(event) {
-    if (!this._isPicking) {
+    if (this._ignoreEventWhenPicking(event)) {
       return;
     }
 
@@ -938,7 +971,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    *         Current hover event.
    */
   async onHovered(event) {
-    if (!this._isPicking) {
+    if (this._ignoreEventWhenPicking(event)) {
       return;
     }
 
@@ -969,7 +1002,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
    *         Current keyboard event.
    */
   onKey(event) {
-    if (!this._currentAccessible || !this._isPicking) {
+    if (!this._currentAccessible || this._ignoreEventWhenPicking(event)) {
       return;
     }
 
@@ -986,7 +1019,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     switch (event.keyCode) {
       // Select the element.
       case event.DOM_VK_RETURN:
-        this._onPick(event);
+        this.onPick(event);
         break;
       // Cancel pick mode.
       case event.DOM_VK_ESCAPE:
@@ -1087,7 +1120,7 @@ const AccessibleWalkerActor = ActorClassWithSpec(accessibleWalkerSpec, {
     const docAcc = this.getRawAccessibleFor(this.rootDoc);
     const win = target.ownerGlobal;
     const scale = this.pixelRatio / getCurrentZoom(win);
-    const rawAccessible = docAcc.getDeepestChildAtPoint(
+    const rawAccessible = docAcc.getDeepestChildAtPointInProcess(
       event.screenX * scale,
       event.screenY * scale
     );

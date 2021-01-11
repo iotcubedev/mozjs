@@ -15,7 +15,6 @@
 #include "mozilla/StaticPrefs_security.h"
 #include "nsContentUtils.h"
 #include "nsStyleConsts.h"
-#include "nsIContentSecurityPolicy.h"
 
 static mozilla::LazyLogModule gMetaElementLog("nsMetaElement");
 #define LOG(msg) MOZ_LOG(gMetaElementLog, mozilla::LogLevel::Debug, msg)
@@ -30,7 +29,7 @@ HTMLMetaElement::HTMLMetaElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsGenericHTMLElement(std::move(aNodeInfo)) {}
 
-HTMLMetaElement::~HTMLMetaElement() {}
+HTMLMetaElement::~HTMLMetaElement() = default;
 
 NS_IMPL_ELEMENT_CLONE(HTMLMetaElement)
 
@@ -62,7 +61,7 @@ nsresult HTMLMetaElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
                                   nsGkAtoms::viewport, eIgnoreCase)) {
         ProcessViewportContent(document);
       }
-      CreateAndDispatchEvent(document, NS_LITERAL_STRING("DOMMetaChanged"));
+      CreateAndDispatchEvent(document, u"DOMMetaChanged"_ns);
     } else if (document && aName == nsGkAtoms::name) {
       if (aValue && aValue->Equals(nsGkAtoms::viewport, eIgnoreCase)) {
         ProcessViewportContent(document);
@@ -70,7 +69,7 @@ nsresult HTMLMetaElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
                  aOldValue->Equals(nsGkAtoms::viewport, eIgnoreCase)) {
         DiscardViewportContent(document);
       }
-      CreateAndDispatchEvent(document, NS_LITERAL_STRING("DOMMetaChanged"));
+      CreateAndDispatchEvent(document, u"DOMMetaChanged"_ns);
     }
     // Update referrer policy when it got changed from JS
     SetMetaReferrer(document);
@@ -120,7 +119,7 @@ nsresult HTMLMetaElement::BindToTree(BindContext& aContext, nsINode& aParent) {
   // Referrer Policy spec requires a <meta name="referrer" tag to be in the
   // <head> element.
   SetMetaReferrer(&doc);
-  CreateAndDispatchEvent(&doc, NS_LITERAL_STRING("DOMMetaAdded"));
+  CreateAndDispatchEvent(&doc, u"DOMMetaAdded"_ns);
   return rv;
 }
 
@@ -130,7 +129,7 @@ void HTMLMetaElement::UnbindFromTree(bool aNullParent) {
                             nsGkAtoms::viewport, eIgnoreCase)) {
     DiscardViewportContent(oldDoc);
   }
-  CreateAndDispatchEvent(oldDoc, NS_LITERAL_STRING("DOMMetaRemoved"));
+  CreateAndDispatchEvent(oldDoc, u"DOMMetaRemoved"_ns);
   nsGenericHTMLElement::UnbindFromTree(aNullParent);
 }
 
@@ -149,6 +148,17 @@ JSObject* HTMLMetaElement::WrapNode(JSContext* aCx,
 }
 
 void HTMLMetaElement::ProcessViewportContent(Document* aDocument) {
+  if (!HasAttr(kNameSpaceID_None, nsGkAtoms::content)) {
+    // Call Document::RemoveMetaViewportElement for cases that the content
+    // attribute is removed.
+    // NOTE: RemoveMetaViewportElement enumerates all existing meta viewport
+    // tags in the case where this element hasn't been there, i.e. this element
+    // is newly added to the document, but it should be fine because a document
+    // unlikely has a bunch of meta viewport tags.
+    aDocument->RemoveMetaViewportElement(this);
+    return;
+  }
+
   nsAutoString content;
   GetContent(content);
 

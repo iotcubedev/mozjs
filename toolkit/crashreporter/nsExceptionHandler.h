@@ -75,7 +75,6 @@ void SetProfileDirectory(nsIFile* aDir);
 void UpdateCrashEventsDir();
 void SetMemoryReportFile(nsIFile* aFile);
 nsresult GetDefaultMemoryReportFile(nsIFile** aFile);
-void SetTelemetrySessionId(const nsACString& id);
 
 /**
  * Get the path where crash event files should be written.
@@ -98,9 +97,24 @@ nsresult AnnotateCrashReport(Annotation key, const nsACString& data);
 nsresult RemoveCrashReportAnnotation(Annotation key);
 nsresult AppendAppNotesToCrashReport(const nsACString& data);
 
-// Called after the crash reporter client has been created in a content
-// process, allowing annotations to be processed.
-void NotifyCrashReporterClientCreated();
+// RAII class for setting a crash annotation during a limited scope of time.
+// Will reset the named annotation to its previous value when destroyed.
+//
+// This type is subject to the same restrictions as AnnotateCrashReport.
+class MOZ_RAII AutoAnnotateCrashReport final {
+ public:
+  AutoAnnotateCrashReport(Annotation key, bool data);
+  AutoAnnotateCrashReport(Annotation key, int data);
+  AutoAnnotateCrashReport(Annotation key, unsigned int data);
+  AutoAnnotateCrashReport(Annotation key, const nsACString& data);
+  ~AutoAnnotateCrashReport();
+
+#ifdef MOZ_CRASHREPORTER
+ private:
+  Annotation mKey;
+  nsCString mPrevious;
+#endif
+};
 
 void AnnotateOOMAllocationSize(size_t size);
 void AnnotateTexturesSize(size_t size);
@@ -116,6 +130,9 @@ nsresult UnregisterAppMemory(void* ptr);
 
 // Include heap regions of the crash context.
 void SetIncludeContextHeap(bool aValue);
+
+void GetAnnotation(uint32_t childPid, Annotation annotation,
+                   nsACString& outStr);
 
 // Functions for working with minidumps and .extras
 typedef mozilla::EnumeratedArray<Annotation, Annotation::Count, nsCString>
@@ -182,8 +199,11 @@ bool TakeMinidumpForChild(uint32_t childPid, nsIFile** dump,
  *
  * @param aChildPid The pid of the crashed child process
  * @param aType The type of the crashed process
+ * @param aDumpId A string that will be filled with the dump ID
  */
-bool FinalizeOrphanedMinidump(uint32_t aChildPid, GeckoProcessType aType);
+[[nodiscard]] bool FinalizeOrphanedMinidump(uint32_t aChildPid,
+                                            GeckoProcessType aType,
+                                            nsString* aDumpId = nullptr);
 
 #if defined(XP_WIN)
 typedef HANDLE ProcessHandle;
@@ -280,15 +300,6 @@ class InjectorCrashCallback {
 void InjectCrashReporterIntoProcess(DWORD processID, InjectorCrashCallback* cb);
 void UnregisterInjectorCallback(DWORD processID);
 #  endif
-
-// Child-side API
-#  if defined(XP_WIN)
-bool SetRemoteExceptionHandler(const nsACString& crashPipe,
-                               uintptr_t aCrashTimeAnnotationFile);
-#  else
-bool SetRemoteExceptionHandler(const nsACString& crashPipe);
-#  endif
-
 #else
 // Parent-side API for children
 
@@ -302,11 +313,11 @@ bool SetRemoteExceptionHandler(const nsACString& crashPipe);
 // and |true| will be returned.
 bool CreateNotificationPipeForChild(int* childCrashFd, int* childCrashRemapFd);
 
-// Child-side API
-bool SetRemoteExceptionHandler();
-
 #endif  // XP_WIN
 
+// Child-side API
+bool SetRemoteExceptionHandler(const char* aCrashPipe = nullptr,
+                               uintptr_t aCrashTimeAnnotationFile = 0);
 bool UnsetRemoteExceptionHandler();
 
 #if defined(MOZ_WIDGET_ANDROID)
@@ -314,15 +325,6 @@ bool UnsetRemoteExceptionHandler();
 // the handle for the pipe since it can't get remapped to a default value.
 void SetNotificationPipeForChild(int childCrashFd);
 void SetCrashAnnotationPipeForChild(int childCrashAnnotationFd);
-
-// Android builds use a custom library loader, so /proc/<pid>/maps
-// will just show anonymous mappings for all the non-system
-// shared libraries. This API is to work around that by providing
-// info about the shared libraries that are mapped into these anonymous
-// mappings.
-void AddLibraryMapping(const char* library_name, uintptr_t start_address,
-                       size_t mapping_length, size_t file_offset);
-
 #endif
 
 // Annotates the crash report with the name of the calling thread.

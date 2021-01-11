@@ -11,7 +11,7 @@
             <menu id="file-menu" data-l10n-id="menu-file">
               <menupopup id="menu_FilePopup"
                          onpopupshowing="updateFileMenuUserContextUIVisibility('menu_newUserContext');
-                                         updateFileMenuImportUIVisibility('cmd_importFromAnotherBrowser');">
+                                         updateImportCommandEnabledState();">
                 <menuitem id="menu_newNavigatorTab"
                           command="cmd_newNavigatorTab"
                           key="key_newNavigatorTab" data-l10n-id="menu-file-new-tab"/>
@@ -25,6 +25,14 @@
                 <menuitem id="menu_newPrivateWindow"
                           command="Tools:PrivateBrowsing"
                           key="key_privatebrowsing" data-l10n-id="menu-file-new-private-window"/>
+#ifdef NIGHTLY_BUILD
+                <menuitem id="menu_newFissionWindow"
+                          command="Tools:FissionWindow"
+                          accesskey="s" label="New Fission Window"/>
+                <menuitem id="menu_newNonFissionWindow"
+                          command="Tools:NonFissionWindow"
+                          accesskey="s" label="New Non-Fission Window"/>
+#endif
                 <menuitem id="menu_openLocation"
                           hidden="true"
                           command="Browser:OpenLocation"
@@ -61,7 +69,7 @@
                           command="cmd_print" data-l10n-id="menu-file-print"/>
                 <menuseparator/>
                 <menuitem id="menu_importFromAnotherBrowser"
-                          command="cmd_importFromAnotherBrowser" data-l10n-id="menu-file-import-from-another-browser"/>
+                          command="cmd_file_importFromAnotherBrowser" data-l10n-id="menu-file-import-from-another-browser"/>
                 <menuseparator/>
                 <menuitem id="goOfflineMenuitem"
                           type="checkbox"
@@ -88,27 +96,27 @@
                          onpopuphidden="updateEditUIVisibility()">
                 <menuitem id="menu_undo"
                           key="key_undo"
-                          command="cmd_undo" data-l10n-id="menu-edit-undo"/>
+                          command="cmd_undo" data-l10n-id="text-action-undo"/>
                 <menuitem id="menu_redo"
                           key="key_redo"
-                          command="cmd_redo" data-l10n-id="menu-edit-redo"/>
+                          command="cmd_redo" data-l10n-id="text-action-redo"/>
                 <menuseparator/>
                 <menuitem id="menu_cut"
                           key="key_cut"
-                          command="cmd_cut" data-l10n-id="menu-edit-cut"/>
+                          command="cmd_cut" data-l10n-id="text-action-cut"/>
                 <menuitem id="menu_copy"
                           key="key_copy"
-                          command="cmd_copy" data-l10n-id="menu-edit-copy"/>
+                          command="cmd_copy" data-l10n-id="text-action-copy"/>
                 <menuitem id="menu_paste"
                           key="key_paste"
-                          command="cmd_paste" data-l10n-id="menu-edit-paste"/>
+                          command="cmd_paste" data-l10n-id="text-action-paste"/>
                 <menuitem id="menu_delete"
                           key="key_delete"
-                          command="cmd_delete" data-l10n-id="menu-edit-delete"/>
+                          command="cmd_delete" data-l10n-id="text-action-delete"/>
                 <menuseparator/>
                 <menuitem id="menu_selectAll"
                           key="key_selectAll"
-                          command="cmd_selectAll" data-l10n-id="menu-edit-select-all"/>
+                          command="cmd_selectAll" data-l10n-id="text-action-select-all"/>
                 <menuseparator/>
                 <menuitem id="menu_find"
                           key="key_find"
@@ -136,7 +144,7 @@
               <menupopup id="menu_viewPopup"
                          onpopupshowing="updateCharacterEncodingMenuState();">
                 <menu id="viewToolbarsMenu" data-l10n-id="menu-view-toolbars-menu">
-                  <menupopup onpopupshowing="onViewToolbarsPopupShowing(event);">
+                  <menupopup id="view-menu-popup" onpopupshowing="onViewToolbarsPopupShowing(event);">
                     <menuseparator/>
                     <menuitem id="menu_customizeToolbars"
                               command="cmd_CustomizeToolbars" data-l10n-id="menu-view-customize-toolbar"/>
@@ -171,7 +179,7 @@
                     <menuseparator/>
                     <menuitem id="menu_zoomReset"
                               key="key_fullZoomReset"
-                              command="cmd_fullZoomReset" data-l10n-id="menu-view-full-zoom-reset"/>
+                              command="cmd_fullZoomReset" data-l10n-id="menu-view-full-zoom-actual-size"/>
                     <menuseparator/>
                     <menuitem id="toggle_zoom"
                               type="checkbox"
@@ -185,7 +193,7 @@
                               oncommand="gPageStyleMenu.disableStyle();"
                               type="radio" data-l10n-id="menu-view-page-style-no-style"/>
                     <menuitem id="menu_pageStylePersistentOnly"
-                              oncommand="gPageStyleMenu.switchStyleSheet('');"
+                              oncommand="gPageStyleMenu.switchStyleSheet(null);"
                               type="radio"
                               checked="true" data-l10n-id="menu-view-page-basic-style"/>
                     <menuseparator/>
@@ -227,7 +235,7 @@
                 <menuseparator hidden="true" id="documentDirection-separator"/>
                 <menuitem id="documentDirection-swap"
                           hidden="true"
-                          oncommand="gBrowser.selectedBrowser.sendMessageToActor('SwitchDocumentDirection', {}, 'SwitchDocumentDirection', true);" data-l10n-id="menu-view-bidi-switch-page-direction"/>
+                          oncommand="gBrowser.selectedBrowser.sendMessageToActor('SwitchDocumentDirection', {}, 'SwitchDocumentDirection', 'roots');" data-l10n-id="menu-view-bidi-switch-page-direction"/>
               </menupopup>
             </menu>
 
@@ -258,7 +266,7 @@
                 <menuitem id="historyRestoreLastSession"
                           command="Browser:RestoreLastSession" data-l10n-id="menu-history-restore-last-session"/>
                 <menuitem id="hiddenTabsMenu"
-                          oncommand="gTabsPanel.showHiddenTabsPanel();"
+                          oncommand="gTabsPanel.showHiddenTabsPanel(event);"
                           hidden="true" data-l10n-id="menu-history-hidden-tabs"/>
                 <menu id="historyUndoMenu"
                       disabled="true" data-l10n-id="menu-history-undo-menu">
@@ -286,7 +294,8 @@
   <menu id="bookmarksMenu"
         ondragenter="PlacesMenuDNDHandler.onDragEnter(event);"
         ondragover="PlacesMenuDNDHandler.onDragOver(event);"
-        ondrop="PlacesMenuDNDHandler.onDrop(event);" data-l10n-id="menu-bookmarks-menu">
+        ondrop="PlacesMenuDNDHandler.onDrop(event);"
+        data-l10n-id="menu-bookmarks-menu">
     <menupopup id="bookmarksMenuPopup"
 #ifndef XP_MACOSX
                placespopup="true"
@@ -303,19 +312,23 @@
                tooltip="bhTooltip" popupsinherittooltip="true">
       <menuitem id="bookmarksShowAll"
                 command="Browser:ShowAllBookmarks"
-                key="manBookmarkKb" data-l10n-id="menu-bookmarks-show-all"/>
+                key="manBookmarkKb"
+                data-l10n-id="menu-bookmarks-show-all"/>
       <menuseparator id="organizeBookmarksSeparator"/>
       <menuitem id="menu_bookmarkThisPage"
                 command="Browser:AddBookmarkAs"
-                key="addBookmarkAsKb"/>
+                key="addBookmarkAsKb"
+                data-l10n-id="menu-bookmark-this-page"/>
       <menuitem id="menu_bookmarkAllTabs"
                 class="show-only-for-keyboard"
                 command="Browser:BookmarkAllTabs"
-                key="bookmarkAllTabsKb" data-l10n-id="menu-bookmarks-all-tabs"/>
+                key="bookmarkAllTabsKb"
+                data-l10n-id="menu-bookmarks-all-tabs"/>
       <menuseparator id="bookmarksToolbarSeparator"/>
       <menu id="bookmarksToolbarFolderMenu"
             class="menu-iconic bookmark-item"
-            container="true" data-l10n-id="menu-bookmarks-toolbar">
+            container="true"
+            data-l10n-id="menu-bookmarks-toolbar">
         <menupopup id="bookmarksToolbarFolderPopup"
 #ifndef XP_MACOSX
                    placespopup="true"
@@ -327,7 +340,8 @@
       </menu>
       <menu id="menu_unsortedBookmarks"
             class="menu-iconic bookmark-item"
-            container="true" data-l10n-id="menu-bookmarks-other">
+            container="true"
+            data-l10n-id="menu-bookmarks-other">
         <menupopup id="otherBookmarksFolderPopup"
 #ifndef XP_MACOSX
                    placespopup="true"
@@ -340,7 +354,8 @@
       <menu id="menu_mobileBookmarks"
             class="menu-iconic bookmark-item"
             hidden="true"
-            container="true" data-l10n-id="menu-bookmarks-mobile">
+            container="true"
+            data-l10n-id="menu-bookmarks-mobile">
         <menupopup id="mobileBookmarksFolderPopup"
 #ifndef XP_MACOSX
                    placespopup="true"
@@ -364,15 +379,19 @@
                         key="key_openAddons"
                         command="Tools:Addons" data-l10n-id="menu-tools-addons"/>
 
-              <!-- only one of sync-setup, sync-unverifieditem, sync-syncnowitem or sync-reauthitem will be showing at once -->
+              <!-- only one of sync-setup, sync-enable, sync-unverifieditem, sync-syncnowitem or sync-reauthitem will be showing at once -->
               <menuitem id="sync-setup"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-sync-sign-in"/>
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in"/>
+              <menuitem id="sync-enable"
+                        class="sync-ui-item"
+                        hidden="true"
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-turn-on-sync"/>
               <menuitem id="sync-unverifieditem"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-sync-sign-in"/>
+                        oncommand="gSync.openPrefs('menubar')" data-l10n-id="menu-tools-fxa-sign-in"/>
               <menuitem id="sync-syncnowitem"
                         class="sync-ui-item"
                         hidden="true"
@@ -380,7 +399,7 @@
               <menuitem id="sync-reauthitem"
                         class="sync-ui-item"
                         hidden="true"
-                        oncommand="gSync.openSignInAgainPage('menubar');" data-l10n-id="menu-tools-sync-re-auth"/>
+                        oncommand="gSync.openSignInAgainPage('menubar');" data-l10n-id="menu-tools-fxa-re-auth"/>
               <menuseparator id="devToolsSeparator"/>
               <menu id="webDeveloperMenu" data-l10n-id="menu-tools-web-developer">
                 <menupopup id="menuWebDeveloperPopup">
@@ -390,9 +409,7 @@
                 </menupopup>
               </menu>
               <menuitem id="menu_pageInfo"
-#ifndef XP_WIN
                         key="key_viewInfo"
-#endif
                         command="View:PageInfo" data-l10n-id="menu-tools-page-info"/>
 #ifndef XP_UNIX
               <menuseparator id="prefSep"/>
@@ -403,7 +420,7 @@
               <menuitem id="menu_layout_debugger"
                         data-l10n-id="menu-tools-layout-debugger"
                         oncommand="toOpenWindowByType('mozapp:layoutdebug',
-                                          'chrome://layoutdebug/content/');"/>
+                                          'chrome://layoutdebug/content/layoutdebug.xhtml');"/>
 #endif
 #ifdef XP_MACOSX
 <!-- nsMenuBarX hides these and uses them to build the Application menu. -->
@@ -449,6 +466,8 @@
 #endif
                 <menuitem id="menu_openTour"
                           oncommand="openTourPage();" data-l10n-id="menu-help-show-tour"/>
+                <menuitem id="help_importFromAnotherBrowser"
+                          command="cmd_help_importFromAnotherBrowser" data-l10n-id="menu-help-import-from-another-browser"/>
                 <menuitem id="menu_keyboardShortcuts"
                           oncommand="openHelpLink('keyboard-shortcuts')"
                           onclick="checkForMiddleClick(this, event);" data-l10n-id="menu-help-keyboard-shortcuts"/>
@@ -469,6 +488,7 @@
                           disabled="true"
                           oncommand="ReportFalseDeceptiveSite();"
                           onclick="checkForMiddleClick(this, event);"
+                          data-l10n-id="menu-help-not-deceptive"
                           hidden="true"/>
                 <menuseparator id="helpPolicySeparator"
                           hidden="true"/>

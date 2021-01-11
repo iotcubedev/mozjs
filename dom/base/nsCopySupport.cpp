@@ -8,8 +8,6 @@
 #include "nsIDocumentEncoder.h"
 #include "nsISupports.h"
 #include "nsIContent.h"
-#include "nsIComponentManager.h"
-#include "nsIServiceManager.h"
 #include "nsIClipboard.h"
 #include "nsIFormControl.h"
 #include "nsWidgetsCID.h"
@@ -19,11 +17,11 @@
 #include "imgIContainer.h"
 #include "imgIRequest.h"
 #include "nsFocusManager.h"
+#include "nsFrameSelection.h"
 #include "mozilla/dom/DataTransfer.h"
 
 #include "nsIDocShell.h"
 #include "nsIContentViewerEdit.h"
-#include "nsIClipboardHelper.h"
 #include "nsISelectionController.h"
 
 #include "nsPIDOMWindow.h"
@@ -32,8 +30,6 @@
 #include "nsGkAtoms.h"
 #include "nsIFrame.h"
 #include "nsIURI.h"
-#include "nsIURIMutator.h"
-#include "nsISimpleEnumerator.h"
 #include "nsGenericHTMLElement.h"
 
 // image copy stuff
@@ -411,8 +407,8 @@ nsresult nsCopySupport::GetTransferableForNode(
   // Make a temporary selection with aNode in a single range.
   // XXX We should try to get rid of the Selection object here.
   // XXX bug 1245883
-  RefPtr<Selection> selection = new Selection();
-  RefPtr<nsRange> range = new nsRange(aNode);
+  RefPtr<Selection> selection = new Selection(SelectionType::eNormal, nullptr);
+  RefPtr<nsRange> range = nsRange::Create(aNode);
   ErrorResult result;
   range->SelectNode(*aNode, result);
   if (NS_WARN_IF(result.Failed())) {
@@ -557,10 +553,10 @@ static nsresult AppendDOMNode(nsITransferable* aTransferable,
   NS_ENSURE_TRUE(document->IsHTMLDocument(), NS_OK);
 
   // init encoder with document and node
-  rv =
-      docEncoder->NativeInit(document, NS_LITERAL_STRING(kHTMLMime),
-                             nsIDocumentEncoder::OutputAbsoluteLinks |
-                                 nsIDocumentEncoder::OutputEncodeBasicEntities);
+  rv = docEncoder->NativeInit(
+      document, NS_LITERAL_STRING_FROM_CSTRING(kHTMLMime),
+      nsIDocumentEncoder::OutputAbsoluteLinks |
+          nsIDocumentEncoder::OutputEncodeBasicEntities);
   NS_ENSURE_SUCCESS(rv, rv);
 
   rv = docEncoder->SetNode(aDOMNode);
@@ -593,14 +589,6 @@ static nsresult AppendImagePromise(nsITransferable* aTransferable,
   nsresult rv;
 
   NS_ENSURE_TRUE(aImgRequest, NS_OK);
-
-  uint32_t imageStatus;
-  rv = aImgRequest->GetImageStatus(&imageStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
-  if (!(imageStatus & imgIRequest::STATUS_FRAME_COMPLETE) ||
-      (imageStatus & imgIRequest::STATUS_ERROR)) {
-    return NS_OK;
-  }
 
   bool isMultipart;
   rv = aImgRequest->GetMultipart(&isMultipart);
@@ -652,12 +640,13 @@ static nsresult AppendImagePromise(nsITransferable* aTransferable,
     // Fix the file extension in the URL
     nsAutoCString primaryExtension;
     mimeInfo->GetPrimaryExtension(primaryExtension);
-
-    rv = NS_MutateURI(imgUri)
-             .Apply(NS_MutatorMethod(&nsIURLMutator::SetFileExtension,
-                                     primaryExtension, nullptr))
-             .Finalize(imgUrl);
-    NS_ENSURE_SUCCESS(rv, rv);
+    if (!primaryExtension.IsEmpty()) {
+      rv = NS_MutateURI(imgUri)
+               .Apply(NS_MutatorMethod(&nsIURLMutator::SetFileExtension,
+                                       primaryExtension, nullptr))
+               .Finalize(imgUrl);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
   }
 
   nsAutoCString fileName;
@@ -685,37 +674,27 @@ static nsresult AppendImagePromise(nsITransferable* aTransferable,
 }
 #endif  // XP_WIN
 
-nsIContent* nsCopySupport::GetSelectionForCopy(Document* aDocument,
-                                               Selection** aSelection) {
-  *aSelection = nullptr;
-
+already_AddRefed<Selection> nsCopySupport::GetSelectionForCopy(
+    Document* aDocument) {
   PresShell* presShell = aDocument->GetPresShell();
   if (!presShell) {
     return nullptr;
   }
 
-  nsCOMPtr<nsIContent> focusedContent;
-  nsCOMPtr<nsISelectionController> selectionController =
-      presShell->GetSelectionControllerForFocusedContent(
-          getter_AddRefs(focusedContent));
-  if (!selectionController) {
+  RefPtr<nsFrameSelection> frameSel = presShell->GetLastFocusedFrameSelection();
+  if (!frameSel) {
     return nullptr;
   }
 
-  RefPtr<Selection> sel = selectionController->GetSelection(
-      nsISelectionController::SELECTION_NORMAL);
-  sel.forget(aSelection);
-  return focusedContent;
+  RefPtr<Selection> sel = frameSel->GetSelection(SelectionType::eNormal);
+  return sel.forget();
 }
 
 bool nsCopySupport::CanCopy(Document* aDocument) {
   if (!aDocument) return false;
 
-  RefPtr<Selection> sel;
-  GetSelectionForCopy(aDocument, getter_AddRefs(sel));
-  NS_ENSURE_TRUE(sel, false);
-
-  return !sel->IsCollapsed();
+  RefPtr<Selection> sel = GetSelectionForCopy(aDocument);
+  return sel && !sel->IsCollapsed();
 }
 
 static bool IsInsideRuby(nsINode* aNode) {
@@ -729,10 +708,9 @@ static bool IsInsideRuby(nsINode* aNode) {
 
 static bool IsSelectionInsideRuby(Selection* aSelection) {
   uint32_t rangeCount = aSelection->RangeCount();
-  ;
   for (auto i : IntegerRange(rangeCount)) {
-    nsRange* range = aSelection->GetRangeAt(i);
-    if (!IsInsideRuby(range->GetCommonAncestor())) {
+    const nsRange* range = aSelection->GetRangeAt(i);
+    if (!IsInsideRuby(range->GetClosestCommonInclusiveAncestor())) {
       return false;
     }
   }
@@ -788,12 +766,12 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   // If a selection was not supplied, try to find it.
   RefPtr<Selection> sel = aSelection;
   if (!sel) {
-    GetSelectionForCopy(doc, getter_AddRefs(sel));
+    sel = GetSelectionForCopy(doc);
   }
 
   // Retrieve the event target node from the start of the selection.
   if (sel) {
-    nsRange* range = sel->GetRangeAt(0);
+    const nsRange* range = sel->GetRangeAt(0);
     if (range) {
       targetElement = GetElementOrNearestFlattenedTreeParentElement(
           range->GetStartContainer());
@@ -814,9 +792,8 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
     return false;
   }
 
-  nsCOMPtr<nsIDocShell> docShell = piWindow->GetDocShell();
-  const bool chromeShell =
-      docShell && docShell->ItemType() == nsIDocShellTreeItem::typeChrome;
+  BrowsingContext* bc = piWindow->GetBrowsingContext();
+  const bool chromeShell = bc && bc->IsChrome();
 
   // next, fire the cut, copy or paste event
   bool doDefault = true;
@@ -884,7 +861,7 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
     // there is unmasked range but it's collapsed or it'll be masked
     // automatically, the selected password shouldn't be copied into the
     // clipboard.
-    if (HTMLInputElement* inputElement =
+    if (RefPtr<HTMLInputElement> inputElement =
             HTMLInputElement::FromNodeOrNull(sourceContent)) {
       if (TextEditor* textEditor = inputElement->GetTextEditor()) {
         if (textEditor->IsPasswordEditor() &&
@@ -941,7 +918,7 @@ bool nsCopySupport::FireClipboardEvent(EventMessage aEventMessage,
   // Now that we have copied, update the clipboard commands. This should have
   // the effect of updating the enabled state of the paste menu item.
   if (doDefault || count) {
-    piWindow->UpdateCommands(NS_LITERAL_STRING("clipboard"), nullptr, 0);
+    piWindow->UpdateCommands(u"clipboard"_ns, nullptr, 0);
   }
 
   if (aActionTaken) {

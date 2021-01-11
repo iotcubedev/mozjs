@@ -4,7 +4,7 @@
 const TEST_ORIGIN = "https://example.com";
 const TEST_SUB_ORIGIN = "https://test1.example.com";
 const REMOVE_DIALOG_URL =
-  "chrome://browser/content/preferences/siteDataRemoveSelected.xul";
+  "chrome://browser/content/preferences/dialogs/siteDataRemoveSelected.xhtml";
 
 // Greek IDN for 'example.test'.
 const TEST_IDN_ORIGIN =
@@ -17,15 +17,6 @@ ChromeUtils.defineModuleGetter(
   "SiteDataTestUtils",
   "resource://testing-common/SiteDataTestUtils.jsm"
 );
-
-add_task(async function setup() {
-  let oldCanRecord = Services.telemetry.canRecordExtended;
-  Services.telemetry.canRecordExtended = true;
-
-  registerCleanupFunction(() => {
-    Services.telemetry.canRecordExtended = oldCanRecord;
-  });
-});
 
 async function testClearing(
   testQuota,
@@ -60,8 +51,10 @@ async function testClearing(
     // Open the identity popup.
     let { gIdentityHandler } = gBrowser.ownerGlobal;
     let promisePanelOpen = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popupshown"
+      gBrowser.ownerGlobal,
+      "popupshown",
+      true,
+      event => event.target == gIdentityHandler._identityPopup
     );
     gIdentityHandler._identityBox.click();
     await promisePanelOpen;
@@ -95,8 +88,6 @@ async function testClearing(
       ]);
     }
 
-    Services.telemetry.clearEvents();
-
     // Click the "Clear data" button.
     let siteDataUpdated = TestUtils.topicObserved(
       "sitedatamanager:sites-updated"
@@ -112,17 +103,6 @@ async function testClearing(
     clearButton.click();
     await hideEvent;
     await removeDialogPromise;
-
-    let events = Services.telemetry.snapshotEvents(
-      Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS
-    ).parent;
-    let buttonEvents = events.filter(
-      e =>
-        e[1] == "security.ui.identitypopup" &&
-        e[2] == "click" &&
-        e[3] == "clear_sitedata"
-    );
-    is(buttonEvents.length, 1, "recorded telemetry for the button click");
 
     await siteDataUpdated;
 

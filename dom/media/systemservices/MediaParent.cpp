@@ -12,7 +12,6 @@
 #include "MediaUtils.h"
 #include "MediaEngine.h"
 #include "VideoUtils.h"
-#include "nsAutoPtr.h"
 #include "nsThreadUtils.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
@@ -31,7 +30,7 @@ mozilla::LazyLogModule gMediaParentLog("MediaParent");
 // A file in the profile dir is used to persist mOriginKeys used to anonymize
 // deviceIds to be unique per origin, to avoid them being supercookies.
 
-#define ORIGINKEYS_FILE "enumerate_devices.txt"
+#define ORIGINKEYS_FILE u"enumerate_devices.txt"
 #define ORIGINKEYS_VERSION "1"
 
 namespace mozilla {
@@ -86,7 +85,7 @@ class OriginKeyStore : public nsISupports {
       // Avoid int64_t* <-> void* casting offset
       OriginKey since(nsCString(), aSinceWhen / PR_USEC_PER_SEC);
       for (auto iter = mKeys.Iter(); !iter.Done(); iter.Next()) {
-        nsAutoPtr<OriginKey>& originKey = iter.Data();
+        auto originKey = iter.UserData();
         LOG((((originKey->mSecondsStamp >= since.mSecondsStamp)
                   ? "%s: REMOVE %" PRId64 " >= %" PRId64
                   : "%s: KEEP   %" PRId64 " < %" PRId64),
@@ -158,7 +157,7 @@ class OriginKeyStore : public nsISupports {
 
   class OriginKeysLoader : public OriginKeysTable {
    public:
-    OriginKeysLoader() {}
+    OriginKeysLoader() = default;
 
     nsresult GetPrincipalKey(const ipc::PrincipalInfo& aPrincipalInfo,
                              nsCString& aResult, bool aPersist = false) {
@@ -182,7 +181,7 @@ class OriginKeyStore : public nsISupports {
       if (NS_WARN_IF(NS_FAILED(rv))) {
         return nullptr;
       }
-      file->Append(NS_LITERAL_STRING(ORIGINKEYS_FILE));
+      file->Append(nsLiteralString(ORIGINKEYS_FILE));
       return file.forget();
     }
 
@@ -441,7 +440,7 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
 
         nsresult rv;
         nsAutoCString result;
-        if (IsPincipalInfoPrivate(aPrincipalInfo)) {
+        if (IsPrincipalInfoPrivate(aPrincipalInfo)) {
           rv = sOriginKeyStore->mPrivateBrowsingOriginKeys.GetPrincipalKey(
               aPrincipalInfo, result);
         } else {
@@ -455,10 +454,10 @@ mozilla::ipc::IPCResult Parent<Super>::RecvGetPrincipalKey(
         return PrincipalKeyPromise::CreateAndResolve(result, __func__);
       })
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [aResolve](const PrincipalKeyPromise::ResolveOrRejectValue& aValue) {
             if (aValue.IsReject()) {
-              aResolve(NS_LITERAL_CSTRING(""));
+              aResolve(""_ns);
             } else {
               aResolve(aValue.ResolveValue());
             }

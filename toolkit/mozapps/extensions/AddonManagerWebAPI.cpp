@@ -29,17 +29,14 @@ static bool IsValidHost(const nsACString& host) {
     return false;
   }
 
-  if (host.EqualsLiteral("addons.mozilla.org") ||
-      host.EqualsLiteral("discovery.addons.mozilla.org")) {
+  if (host.EqualsLiteral("addons.mozilla.org")) {
     return true;
   }
 
   // When testing allow access to the developer sites.
   if (Preferences::GetBool("extensions.webapi.testing", false)) {
     if (host.LowerCaseEqualsLiteral("addons.allizom.org") ||
-        host.LowerCaseEqualsLiteral("discovery.addons.allizom.org") ||
         host.LowerCaseEqualsLiteral("addons-dev.allizom.org") ||
-        host.LowerCaseEqualsLiteral("discovery.addons-dev.allizom.org") ||
         host.LowerCaseEqualsLiteral("example.com")) {
       return true;
     }
@@ -71,6 +68,7 @@ bool AddonManagerWebAPI::IsValidSite(nsIURI* uri) {
   return IsValidHost(host);
 }
 
+#ifndef ANDROID
 bool AddonManagerWebAPI::IsAPIEnabled(JSContext* aCx, JSObject* aGlobal) {
   MOZ_DIAGNOSTIC_ASSERT(JS_IsGlobalObject(aGlobal));
   nsCOMPtr<nsPIDOMWindowInner> win = xpc::WindowOrNull(aGlobal);
@@ -108,17 +106,20 @@ bool AddonManagerWebAPI::IsAPIEnabled(JSContext* aCx, JSObject* aGlobal) {
     }
 
     // Checks whether there is a parent frame of the same type. This won't cross
-    // mozbrowser or chrome boundaries.
+    // mozbrowser or chrome or fission/process boundaries.
     nsCOMPtr<nsIDocShellTreeItem> parent;
     nsresult rv = docShell->GetInProcessSameTypeParent(getter_AddRefs(parent));
     if (NS_FAILED(rv)) {
       return false;
     }
 
+    // No parent means we've hit a mozbrowser or chrome or process boundary.
     if (!parent) {
-      // No parent means we've hit a mozbrowser or chrome boundary so allow
-      // access to the API.
-      return true;
+      // With Fission, a cross-origin iframe has an out-of-process parent, but
+      // DocShell knows nothing about it. We need to ask BrowsingContext here,
+      // and only allow API access if AMO is actually at the top, not framed
+      // by evilleagueofevil.com.
+      return docShell->GetBrowsingContext()->IsTopContent();
     }
 
     Document* doc = win->GetDoc();
@@ -138,6 +139,11 @@ bool AddonManagerWebAPI::IsAPIEnabled(JSContext* aCx, JSObject* aGlobal) {
   // Found a document with no inner window, don't grant access to the API.
   return false;
 }
+#else   // We don't support mozAddonManager on Android
+bool AddonManagerWebAPI::IsAPIEnabled(JSContext* aCx, JSObject* aGlobal) {
+  return false;
+}
+#endif  // ifndef ANDROID
 
 namespace dom {
 

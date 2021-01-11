@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This allows ubuntu-desktop to be installed without human interaction
+# This allows packages to be installed without human interaction
 export DEBIAN_FRONTEND=noninteractive
 
 set -ve
@@ -11,8 +11,10 @@ cd /setup
 
 apt_packages=()
 apt_packages+=('curl')
+apt_packages+=('iproute2')
 apt_packages+=('locales')
 apt_packages+=('git')
+apt_packages+=('graphviz')
 apt_packages+=('python')
 apt_packages+=('python-pip')
 apt_packages+=('python3')
@@ -44,6 +46,12 @@ cd /build
 . install-mercurial.sh
 
 ###
+# zstandard
+###
+pip install zstandard==0.13.0
+pip3 install zstandard==0.13.0
+
+###
 # ESLint Setup
 ###
 
@@ -66,10 +74,10 @@ mv /build/node_modules /build/node_modules_eslint-plugin-mozilla
 tooltool_fetch <<EOF
 [
   {
-    "size": 866160,
-    "digest": "9f0ef6bf44b8622bd0e4e8b0b5b5c714c0a2ce4487e6f234e7d4caac458164c521949f4d84b8296274e8bd20966f835e26f6492ba499405d38b620181e82429e",
+    "size": 1161860,
+    "digest": "3246470715e1ddf4c7e5136fdddd2ca269928c2de3074a98233faef189efd88fc9b28ddbe68642a31cf647a97f630941d764187006c5115e6f357d49322ef58d",
     "algorithm": "sha512",
-    "filename": "fzf-0.16.11-linux_amd64.tgz",
+    "filename": "fzf-0.20.0-linux_amd64.tgz",
     "unpack": true
   }
 ]
@@ -77,12 +85,13 @@ EOF
 mv fzf /usr/local/bin
 
 ###
-# Flake8 Setup
+# Flake8/pylint Setup
 ###
 
 cd /setup
 
-pip install --require-hashes -r /tmp/flake8_requirements.txt
+pip3 install --require-hashes -r /tmp/flake8_requirements.txt
+pip3 install --require-hashes -r /tmp/pylint_requirements.txt
 
 ###
 # codespell Setup
@@ -90,7 +99,7 @@ pip install --require-hashes -r /tmp/flake8_requirements.txt
 
 cd /setup
 
-pip install --require-hashes -r /tmp/codespell_requirements.txt
+pip3 install --require-hashes -r /tmp/codespell_requirements.txt
 
 ###
 # tox Setup
@@ -98,10 +107,18 @@ pip install --require-hashes -r /tmp/codespell_requirements.txt
 
 cd /setup
 
-pip install --require-hashes -r /tmp/tox_requirements.txt
+pip3 install --require-hashes -r /tmp/tox_requirements.txt
 
 ###
-# rustfmt
+# Black Setup
+###
+
+cd /setup
+
+pip3 install --require-hashes -r /tmp/black_requirements.txt
+
+###
+# rustfmt and clippy
 ###
 
 cd /setup
@@ -110,7 +127,10 @@ export CARGO_HOME="$RUSTUP_HOME"
 mkdir -p "$CARGO_HOME"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 "$RUSTUP_HOME"/bin/rustup component add rustfmt
+"$RUSTUP_HOME"/bin/rustup component add clippy
+"$RUSTUP_HOME"/bin/rustc --version
 "$RUSTUP_HOME"/bin/rustfmt --version
+"$CARGO_HOME"/bin/cargo clippy --version
 
 cd /
 rm -rf /setup

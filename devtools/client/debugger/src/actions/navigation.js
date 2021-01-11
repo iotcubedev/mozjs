@@ -7,11 +7,12 @@
 import { clearDocuments } from "../utils/editor";
 import sourceQueue from "../utils/source-queue";
 
-import { updateThreads } from "./threads";
+import { evaluateExpressions } from "./expressions";
 
 import { clearWasmStates } from "../utils/wasm";
-import { getMainThread } from "../selectors";
+import { getMainThread, getThreadContext } from "../selectors";
 import type { Action, ThunkArgs } from "./types";
+import type { ActorId, URL } from "../types";
 
 /**
  * Redux actions for the navigation state
@@ -35,7 +36,6 @@ export function willNavigate(event: Object) {
     clearWasmStates();
     clearDocuments();
     parser.clear();
-    client.detachWorkers();
     const thread = getMainThread(getState());
 
     dispatch({
@@ -46,26 +46,23 @@ export function willNavigate(event: Object) {
 }
 
 export function connect(
-  url: string,
-  actor: string,
-  canRewind: boolean,
+  url: URL,
+  actor: ActorId,
+  traits: Object,
   isWebExtension: boolean
 ) {
-  return async function({ dispatch }: ThunkArgs) {
-    await dispatch(updateThreads());
-    dispatch(
+  return async function({ dispatch, getState }: ThunkArgs) {
+    await dispatch(
       ({
         type: "CONNECT",
-        mainThread: {
-          url,
-          actor,
-          type: "mainThread",
-          name: L10N.getStr("mainThread"),
-        },
-        canRewind,
+        traits,
+        mainThreadActorID: actor,
         isWebExtension,
       }: Action)
     );
+
+    const cx = getThreadContext(getState());
+    dispatch(evaluateExpressions(cx));
   };
 }
 
@@ -74,7 +71,7 @@ export function connect(
  * @static
  */
 export function navigated() {
-  return async function({ panel }: ThunkArgs) {
+  return async function({ dispatch, panel }: ThunkArgs) {
     panel.emit("reloaded");
   };
 }

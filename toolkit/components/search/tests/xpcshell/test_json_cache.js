@@ -13,131 +13,174 @@ const { AppConstants } = ChromeUtils.import(
 const { getAppInfo } = ChromeUtils.import(
   "resource://testing-common/AppInfo.jsm"
 );
+const { SearchService } = ChromeUtils.import(
+  "resource://gre/modules/SearchService.jsm"
+);
 
 var cacheTemplate, appPluginsPath, profPlugins;
 
 /**
  * Test reading from search.json.mozlz4
  */
-function run_test() {
-  let cacheTemplateFile = do_get_file("data/search.json");
+add_task(async function setup() {
+  await useTestEngines("data1");
+  await AddonTestUtils.promiseStartupManager();
+});
+
+async function loadCacheFile(cacheFile) {
+  let cacheTemplateFile = do_get_file(cacheFile);
   cacheTemplate = readJSONFile(cacheTemplateFile);
   cacheTemplate.buildID = getAppInfo().platformBuildID;
+  cacheTemplate.version = SearchUtils.CACHE_VERSION;
 
-  let engineFile = do_get_profile().clone();
-  engineFile.append("searchplugins");
-  engineFile.append("test-search-engine.xml");
-  engineFile.parent.create(
-    Ci.nsIFile.DIRECTORY_TYPE,
-    FileUtils.PERMS_DIRECTORY
-  );
+  if (gModernConfig) {
+    delete cacheTemplate.visibleDefaultEngines;
+  } else {
+    // The list of visibleDefaultEngines needs to match or the cache will be ignored.
+    cacheTemplate.visibleDefaultEngines = getDefaultEngineList(false);
 
-  // Copy the test engine to the test profile.
-  let engineTemplateFile = do_get_file("data/engine.xml");
-  engineTemplateFile.copyTo(engineFile.parent, "test-search-engine.xml");
+    // Since the above code is querying directly from list.json,
+    // we need to override the values in the esr case.
+    if (AppConstants.MOZ_APP_VERSION_DISPLAY.endsWith("esr")) {
+      let esrOverrides = {
+        "google-b-d": "google-b-e",
+        "google-b-1-d": "google-b-1-e",
+      };
 
-  // The list of visibleDefaultEngines needs to match or the cache will be ignored.
-  cacheTemplate.visibleDefaultEngines = getDefaultEngineList(false);
-
-  // Since the above code is querying directly from list.json,
-  // we need to override the values in the esr case.
-  if (AppConstants.MOZ_APP_VERSION_DISPLAY.endsWith("esr")) {
-    let esrOverrides = {
-      "google-b-d": "google-b-e",
-      "google-b-1-d": "google-b-1-e",
-    };
-
-    for (let engine in esrOverrides) {
-      let index = cacheTemplate.visibleDefaultEngines.indexOf(engine);
-      if (index > -1) {
-        cacheTemplate.visibleDefaultEngines[index] = esrOverrides[engine];
+      for (let engine in esrOverrides) {
+        let index = cacheTemplate.visibleDefaultEngines.indexOf(engine);
+        if (index > -1) {
+          cacheTemplate.visibleDefaultEngines[index] = esrOverrides[engine];
+        }
       }
     }
   }
 
-  run_next_test();
-}
+  await promiseSaveCacheData(cacheTemplate);
 
-add_test(function prepare_test_data() {
-  OS.File.writeAtomic(
-    OS.Path.join(OS.Constants.Path.profileDir, CACHE_FILENAME),
-    new TextEncoder().encode(JSON.stringify(cacheTemplate)),
-    { compression: "lz4" }
-  ).then(run_next_test);
-});
+  if (!gModernConfig) {
+    // For the legacy config, make sure we switch _isBuiltin to _isAppProvided
+    // after saving, so that the expected results match.
+    for (let engine of cacheTemplate.engines) {
+      if ("_isBuiltin" in engine) {
+        engine._isAppProvided = engine._isBuiltin;
+        delete engine._isBuiltin;
+      }
+      if ("extensionID" in engine) {
+        engine._extensionID = engine.extensionID;
+        delete engine.extensionID;
+      }
+    }
+  }
+}
 
 /**
  * Start the search service and confirm the engine properties match the expected values.
+ *
+ * @param {string} cacheFile
+ *   The path to the cache file to use.
  */
-add_test(function test_cached_engine_properties() {
+async function checkLoadCachedProperties(cacheFile) {
   info("init search service");
 
-  Services.search.init().then(function initComplete(aResult) {
-    info("init'd search service");
-    Assert.ok(Components.isSuccessCode(aResult));
+  await loadCacheFile(cacheFile);
 
-    Services.search.getEngines().then(engines => {
-      let engine = engines[0].QueryInterface(Ci.nsISearchEngine);
-      isSubObjectOf(EXPECTED_ENGINE.engine, engine);
+  const cacheFileWritten = promiseAfterCache();
+  let ss = new SearchService();
+  let result = await ss.init();
 
-      let engineFromSS = Services.search.getEngineByName(
-        EXPECTED_ENGINE.engine.name
-      );
-      Assert.ok(!!engineFromSS);
-      isSubObjectOf(EXPECTED_ENGINE.engine, engineFromSS);
+  info("init'd search service");
+  Assert.ok(Components.isSuccessCode(result));
 
-      removeCacheFile();
-      run_next_test();
-    });
-  });
+  await cacheFileWritten;
+
+  let engines = await ss.getEngines();
+
+  Assert.equal(
+    engines[0].name,
+    "engine1",
+    "Should have loaded the correct first engine"
+  );
+  Assert.equal(engines[0].alias, "testAlias", "Should have set the alias");
+  Assert.equal(engines[0].hidden, false, "Should have not hidden the engine");
+  Assert.equal(
+    engines[1].name,
+    "engine2",
+    "Should have loaded the correct second engine"
+  );
+  Assert.equal(engines[1].alias, null, "Should have not set the alias");
+  Assert.equal(engines[1].hidden, true, "Should have hidden the engine");
+
+  // The extra engine is the second in the list.
+  isSubObjectOf(EXPECTED_ENGINE.engine, engines[2]);
+
+  let engineFromSS = ss.getEngineByName(EXPECTED_ENGINE.engine.name);
+  Assert.ok(!!engineFromSS);
+  isSubObjectOf(EXPECTED_ENGINE.engine, engineFromSS);
+
+  removeCacheFile();
+  ss._removeObservers();
+}
+
+add_task(async function test_legacy_cached_engine_properties() {
+  await checkLoadCachedProperties("data/search-legacy.json");
+});
+
+add_task(async function test_current_cached_engine_properties() {
+  // Legacy configuration doesn't support loading the modern cache directly.
+  if (!gModernConfig) {
+    return;
+  }
+  await checkLoadCachedProperties("data/search.json");
 });
 
 /**
  * Test that the JSON cache written in the profile is correct.
  */
-add_test(function test_cache_write() {
+add_task(async function test_cache_write() {
   info("test cache writing");
+
+  await loadCacheFile(
+    gModernConfig ? "data/search.json" : "data/search-legacy.json"
+  );
+
+  const cacheFileWritten = promiseAfterCache();
+  await Services.search.init();
+  await cacheFileWritten;
+  removeCacheFile();
 
   let cache = do_get_profile().clone();
   cache.append(CACHE_FILENAME);
   Assert.ok(!cache.exists());
 
   info("Next step is forcing flush");
-  do_timeout(0, function forceFlush() {
-    info("Forcing flush");
-    // Force flush
-    // Note: the timeout is needed, to avoid some reentrency
-    // issues in nsSearchService.
+  // Note: the dispatch is needed, to avoid some reentrency
+  // issues in SearchService.
+  let cacheWritePromise = promiseAfterCache();
 
-    let cacheWriteObserver = {
-      observe: function cacheWriteObserver_observe(aEngine, aTopic, aVerb) {
-        if (
-          aTopic != "browser-search-service" ||
-          aVerb != "write-cache-to-disk-complete"
-        ) {
-          return;
-        }
-        Services.obs.removeObserver(
-          cacheWriteObserver,
-          "browser-search-service"
-        );
-        info("Cache write complete");
-        Assert.ok(cache.exists());
-        // Check that the search.json.mozlz4 cache matches the template
-
-        promiseCacheData().then(cacheWritten => {
-          info("Check search.json.mozlz4");
-          isSubObjectOf(cacheTemplate, cacheWritten);
-
-          run_next_test();
-        });
-      },
-    };
-    Services.obs.addObserver(cacheWriteObserver, "browser-search-service");
-
-    Services.search
+  Services.tm.dispatchToMainThread(() => {
+    // Call the observe method directly to simulate a remove but not actually
+    // remove anything.
+    Services.search.wrappedJSObject._cache
       .QueryInterface(Ci.nsIObserver)
       .observe(null, "browser-search-engine-modified", "engine-removed");
+  });
+
+  await cacheWritePromise;
+
+  info("Cache write complete");
+  Assert.ok(cache.exists());
+  // Check that the search.json.mozlz4 cache matches the template
+
+  let cacheData = await promiseCacheData();
+  info("Check search.json.mozlz4");
+  isSubObjectOf(cacheTemplate, cacheData, (prop, value) => {
+    // Skip items that are to do with icons for extensions, as we can't
+    // control the uuid.
+    if (prop != "_iconURL" && prop != "{}") {
+      return false;
+    }
+    return value.startsWith("moz-extension://");
   });
 });
 

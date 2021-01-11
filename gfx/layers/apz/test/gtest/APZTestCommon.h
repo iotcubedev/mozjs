@@ -45,6 +45,15 @@ using ::testing::MockFunction;
 using ::testing::NiceMock;
 typedef mozilla::layers::GeckoContentController::TapType TapType;
 
+static TimeStamp GetStartupTime() {
+  static TimeStamp sStartupTime = TimeStamp::Now();
+  return sStartupTime;
+}
+
+inline uint32_t MillisecondsSinceStartup(TimeStamp aTime) {
+  return (aTime - GetStartupTime()).ToMilliseconds();
+}
+
 // Some helper functions for constructing input event objects suitable to be
 // passed either to an APZC (which expects an transformed point), or to an APZTM
 // (which expects an untransformed point). We handle both cases by setting both
@@ -67,8 +76,9 @@ inline PinchGestureInput CreatePinchGestureInput(
     PinchGestureInput::PinchGestureType aType, const ScreenPoint& aFocus,
     float aCurrentSpan, float aPreviousSpan, TimeStamp timestamp) {
   ParentLayerPoint localFocus(aFocus.x, aFocus.y);
-  PinchGestureInput result(aType, 0, timestamp, ExternalPoint(0, 0), aFocus,
-                           aCurrentSpan, aPreviousSpan, 0);
+  PinchGestureInput result(
+      aType, PinchGestureInput::UNKNOWN, MillisecondsSinceStartup(timestamp),
+      timestamp, ExternalPoint(0, 0), aFocus, aCurrentSpan, aPreviousSpan, 0);
   return result;
 }
 
@@ -115,11 +125,6 @@ class ScopedGfxSetting {
   ScopedGfxSetting<const varType&, varType> var_##varBase( \
       &(gfxVars::varBase), &(gfxVars::Set##varBase), varValue)
 
-static TimeStamp GetStartupTime() {
-  static TimeStamp sStartupTime = TimeStamp::Now();
-  return sStartupTime;
-}
-
 class MockContentController : public GeckoContentController {
  public:
   MOCK_METHOD1(NotifyLayerTransforms, void(const nsTArray<MatrixMessage>&));
@@ -132,9 +137,10 @@ class MockContentController : public GeckoContentController {
                     const uint32_t& aScrollGeneration));
   MOCK_METHOD5(HandleTap, void(TapType, const LayoutDevicePoint&, Modifiers,
                                const ScrollableLayerGuid&, uint64_t));
-  MOCK_METHOD4(NotifyPinchGesture,
+  MOCK_METHOD5(NotifyPinchGesture,
                void(PinchGestureInput::PinchGestureType,
-                    const ScrollableLayerGuid&, LayoutDeviceCoord, Modifiers));
+                    const ScrollableLayerGuid&, const LayoutDevicePoint&,
+                    LayoutDeviceCoord, Modifiers));
   // Can't use the macros with already_AddRefed :(
   void PostDelayedTask(already_AddRefed<Runnable> aTask, int aDelayMs) {
     RefPtr<Runnable> task = aTask;
@@ -239,21 +245,9 @@ class TestAPZCTreeManager : public APZCTreeManager {
    **/
   void CancelAnimation() { EXPECT_TRUE(false); }
 
-  using APZCTreeManager::SetTargetAPZC;  // silence clang warning about overload
-  void SetTargetAPZC(uint64_t aInputBlockId,
-                     const nsTArray<ScrollableLayerGuid>& aTargets) {
-    nsTArray<SLGuidAndRenderRoot> wrapped;
-    for (const ScrollableLayerGuid& target : aTargets) {
-      wrapped.AppendElement(
-          SLGuidAndRenderRoot(target, wr::RenderRoot::Default));
-    }
-    this->SetTargetAPZC(aInputBlockId, wrapped);
-  }
-
  protected:
-  AsyncPanZoomController* NewAPZCInstance(LayersId aLayersId,
-                                          GeckoContentController* aController,
-                                          wr::RenderRoot aRenderRoot) override;
+  AsyncPanZoomController* NewAPZCInstance(
+      LayersId aLayersId, GeckoContentController* aController) override;
 
   TimeStamp GetFrameTime() override { return mcc->Time(); }
 
@@ -266,22 +260,20 @@ class TestAsyncPanZoomController : public AsyncPanZoomController {
   TestAsyncPanZoomController(LayersId aLayersId,
                              MockContentControllerDelayed* aMcc,
                              TestAPZCTreeManager* aTreeManager,
-                             wr::RenderRoot aRenderRoot,
                              GestureBehavior aBehavior = DEFAULT_GESTURES)
       : AsyncPanZoomController(aLayersId, aTreeManager,
-                               aTreeManager->GetInputQueue(), aMcc, aRenderRoot,
-                               aBehavior),
+                               aTreeManager->GetInputQueue(), aMcc, aBehavior),
         mWaitForMainThread(false),
         mcc(aMcc) {}
 
-  nsEventStatus ReceiveInputEvent(const InputData& aEvent,
-                                  ScrollableLayerGuid* aDummy,
-                                  uint64_t* aOutInputBlockId) {
+  APZEventResult ReceiveInputEvent(const InputData& aEvent) {
     // This is a function whose signature matches exactly the ReceiveInputEvent
     // on APZCTreeManager. This allows us to templates for functions like
     // TouchDown, TouchUp, etc so that we can reuse the code for dispatching
     // events into both APZC and APZCTM.
-    return ReceiveInputEvent(aEvent, aOutInputBlockId);
+    APZEventResult result;
+    result.mStatus = ReceiveInputEvent(aEvent, &result.mInputBlockId);
+    return result;
   }
 
   nsEventStatus ReceiveInputEvent(const InputData& aEvent,
@@ -523,30 +515,25 @@ void APZCTesterBase::Tap(const RefPtr<InputReceiver>& aTarget,
                          const ScreenIntPoint& aPoint, TimeDuration aTapLength,
                          nsEventStatus (*aOutEventStatuses)[2],
                          uint64_t* aOutInputBlockId) {
-  // Even if the caller doesn't care about the block id, we need it to set the
-  // allowed touch behaviour below, so make sure aOutInputBlockId is non-null.
-  uint64_t blockId;
-  if (!aOutInputBlockId) {
-    aOutInputBlockId = &blockId;
-  }
-
-  nsEventStatus status =
-      TouchDown(aTarget, aPoint, mcc->Time(), aOutInputBlockId);
+  APZEventResult result = TouchDown(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[0] = status;
+    (*aOutEventStatuses)[0] = result.mStatus;
+  }
+  if (aOutInputBlockId) {
+    *aOutInputBlockId = result.mInputBlockId;
   }
   mcc->AdvanceBy(aTapLength);
 
   // If touch-action is enabled then simulate the allowed touch behaviour
   // notification that the main thread is supposed to deliver.
   if (StaticPrefs::layout_css_touch_action_enabled() &&
-      status != nsEventStatus_eConsumeNoDefault) {
-    SetDefaultAllowedTouchBehavior(aTarget, *aOutInputBlockId);
+      result.mStatus != nsEventStatus_eConsumeNoDefault) {
+    SetDefaultAllowedTouchBehavior(aTarget, result.mInputBlockId);
   }
 
-  status = TouchUp(aTarget, aPoint, mcc->Time());
+  result.mStatus = TouchUp(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[1] = status;
+    (*aOutEventStatuses)[1] = result.mStatus;
   }
 }
 
@@ -598,19 +585,22 @@ void APZCTesterBase::Pan(const RefPtr<InputReceiver>& aTarget,
   }
 
   // Make sure the move is large enough to not be handled as a tap
-  nsEventStatus status =
+  APZEventResult result =
       TouchDown(aTarget,
                 ScreenIntPoint(aTouchStart.x + overcomeTouchToleranceX,
                                aTouchStart.y + overcomeTouchToleranceY),
-                mcc->Time(), aOutInputBlockId);
+                mcc->Time());
+  if (aOutInputBlockId) {
+    *aOutInputBlockId = result.mInputBlockId;
+  }
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[0] = status;
+    (*aOutEventStatuses)[0] = result.mStatus;
   }
 
   mcc->AdvanceBy(TIME_BETWEEN_TOUCH_EVENT);
 
   // Allowed touch behaviours must be set after sending touch-start.
-  if (status != nsEventStatus_eConsumeNoDefault) {
+  if (result.mStatus != nsEventStatus_eConsumeNoDefault) {
     if (aAllowedTouchBehaviors) {
       EXPECT_EQ(1UL, aAllowedTouchBehaviors->Length());
       aTarget->SetAllowedTouchBehavior(*aOutInputBlockId,
@@ -620,27 +610,27 @@ void APZCTesterBase::Pan(const RefPtr<InputReceiver>& aTarget,
     }
   }
 
-  status = TouchMove(aTarget, aTouchStart, mcc->Time());
+  result.mStatus = TouchMove(aTarget, aTouchStart, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[1] = status;
+    (*aOutEventStatuses)[1] = result.mStatus;
   }
 
   mcc->AdvanceBy(TIME_BETWEEN_TOUCH_EVENT);
 
-  status = TouchMove(aTarget, aTouchEnd, mcc->Time());
+  result.mStatus = TouchMove(aTarget, aTouchEnd, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[2] = status;
+    (*aOutEventStatuses)[2] = result.mStatus;
   }
 
   mcc->AdvanceBy(TIME_BETWEEN_TOUCH_EVENT);
 
   if (!(aOptions & PanOptions::KeepFingerDown)) {
-    status = TouchUp(aTarget, aTouchEnd, mcc->Time());
+    result.mStatus = TouchUp(aTarget, aTouchEnd, mcc->Time());
   } else {
-    status = nsEventStatus_eIgnore;
+    result.mStatus = nsEventStatus_eIgnore;
   }
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[3] = status;
+    (*aOutEventStatuses)[3] = result.mStatus;
   }
 
   if ((aOptions & PanOptions::NoFling)) {
@@ -688,45 +678,44 @@ void APZCTesterBase::DoubleTap(const RefPtr<InputReceiver>& aTarget,
                                const ScreenIntPoint& aPoint,
                                nsEventStatus (*aOutEventStatuses)[4],
                                uint64_t (*aOutInputBlockIds)[2]) {
-  uint64_t blockId;
-  nsEventStatus status = TouchDown(aTarget, aPoint, mcc->Time(), &blockId);
+  APZEventResult result = TouchDown(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[0] = status;
+    (*aOutEventStatuses)[0] = result.mStatus;
   }
   if (aOutInputBlockIds) {
-    (*aOutInputBlockIds)[0] = blockId;
+    (*aOutInputBlockIds)[0] = result.mInputBlockId;
   }
   mcc->AdvanceByMillis(10);
 
   // If touch-action is enabled then simulate the allowed touch behaviour
   // notification that the main thread is supposed to deliver.
   if (StaticPrefs::layout_css_touch_action_enabled() &&
-      status != nsEventStatus_eConsumeNoDefault) {
-    SetDefaultAllowedTouchBehavior(aTarget, blockId);
+      result.mStatus != nsEventStatus_eConsumeNoDefault) {
+    SetDefaultAllowedTouchBehavior(aTarget, result.mInputBlockId);
   }
 
-  status = TouchUp(aTarget, aPoint, mcc->Time());
+  result.mStatus = TouchUp(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[1] = status;
+    (*aOutEventStatuses)[1] = result.mStatus;
   }
   mcc->AdvanceByMillis(10);
-  status = TouchDown(aTarget, aPoint, mcc->Time(), &blockId);
+  result = TouchDown(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[2] = status;
+    (*aOutEventStatuses)[2] = result.mStatus;
   }
   if (aOutInputBlockIds) {
-    (*aOutInputBlockIds)[1] = blockId;
+    (*aOutInputBlockIds)[1] = result.mInputBlockId;
   }
   mcc->AdvanceByMillis(10);
 
   if (StaticPrefs::layout_css_touch_action_enabled() &&
-      status != nsEventStatus_eConsumeNoDefault) {
-    SetDefaultAllowedTouchBehavior(aTarget, blockId);
+      result.mStatus != nsEventStatus_eConsumeNoDefault) {
+    SetDefaultAllowedTouchBehavior(aTarget, result.mInputBlockId);
   }
 
-  status = TouchUp(aTarget, aPoint, mcc->Time());
+  result.mStatus = TouchUp(aTarget, aPoint, mcc->Time());
   if (aOutEventStatuses) {
-    (*aOutEventStatuses)[3] = status;
+    (*aOutEventStatuses)[3] = result.mStatus;
   }
 }
 
@@ -886,10 +875,8 @@ void APZCTesterBase::PinchWithPinchInput(
   mcc->AdvanceBy(TIME_BETWEEN_PINCH_INPUT);
 
   actualStatus = aTarget->ReceiveInputEvent(
-      CreatePinchGestureInput(
-          PinchGestureInput::PINCHGESTURE_END,
-          PinchGestureInput::BothFingersLifted<ScreenPixel>(), 10.0 * aScale,
-          10.0 * aScale, mcc->Time()),
+      CreatePinchGestureInput(PinchGestureInput::PINCHGESTURE_END, aSecondFocus,
+                              10.0 * aScale, 10.0 * aScale, mcc->Time()),
       nullptr);
   if (aOutEventStatuses) {
     (*aOutEventStatuses)[2] = actualStatus;
@@ -904,20 +891,18 @@ void APZCTesterBase::PinchWithPinchInputAndCheckStatus(
   PinchWithPinchInput(aTarget, aFocus, aFocus, aScale, &statuses);
 
   nsEventStatus expectedStatus = aShouldTriggerPinch
-                                     ? nsEventStatus_eConsumeNoDefault
+                                     ? nsEventStatus_eConsumeDoDefault
                                      : nsEventStatus_eIgnore;
   EXPECT_EQ(expectedStatus, statuses[0]);
   EXPECT_EQ(expectedStatus, statuses[1]);
 }
 
 AsyncPanZoomController* TestAPZCTreeManager::NewAPZCInstance(
-    LayersId aLayersId, GeckoContentController* aController,
-    wr::RenderRoot aRenderRoot) {
+    LayersId aLayersId, GeckoContentController* aController) {
   MockContentControllerDelayed* mcc =
       static_cast<MockContentControllerDelayed*>(aController);
   return new TestAsyncPanZoomController(
-      aLayersId, mcc, this, aRenderRoot,
-      AsyncPanZoomController::USE_GESTURE_DETECTOR);
+      aLayersId, mcc, this, AsyncPanZoomController::USE_GESTURE_DETECTOR);
 }
 
 inline FrameMetrics TestFrameMetrics() {
@@ -929,10 +914,6 @@ inline FrameMetrics TestFrameMetrics() {
   fm.SetScrollableRect(CSSRect(0, 0, 100, 100));
 
   return fm;
-}
-
-inline uint32_t MillisecondsSinceStartup(TimeStamp aTime) {
-  return (aTime - GetStartupTime()).ToMilliseconds();
 }
 
 #endif  // mozilla_layers_APZTestCommon_h

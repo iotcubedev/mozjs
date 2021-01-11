@@ -7,12 +7,14 @@
 #ifndef mozilla_dom_serviceworkerprivate_h
 #define mozilla_dom_serviceworkerprivate_h
 
+#include <type_traits>
+
 #include "nsCOMPtr.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/MozPromise.h"
 
-#define NOTIFICATION_CLICK_EVENT_NAME "notificationclick"
-#define NOTIFICATION_CLOSE_EVENT_NAME "notificationclose"
+#define NOTIFICATION_CLICK_EVENT_NAME u"notificationclick"
+#define NOTIFICATION_CLOSE_EVENT_NAME u"notificationclose"
 
 class nsIInterceptedChannel;
 class nsIWorkerDebugger;
@@ -96,13 +98,15 @@ class ServiceWorkerPrivate final {
   NS_IMETHOD_(MozExternalRefCountType) Release();
   NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(ServiceWorkerPrivate)
 
-  typedef mozilla::FalseType HasThreadSafeRefCnt;
+  using HasThreadSafeRefCnt = std::false_type;
 
  protected:
   nsCycleCollectingAutoRefCnt mRefCnt;
   NS_DECL_OWNINGTHREAD
 
  public:
+  // TODO: remove this class. There's one (and only should be one) concrete
+  // class that derives this abstract base class.
   class Inner {
    public:
     NS_INLINE_DECL_PURE_VIRTUAL_REFCOUNTING
@@ -134,7 +138,7 @@ class ServiceWorkerPrivate final {
     virtual nsresult SendFetchEvent(
         RefPtr<ServiceWorkerRegistrationInfo> aRegistration,
         nsCOMPtr<nsIInterceptedChannel> aChannel, const nsAString& aClientId,
-        const nsAString& aResultingClientId, bool aIsReload) = 0;
+        const nsAString& aResultingClientId) = 0;
 
     virtual nsresult SpawnWorkerIfNeeded() = 0;
 
@@ -175,7 +179,7 @@ class ServiceWorkerPrivate final {
 
   nsresult SendFetchEvent(nsIInterceptedChannel* aChannel,
                           nsILoadGroup* aLoadGroup, const nsAString& aClientId,
-                          const nsAString& aResultingClientId, bool aIsReload);
+                          const nsAString& aResultingClientId);
 
   bool MaybeStoreISupports(nsISupports* aSupports);
 
@@ -202,6 +206,16 @@ class ServiceWorkerPrivate final {
 
   bool IsIdle() const;
 
+  // This promise is used schedule clearing of the owning registrations and its
+  // associated Service Workers if that registration becomes "unreachable" by
+  // the ServiceWorkerManager. This occurs under two conditions, which are the
+  // preconditions to calling this method:
+  // - The owning registration must be unregistered.
+  // - The associated Service Worker must *not* be controlling clients.
+  //
+  // Additionally, perhaps stating the obvious, the associated Service Worker
+  // must *not* be idle (whatever must be done "when idle" can just be done
+  // immediately).
   RefPtr<GenericPromise> GetIdlePromise();
 
   void SetHandlesFetch(bool aValue);

@@ -7,7 +7,6 @@
 #include "mozilla/dom/SVGImageElement.h"
 
 #include "mozilla/ArrayUtils.h"
-#include "mozilla/EventStateManager.h"
 #include "mozilla/EventStates.h"
 #include "mozilla/gfx/2D.h"
 #include "nsCOMPtr.h"
@@ -16,6 +15,7 @@
 #include "imgINotificationObserver.h"
 #include "mozilla/dom/SVGImageElementBinding.h"
 #include "mozilla/dom/SVGLengthBinding.h"
+#include "mozilla/dom/UserActivation.h"
 #include "nsContentUtils.h"
 #include "SVGGeometryProperty.h"
 
@@ -64,7 +64,7 @@ SVGImageElement::SVGImageElement(
   AddStatesSilently(NS_EVENT_STATE_BROKEN);
 }
 
-SVGImageElement::~SVGImageElement() { DestroyImageLoadingContent(); }
+SVGImageElement::~SVGImageElement() { nsImageLoadingContent::Destroy(); }
 
 nsCSSPropertyID SVGImageElement::GetCSSPropertyIdForAttrEnum(
     uint8_t aAttrEnum) {
@@ -142,7 +142,7 @@ nsresult SVGImageElement::LoadSVGImage(bool aForce, bool aNotify) {
 
   // Mark channel as urgent-start before load image if the image load is
   // initaiated by a user interaction.
-  mUseUrgentStartForChannel = EventStateManager::IsHandlingUserInput();
+  mUseUrgentStartForChannel = UserActivation::IsHandlingUserInput();
 
   return LoadImage(href, aForce, aNotify, eImageLoadType_Normal);
 }
@@ -229,6 +229,11 @@ EventStates SVGImageElement::IntrinsicState() const {
          nsImageLoadingContent::ImageState();
 }
 
+void SVGImageElement::DestroyContent() {
+  nsImageLoadingContent::Destroy();
+  SVGImageElementBase::DestroyContent();
+}
+
 NS_IMETHODIMP_(bool)
 SVGImageElement::IsAttributeMapped(const nsAtom* name) const {
   static const MappedAttributeEntry* const map[] = {
@@ -265,7 +270,7 @@ bool SVGImageElement::GetGeometryBounds(
 
 already_AddRefed<Path> SVGImageElement::BuildPath(PathBuilder* aBuilder) {
   // To get bound, the faster method GetGeometryBounds() should already return
-  // success. For render and hittest, nsSVGImageFrame should have its own
+  // success. For render and hittest, SVGImageFrame should have its own
   // implementation that doesn't need to build path for an image.
   MOZ_ASSERT_UNREACHABLE(
       "There is no reason to call BuildPath for SVGImageElement");
@@ -299,13 +304,6 @@ SVGImageElement::GetAnimatedPreserveAspectRatio() {
 SVGElement::StringAttributesInfo SVGImageElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
                               ArrayLength(sStringInfo));
-}
-
-nsresult SVGImageElement::CopyInnerTo(Element* aDest) {
-  if (aDest->OwnerDoc()->IsStaticDocument()) {
-    CreateStaticImageClone(static_cast<SVGImageElement*>(aDest));
-  }
-  return SVGImageElementBase::CopyInnerTo(aDest);
 }
 
 }  // namespace dom

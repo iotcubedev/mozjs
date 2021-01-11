@@ -4,20 +4,35 @@
 
 "use strict";
 
-const { DebuggerServer } = require("devtools/server/debugger-server");
+const { DevToolsServer } = require("devtools/server/devtools-server");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
 const { assert } = DevToolsUtils;
 
 loader.lazyRequireGetter(
   this,
-  "longStringGrip",
-  "devtools/server/actors/object/long-string",
+  "LongStringActor",
+  "devtools/server/actors/string",
   true
 );
+
 loader.lazyRequireGetter(
   this,
   "symbolGrip",
   "devtools/server/actors/object/symbol",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "ObjectActor",
+  "devtools/server/actors/object",
+  true
+);
+
+loader.lazyRequireGetter(
+  this,
+  "EnvironmentActor",
+  "devtools/server/actors/environment",
   true
 );
 
@@ -48,6 +63,17 @@ function getPromiseState(obj) {
 }
 
 /**
+ * Returns true if value is an object or function
+ *
+ * @param value
+ * @returns {boolean}
+ */
+
+function isObjectOrFunction(value) {
+  return value && (typeof value == "object" || typeof value == "function");
+}
+
+/**
  * Make a debuggee value for the given object, if needed. Primitive values
  * are left the same.
  *
@@ -61,7 +87,7 @@ function getPromiseState(obj) {
  * @return object
  */
 function makeDebuggeeValueIfNeeded(obj, value) {
-  if (value && (typeof value == "object" || typeof value == "function")) {
+  if (isObjectOrFunction(value)) {
     return obj.makeDebuggeeValue(value);
   }
   return value;
@@ -78,8 +104,12 @@ function unwrapDebuggeeValue(value) {
 }
 
 /**
- * Create a grip for the given debuggee value.  If the value is an
- * object, will create an actor with the given lifetime.
+ * Create a grip for the given debuggee value. If the value is an object or a long string,
+ * it will create an actor and add it to the pool
+ * @param {any} value: The debuggee value.
+ * @param {Pool} pool: The pool where the created actor will be added.
+ * @param {Function} makeObjectGrip: Function that will be called to create the grip for
+ *                                   non-primitive values.
  */
 function createValueGrip(value, pool, makeObjectGrip) {
   switch (typeof value) {
@@ -88,7 +118,15 @@ function createValueGrip(value, pool, makeObjectGrip) {
 
     case "string":
       if (stringIsLong(value)) {
-        return longStringGrip(value, pool);
+        for (const child of pool.poolChildren()) {
+          if (child instanceof LongStringActor && child.str == value) {
+            return child.form();
+          }
+        }
+
+        const actor = new LongStringActor(pool.conn, value);
+        pool.manage(actor);
+        return actor.form();
       }
       return value;
 
@@ -148,7 +186,7 @@ function createValueGrip(value, pool, makeObjectGrip) {
  *        The string we are checking the length of.
  */
 function stringIsLong(str) {
-  return str.length >= DebuggerServer.LONG_STRING_LENGTH;
+  return str.length >= DevToolsServer.LONG_STRING_LENGTH;
 }
 
 const TYPED_ARRAY_CLASSES = [
@@ -161,6 +199,8 @@ const TYPED_ARRAY_CLASSES = [
   "Int32Array",
   "Float32Array",
   "Float64Array",
+  "BigInt64Array",
+  "BigUint64Array",
 ];
 
 /**
@@ -203,37 +243,12 @@ function getArrayLength(object) {
     return DevToolsUtils.getProperty(object, "length");
   }
 
-  // When replaying, we use a special API to get typed array lengths. We can't
-  // invoke getters on the proxy returned by unsafeDereference().
-  if (isReplaying) {
-    return object.getTypedArrayLength();
-  }
-
   // For typed arrays, `DevToolsUtils.getProperty` is not reliable because the `length`
   // getter could be shadowed by an own property, and `getOwnPropertyNames` is
   // unnecessarily slow. Obtain the `length` getter safely and call it manually.
   const typedProto = Object.getPrototypeOf(Uint8Array.prototype);
   const getter = Object.getOwnPropertyDescriptor(typedProto, "length").get;
   return getter.call(object.unsafeDereference());
-}
-
-/**
- * Returns the number of elements in a Set or Map.
- *
- * @param object Debugger.Object
- *        The debuggee object of the Set or Map.
- * @return Number
- */
-function getContainerSize(object) {
-  if (object.class != "Set" && object.class != "Map") {
-    throw new Error(`Expected a set/map, got a ${object.class}`);
-  }
-
-  if (isReplaying) {
-    return object.getContainerSize();
-  }
-
-  return DevToolsUtils.getProperty(object, "size");
 }
 
 /**
@@ -279,39 +294,232 @@ function getStorageLength(object) {
   return DevToolsUtils.getProperty(object, "length");
 }
 
-// Get the string representation of a Debugger.Object for a RegExp.
-function getRegExpString(object) {
-  if (isReplaying) {
-    return object.getRegExpString();
-  }
-
-  return DevToolsUtils.callPropertyOnObject(object, "toString");
-}
-
-// Get the time associated with a Debugger.Object for a Date.
-function getDateTime(object) {
-  if (isReplaying) {
-    return object.getDateTime();
-  }
-
-  return DevToolsUtils.callPropertyOnObject(object, "getTime");
-}
-
-// Get the properties of a Debugger.Object for an Error which are needed to
-// preview the object.
-function getErrorProperties(object) {
-  if (isReplaying) {
-    return object.getErrorProperties();
-  }
-
-  return {
-    name: DevToolsUtils.getProperty(object, "name"),
-    message: DevToolsUtils.getProperty(object, "message"),
-    stack: DevToolsUtils.getProperty(object, "stack"),
-    fileName: DevToolsUtils.getProperty(object, "fileName"),
-    lineNumber: DevToolsUtils.getProperty(object, "lineNumber"),
-    columnNumber: DevToolsUtils.getProperty(object, "columnNumber"),
+/**
+ * Returns an array of properties based on event class name.
+ *
+ * @param className
+ * @returns {Array}
+ */
+function getPropsForEvent(className) {
+  const positionProps = ["buttons", "clientX", "clientY", "layerX", "layerY"];
+  const eventToPropsMap = {
+    MouseEvent: positionProps,
+    DragEvent: positionProps,
+    PointerEvent: positionProps,
+    SimpleGestureEvent: positionProps,
+    WheelEvent: positionProps,
+    KeyboardEvent: ["key", "charCode", "keyCode"],
+    TransitionEvent: ["propertyName", "pseudoElement"],
+    AnimationEvent: ["animationName", "pseudoElement"],
+    ClipboardEvent: ["clipboardData"],
   };
+
+  if (className in eventToPropsMap) {
+    return eventToPropsMap[className];
+  }
+
+  return [];
+}
+
+/**
+ * Returns an array of of all properties of an object
+ *
+ * @param obj
+ * @param rawObj
+ * @returns {Array}
+ */
+function getPropNamesFromObject(obj, rawObj) {
+  let names = [];
+
+  try {
+    if (isStorage(obj)) {
+      // local and session storage cannot be iterated over using
+      // Object.getOwnPropertyNames() because it skips keys that are duplicated
+      // on the prototype e.g. "key", "getKeys" so we need to gather the real
+      // keys using the storage.key() function.
+      for (let j = 0; j < rawObj.length; j++) {
+        names.push(rawObj.key(j));
+      }
+    } else {
+      names = obj.getOwnPropertyNames();
+    }
+  } catch (ex) {
+    // Calling getOwnPropertyNames() on some wrapped native prototypes is not
+    // allowed: "cannot modify properties of a WrappedNative". See bug 952093.
+  }
+
+  return names;
+}
+
+/**
+ * Returns an array of all symbol properties of an object
+ *
+ * @param obj
+ * @returns {Array}
+ */
+function getSafeOwnPropertySymbols(obj) {
+  try {
+    return obj.getOwnPropertySymbols();
+  } catch (ex) {
+    return [];
+  }
+}
+
+/**
+ * Returns an array modifiers based on keys
+ *
+ * @param rawObj
+ * @returns {Array}
+ */
+function getModifiersForEvent(rawObj) {
+  const modifiers = [];
+  const keysToModifiersMap = {
+    altKey: "Alt",
+    ctrlKey: "Control",
+    metaKey: "Meta",
+    shiftKey: "Shift",
+  };
+
+  for (const key in keysToModifiersMap) {
+    if (keysToModifiersMap.hasOwnProperty(key) && rawObj[key]) {
+      modifiers.push(keysToModifiersMap[key]);
+    }
+  }
+
+  return modifiers;
+}
+
+/**
+ * Make a debuggee value for the given value.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param mixed value
+ *        The value you want to get a debuggee value for.
+ * @return object
+ *         Debuggee value for |value|.
+ */
+function makeDebuggeeValue(targetActor, value) {
+  if (isObject(value)) {
+    try {
+      const global = Cu.getGlobalForObject(value);
+      const dbgGlobal = targetActor.dbg.makeGlobalObjectReference(global);
+      return dbgGlobal.makeDebuggeeValue(value);
+    } catch (ex) {
+      // The above can throw an exception if value is not an actual object
+      // or 'Object in compartment marked as invisible to Debugger'
+    }
+  }
+  const dbgGlobal = targetActor.dbg.makeGlobalObjectReference(
+    targetActor.window
+  );
+  return dbgGlobal.makeDebuggeeValue(value);
+}
+
+function isObject(value) {
+  return Object(value) === value;
+}
+
+/**
+ * Create a grip for the given string.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ */
+function createStringGrip(targetActor, string) {
+  if (string && stringIsLong(string)) {
+    const actor = new LongStringActor(targetActor.conn, string);
+    targetActor.manage(actor);
+    return actor.form();
+  }
+  return string;
+}
+
+/**
+ * Create a grip for the given value.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param mixed value
+ *        The value you want to get a debuggee value for.
+ * @param Number depth
+ *        Depth of the object compared to the top level object,
+ *        when we are inspecting nested attributes.
+ * @return object
+ */
+function createValueGripForTarget(targetActor, value, depth = 0) {
+  return createValueGrip(
+    value,
+    targetActor,
+    createObjectGrip.bind(null, targetActor, depth)
+  );
+}
+
+/**
+ * Create and return an environment actor that corresponds to the provided
+ * Debugger.Environment. This is a straightforward clone of the ThreadActor's
+ * method except that it stores the environment actor in the web console
+ * actor's pool.
+ *
+ * @param Debugger.Environment environment
+ *        The lexical environment we want to extract.
+ * @param TargetActor targetActor
+ *        The Target Actor to use as parent actor.
+ * @return The EnvironmentActor for |environment| or |undefined| for host
+ *         functions or functions scoped to a non-debuggee global.
+ */
+function createEnvironmentActor(environment, targetActor) {
+  if (!environment) {
+    return undefined;
+  }
+
+  if (environment.actor) {
+    return environment.actor;
+  }
+
+  const actor = new EnvironmentActor(environment, targetActor);
+  targetActor.manage(actor);
+  environment.actor = actor;
+
+  return actor;
+}
+
+/**
+ * Create a grip for the given object.
+ *
+ * @param TargetActor targetActor
+ *        The Target Actor from which this object originates.
+ * @param Number depth
+ *        Depth of the object compared to the top level object,
+ *        when we are inspecting nested attributes.
+ * @param object object
+ *        The object you want.
+ * @param object pool
+ *        A Pool where the new actor instance is added.
+ * @param object
+ *        The object grip.
+ */
+function createObjectGrip(targetActor, depth, object, pool) {
+  let gripDepth = depth;
+  const actor = new ObjectActor(
+    object,
+    {
+      thread: targetActor.threadActor,
+      getGripDepth: () => gripDepth,
+      incrementGripDepth: () => gripDepth++,
+      decrementGripDepth: () => gripDepth--,
+      createValueGrip: v => createValueGripForTarget(targetActor, v, gripDepth),
+      createEnvironmentActor: env => createEnvironmentActor(env, targetActor),
+      sources: () =>
+        DevToolsUtils.reportException(
+          "WebConsoleActor",
+          Error("sources not yet implemented")
+        ),
+    },
+    targetActor.conn
+  );
+  pool.manage(actor);
+  return actor.form();
 }
 
 module.exports = {
@@ -325,9 +533,13 @@ module.exports = {
   isStorage,
   getArrayLength,
   getStorageLength,
-  getContainerSize,
   isArrayIndex,
-  getRegExpString,
-  getDateTime,
-  getErrorProperties,
+  getPropsForEvent,
+  getPropNamesFromObject,
+  getSafeOwnPropertySymbols,
+  getModifiersForEvent,
+  isObjectOrFunction,
+  createStringGrip,
+  makeDebuggeeValue,
+  createValueGripForTarget,
 };

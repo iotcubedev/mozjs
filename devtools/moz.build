@@ -29,6 +29,7 @@ if CONFIG['MOZ_BUILD_APP'] == 'browser':
 
 with Files('**'):
     BUG_COMPONENT = ('DevTools', 'General')
+    SCHEDULES.exclusive = ['linux', 'macosx', 'windows']
 
 with Files('docs/**'):
     BUG_COMPONENT = ('DevTools', 'General')
@@ -42,8 +43,10 @@ with Files('docs/tools/debugger-panel.md'):
 with Files('docs/backend/debugger-api.md'):
     BUG_COMPONENT = ('DevTools', 'Debugger')
 
-with Files('docs/tools/http-inspector.md'):
+with Files('docs/tools/console-panel.md'):
     BUG_COMPONENT = ('DevTools', 'Console')
 
 with Files('docs/tools/inspector-panel.md'):
     BUG_COMPONENT = ('DevTools', 'Inspector')
+
+SPHINX_TREES['/devtools'] = 'docs'

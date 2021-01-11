@@ -3,7 +3,8 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // Dependencies
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
 const {
   isGrip,
   cropString,
@@ -12,20 +13,20 @@ const {
 } = require("./rep-utils");
 const { MODE } = require("./constants");
 const nodeConstants = require("../shared/dom-node-constants");
-const dom = require("react-dom-factories");
-const { span } = dom;
 
 /**
  * Renders DOM comment node.
  */
+
 CommentNode.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
   mode: PropTypes.oneOf(Object.keys(MODE).map(key => MODE[key])),
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function CommentNode(props) {
-  const { object, mode = MODE.SHORT } = props;
+  const { object, mode = MODE.SHORT, shouldRenderTooltip } = props;
 
   let { textContent } = object.preview;
   if (mode === MODE.TINY) {
@@ -34,13 +35,24 @@ function CommentNode(props) {
     textContent = cropString(textContent, 50);
   }
 
-  return span(
-    {
-      className: "objectBox theme-comment",
-      "data-link-actor-id": object.actor,
-    },
-    `<!-- ${textContent} -->`
-  );
+  const config = getElementConfig({ object, textContent, shouldRenderTooltip });
+
+  return span(config, `<!-- ${textContent} -->`);
+}
+
+function getElementConfig(opts) {
+  const { object, shouldRenderTooltip } = opts;
+
+  // Run textContent through cropString to sanitize
+  const uncroppedText = shouldRenderTooltip
+    ? cropString(object.preview.textContent)
+    : null;
+
+  return {
+    className: "objectBox theme-comment",
+    "data-link-actor-id": object.actor,
+    title: shouldRenderTooltip ? `<!-- ${uncroppedText} -->` : null,
+  };
 }
 
 // Registration

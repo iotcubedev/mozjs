@@ -48,7 +48,7 @@ void nsAbsoluteContainingBlock::SetInitialChildList(nsIFrame* aDelegatingFrame,
                                                     nsFrameList& aChildList) {
   MOZ_ASSERT(mChildListID == aListID, "unexpected child list name");
 #ifdef DEBUG
-  nsFrame::VerifyDirtyBitSet(aChildList);
+  nsIFrame::VerifyDirtyBitSet(aChildList);
   for (nsIFrame* f : aChildList) {
     MOZ_ASSERT(f->GetParent() == aDelegatingFrame, "Unexpected parent");
   }
@@ -63,7 +63,7 @@ void nsAbsoluteContainingBlock::AppendFrames(nsIFrame* aDelegatingFrame,
 
   // Append the frames to our list of absolutely positioned frames
 #ifdef DEBUG
-  nsFrame::VerifyDirtyBitSet(aFrameList);
+  nsIFrame::VerifyDirtyBitSet(aFrameList);
 #endif
   mAbsoluteFrames.AppendFrames(nullptr, aFrameList);
 
@@ -82,7 +82,7 @@ void nsAbsoluteContainingBlock::InsertFrames(nsIFrame* aDelegatingFrame,
                "inserting after sibling frame with different parent");
 
 #ifdef DEBUG
-  nsFrame::VerifyDirtyBitSet(aFrameList);
+  nsIFrame::VerifyDirtyBitSet(aFrameList);
 #endif
   mAbsoluteFrames.InsertFrames(nullptr, aPrevFrame, aFrameList);
 
@@ -165,12 +165,12 @@ void nsAbsoluteContainingBlock::Reflow(nsContainerFrame* aDelegatingFrame,
   for (kidFrame = mAbsoluteFrames.FirstChild(); kidFrame;
        kidFrame = kidFrame->GetNextSibling()) {
     bool kidNeedsReflow =
-        reflowAll || NS_SUBTREE_DIRTY(kidFrame) ||
+        reflowAll || kidFrame->IsSubtreeDirty() ||
         FrameDependsOnContainer(
             kidFrame, !!(aFlags & AbsPosReflowFlags::CBWidthChanged),
             !!(aFlags & AbsPosReflowFlags::CBHeightChanged));
 
-    if (NS_SUBTREE_DIRTY(kidFrame)) {
+    if (kidFrame->IsSubtreeDirty()) {
       MaybeMarkAncestorsAsHavingDescendantDependentOnItsStaticPos(
           kidFrame, aDelegatingFrame);
     }
@@ -195,7 +195,7 @@ void nsAbsoluteContainingBlock::Reflow(nsContainerFrame* aDelegatingFrame,
         nscoord kidOverflowBEnd =
             LogicalRect(containerWM,
                         // Use ...RelativeToSelf to ignore transforms
-                        kidFrame->GetScrollableOverflowRectRelativeToSelf() +
+                        kidFrame->ScrollableOverflowRectRelativeToSelf() +
                             kidFrame->GetPosition(),
                         aContainingBlock.Size())
                 .BEnd(containerWM);
@@ -221,8 +221,7 @@ void nsAbsoluteContainingBlock::Reflow(nsContainerFrame* aDelegatingFrame,
         if (!nextFrame) {
           nextFrame = aPresContext->PresShell()
                           ->FrameConstructor()
-                          ->CreateContinuingFrame(aPresContext, kidFrame,
-                                                  aDelegatingFrame);
+                          ->CreateContinuingFrame(kidFrame, aDelegatingFrame);
         }
         // Add it as an overflow container.
         // XXXfr This is a hack to fix some of our printing dataloss.
@@ -257,7 +256,7 @@ void nsAbsoluteContainingBlock::Reflow(nsContainerFrame* aDelegatingFrame,
     // needed.  But the logic to not do that is enough more complicated, and
     // the case enough of an edge case, that this is probably better.
     if (kidNeedsReflow && aPresContext->CheckForInterrupt(aDelegatingFrame)) {
-      if (aDelegatingFrame->GetStateBits() & NS_FRAME_IS_DIRTY) {
+      if (aDelegatingFrame->HasAnyStateBits(NS_FRAME_IS_DIRTY)) {
         kidFrame->MarkSubtreeDirty();
       } else {
         kidFrame->AddStateBits(NS_FRAME_HAS_DIRTY_CHILDREN);
@@ -522,16 +521,17 @@ static nscoord OffsetToAlignedStaticPos(const ReflowInput& aKidReflowInput,
                                     : alignAreaSize.BSize(pcWM);
 
   AlignJustifyFlags flags = AlignJustifyFlags::IgnoreAutoMargins;
-  uint16_t alignConst = aPlaceholderContainer->CSSAlignmentForAbsPosChild(
-      aKidReflowInput, pcAxis);
+  StyleAlignFlags alignConst =
+      aPlaceholderContainer->CSSAlignmentForAbsPosChild(aKidReflowInput,
+                                                        pcAxis);
   // If the safe bit in alignConst is set, set the safe flag in |flags|.
   // Note: If no <overflow-position> is specified, we behave as 'unsafe'.
   // This doesn't quite match the css-align spec, which has an [at-risk]
   // "smart default" behavior with some extra nuance about scroll containers.
-  if (alignConst & NS_STYLE_ALIGN_SAFE) {
+  if (alignConst & StyleAlignFlags::SAFE) {
     flags |= AlignJustifyFlags::OverflowSafe;
   }
-  alignConst &= ~NS_STYLE_ALIGN_FLAG_BITS;
+  alignConst &= ~StyleAlignFlags::FLAG_BITS;
 
   // Find out if placeholder-container & the OOF child have the same start-sides
   // in the placeholder-container's pcAxis.
@@ -663,7 +663,7 @@ void nsAbsoluteContainingBlock::ReflowAbsoluteFrame(
 
 #ifdef DEBUG
   if (nsBlockFrame::gNoisyReflow) {
-    nsFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent);
+    nsIFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent);
     printf("abs pos ");
     nsAutoString name;
     aKidFrame->GetFrameName(name);
@@ -727,16 +727,23 @@ void nsAbsoluteContainingBlock::ReflowAbsoluteFrame(
 
   bool constrainBSize =
       (aReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE) &&
-      (aFlags & AbsPosReflowFlags::ConstrainHeight) &&
+
       // Don't split if told not to (e.g. for fixed frames)
-      !aDelegatingFrame->IsInlineFrame() &&
+      (aFlags & AbsPosReflowFlags::ConstrainHeight) &&
+
       // XXX we don't handle splitting frames for inline absolute containing
       // blocks yet
+      !aDelegatingFrame->IsInlineFrame() &&
+
+      // Bug 1588623: Support splitting absolute positioned multicol containers.
+      !aKidFrame->IsColumnSetWrapperFrame() &&
+
+      // Don't split things below the fold. (Ideally we shouldn't *have*
+      // anything totally below the fold, but we can't position frames
+      // across next-in-flow breaks yet.
       (aKidFrame->GetLogicalRect(aContainingBlock.Size()).BStart(wm) <=
        aReflowInput.AvailableBSize());
-  // Don't split things below the fold. (Ideally we shouldn't *have*
-  // anything totally below the fold, but we can't position frames
-  // across next-in-flow breaks yet.
+
   if (constrainBSize) {
     kidReflowInput.AvailableBSize() =
         aReflowInput.AvailableBSize() -
@@ -783,7 +790,7 @@ void nsAbsoluteContainingBlock::ReflowAbsoluteFrame(
     // Size and position the view and set its opacity, visibility, content
     // transparency, and clip
     nsContainerFrame::SyncFrameViewAfterReflow(aPresContext, aKidFrame, view,
-                                               kidDesiredSize.VisualOverflow());
+                                               kidDesiredSize.InkOverflow());
   } else {
     nsContainerFrame::PositionChildViews(aKidFrame);
   }
@@ -792,7 +799,7 @@ void nsAbsoluteContainingBlock::ReflowAbsoluteFrame(
 
 #ifdef DEBUG
   if (nsBlockFrame::gNoisyReflow) {
-    nsFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent - 1);
+    nsIFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent - 1);
     printf("abs pos ");
     nsAutoString name;
     aKidFrame->GetFrameName(name);

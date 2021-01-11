@@ -6,18 +6,4 @@
 # find and create .mozconfig files and to generate targets.
 .NOTPARALLEL:
 
-include $(topsrcdir)/config/AB_rCD.mk
-
-chrome-%:: AB_CD=$*
-chrome-%::
-	$(MAKE) \
-	  res/values$(AB_rCD)/strings.xml \
-	  res/raw$(AB_rCD)/suggestedsites.json \
-	  AB_CD=$*
-
 include $(topsrcdir)/config/rules.mk
-
-# The RecursiveMake backend puts this target into the `export`
-# tier... but we then don't `export::` it in artifact builds.  We need
-# this for artifact builds, so we `export::` it here.
-export:: android_apks

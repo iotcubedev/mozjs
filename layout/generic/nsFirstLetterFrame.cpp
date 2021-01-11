@@ -38,7 +38,7 @@ NS_QUERYFRAME_TAIL_INHERITING(nsContainerFrame)
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsFirstLetterFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Letter"), aResult);
+  return MakeFrameName(u"Letter"_ns, aResult);
 }
 #endif
 
@@ -88,7 +88,7 @@ nsresult nsFirstLetterFrame::GetChildFrameContainingOffset(
     return kid->GetChildFrameContainingOffset(
         inContentOffset, inHint, outFrameContentOffset, outChildFrame);
   } else {
-    return nsFrame::GetChildFrameContainingOffset(
+    return nsIFrame::GetChildFrameContainingOffset(
         inContentOffset, inHint, outFrameContentOffset, outChildFrame);
   }
 }
@@ -267,8 +267,7 @@ void nsFirstLetterFrame::Reflow(nsPresContext* aPresContext,
         // created for us) we need to put the continuation with the rest of the
         // text that the first letter frame was made out of.
         nsIFrame* continuation;
-        CreateContinuationForFloatingParent(aPresContext, kid, &continuation,
-                                            true);
+        CreateContinuationForFloatingParent(kid, &continuation, true);
       }
     }
   }
@@ -282,21 +281,20 @@ bool nsFirstLetterFrame::CanContinueTextRun() const {
   return true;
 }
 
-nsresult nsFirstLetterFrame::CreateContinuationForFloatingParent(
-    nsPresContext* aPresContext, nsIFrame* aChild, nsIFrame** aContinuation,
-    bool aIsFluid) {
+void nsFirstLetterFrame::CreateContinuationForFloatingParent(
+    nsIFrame* aChild, nsIFrame** aContinuation, bool aIsFluid) {
   NS_ASSERTION(IsFloating(),
                "can only call this on floating first letter frames");
   MOZ_ASSERT(aContinuation, "bad args");
 
   *aContinuation = nullptr;
 
-  mozilla::PresShell* presShell = aPresContext->PresShell();
+  mozilla::PresShell* presShell = PresShell();
   nsPlaceholderFrame* placeholderFrame = GetPlaceholderFrame();
   nsContainerFrame* parent = placeholderFrame->GetParent();
 
   nsIFrame* continuation = presShell->FrameConstructor()->CreateContinuingFrame(
-      aPresContext, aChild, parent, aIsFluid);
+      aChild, parent, aIsFluid);
 
   // The continuation will have gotten the first letter style from its
   // prev continuation, so we need to repair the ComputedStyle so it
@@ -322,7 +320,6 @@ nsresult nsFirstLetterFrame::CreateContinuationForFloatingParent(
   parent->InsertFrames(kNoReflowPrincipalList, placeholderFrame, nullptr, temp);
 
   *aContinuation = continuation;
-  return NS_OK;
 }
 
 void nsFirstLetterFrame::DrainOverflowFrames(nsPresContext* aPresContext) {
@@ -387,7 +384,7 @@ nsIFrame::LogicalSides nsFirstLetterFrame::GetLogicalSkipSides(
     // properties that could trigger a call to GetSkipSides.  Then again,
     // it's not really an error to call GetSkipSides on any frame, so
     // that's why we handle it properly.
-    return LogicalSides(eLogicalSideBitsAll);
+    return LogicalSides(mWritingMode, eLogicalSideBitsAll);
   }
-  return LogicalSides();  // first continuation displays all sides
+  return LogicalSides(mWritingMode);  // first continuation displays all sides
 }

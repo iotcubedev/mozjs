@@ -17,8 +17,12 @@ const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const Tree = createFactory(
   require("devtools/client/shared/components/VirtualizedTree")
 );
-const OptimizationsItem = createFactory(require("./JITOptimizationsItem"));
-const FrameView = createFactory(require("../../shared/components/Frame"));
+const OptimizationsItem = createFactory(
+  require("devtools/client/performance/components/JITOptimizationsItem")
+);
+const FrameView = createFactory(
+  require("devtools/client/shared/components/Frame")
+);
 const JIT_TITLE = L10N.getStr("jit.title");
 // If TREE_ROW_HEIGHT changes, be sure to change `var(--jit-tree-row-height)`
 // in `devtools/client/themes/jit-optimizations.css`
@@ -108,9 +112,6 @@ class JITOptimizations extends Component {
       ? frameData.categoryData.label
       : frameData.functionName || "";
 
-    // Simulate `SavedFrame`s interface
-    const frame = { source: url, line: +line, functionDisplayName: name };
-
     // Neither Meta Category nodes, or the lack of a selected frame node,
     // renders out a frame source, like "file.js:123"; so just use
     // an empty span.
@@ -119,8 +120,12 @@ class JITOptimizations extends Component {
       frameComponent = dom.span();
     } else {
       frameComponent = FrameView({
-        frame,
-        onClick: () => onViewSourceInDebugger(frame),
+        frame: {
+          source: url,
+          line: +line,
+          functionDisplayName: name,
+        },
+        onClick: onViewSourceInDebugger,
       });
     }
 

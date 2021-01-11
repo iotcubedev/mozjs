@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGPathElement_h
-#define mozilla_dom_SVGPathElement_h
+#ifndef DOM_SVG_SVGPATHELEMENT_H_
+#define DOM_SVG_SVGPATHELEMENT_H_
 
 #include "mozilla/gfx/2D.h"
 #include "mozilla/RefPtr.h"
@@ -18,14 +18,14 @@ nsresult NS_NewSVGPathElement(
 
 namespace mozilla {
 
-class nsISVGPoint;
-
 namespace dom {
 
-typedef SVGGeometryElement SVGPathElementBase;
+class nsISVGPoint;
+
+using SVGPathElementBase = SVGGeometryElement;
 
 class SVGPathElement final : public SVGPathElementBase {
-  typedef mozilla::gfx::Path Path;
+  using Path = mozilla::gfx::Path;
 
  protected:
   friend nsresult(::NS_NewSVGPathElement(
@@ -41,7 +41,7 @@ class SVGPathElement final : public SVGPathElementBase {
   // nsIContent interface
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* name) const override;
 
-  // nsSVGSVGElement methods:
+  // SVGSVGElement methods:
   virtual bool HasValidDimensions() const override;
 
   // SVGGeometryElement methods:
@@ -119,4 +119,4 @@ class SVGPathElement final : public SVGPathElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGPathElement_h
+#endif  // DOM_SVG_SVGPATHELEMENT_H_

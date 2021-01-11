@@ -9,6 +9,7 @@
 #include <google/protobuf/io/gzip_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 
+#include "js/Array.h"  // JS::NewArrayObject
 #include "js/Debug.h"
 #include "js/TypeDecls.h"
 #include "js/UbiNodeBreadthFirst.h"
@@ -631,7 +632,7 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
         }
       }
 
-      RootedObject pathObj(cx, JS_NewArrayObject(cx, pathValues));
+      RootedObject pathObj(cx, JS::NewArrayObject(cx, pathValues));
       return pathObj && paths.append(ObjectValue(*pathObj));
     });
 
@@ -640,7 +641,7 @@ void HeapSnapshot::ComputeShortestPaths(JSContext* cx, uint64_t start,
       return;
     }
 
-    JS::RootedObject pathsArray(cx, JS_NewArrayObject(cx, paths));
+    JS::RootedObject pathsArray(cx, JS::NewArrayObject(cx, paths));
     if (NS_WARN_IF(!pathsArray)) {
       rv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return;
@@ -1010,7 +1011,7 @@ class MOZ_STACK_CLASS StreamWriter : public CoreDumpWriter {
     // that the 64MB size limit used by Coded{Output,Input}Stream to prevent
     // integer overflow is enforced per message rather than on the whole stream.
     ::google::protobuf::io::CodedOutputStream codedStream(&stream);
-    codedStream.WriteVarint32(message.ByteSize());
+    codedStream.WriteVarint32(message.ByteSizeLong());
     message.SerializeWithCachedSizes(&codedStream);
     return !codedStream.HadError();
   }
@@ -1505,6 +1506,15 @@ void ChromeUtils::SaveHeapSnapshotShared(
 }
 
 /* static */
+uint64_t ChromeUtils::GetObjectNodeId(GlobalObject& global,
+                                      JS::HandleObject val) {
+  JS::RootedObject obj(global.Context(), val);
+
+  JS::ubi::Node node(obj);
+  return node.identifier();
+}
+
+/* static */
 void ChromeUtils::SaveHeapSnapshot(GlobalObject& global,
                                    const HeapSnapshotBoundaries& boundaries,
                                    nsAString& outFilePath, ErrorResult& rv) {
@@ -1525,7 +1535,7 @@ already_AddRefed<HeapSnapshot> ChromeUtils::ReadHeapSnapshot(
     GlobalObject& global, const nsAString& filePath, ErrorResult& rv) {
   auto start = TimeStamp::Now();
 
-  UniquePtr<char[]> path(ToNewCString(filePath));
+  UniquePtr<char[]> path(ToNewCString(filePath, mozilla::fallible));
   if (!path) {
     rv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return nullptr;

@@ -36,12 +36,14 @@ const {
 } = require("devtools/shared/constants");
 
 add_task(async function() {
-  const { target, walker, accessibility } = await initAccessibilityFrontForUrl(
+  const {
+    target,
+    walker,
+    a11yWalker,
+    parentAccessibility,
+  } = await initAccessibilityFrontsForUrl(
     `${MAIN_DOMAIN}doc_accessibility_text_label_audit.html`
   );
-
-  const a11yWalker = await accessibility.getWalker();
-  await accessibility.enable();
 
   const tests = [
     ["Button menu with inner content", "#buttonmenu-1", null],
@@ -1062,6 +1064,46 @@ add_task(async function() {
       { score: FAIL, issue: TOOLBAR_NO_NAME },
     ],
     ["Non-unique aria toolbar with aria-labelledby", "#toolbar-4", null],
+    ["SVGElement with role=img that has a title", "#svg-1", null],
+    ["SVGElement without role=img that has a title", "#svg-2", null],
+    [
+      "SVGElement with role=img and no name",
+      "#svg-3",
+      { score: FAIL, issue: IMAGE_NO_NAME },
+    ],
+    [
+      "SVGElement with no name",
+      "#svg-4",
+      { score: FAIL, issue: IMAGE_NO_NAME },
+    ],
+    ["SVGElement with a name", "#svg-5", null],
+    [
+      "SVGElement with a name and with ownerSVGElement with a name",
+      "#svg-6",
+      null,
+    ],
+    ["SVGElement with a title", "#svg-7", null],
+    [
+      "SVGElement with a name and with ownerSVGElement with a title",
+      "#svg-8",
+      null,
+    ],
+    ["SVGElement with role=img that has a title", "#svg-9", null],
+    [
+      "SVGElement with a name and with ownerSVGElement with role=img that has a title",
+      "#svg-10",
+      null,
+    ],
+    [
+      "SVGElement with role=img and no title",
+      "#svg-11",
+      { score: FAIL, issue: IMAGE_NO_NAME },
+    ],
+    [
+      "SVGElement with a name and with ownerSVGElement with role=img and no title",
+      "#svg-12",
+      null,
+    ],
   ];
 
   for (const [description, selector, expected] of tests) {
@@ -1086,7 +1128,7 @@ add_task(async function() {
     "Audit result for document is correct."
   );
 
-  await ContentTask.spawn(gBrowser.selectedBrowser, null, () => {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], () => {
     content.document.title = "Hello world";
   });
   audit = await front.audit({ types: [TEXT_LABEL] });
@@ -1097,8 +1139,7 @@ add_task(async function() {
     "Audit result for document is correct."
   );
 
-  await accessibility.disable();
-  await waitForA11yShutdown();
+  await waitForA11yShutdown(parentAccessibility);
   await target.destroy();
   gBrowser.removeCurrentTab();
 });

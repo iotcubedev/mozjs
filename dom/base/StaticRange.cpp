@@ -45,9 +45,12 @@ template void StaticRange::DoSetRange(const RawRangeBoundary& aStartBoundary,
                                       const RawRangeBoundary& aEndBoundary,
                                       nsINode* aRootNode);
 
+nsTArray<RefPtr<StaticRange>>* StaticRange::sCachedRanges = nullptr;
+
 NS_IMPL_MAIN_THREAD_ONLY_CYCLE_COLLECTING_ADDREF(StaticRange)
-NS_IMPL_MAIN_THREAD_ONLY_CYCLE_COLLECTING_RELEASE_WITH_LAST_RELEASE(
-    StaticRange, DoSetRange(RawRangeBoundary(), RawRangeBoundary(), nullptr))
+NS_IMPL_MAIN_THREAD_ONLY_CYCLE_COLLECTING_RELEASE_WITH_INTERRUPTABLE_LAST_RELEASE(
+    StaticRange, DoSetRange(RawRangeBoundary(), RawRangeBoundary(), nullptr),
+    AbstractRange::MaybeCacheToReuse(*this))
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(StaticRange)
 NS_INTERFACE_MAP_END_INHERITING(AbstractRange)
@@ -66,15 +69,25 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(StaticRange, AbstractRange)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 // static
+already_AddRefed<StaticRange> StaticRange::Create(nsINode* aNode) {
+  MOZ_ASSERT(aNode);
+  if (!sCachedRanges || sCachedRanges->IsEmpty()) {
+    return do_AddRef(new StaticRange(aNode));
+  }
+  RefPtr<StaticRange> staticRange = sCachedRanges->PopLastElement().forget();
+  staticRange->Init(aNode);
+  return staticRange.forget();
+}
+
+// static
 template <typename SPT, typename SRT, typename EPT, typename ERT>
 already_AddRefed<StaticRange> StaticRange::Create(
     const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
     const RangeBoundaryBase<EPT, ERT>& aEndBoundary, ErrorResult& aRv) {
-  RefPtr<StaticRange> staticRange = new StaticRange(aStartBoundary.Container());
-  aRv = staticRange->SetStartAndEnd(aStartBoundary, aEndBoundary);
-  if (NS_WARN_IF(aRv.Failed())) {
-    return nullptr;
-  }
+  RefPtr<StaticRange> staticRange =
+      StaticRange::Create(aStartBoundary.Container());
+  staticRange->DoSetRange(aStartBoundary, aEndBoundary, nullptr);
+
   return staticRange.forget();
 }
 
@@ -84,7 +97,23 @@ void StaticRange::DoSetRange(const RangeBoundaryBase<SPT, SRT>& aStartBoundary,
                              nsINode* aRootNode) {
   mStart = aStartBoundary;
   mEnd = aEndBoundary;
-  mIsPositioned = mStart.IsSet();
+  MOZ_ASSERT(mStart.IsSet() == mEnd.IsSet());
+  mIsPositioned = mStart.IsSet() && mEnd.IsSet();
+}
+
+/* static */
+already_AddRefed<StaticRange> StaticRange::Constructor(
+    const GlobalObject& global, const StaticRangeInit& init, ErrorResult& aRv) {
+  if (init.mStartContainer->NodeType() == nsINode::DOCUMENT_TYPE_NODE ||
+      init.mStartContainer->NodeType() == nsINode::ATTRIBUTE_NODE ||
+      init.mEndContainer->NodeType() == nsINode::DOCUMENT_TYPE_NODE ||
+      init.mEndContainer->NodeType() == nsINode::ATTRIBUTE_NODE) {
+    aRv.Throw(NS_ERROR_DOM_INVALID_NODE_TYPE_ERR);
+    return nullptr;
+  }
+
+  return Create(init.mStartContainer, init.mStartOffset, init.mEndContainer,
+                init.mEndOffset, aRv);
 }
 
 JSObject* StaticRange::WrapObject(JSContext* aCx,

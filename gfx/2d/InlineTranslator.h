@@ -30,6 +30,8 @@ using gfx::Translator;
 
 class InlineTranslator : public Translator {
  public:
+  InlineTranslator();
+
   explicit InlineTranslator(DrawTarget* aDT, void* aFontContext = nullptr);
 
   bool TranslateRecording(char*, size_t len);
@@ -100,37 +102,37 @@ class InlineTranslator : public Translator {
   }
 
   void AddDrawTarget(ReferencePtr aRefPtr, DrawTarget* aDT) final {
-    mDrawTargets.Put(aRefPtr, aDT);
+    mDrawTargets.Put(aRefPtr, RefPtr{aDT});
   }
 
   void AddPath(ReferencePtr aRefPtr, Path* aPath) final {
-    mPaths.Put(aRefPtr, aPath);
+    mPaths.Put(aRefPtr, RefPtr{aPath});
   }
 
   void AddSourceSurface(ReferencePtr aRefPtr, SourceSurface* aSurface) final {
-    mSourceSurfaces.Put(aRefPtr, aSurface);
+    mSourceSurfaces.Put(aRefPtr, RefPtr{aSurface});
   }
 
   void AddFilterNode(ReferencePtr aRefPtr, FilterNode* aFilter) final {
-    mFilterNodes.Put(aRefPtr, aFilter);
+    mFilterNodes.Put(aRefPtr, RefPtr{aFilter});
   }
 
   void AddGradientStops(ReferencePtr aRefPtr, GradientStops* aStops) final {
-    mGradientStops.Put(aRefPtr, aStops);
+    mGradientStops.Put(aRefPtr, RefPtr{aStops});
   }
 
   void AddScaledFont(ReferencePtr aRefPtr, ScaledFont* aScaledFont) final {
-    mScaledFonts.Put(aRefPtr, aScaledFont);
+    mScaledFonts.Put(aRefPtr, RefPtr{aScaledFont});
   }
 
   void AddUnscaledFont(ReferencePtr aRefPtr,
                        UnscaledFont* aUnscaledFont) final {
-    mUnscaledFonts.Put(aRefPtr, aUnscaledFont);
+    mUnscaledFonts.Put(aRefPtr, RefPtr{aUnscaledFont});
   }
 
   void AddNativeFontResource(uint64_t aKey,
                              NativeFontResource* aScaledFontResouce) final {
-    mNativeFontResources.Put(aKey, aScaledFontResouce);
+    mNativeFontResources.Put(aKey, RefPtr{aScaledFontResouce});
   }
 
   void RemoveDrawTarget(ReferencePtr aRefPtr) override {
@@ -163,13 +165,18 @@ class InlineTranslator : public Translator {
       ReferencePtr aRefPtr, const gfx::IntSize& aSize,
       gfx::SurfaceFormat aFormat) override;
 
-  mozilla::gfx::DrawTarget* GetReferenceDrawTarget() final { return mBaseDT; }
+  mozilla::gfx::DrawTarget* GetReferenceDrawTarget() final {
+    MOZ_ASSERT(mBaseDT, "mBaseDT has not been initialized.");
+    return mBaseDT;
+  }
 
   void* GetFontContext() final { return mFontContext; }
   std::string GetError() { return mError; }
 
- private:
+ protected:
   RefPtr<DrawTarget> mBaseDT;
+
+ private:
   void* mFontContext;
   std::string mError;
 

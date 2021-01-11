@@ -62,17 +62,22 @@ ms[rquote]:after {
  }
 
 /**************************************************************************/
-/* Links                                                                  */
+/* Links and focusable elements                                           */
 /**************************************************************************/
 :any-link {
   text-decoration: none !important;
+}
+
+*:-moz-focusring {
+  /* Don't specify the outline-color, we should always use initial value. */
+  outline: 1px dotted;
 }
 
 /**************************************************************************/
 /* attributes common to all tags                                          */
 /**************************************************************************/
 
-/* These attributes are mapped to style in nsMathMLElement.cpp:
+/* These attributes are mapped to style in MathMLElement.cpp:
 
    - background -> background                             (deprecated)
    - color -> color                                       (deprecated)
@@ -203,14 +208,6 @@ mtable[framespacing] > mtr > mtd {
   padding: 0px;
 }
 
-/**************************************************************************/
-/* This rule is used to give a ComputedStyle suitable for nsMathMLChars.
-   We don't actually style -moz-math-anonymous by default. */
-/*
-::-moz-math-anonymous {
-}
-*/
-
 /**********************************************************************/
 /* This is used when wrapping non-MathML inline elements inside math. */
 *|*::-moz-mathml-anonymous-block {
@@ -250,7 +247,7 @@ mstyle[displaystyle="true" i] {
 /*
    The mfrac element sets displaystyle to "false", or if it was already false
    increments scriptlevel by 1, within numerator and denominator.
-*/   
+*/
 mfrac > * {
     -moz-script-level: auto;
     -moz-math-display: inline;

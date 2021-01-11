@@ -8,7 +8,10 @@ import glob
 import os
 import shutil
 import sys
+import unittest
 from io import StringIO
+
+import six
 
 from marionette_driver import Wait
 from marionette_driver.errors import (
@@ -17,7 +20,7 @@ from marionette_driver.errors import (
     TimeoutException
 )
 
-from marionette_harness import MarionetteTestCase, expectedFailure, run_if_e10s
+from marionette_harness import MarionetteTestCase, expectedFailure
 
 # Import runner module to monkey patch mozcrash module
 from mozrunner.base import runner
@@ -135,7 +138,10 @@ class TestCrash(BaseCrashTestCase):
 
         self.marionette.get_url()
 
-    @run_if_e10s("Content crashes only exist in e10s mode")
+
+    # Disabled until bug 1569928 is fixed; note that Bug 1602757 makes
+    # this basically a perma-fail
+    @unittest.skip("Bug 1569928 - Perma fails with content processes pre-started")
     def test_crash_content_process(self):
         # For a content process crash and MOZ_CRASHREPORTER_SHUTDOWN set the top
         # browsing context will be gone first. As such the raised NoSuchWindowException
@@ -162,7 +168,8 @@ class TestCrash(BaseCrashTestCase):
         self.assertNotEqual(self.marionette.process_id, self.pid)
         self.marionette.get_url()
 
-    @expectedFailure
+    @unittest.expectedFailure
+    @unittest.skipIf(six.PY3, "Bug 1641226 - Not supported in Python3.")
     def test_unexpected_crash(self):
         self.crash(parent=True)
 

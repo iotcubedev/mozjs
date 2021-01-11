@@ -26,7 +26,7 @@ ChromeUtils.defineModuleGetter(
 function SecurityReporter() {}
 
 SecurityReporter.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsISecurityReporter]),
+  QueryInterface: ChromeUtils.generateQI(["nsISecurityReporter"]),
   reportTLSError(transportSecurityInfo, hostname, port) {
     // don't send if there's no transportSecurityInfo (since the report cannot
     // contain anything of interest)
@@ -50,12 +50,12 @@ SecurityReporter.prototype = {
       return;
     }
 
-    // Convert the nsIX509CertList into a format that can be parsed into
+    // Convert the array of nsIX509Cert into a format that can be parsed into
     // JSON
     let asciiCertChain = [];
 
     if (transportSecurityInfo.failedCertChain) {
-      for (let cert of transportSecurityInfo.failedCertChain.getEnumerator()) {
+      for (let cert of transportSecurityInfo.failedCertChain) {
         asciiCertChain.push(cert.getBase64DERString());
       }
     }

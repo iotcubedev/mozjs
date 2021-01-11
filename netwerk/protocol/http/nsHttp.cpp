@@ -13,22 +13,26 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/Unused.h"
+#include "mozilla/StaticPrefs_network.h"
 #include "nsCRT.h"
 #include "nsHttpRequestHead.h"
 #include "nsHttpResponseHead.h"
 #include "nsHttpHandler.h"
 #include "nsICacheEntry.h"
 #include "nsIRequest.h"
+#include "nsJSUtils.h"
 #include <errno.h>
 #include <functional>
 
 namespace mozilla {
 namespace net {
 
+const uint32_t kHttp3VersionCount = 3;
+const nsCString kHttp3Versions[] = {"h3-27"_ns, "h3-28"_ns, "h3-29"_ns};
+
 // define storage for all atoms
 namespace nsHttp {
-#define HTTP_ATOM(_name, _value) nsHttpAtom _name = {_value};
+#define HTTP_ATOM(_name, _value) nsHttpAtom _name(_value);
 #include "nsHttpAtomList.h"
 #undef HTTP_ATOM
 }  // namespace nsHttp
@@ -139,7 +143,7 @@ Mutex* GetLock() { return sLock; }
 
 // this function may be called from multiple threads
 nsHttpAtom ResolveAtom(const char* str) {
-  nsHttpAtom atom = {nullptr};
+  nsHttpAtom atom;
 
   if (!str || !sAtomTable) return atom;
 
@@ -210,6 +214,8 @@ bool IsValidToken(const char* start, const char* end) {
 
 const char* GetProtocolVersion(HttpVersion pv) {
   switch (pv) {
+    case HttpVersion::v3_0:
+      return "h3";
     case HttpVersion::v2_0:
       return "h2";
     case HttpVersion::v1_0:
@@ -418,7 +424,8 @@ bool ValidationRequired(bool isForcedValid,
     LOG(("  not validating, expire time not in the past"));
   } else if (cachedResponseHead->MustValidateIfExpired()) {
     doValidation = true;
-  } else if (cachedResponseHead->StaleWhileRevalidate(now, expiration)) {
+  } else if (cachedResponseHead->StaleWhileRevalidate(now, expiration) &&
+             StaticPrefs::network_http_stale_while_revalidate_enabled()) {
     LOG(("  not validating, in the stall-while-revalidate window"));
     doValidation = false;
     if (performBackgroundRevalidation) {
@@ -516,6 +523,43 @@ bool IsBeforeLastActiveTabLoadOptimization(TimeStamp const& when) {
          gHttpHandler->IsBeforeLastActiveTabLoadOptimization(when);
 }
 
+nsCString ConvertRequestHeadToString(nsHttpRequestHead& aRequestHead,
+                                     bool aHasRequestBody,
+                                     bool aRequestBodyHasHeaders,
+                                     bool aUsingConnect) {
+  // Make sure that there is "Content-Length: 0" header in the requestHead
+  // in case of POST and PUT methods when there is no requestBody and
+  // requestHead doesn't contain "Transfer-Encoding" header.
+  //
+  // RFC1945 section 7.2.2:
+  //   HTTP/1.0 requests containing an entity body must include a valid
+  //   Content-Length header field.
+  //
+  // RFC2616 section 4.4:
+  //   For compatibility with HTTP/1.0 applications, HTTP/1.1 requests
+  //   containing a message-body MUST include a valid Content-Length header
+  //   field unless the server is known to be HTTP/1.1 compliant.
+  if ((aRequestHead.IsPost() || aRequestHead.IsPut()) && !aHasRequestBody &&
+      !aRequestHead.HasHeader(nsHttp::Transfer_Encoding)) {
+    DebugOnly<nsresult> rv =
+        aRequestHead.SetHeader(nsHttp::Content_Length, "0"_ns);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+  }
+
+  nsCString reqHeaderBuf;
+  reqHeaderBuf.Truncate();
+
+  // make sure we eliminate any proxy specific headers from
+  // the request if we are using CONNECT
+  aRequestHead.Flatten(reqHeaderBuf, aUsingConnect);
+
+  if (!aRequestBodyHasHeaders || !aHasRequestBody) {
+    reqHeaderBuf.AppendLiteral("\r\n");
+  }
+
+  return reqHeaderBuf;
+}
+
 void NotifyActiveTabLoadOptimization() {
   if (gHttpHandler) {
     gHttpHandler->NotifyActiveTabLoadOptimization();
@@ -531,13 +575,6 @@ void SetLastActiveTabLoadOptimizationHit(TimeStamp const& when) {
   if (gHttpHandler) {
     gHttpHandler->SetLastActiveTabLoadOptimizationHit(when);
   }
-}
-
-HttpVersion GetHttpVersionFromSpdy(SpdyVersion sv) {
-  MOZ_DIAGNOSTIC_ASSERT(sv != SpdyVersion::NONE);
-  MOZ_ASSERT(sv == SpdyVersion::HTTP_2);
-
-  return HttpVersion::v2_0;
 }
 
 }  // namespace nsHttp
@@ -807,25 +844,14 @@ void LogCallingScriptLocation(void* instance) {
        col));
 }
 
-static bool sSanitize = true;
-
-static bool InitPreferences() {
-  Preferences::AddBoolVarCache(&sSanitize,
-                               "network.http.sanitize-headers-in-logs", true);
-  return true;
-}
-
 void LogHeaders(const char* lineStart) {
-  // The static bool assignment means that AddBoolVarCache is called just once.
-  static bool once = InitPreferences();
-  Unused << once;
-
   nsAutoCString buf;
   char* endOfLine;
   while ((endOfLine = PL_strstr(lineStart, "\r\n"))) {
     buf.Assign(lineStart, endOfLine - lineStart);
-    if (sSanitize && (PL_strcasestr(buf.get(), "authorization: ") ||
-                      PL_strcasestr(buf.get(), "proxy-authorization: "))) {
+    if (StaticPrefs::network_http_sanitize_headers_in_logs() &&
+        (PL_strcasestr(buf.get(), "authorization: ") ||
+         PL_strcasestr(buf.get(), "proxy-authorization: "))) {
       char* p = PL_strchr(buf.get(), ' ');
       while (p && *++p) {
         *p = '*';
@@ -834,6 +860,144 @@ void LogHeaders(const char* lineStart) {
     LOG1(("  %s\n", buf.get()));
     lineStart = endOfLine + 2;
   }
+}
+
+nsresult HttpProxyResponseToErrorCode(uint32_t aStatusCode) {
+  // In proxy CONNECT case, we treat every response code except 200 as an error.
+  // Even if the proxy server returns other 2xx codes (i.e. 206), this function
+  // still returns an error code.
+  MOZ_ASSERT(aStatusCode != 200);
+
+  nsresult rv;
+  switch (aStatusCode) {
+    case 300:
+    case 301:
+    case 302:
+    case 303:
+    case 307:
+    case 308:
+      // Bad redirect: not top-level, or it's a POST, bad/missing Location,
+      // or ProcessRedirect() failed for some other reason.  Legal
+      // redirects that fail because site not available, etc., are handled
+      // elsewhere, in the regular codepath.
+      rv = NS_ERROR_CONNECTION_REFUSED;
+      break;
+    // Squid sends 404 if DNS fails (regular 404 from target is tunneled)
+    case 404:  // HTTP/1.1: "Not Found"
+               // RFC 2616: "some deployed proxies are known to return 400 or
+               // 500 when DNS lookups time out."  (Squid uses 500 if it runs
+               // out of sockets: so we have a conflict here).
+    case 400:  // HTTP/1.1 "Bad Request"
+    case 500:  // HTTP/1.1: "Internal Server Error"
+      rv = NS_ERROR_UNKNOWN_HOST;
+      break;
+    case 401:
+      rv = NS_ERROR_PROXY_UNAUTHORIZED;
+      break;
+    case 402:
+      rv = NS_ERROR_PROXY_PAYMENT_REQUIRED;
+      break;
+    case 403:
+      rv = NS_ERROR_PROXY_FORBIDDEN;
+      break;
+    case 405:
+      rv = NS_ERROR_PROXY_METHOD_NOT_ALLOWED;
+      break;
+    case 406:
+      rv = NS_ERROR_PROXY_NOT_ACCEPTABLE;
+      break;
+    case 407:  // ProcessAuthentication() failed (e.g. no header)
+      rv = NS_ERROR_PROXY_AUTHENTICATION_FAILED;
+      break;
+    case 408:
+      rv = NS_ERROR_PROXY_REQUEST_TIMEOUT;
+      break;
+    case 409:
+      rv = NS_ERROR_PROXY_CONFLICT;
+      break;
+    case 410:
+      rv = NS_ERROR_PROXY_GONE;
+      break;
+    case 411:
+      rv = NS_ERROR_PROXY_LENGTH_REQUIRED;
+      break;
+    case 412:
+      rv = NS_ERROR_PROXY_PRECONDITION_FAILED;
+      break;
+    case 413:
+      rv = NS_ERROR_PROXY_REQUEST_ENTITY_TOO_LARGE;
+      break;
+    case 414:
+      rv = NS_ERROR_PROXY_REQUEST_URI_TOO_LONG;
+      break;
+    case 415:
+      rv = NS_ERROR_PROXY_UNSUPPORTED_MEDIA_TYPE;
+      break;
+    case 416:
+      rv = NS_ERROR_PROXY_REQUESTED_RANGE_NOT_SATISFIABLE;
+      break;
+    case 417:
+      rv = NS_ERROR_PROXY_EXPECTATION_FAILED;
+      break;
+    case 421:
+      rv = NS_ERROR_PROXY_MISDIRECTED_REQUEST;
+      break;
+    case 425:
+      rv = NS_ERROR_PROXY_TOO_EARLY;
+      break;
+    case 426:
+      rv = NS_ERROR_PROXY_UPGRADE_REQUIRED;
+      break;
+    case 428:
+      rv = NS_ERROR_PROXY_PRECONDITION_REQUIRED;
+      break;
+    case 429:
+      rv = NS_ERROR_PROXY_TOO_MANY_REQUESTS;
+      break;
+    case 431:
+      rv = NS_ERROR_PROXY_REQUEST_HEADER_FIELDS_TOO_LARGE;
+      break;
+    case 451:
+      rv = NS_ERROR_PROXY_UNAVAILABLE_FOR_LEGAL_REASONS;
+      break;
+    case 501:
+      rv = NS_ERROR_PROXY_NOT_IMPLEMENTED;
+      break;
+    case 502:
+      rv = NS_ERROR_PROXY_BAD_GATEWAY;
+      break;
+    case 503:
+      // Squid returns 503 if target request fails for anything but DNS.
+      /* User sees: "Failed to Connect:
+       *  Firefox can't establish a connection to the server at
+       *  www.foo.com.  Though the site seems valid, the browser
+       *  was unable to establish a connection."
+       */
+      rv = NS_ERROR_CONNECTION_REFUSED;
+      break;
+    // RFC 2616 uses 504 for both DNS and target timeout, so not clear what to
+    // do here: picking target timeout, as DNS covered by 400/404/500
+    case 504:
+      rv = NS_ERROR_PROXY_GATEWAY_TIMEOUT;
+      break;
+    case 505:
+      rv = NS_ERROR_PROXY_VERSION_NOT_SUPPORTED;
+      break;
+    case 506:
+      rv = NS_ERROR_PROXY_VARIANT_ALSO_NEGOTIATES;
+      break;
+    case 510:
+      rv = NS_ERROR_PROXY_NOT_EXTENDED;
+      break;
+    case 511:
+      rv = NS_ERROR_PROXY_NETWORK_AUTHENTICATION_REQUIRED;
+      break;
+    default:
+      rv = NS_ERROR_PROXY_CONNECTION_REFUSED;
+      break;
+  }
+
+  return rv;
 }
 
 }  // namespace net

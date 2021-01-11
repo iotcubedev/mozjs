@@ -10,9 +10,7 @@ using namespace mozilla::net;
 
 #include "nsFtpProtocolHandler.h"
 #include "nsFTPChannel.h"
-#include "nsIStandardURL.h"
 #include "mozilla/Logging.h"
-#include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsIObserverService.h"
 #include "nsEscape.h"
@@ -162,16 +160,9 @@ nsFtpProtocolHandler::NewProxiedChannel(nsIURI* uri, nsIProxyInfo* proxyInfo,
   else
     channel = new nsFtpChannel(uri, proxyInfo);
 
-  nsresult rv = channel->Init();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   // set the loadInfo on the new channel
-  rv = channel->SetLoadInfo(aLoadInfo);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
+  nsresult rv = channel->SetLoadInfo(aLoadInfo);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   channel.forget(result);
   return rv;
@@ -258,7 +249,7 @@ nsresult nsFtpProtocolHandler::InsertConnection(nsIURI* aKey,
     return rv;
   }
 
-  ts->key = ToNewCString(spec);
+  ts->key = ToNewCString(spec, mozilla::fallible);
   if (!ts->key) {
     delete ts;
     return NS_ERROR_OUT_OF_MEMORY;

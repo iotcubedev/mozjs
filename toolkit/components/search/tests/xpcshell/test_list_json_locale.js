@@ -5,13 +5,18 @@
 
 "use strict";
 
-add_task(function test_setup() {
-  useTestEngineConfig();
+add_task(async function setup() {
+  await useTestEngines();
 
+  Services.prefs.setBoolPref(
+    SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault.ui.enabled",
+    true
+  );
   Services.prefs.setBoolPref(
     SearchUtils.BROWSER_SEARCH_PREF + "separatePrivateDefault",
     true
   );
+  Region._setHomeRegion("US", false);
 });
 
 add_task(async function test_listJSONlocale() {
@@ -77,9 +82,9 @@ add_task(async function test_listJSONlocaleSwitch() {
 
 // Check that region overrides apply
 add_task(async function test_listJSONRegionOverride() {
-  Services.prefs.setCharPref("browser.search.region", "RU");
+  Region._setHomeRegion("RU", false);
 
-  await asyncReInit({ skipReset: true });
+  await asyncReInit();
 
   Assert.ok(Services.search.isInitialized, "search initialized");
 

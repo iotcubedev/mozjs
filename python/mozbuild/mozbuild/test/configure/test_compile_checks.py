@@ -9,7 +9,7 @@ import textwrap
 import unittest
 import mozpack.path as mozpath
 
-from StringIO import StringIO
+from six import StringIO
 
 from buildconfig import topsrcdir
 from common import ConfigureTestSandbox
@@ -23,7 +23,10 @@ class BaseCompileChecks(unittest.TestCase):
         expected_flags = expected_flags or []
 
         def mock_compiler(stdin, args):
-            args, test_file = args[:-1], args[-1]
+            test_file = [a for a in args if not a.startswith('-')]
+            self.assertEqual(len(test_file), 1)
+            test_file = test_file[0]
+            args = [a for a in args if a.startswith('-')]
             self.assertIn('-c', args)
             for flag in expected_flags:
                 self.assertIn(flag, args)

@@ -41,6 +41,7 @@
 #include "mozilla/gfx/Rect.h"           // for Rect
 #include "mozilla/gfx/Types.h"          // for Color, SurfaceFormat
 #include "mozilla/layers/Compositor.h"  // for Compositor
+#include "mozilla/layers/CompositorOGL.h"
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/Effects.h"              // for Effect, EffectChain, etc
 #include "mozilla/layers/LayerMetricsWrapper.h"  // for LayerMetricsWrapper
@@ -62,7 +63,6 @@
 #  include <android/native_window.h>
 #  include "mozilla/jni/Utils.h"
 #  include "mozilla/widget/AndroidCompositorWidget.h"
-#  include "opengl/CompositorOGL.h"
 #  include "GLConsts.h"
 #  include "GLContextEGL.h"
 #  include "GLContextProvider.h"
@@ -116,11 +116,10 @@ HostLayerManager::HostLayerManager()
     : mDebugOverlayWantsNextFrame(false),
       mWarningLevel(0.0f),
       mCompositorBridgeID(0),
-      mWindowOverlayChanged(false),
       mLastPaintTime(TimeDuration::Forever()),
       mRenderStartTime(TimeStamp::Now()) {}
 
-HostLayerManager::~HostLayerManager() {}
+HostLayerManager::~HostLayerManager() = default;
 
 void HostLayerManager::RecordPaintTimes(const PaintTiming& aTiming) {
   mDiagnostics->RecordPaintTimes(aTiming);
@@ -135,6 +134,17 @@ void HostLayerManager::WriteCollectedFrames() {
     mCompositionRecorder->WriteCollectedFrames();
     mCompositionRecorder = nullptr;
   }
+}
+
+Maybe<CollectedFrames> HostLayerManager::GetCollectedFrames() {
+  Maybe<CollectedFrames> maybeFrames;
+
+  if (mCompositionRecorder) {
+    maybeFrames.emplace(mCompositionRecorder->GetCollectedFrames());
+    mCompositionRecorder = nullptr;
+  }
+
+  return maybeFrames;
 }
 
 /**
@@ -155,6 +165,10 @@ LayerManagerComposite::LayerManagerComposite(Compositor* aCompositor)
   mDiagnostics = MakeUnique<Diagnostics>();
   MOZ_ASSERT(aCompositor);
   mNativeLayerRoot = aCompositor->GetWidget()->GetNativeLayerRoot();
+  if (mNativeLayerRoot) {
+    mSurfacePoolHandle = aCompositor->GetSurfacePoolHandle();
+    MOZ_RELEASE_ASSERT(mSurfacePoolHandle);
+  }
 
 #ifdef USE_SKIA
   mPaintCounter = nullptr;
@@ -173,7 +187,20 @@ void LayerManagerComposite::Destroy() {
     mRoot = nullptr;
     mClonedLayerTreeProperties = nullptr;
     mProfilerScreenshotGrabber.Destroy();
+
     if (mNativeLayerRoot) {
+      if (mGPUStatsLayer) {
+        mNativeLayerRoot->RemoveLayer(mGPUStatsLayer);
+        mGPUStatsLayer = nullptr;
+      }
+      if (mUnusedTransformWarningLayer) {
+        mNativeLayerRoot->RemoveLayer(mUnusedTransformWarningLayer);
+        mUnusedTransformWarningLayer = nullptr;
+      }
+      if (mDisabledApzWarningLayer) {
+        mNativeLayerRoot->RemoveLayer(mDisabledApzWarningLayer);
+        mDisabledApzWarningLayer = nullptr;
+      }
       for (const auto& nativeLayer : mNativeLayers) {
         mNativeLayerRoot->RemoveLayer(nativeLayer);
       }
@@ -547,6 +574,8 @@ void LayerManagerComposite::EndTransaction(const TimeStamp& aTimeStamp,
 }
 
 void LayerManagerComposite::UpdateAndRender() {
+  mCompositionOpportunityId = mCompositionOpportunityId.Next();
+
   if (gfxEnv::SkipComposition()) {
     mInvalidRegion.SetEmpty();
     return;
@@ -594,7 +623,7 @@ void LayerManagerComposite::UpdateAndRender() {
     invalid = mInvalidRegion;
   }
 
-  if (invalid.IsEmpty() && !mWindowOverlayChanged) {
+  if (invalid.IsEmpty()) {
     // Composition requested, but nothing has changed. Don't do any work.
     mClonedLayerTreeProperties = LayerProperties::CloneFrom(GetRoot());
     mProfilerScreenshotGrabber.NotifyEmptyFrame();
@@ -609,7 +638,11 @@ void LayerManagerComposite::UpdateAndRender() {
 
   // We don't want our debug overlay to cause more frames to happen
   // so we will invalidate after we've decided if something changed.
-  InvalidateDebugOverlay(invalid, mRenderBounds);
+  // Only invalidate if we're not using native layers. When using native layers,
+  // UpdateDebugOverlayNativeLayers will repaint the appropriate layer areas.
+  if (!mNativeLayerRoot) {
+    InvalidateDebugOverlay(invalid, mRenderBounds);
+  }
 
   bool rendered = Render(invalid, opaque);
 #if defined(MOZ_WIDGET_ANDROID)
@@ -618,7 +651,6 @@ void LayerManagerComposite::UpdateAndRender() {
 
   if (!mTarget && rendered) {
     mInvalidRegion.SetEmpty();
-    mWindowOverlayChanged = false;
   }
 
   // Update cached layer tree information.
@@ -671,6 +703,50 @@ void LayerManagerComposite::DrawPaintTimes(Compositor* aCompositor) {
 }
 #endif
 
+static Rect RectWithEdges(int32_t aTop, int32_t aRight, int32_t aBottom,
+                          int32_t aLeft) {
+  return Rect(aLeft, aTop, aRight - aLeft, aBottom - aTop);
+}
+
+void LayerManagerComposite::DrawBorder(const IntRect& aOuter,
+                                       int32_t aBorderWidth,
+                                       const DeviceColor& aColor,
+                                       const Matrix4x4& aTransform) {
+  EffectChain effects;
+  effects.mPrimaryEffect = new EffectSolidColor(aColor);
+
+  IntRect inner(aOuter);
+  inner.Deflate(aBorderWidth);
+  // Top and bottom border sides
+  mCompositor->DrawQuad(
+      RectWithEdges(aOuter.Y(), aOuter.XMost(), inner.Y(), aOuter.X()), aOuter,
+      effects, 1, aTransform);
+  mCompositor->DrawQuad(
+      RectWithEdges(inner.YMost(), aOuter.XMost(), aOuter.YMost(), aOuter.X()),
+      aOuter, effects, 1, aTransform);
+  // Left and right border sides
+  mCompositor->DrawQuad(
+      RectWithEdges(inner.Y(), inner.X(), inner.YMost(), aOuter.X()), aOuter,
+      effects, 1, aTransform);
+  mCompositor->DrawQuad(
+      RectWithEdges(inner.Y(), aOuter.XMost(), inner.YMost(), inner.XMost()),
+      aOuter, effects, 1, aTransform);
+}
+
+void LayerManagerComposite::DrawTranslationWarningOverlay(
+    const IntRect& aBounds) {
+  // Black blorder
+  IntRect blackBorderBounds(aBounds);
+  blackBorderBounds.Deflate(4);
+  DrawBorder(blackBorderBounds, 6, DeviceColor(0, 0, 0, 1), Matrix4x4());
+
+  // Warning border, yellow to red
+  IntRect warnBorder(aBounds);
+  warnBorder.Deflate(5);
+  DrawBorder(warnBorder, 4, DeviceColor(1, 1.f - mWarningLevel, 0, 1),
+             Matrix4x4());
+}
+
 static uint16_t sFrameCount = 0;
 void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
   bool drawFps = StaticPrefs::layers_acceleration_draw_fps();
@@ -682,55 +758,11 @@ void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
   }
 
   if (drawFps) {
-    float alpha = 1;
 #ifdef ANDROID
     // Draw a translation delay warning overlay
-    int width;
-    int border;
-
-    TimeStamp now = TimeStamp::Now();
-    if (!mWarnTime.IsNull() &&
-        (now - mWarnTime).ToMilliseconds() < kVisualWarningDuration) {
-      EffectChain effects;
-
-      // Black blorder
-      border = 4;
-      width = 6;
-      effects.mPrimaryEffect = new EffectSolidColor(gfx::Color(0, 0, 0, 1));
-      mCompositor->DrawQuad(
-          gfx::Rect(border, border, aBounds.Width() - 2 * border, width),
-          aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(gfx::Rect(border, aBounds.Height() - border - width,
-                                      aBounds.Width() - 2 * border, width),
-                            aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(
-          gfx::Rect(border, border + width, width,
-                    aBounds.Height() - 2 * border - width * 2),
-          aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(
-          gfx::Rect(aBounds.Width() - border - width, border + width, width,
-                    aBounds.Height() - 2 * border - 2 * width),
-          aBounds, effects, alpha, gfx::Matrix4x4());
-
-      // Content
-      border = 5;
-      width = 4;
-      effects.mPrimaryEffect =
-          new EffectSolidColor(gfx::Color(1, 1.f - mWarningLevel, 0, 1));
-      mCompositor->DrawQuad(
-          gfx::Rect(border, border, aBounds.Width() - 2 * border, width),
-          aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(gfx::Rect(border, aBounds.height - border - width,
-                                      aBounds.Width() - 2 * border, width),
-                            aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(
-          gfx::Rect(border, border + width, width,
-                    aBounds.Height() - 2 * border - width * 2),
-          aBounds, effects, alpha, gfx::Matrix4x4());
-      mCompositor->DrawQuad(
-          gfx::Rect(aBounds.Width() - border - width, border + width, width,
-                    aBounds.Height() - 2 * border - 2 * width),
-          aBounds, effects, alpha, gfx::Matrix4x4());
+    if (!mWarnTime.IsNull() && (TimeStamp::Now() - mWarnTime).ToMilliseconds() <
+                                   kVisualWarningDuration) {
+      DrawTranslationWarningOverlay(aBounds);
       SetDebugOverlayWantsNextFrame(true);
     }
 #endif
@@ -743,11 +775,13 @@ void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
     mTextRenderer->RenderText(mCompositor, text, IntPoint(2, 5), Matrix4x4(),
                               24, 600, TextRenderer::FontType::FixedWidth);
 
+    float alpha = 1;
     if (mUnusedApzTransformWarning) {
       // If we have an unused APZ transform on this composite, draw a 20x20 red
       // box in the top-right corner
       EffectChain effects;
-      effects.mPrimaryEffect = new EffectSolidColor(gfx::Color(1, 0, 0, 1));
+      effects.mPrimaryEffect =
+          new EffectSolidColor(gfx::DeviceColor(1, 0, 0, 1));
       mCompositor->DrawQuad(gfx::Rect(aBounds.Width() - 20, 0, 20, 20), aBounds,
                             effects, alpha, gfx::Matrix4x4());
 
@@ -759,7 +793,8 @@ void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
       // in the top-right corner, to the left of the unused-apz-transform
       // warning box
       EffectChain effects;
-      effects.mPrimaryEffect = new EffectSolidColor(gfx::Color(1, 1, 0, 1));
+      effects.mPrimaryEffect =
+          new EffectSolidColor(gfx::DeviceColor(1, 1, 0, 1));
       mCompositor->DrawQuad(gfx::Rect(aBounds.Width() - 40, 0, 20, 20), aBounds,
                             effects, alpha, gfx::Matrix4x4());
 
@@ -776,9 +811,7 @@ void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
         new EffectSolidColor(gfxUtils::GetColorForFrameNumber(sFrameCount));
     mCompositor->DrawQuad(Rect(sideRect), sideRect, effects, 1.0,
                           gfx::Matrix4x4());
-  }
 
-  if (drawFrameColorBars) {
     // We intentionally overflow at 2^16.
     sFrameCount++;
   }
@@ -789,6 +822,97 @@ void LayerManagerComposite::RenderDebugOverlay(const IntRect& aBounds) {
     DrawPaintTimes(mCompositor);
   }
 #endif
+}
+
+void LayerManagerComposite::UpdateDebugOverlayNativeLayers() {
+  // Remove all debug layers first because PlaceNativeLayers might have changed
+  // the z-order. By removing and re-adding, we keep the debug overlay layers
+  // on top.
+  if (mGPUStatsLayer) {
+    mNativeLayerRoot->RemoveLayer(mGPUStatsLayer);
+  }
+  if (mUnusedTransformWarningLayer) {
+    mNativeLayerRoot->RemoveLayer(mUnusedTransformWarningLayer);
+  }
+  if (mDisabledApzWarningLayer) {
+    mNativeLayerRoot->RemoveLayer(mDisabledApzWarningLayer);
+  }
+
+  bool drawFps = StaticPrefs::layers_acceleration_draw_fps();
+
+  if (drawFps) {
+    GPUStats stats;
+    stats.mScreenPixels = mRenderBounds.Area();
+    mCompositor->GetFrameStats(&stats);
+
+    std::string text = mDiagnostics->GetFrameOverlayString(stats);
+    IntSize size = mTextRenderer->ComputeSurfaceSize(
+        text, 600, TextRenderer::FontType::FixedWidth);
+
+    if (!mGPUStatsLayer || mGPUStatsLayer->GetSize() != size) {
+      mGPUStatsLayer =
+          mNativeLayerRoot->CreateLayer(size, false, mSurfacePoolHandle);
+    }
+
+    mGPUStatsLayer->SetPosition(IntPoint(2, 5));
+    IntRect bounds({}, size);
+    RefPtr<DrawTarget> dt = mGPUStatsLayer->NextSurfaceAsDrawTarget(
+        bounds, bounds, BackendType::SKIA);
+    mTextRenderer->RenderTextToDrawTarget(dt, text, 600,
+                                          TextRenderer::FontType::FixedWidth);
+    mGPUStatsLayer->NotifySurfaceReady();
+    mNativeLayerRoot->AppendLayer(mGPUStatsLayer);
+
+    IntSize square(20, 20);
+    // The two warning layers are created on demand and their content is only
+    // drawn once. After that, they only get moved (if the window size changes)
+    // and conditionally shown.
+    // The drawing would be unnecessary if we had native "color layers".
+    if (mUnusedApzTransformWarning) {
+      // If we have an unused APZ transform on this composite, draw a 20x20 red
+      // box in the top-right corner.
+      if (!mUnusedTransformWarningLayer) {
+        mUnusedTransformWarningLayer =
+            mNativeLayerRoot->CreateLayer(square, true, mSurfacePoolHandle);
+        RefPtr<DrawTarget> dt =
+            mUnusedTransformWarningLayer->NextSurfaceAsDrawTarget(
+                IntRect({}, square), IntRect({}, square), BackendType::SKIA);
+        dt->FillRect(Rect(0, 0, 20, 20), ColorPattern(DeviceColor(1, 0, 0, 1)));
+        mUnusedTransformWarningLayer->NotifySurfaceReady();
+      }
+      mUnusedTransformWarningLayer->SetPosition(
+          IntPoint(mRenderBounds.XMost() - 20, mRenderBounds.Y()));
+      mNativeLayerRoot->AppendLayer(mUnusedTransformWarningLayer);
+
+      mUnusedApzTransformWarning = false;
+      SetDebugOverlayWantsNextFrame(true);
+    }
+
+    if (mDisabledApzWarning) {
+      // If we have a disabled APZ on this composite, draw a 20x20 yellow box
+      // in the top-right corner, to the left of the unused-apz-transform
+      // warning box.
+      if (!mDisabledApzWarningLayer) {
+        mDisabledApzWarningLayer =
+            mNativeLayerRoot->CreateLayer(square, true, mSurfacePoolHandle);
+        RefPtr<DrawTarget> dt =
+            mDisabledApzWarningLayer->NextSurfaceAsDrawTarget(
+                IntRect({}, square), IntRect({}, square), BackendType::SKIA);
+        dt->FillRect(Rect(0, 0, 20, 20), ColorPattern(DeviceColor(1, 1, 0, 1)));
+        mDisabledApzWarningLayer->NotifySurfaceReady();
+      }
+      mDisabledApzWarningLayer->SetPosition(
+          IntPoint(mRenderBounds.XMost() - 40, mRenderBounds.Y()));
+      mNativeLayerRoot->AppendLayer(mDisabledApzWarningLayer);
+
+      mDisabledApzWarning = false;
+      SetDebugOverlayWantsNextFrame(true);
+    }
+  } else {
+    mGPUStatsLayer = nullptr;
+    mUnusedTransformWarningLayer = nullptr;
+    mDisabledApzWarningLayer = nullptr;
+  }
 }
 
 RefPtr<CompositingRenderTarget>
@@ -892,20 +1016,23 @@ void LayerManagerComposite::PlaceNativeLayer(
     std::deque<RefPtr<NativeLayer>>* aLayersToRecycle,
     IntRegion* aWindowInvalidRegion) {
   RefPtr<NativeLayer> layer;
-  if (aLayersToRecycle->empty()) {
-    layer = mNativeLayerRoot->CreateLayer();
+  if (aLayersToRecycle->empty() ||
+      aLayersToRecycle->front()->GetSize() != aRect.Size() ||
+      aLayersToRecycle->front()->IsOpaque() != aOpaque) {
+    layer = mNativeLayerRoot->CreateLayer(aRect.Size(), aOpaque,
+                                          mSurfacePoolHandle);
     mNativeLayerRoot->AppendLayer(layer);
+    aWindowInvalidRegion->OrWith(aRect);
   } else {
     layer = aLayersToRecycle->front();
     aLayersToRecycle->pop_front();
+    IntRect oldRect = layer->GetRect();
+    if (!aRect.IsEqualInterior(oldRect)) {
+      aWindowInvalidRegion->OrWith(oldRect);
+      aWindowInvalidRegion->OrWith(aRect);
+    }
   }
-  IntRect oldRect = layer->GetRect();
-  if (!aRect.IsEqualInterior(oldRect)) {
-    aWindowInvalidRegion->OrWith(oldRect);
-    aWindowInvalidRegion->OrWith(aRect);
-  }
-  layer->SetRect(aRect);
-  layer->SetOpaqueRegion(aOpaque ? aRect - aRect.TopLeft() : IntRect());
+  layer->SetPosition(aRect.TopLeft());
   mNativeLayers.push_back(layer);
 }
 
@@ -918,35 +1045,6 @@ static void ClearLayerFlags(Layer* aLayer) {
     }
   });
 }
-
-#if defined(MOZ_WIDGET_ANDROID)
-class ScopedCompositorRenderOffset {
- public:
-  ScopedCompositorRenderOffset(CompositorOGL* aCompositor,
-                               const ScreenPoint& aOffset)
-      : mCompositor(aCompositor),
-        mOriginalOffset(mCompositor->GetScreenRenderOffset()),
-        mOriginalProjection(mCompositor->GetProjMatrix()) {
-    ScreenPoint offset(mOriginalOffset.x + aOffset.x,
-                       mOriginalOffset.y + aOffset.y);
-    mCompositor->SetScreenRenderOffset(offset);
-    // Calling CompositorOGL::SetScreenRenderOffset does not affect the
-    // projection matrix so adjust that as well.
-    gfx::Matrix4x4 mat = mOriginalProjection;
-    mat.PreTranslate(aOffset.x, aOffset.y, 0.0f);
-    mCompositor->SetProjMatrix(mat);
-  }
-  ~ScopedCompositorRenderOffset() {
-    mCompositor->SetScreenRenderOffset(mOriginalOffset);
-    mCompositor->SetProjMatrix(mOriginalProjection);
-  }
-
- private:
-  CompositorOGL* const mCompositor;
-  const ScreenPoint mOriginalOffset;
-  const gfx::Matrix4x4 mOriginalProjection;
-};
-#endif  // defined(MOZ_WIDGET_ANDROID)
 
 bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
                                    const nsIntRegion& aOpaqueRegion) {
@@ -989,9 +1087,9 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
 
   mozilla::widget::WidgetRenderingContext widgetContext;
 #if defined(XP_MACOSX)
-  widgetContext.mLayerManager = this;
-#elif defined(MOZ_WIDGET_ANDROID)
-  widgetContext.mCompositor = GetCompositor();
+  if (CompositorOGL* compositorOGL = mCompositor->AsCompositorOGL()) {
+    widgetContext.mGL = compositorOGL->gl();
+  }
 #endif
 
   {
@@ -1023,6 +1121,7 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
         aInvalidRegion, rootLayerClip, mRenderBounds, aOpaqueRegion, mTarget,
         mTargetBounds);
   } else if (mNativeLayerRoot) {
+    mSurfacePoolHandle->OnBeginFrame();
     if (aInvalidRegion.Intersects(mRenderBounds)) {
       mCompositor->BeginFrameForNativeLayers();
       maybeBounds = Some(mRenderBounds);
@@ -1047,11 +1146,6 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
 
   IntRect bounds = *maybeBounds;
   IntRect clipRect = rootLayerClip.valueOr(bounds);
-#if defined(MOZ_WIDGET_ANDROID)
-  ScreenCoord offset = GetContentShiftForToolbar();
-  ScopedCompositorRenderOffset scopedOffset(mCompositor->AsCompositorOGL(),
-                                            ScreenPoint(0.0f, offset));
-#endif
 
   // Prepare our layers.
   {
@@ -1094,11 +1188,7 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
       // opaque parts of the window are covered by different layers and we can
       // update those parts separately.
       IntRegion opaqueRegion;
-#ifdef XP_MACOSX
-      opaqueRegion =
-          mCompositor->GetWidget()->GetOpaqueWidgetRegion().ToUnknownRegion();
-#endif
-      opaqueRegion.AndWith(mRenderBounds);
+      opaqueRegion.And(aOpaqueRegion, mRenderBounds);
 
       // Limit the complexity of these regions. Usually, opaqueRegion should be
       // only one or two rects, so this SimplifyInward call will not change the
@@ -1159,28 +1249,14 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
     }
   }
 
-  if (!usingNativeLayers) {
-    // Allow widget to render a custom foreground.
-    mCompositor->GetWidget()->DrawWindowOverlay(
-        &widgetContext, LayoutDeviceIntRect::FromUnknownRect(bounds));
-
+  if (usingNativeLayers) {
+    UpdateDebugOverlayNativeLayers();
+  } else {
 #if defined(MOZ_WIDGET_ANDROID)
-    // Depending on the content shift the toolbar may be rendered on top of
-    // some of the content so it must be rendered after the content.
-    if (jni::IsFennec()) {
-      RenderToolbar();
-    }
     HandlePixelsTarget();
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
     // Debugging
-    // FIXME: We should render the debug overlay when using native layers, too.
-    // But we can't split the debug overlay rendering into multiple tiles
-    // because of a cyclic dependency: We want to display stats about the
-    // rendering of the entire window, but at the time when we render into the
-    // native layers, we do not know all the information about this frame yet.
-    // So we need to render the debug layer into an additional native layer on
-    // top, probably.
     RenderDebugOverlay(bounds);
   }
 
@@ -1188,6 +1264,10 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
     AUTO_PROFILER_LABEL("LayerManagerComposite::Render:EndFrame", GRAPHICS);
 
     mCompositor->EndFrame();
+
+    if (usingNativeLayers) {
+      mNativeLayerRoot->CommitToScreen();
+    }
   }
 
   mCompositor->GetWidget()->PostRender(&widgetContext);
@@ -1200,6 +1280,10 @@ bool LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion,
 
   // Our payload has now been presented.
   mPayload.Clear();
+
+  if (usingNativeLayers) {
+    mSurfacePoolHandle->OnEndFrame();
+  }
 
   mCompositor->WaitForGPU();
 
@@ -1346,67 +1430,6 @@ void LayerManagerComposite::RenderToPresentationSurface() {
   mCompositor->EndFrame();
 }
 
-ScreenCoord LayerManagerComposite::GetContentShiftForToolbar() {
-  ScreenCoord result(0.0f);
-  // If we're not in Fennec, we don't have a dynamic toolbar so there isn't a
-  // content offset.
-  if (!jni::IsFennec()) {
-    return result;
-  }
-  // If mTarget not null we are not drawing to the screen so
-  // there will not be any content offset.
-  if (mTarget) {
-    return result;
-  }
-
-  if (CompositorBridgeParent* bridge =
-          mCompositor->GetCompositorBridgeParent()) {
-    AndroidDynamicToolbarAnimator* animator =
-        bridge->GetAndroidDynamicToolbarAnimator();
-    MOZ_RELEASE_ASSERT(animator);
-    result.value = (float)animator->GetCurrentContentOffset().value;
-  }
-  return result;
-}
-
-void LayerManagerComposite::RenderToolbar() {
-  // If mTarget is not null we are not drawing to the screen so
-  // don't draw the toolbar.
-  if (mTarget) {
-    return;
-  }
-
-  if (CompositorBridgeParent* bridge =
-          mCompositor->GetCompositorBridgeParent()) {
-    AndroidDynamicToolbarAnimator* animator =
-        bridge->GetAndroidDynamicToolbarAnimator();
-    MOZ_RELEASE_ASSERT(animator);
-
-    animator->UpdateToolbarSnapshotTexture(mCompositor->AsCompositorOGL());
-
-    int32_t toolbarHeight = animator->GetCurrentToolbarHeight();
-    if (toolbarHeight == 0) {
-      return;
-    }
-
-    EffectChain effects;
-    effects.mPrimaryEffect = animator->GetToolbarEffect();
-
-    // If GetToolbarEffect returns null, nothing is rendered for the static
-    // snapshot of the toolbar. If the real toolbar chrome is not covering this
-    // portion of the surface, the clear color of the surface will be visible.
-    // On Android the clear color is the background color of the page.
-    if (effects.mPrimaryEffect) {
-      ScopedCompositorRenderOffset toolbarOffset(
-          mCompositor->AsCompositorOGL(),
-          ScreenPoint(0.0f, -animator->GetCurrentContentOffset()));
-      mCompositor->DrawQuad(gfx::Rect(0, 0, mRenderBounds.width, toolbarHeight),
-                            IntRect(0, 0, mRenderBounds.width, toolbarHeight),
-                            effects, 1.0, gfx::Matrix4x4());
-    }
-  }
-}
-
 // Used by robocop tests to get a snapshot of the frame buffer.
 void LayerManagerComposite::HandlePixelsTarget() {
   if (!mScreenPixelsTarget) {
@@ -1518,7 +1541,7 @@ LayerComposite::LayerComposite(LayerManagerComposite* aManager)
       mDestroyed(false),
       mLayerComposited(false) {}
 
-LayerComposite::~LayerComposite() {}
+LayerComposite::~LayerComposite() = default;
 
 void LayerComposite::Destroy() {
   if (!mDestroyed) {

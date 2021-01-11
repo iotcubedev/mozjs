@@ -12,13 +12,11 @@
 #include "nsContentUtils.h"
 #include "nsSize.h"
 #include "mozilla/ReflowInput.h"
-#include "nsIServiceManager.h"
 #include "nsComponentManagerUtils.h"
 #include "nsString.h"
 #include "nsAtom.h"
 #include "nsReadableUtils.h"
 #include "nsUnicharUtils.h"
-#include "nsISimpleEnumerator.h"
 #include "mozilla/LookAndFeel.h"
 
 // Interfaces needed to be included
@@ -30,9 +28,7 @@
 #include "mozilla/dom/MouseEvent.h"
 #include "mozilla/dom/SVGTitleElement.h"
 #include "nsIFormControl.h"
-#include "nsIImageLoadingContent.h"
 #include "nsIWebNavigation.h"
-#include "nsIStringBundle.h"
 #include "nsPIDOMWindow.h"
 #include "nsPIWindowRoot.h"
 #include "nsIWindowWatcher.h"
@@ -43,7 +39,6 @@
 #include "nsRect.h"
 #include "nsIWebBrowserChromeFocus.h"
 #include "nsIContent.h"
-#include "imgIContainer.h"
 #include "nsViewManager.h"
 #include "nsView.h"
 #include "nsIConstraintValidation.h"
@@ -360,7 +355,7 @@ nsDocShellTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem, int32_t aCX,
     if (browserChild) {
       // The XUL window to resize is in the parent process, but there we
       // won't be able to get aShellItem to do the hack in
-      // nsXULWindow::SizeShellTo, so let's send the width and height of
+      // AppWindow::SizeShellTo, so let's send the width and height of
       // aShellItem too.
       nsCOMPtr<nsIBaseWindow> shellAsWin(do_QueryInterface(aShellItem));
       NS_ENSURE_TRUE(shellAsWin, NS_ERROR_FAILURE);
@@ -444,9 +439,6 @@ nsDocShellTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
                                 int32_t aY, int32_t aCX, int32_t aCY) {
   return NS_ERROR_NULL_POINTER;
 }
-
-NS_IMETHODIMP
-nsDocShellTreeOwner::Create() { return NS_ERROR_NULL_POINTER; }
 
 NS_IMETHODIMP
 nsDocShellTreeOwner::Destroy() {
@@ -588,7 +580,7 @@ nsDocShellTreeOwner::SetParentNativeWindow(nativeWindow aParentNativeWindow) {
 
 NS_IMETHODIMP
 nsDocShellTreeOwner::GetNativeHandle(nsAString& aNativeHandle) {
-  // the nativeHandle should be accessed from nsIXULWindow
+  // the nativeHandle should be accessed from nsIAppWindow
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -816,9 +808,9 @@ nsDocShellTreeOwner::AddChromeListeners() {
 
   EventListenerManager* elmP = target->GetOrCreateListenerManager();
   if (elmP) {
-    elmP->AddEventListenerByType(this, NS_LITERAL_STRING("dragover"),
+    elmP->AddEventListenerByType(this, u"dragover"_ns,
                                  TrustedEventsAtSystemGroupBubble());
-    elmP->AddEventListenerByType(this, NS_LITERAL_STRING("drop"),
+    elmP->AddEventListenerByType(this, u"drop"_ns,
                                  TrustedEventsAtSystemGroupBubble());
   }
 
@@ -840,9 +832,9 @@ nsDocShellTreeOwner::RemoveChromeListeners() {
 
   EventListenerManager* elmP = piTarget->GetOrCreateListenerManager();
   if (elmP) {
-    elmP->RemoveEventListenerByType(this, NS_LITERAL_STRING("dragover"),
+    elmP->RemoveEventListenerByType(this, u"dragover"_ns,
                                     TrustedEventsAtSystemGroupBubble());
-    elmP->RemoveEventListenerByType(this, NS_LITERAL_STRING("drop"),
+    elmP->RemoveEventListenerByType(this, u"drop"_ns,
                                     TrustedEventsAtSystemGroupBubble());
   }
 
@@ -1014,18 +1006,18 @@ ChromeTooltipListener::AddTooltipListener() {
   if (mEventTarget) {
     nsresult rv = NS_OK;
 #ifndef XP_WIN
-    rv = mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("keydown"),
-                                              this, false, false);
+    rv =
+        mEventTarget->AddSystemEventListener(u"keydown"_ns, this, false, false);
     NS_ENSURE_SUCCESS(rv, rv);
 #endif
-    rv = mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("mousedown"),
-                                              this, false, false);
+    rv = mEventTarget->AddSystemEventListener(u"mousedown"_ns, this, false,
+                                              false);
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("mouseout"),
-                                              this, false, false);
+    rv = mEventTarget->AddSystemEventListener(u"mouseout"_ns, this, false,
+                                              false);
     NS_ENSURE_SUCCESS(rv, rv);
-    rv = mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("mousemove"),
-                                              this, false, false);
+    rv = mEventTarget->AddSystemEventListener(u"mousemove"_ns, this, false,
+                                              false);
     NS_ENSURE_SUCCESS(rv, rv);
 
     mTooltipListenerInstalled = true;
@@ -1054,15 +1046,11 @@ NS_IMETHODIMP
 ChromeTooltipListener::RemoveTooltipListener() {
   if (mEventTarget) {
 #ifndef XP_WIN
-    mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("keydown"), this,
-                                            false);
+    mEventTarget->RemoveSystemEventListener(u"keydown"_ns, this, false);
 #endif
-    mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("mousedown"),
-                                            this, false);
-    mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("mouseout"), this,
-                                            false);
-    mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("mousemove"),
-                                            this, false);
+    mEventTarget->RemoveSystemEventListener(u"mousedown"_ns, this, false);
+    mEventTarget->RemoveSystemEventListener(u"mouseout"_ns, this, false);
+    mEventTarget->RemoveSystemEventListener(u"mousemove"_ns, this, false);
     mTooltipListenerInstalled = false;
   }
 
@@ -1143,7 +1131,7 @@ nsresult ChromeTooltipListener::MouseMove(Event* aMouseEvent) {
     if (mPossibleTooltipNode) {
       nsresult rv = NS_NewTimerWithFuncCallback(
           getter_AddRefs(mTooltipTimer), sTooltipCallback, this,
-          LookAndFeel::GetInt(LookAndFeel::eIntID_TooltipDelay, 500),
+          LookAndFeel::GetInt(LookAndFeel::IntID::TooltipDelay, 500),
           nsITimer::TYPE_ONE_SHOT, "ChromeTooltipListener::MouseMove", target);
       if (NS_FAILED(rv)) {
         mPossibleTooltipNode = nullptr;
@@ -1246,10 +1234,18 @@ void ChromeTooltipListener::sTooltipCallback(nsITimer* aTimer,
                                              void* aChromeTooltipListener) {
   auto self = static_cast<ChromeTooltipListener*>(aChromeTooltipListener);
   if (self && self->mPossibleTooltipNode) {
+    // release tooltip target once done, no matter what we do here.
+    auto cleanup = MakeScopeExit([&] { self->mPossibleTooltipNode = nullptr; });
     if (!self->mPossibleTooltipNode->IsInComposedDoc()) {
-      // release tooltip target if there is one, NO MATTER WHAT
-      self->mPossibleTooltipNode = nullptr;
       return;
+    }
+    // Check that the document or its ancestors haven't been replaced.
+    Document* doc = self->mPossibleTooltipNode->OwnerDoc();
+    while (doc) {
+      if (!doc->IsCurrentActiveDocument()) {
+        return;
+      }
+      doc = doc->GetInProcessParentDocument();
     }
 
     // The actual coordinates we want to put the tooltip at are relative to the
@@ -1275,8 +1271,6 @@ void ChromeTooltipListener::sTooltipCallback(nsITimer* aTimer,
     }
 
     if (!widget || !docShell || !docShell->GetIsActive()) {
-      // release tooltip target if there is one, NO MATTER WHAT
-      self->mPossibleTooltipNode = nullptr;
       return;
     }
 
@@ -1305,14 +1299,9 @@ void ChromeTooltipListener::sTooltipCallback(nsITimer* aTimer,
                           self->mMouseScreenY - screenDot.y / scaleFactor,
                           tooltipText, directionText);
         self->mLastShownTooltipText = std::move(tooltipText);
-        if (self->mPossibleTooltipNode->OwnerDoc()) {
-          self->mLastDocshell = do_GetWeakReference(
-              self->mPossibleTooltipNode->OwnerDoc()->GetDocShell());
-        }
+        self->mLastDocshell = do_GetWeakReference(
+            self->mPossibleTooltipNode->OwnerDoc()->GetDocShell());
       }
     }
-
-    // release tooltip target if there is one, NO MATTER WHAT
-    self->mPossibleTooltipNode = nullptr;
   }
 }

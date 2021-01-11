@@ -77,17 +77,30 @@ class Rule {
     this.getUniqueSelector = this.getUniqueSelector.bind(this);
     this.onDeclarationsUpdated = this.onDeclarationsUpdated.bind(this);
     this.onLocationChanged = this.onLocationChanged.bind(this);
-    this.updateSourceLocation = this.updateSourceLocation.bind(this);
+    this.onStyleRuleFrontUpdated = this.onStyleRuleFrontUpdated.bind(this);
+    this.updateOriginalLocation = this.updateOriginalLocation.bind(this);
 
-    this.domRule.on("declarations-updated", this.onDeclarationsUpdated);
+    // Added in Firefox 72 for backwards compatibility of initial fix for Bug 1557689.
+    // See follow-up fix in Bug 1593944.
+    if (this.domRule.traits.emitsRuleUpdatedEvent) {
+      this.domRule.on("rule-updated", this.onStyleRuleFrontUpdated);
+    } else {
+      this.domRule.on("declarations-updated", this.onDeclarationsUpdated);
+    }
   }
 
   destroy() {
-    if (this.unsubscribeSourceMap) {
-      this.unsubscribeSourceMap();
+    if (this._unsubscribeSourceMap) {
+      this._unsubscribeSourceMap();
     }
 
-    this.domRule.off("declarations-updated", this.onDeclarationsUpdated);
+    // Added in Firefox 72
+    if (this.domRule.traits.emitsRuleUpdatedEvent) {
+      this.domRule.off("rule-updated", this.onStyleRuleFrontUpdated);
+    } else {
+      this.domRule.off("declarations-updated", this.onDeclarationsUpdated);
+    }
+
     this.domRule.off("location-changed", this.onLocationChanged);
   }
 
@@ -117,10 +130,8 @@ class Rule {
 
   get sourceLink() {
     return {
-      label: this.getSourceText(
-        CssLogic.shortSource({ href: this.sourceLocation.url })
-      ),
-      title: this.getSourceText(this.sourceLocation.url),
+      label: this._getSourceText(true),
+      title: this._getSourceText(),
     };
   }
 
@@ -132,16 +143,17 @@ class Rule {
    * Returns the original source location which includes the original URL, line and
    * column numbers.
    */
-  get sourceLocation() {
-    if (!this._sourceLocation) {
-      this._sourceLocation = {
-        column: this.ruleColumn,
-        line: this.ruleLine,
+  get generatedLocation() {
+    if (!this._generatedLocation) {
+      this._generatedLocation = {
+        sheet: this.sheet,
         url: this.sheet ? this.sheet.href || this.sheet.nodeHref : null,
+        line: this.ruleLine,
+        column: this.ruleColumn,
       };
     }
 
-    return this._sourceLocation;
+    return this._generatedLocation;
   }
 
   get title() {
@@ -226,33 +238,37 @@ class Rule {
   /**
    * Returns the TextProperty with the given id or undefined if it cannot be found.
    *
-   * @param {String} id
+   * @param {String|null} id
    *        A TextProperty id.
    * @return {TextProperty|undefined} with the given id in the current Rule or undefined
    * if it cannot be found.
    */
   getDeclaration(id) {
-    return this.textProps.find(textProp => textProp.id === id);
+    return id ? this.textProps.find(textProp => textProp.id === id) : undefined;
   }
 
   /**
-   * Returns a formatted source text of the given stylesheet URL with its source line
+   * Returns a formatted source text of the stylesheet URL with its source line
    * and @media text.
    *
-   * @param  {String} url
-   *         The stylesheet URL.
+   * @param  {boolean} shortenURL True to get a shorter version of the URL.
    */
-  getSourceText(url) {
+  _getSourceText(shortenURL) {
     if (this.isSystem) {
       return `${STYLE_INSPECTOR_L10N.getStr("rule.userAgentStyles")} ${
         this.title
       }`;
     }
 
-    let sourceText = url;
+    const currentLocation = this._originalLocation || this.generatedLocation;
 
-    if (this.sourceLocation.line > 0) {
-      sourceText += ":" + this.sourceLocation.line;
+    let sourceText = currentLocation.url;
+    if (shortenURL) {
+      sourceText = CssLogic.shortSource({ href: sourceText });
+    }
+
+    if (currentLocation.line > 0) {
+      sourceText += ":" + currentLocation.line;
     }
 
     if (this.mediaText) {
@@ -577,6 +593,22 @@ class Rule {
   }
 
   /**
+   * Event handler for "rule-updated" event fired by StyleRuleActor.
+   *
+   * @param {StyleRuleFront} front
+   */
+  onStyleRuleFrontUpdated(front) {
+    // Overwritting this reference is not required, but it's here to avoid confusion.
+    // Whenever an actor is passed over the protocol, either as a return value or as
+    // payload on an event, the `form` of its corresponding front will be automatically
+    // updated. No action required.
+    // Even if this `domRule` reference here is not explicitly updated, lookups of
+    // `this.domRule.declarations` will point to the latest state of declarations set
+    // on the actor. Everything on `StyleRuleForm.form` will point to the latest state.
+    this.domRule = front;
+  }
+
+  /**
    * Get the list of TextProperties from the style. Needs
    * to parse the style's authoredText.
    */
@@ -856,6 +888,8 @@ class Rule {
   }
 
   /**
+   * TODO: Remove after Firefox 75. Keep until then for backwards-compatibility for Bug
+   * 1557689 which has an updated fix from Bug 1593944.
    * Handler for "declarations-updated" events fired from the StyleRuleActor for a
    * CSS rule when the status of any of its CSS declarations change.
    *
@@ -892,8 +926,13 @@ class Rule {
    * rule. This will overwrite the source map location.
    */
   onLocationChanged() {
-    const url = this.sheet ? this.sheet.href || this.sheet.nodeHref : null;
-    this.updateSourceLocation(url, this.ruleLine, this.ruleColumn);
+    // Clear the cached generated location data so the generatedLocation getter
+    // can rebuild it when needed.
+    this._generatedLocation = null;
+
+    this.store.dispatch(
+      updateSourceLink(this.domRule.actorID, this.sourceLink)
+    );
   }
 
   /**
@@ -901,20 +940,18 @@ class Rule {
    * location.
    */
   subscribeToLocationChange() {
-    const { url, line, column } = this.sourceLocation;
+    const { sheet, line, column } = this.generatedLocation;
 
-    if (url && !this.isSystem && this.domRule.type !== ELEMENT_STYLE) {
+    if (sheet && !this.isSystem && this.domRule.type !== ELEMENT_STYLE) {
       // Subscribe returns an unsubscribe function that can be called on destroy.
-      this.unsubscribeSourceMap = this.sourceMapURLService.subscribe(
-        url,
+      if (this._unsubscribeSourceMap) {
+        this._unsubscribeSourceMap();
+      }
+      this._unsubscribeSourceMap = this.sourceMapURLService.subscribeByID(
+        sheet.actorID,
         line,
         column,
-        (enabled, sourceUrl, sourceLine, sourceColumn) => {
-          if (enabled) {
-            // Only update the source location if source map is in use.
-            this.updateSourceLocation(sourceUrl, sourceLine, sourceColumn);
-          }
-        }
+        this.updateOriginalLocation
       );
     }
 
@@ -925,19 +962,11 @@ class Rule {
    * Handler for any location changes called from the SourceMapURLService and can also be
    * called from onLocationChanged(). Updates the source location for the rule.
    *
-   * @param  {String} url
-   *         The original URL.
-   * @param  {Number} line
-   *         The original line number.
-   * @param  {number} column
-   *         The original column number.
+   * @param  {Object | null} url/line/column
+   *         The original URL/line/column position of this sheet or null.
    */
-  updateSourceLocation(url, line, column) {
-    this._sourceLocation = {
-      column,
-      line,
-      url,
-    };
+  updateOriginalLocation(originalLocation) {
+    this._originalLocation = originalLocation;
     this.store.dispatch(
       updateSourceLink(this.domRule.actorID, this.sourceLink)
     );

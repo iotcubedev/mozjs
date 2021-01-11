@@ -1,5 +1,4 @@
 //! Cranelift code generation library.
-
 #![deny(missing_docs, trivial_numeric_casts, unused_extern_crates)]
 #![warn(unused_import_braces)]
 #![cfg_attr(feature = "std", deny(unstable_features))]
@@ -18,13 +17,12 @@
                 clippy::assign_op_pattern,
                 clippy::empty_line_after_outer_attr,
 // Hard to avoid in generated code:
-                clippy::cyclomatic_complexity,
+                clippy::cognitive_complexity,
                 clippy::too_many_arguments,
 // Code generator doesn't have a way to collapse identical arms:
                 clippy::match_same_arms,
 // These are relatively minor style issues, but would be easy to fix:
                 clippy::new_without_default,
-                clippy::new_without_default_derive,
                 clippy::should_implement_trait,
                 clippy::len_without_is_empty))]
 #![cfg_attr(
@@ -35,23 +33,29 @@
         clippy::nonminimal_bool,
         clippy::option_map_unwrap_or,
         clippy::option_map_unwrap_or_else,
-        clippy::print_stdout,
         clippy::unicode_not_nfc,
         clippy::use_self
     )
 )]
 #![no_std]
-#![cfg_attr(not(feature = "std"), feature(alloc))]
+// Various bits and pieces of this crate might only be used for one platform or
+// another, but it's not really too useful to learn about that all the time. On
+// CI we build at least one version of this crate with `--features all-arch`
+// which means we'll always detect truly dead code, otherwise if this is only
+// built for one platform we don't have to worry too much about trimming
+// everything down.
+#![cfg_attr(not(feature = "all-arch"), allow(dead_code))]
 
-#[cfg(not(feature = "std"))]
+#[allow(unused_imports)] // #[macro_use] is required for no_std
 #[macro_use]
-extern crate alloc as std;
+extern crate alloc;
+
 #[cfg(feature = "std")]
 #[macro_use]
 extern crate std;
 
 #[cfg(not(feature = "std"))]
-use hashmap_core::{map as hash_map, HashMap, HashSet};
+use hashbrown::{hash_map, HashMap, HashSet};
 #[cfg(feature = "std")]
 use std::collections::{hash_map, HashMap, HashSet};
 
@@ -73,6 +77,7 @@ pub mod flowgraph;
 pub mod ir;
 pub mod isa;
 pub mod loop_analysis;
+pub mod machinst;
 pub mod print_errors;
 pub mod settings;
 pub mod timing;
@@ -88,6 +93,7 @@ mod context;
 mod dce;
 mod divconst_magic_numbers;
 mod fx;
+mod inst_predicates;
 mod iterators;
 mod legalizer;
 mod licm;
@@ -96,8 +102,8 @@ mod partition_slice;
 mod postopt;
 mod predicates;
 mod redundant_reload_remover;
-mod ref_slice;
 mod regalloc;
+mod remove_constant_phis;
 mod result;
 mod scoped_hash_map;
 mod simple_gvn;
@@ -106,6 +112,9 @@ mod stack_layout;
 mod topo_order;
 mod unreachable_code;
 mod value_label;
+
+#[cfg(feature = "enable-peepmatic")]
+mod peepmatic;
 
 pub use crate::result::{CodegenError, CodegenResult};
 

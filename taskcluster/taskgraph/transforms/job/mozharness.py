@@ -11,18 +11,21 @@ way, and certainly anything using mozharness should use this approach.
 from __future__ import absolute_import, print_function, unicode_literals
 import json
 
+import six
+from six import text_type
 from textwrap import dedent
 
 from taskgraph.util.schema import Schema
 from voluptuous import Required, Optional, Any
 from voluptuous.validators import Match
 
+from mozpack import path as mozpath
+
 from taskgraph.transforms.job import (
     configure_taskdesc_for_run,
     run_job_using,
 )
 from taskgraph.transforms.job.common import (
-    docker_worker_add_workspace_cache,
     setup_secrets,
     docker_worker_add_artifacts,
     generic_worker_add_artifacts,
@@ -37,16 +40,16 @@ mozharness_run_schema = Schema({
 
     # the mozharness script used to run this task, relative to the testing/
     # directory and using forward slashes even on Windows
-    Required('script'): basestring,
+    Required('script'): text_type,
 
     # Additional paths to look for mozharness configs in. These should be
     # relative to the base of the source checkout
-    Optional('config-paths'): [basestring],
+    Optional('config-paths'): [text_type],
 
     # the config files required for the task, relative to
     # testing/mozharness/configs or one of the paths specified in
     # `config-paths` and using forward slashes even on Windows
-    Required('config'): [basestring],
+    Required('config'): [text_type],
 
     # any additional actions to pass to the mozharness command
     Optional('actions'): [Match(
@@ -61,14 +64,10 @@ mozharness_run_schema = Schema({
     )],
 
     # --custom-build-variant-cfg value
-    Optional('custom-build-variant-cfg'): basestring,
+    Optional('custom-build-variant-cfg'): text_type,
 
     # Extra configuration options to pass to mozharness.
     Optional('extra-config'): dict,
-
-    # Extra metadata to use toward the workspace caching.
-    # Only supported on docker-worker
-    Optional('extra-workspace-cache-key'): basestring,
 
     # If not false, tooltool downloads will be enabled via relengAPIProxy
     # for either just public files, or all files.  Not supported on Windows
@@ -83,7 +82,7 @@ mozharness_run_schema = Schema({
     # this will enable any worker features required and set the task's scopes
     # appropriately.  `true` here means ['*'], all secrets.  Not supported on
     # Windows
-    Required('secrets'): Any(bool, [basestring]),
+    Required('secrets'): Any(bool, [text_type]),
 
     # If true, taskcluster proxy will be enabled; note that it may also be enabled
     # automatically e.g., for secrets support.  Not supported on Windows.
@@ -97,7 +96,7 @@ mozharness_run_schema = Schema({
     Required('keep-artifacts'): bool,
 
     # If specified, use the in-tree job script specified.
-    Optional('job-script'): basestring,
+    Optional('job-script'): text_type,
 
     Required('requires-signed-builds'): bool,
 
@@ -117,7 +116,7 @@ mozharness_run_schema = Schema({
     Required('comm-checkout'): bool,
 
     # Base work directory used to set up the task.
-    Required('workdir'): basestring,
+    Required('workdir'): text_type,
 })
 
 
@@ -149,9 +148,9 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
                                   "'use-magic-mh-args' on docker-workers")
 
     # Running via mozharness assumes an image that contains build.sh:
-    # by default, debian7-amd64-build, but it could be another image (like
+    # by default, debian8-amd64-build, but it could be another image (like
     # android-build).
-    worker.setdefault('docker-image', {'in-tree': 'debian7-amd64-build'})
+    worker.setdefault('docker-image', {'in-tree': 'debian8-amd64-build'})
 
     worker.setdefault('artifacts', []).append({
         'name': 'public/logs',
@@ -160,12 +159,10 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
     })
     worker['taskcluster-proxy'] = run.pop('taskcluster-proxy', None)
     docker_worker_add_artifacts(config, job, taskdesc)
-    docker_worker_add_workspace_cache(config, job, taskdesc,
-                                      extra=run.pop('extra-workspace-cache-key', None))
 
     env = worker.setdefault('env', {})
     env.update({
-        'GECKO_PATH': '{workdir}/workspace/build/src'.format(**run),
+        'WORKSPACE': '{workdir}/workspace'.format(**run),
         'MOZHARNESS_CONFIG': ' '.join(run.pop('config')),
         'MOZHARNESS_SCRIPT': run.pop('script'),
         'MH_BRANCH': config.params['project'],
@@ -176,6 +173,8 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
         'MOZ_SCM_LEVEL': config.params['level'],
         'PYTHONUNBUFFERED': '1',
     })
+
+    worker.setdefault('required-volumes', []).append(env['WORKSPACE'])
 
     if 'actions' in run:
         env['MOZHARNESS_ACTIONS'] = ' '.join(run.pop('actions'))
@@ -189,8 +188,10 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
     if 'custom-build-variant-cfg' in run:
         env['MH_CUSTOM_BUILD_VARIANT_CFG'] = run.pop('custom-build-variant-cfg')
 
-    if 'extra-config' in run:
-        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run.pop('extra-config'))
+    extra_config = run.pop('extra-config', {})
+    extra_config['objdir'] = 'obj-build'
+    env['EXTRA_MOZHARNESS_CONFIG'] = six.ensure_text(
+        json.dumps(extra_config, sort_keys=True))
 
     if 'job-script' in run:
         env['JOB_SCRIPT'] = run['job-script']
@@ -218,12 +219,10 @@ def mozharness_on_docker_worker_setup(config, job, taskdesc):
     setup_secrets(config, job, taskdesc)
 
     run['using'] = 'run-task'
-    run['command'] = [
-        '{workdir}/workspace/build/src/{script}'.format(
-            workdir=run['workdir'],
-            script=run.pop('job-script', 'taskcluster/scripts/builder/build-linux.sh'),
-        ),
-    ]
+    run['command'] = mozpath.join(
+        "${GECKO_PATH}",
+        run.pop('job-script', 'taskcluster/scripts/builder/build-linux.sh'),
+    )
     run.pop('secrets')
     run.pop('requires-signed-builds')
 
@@ -241,7 +240,7 @@ def mozharness_on_generic_worker(config, job, taskdesc):
 
     # fail if invalid run options are included
     invalid = []
-    for prop in ['tooltool-downloads', 'taskcluster-proxy', 'need-xvfb']:
+    for prop in ['need-xvfb']:
         if prop in run and run.pop(prop):
             invalid.append(prop)
     if not run.pop('keep-artifacts', True):
@@ -251,6 +250,8 @@ def mozharness_on_generic_worker(config, job, taskdesc):
                         ', '.join(invalid))
 
     worker = taskdesc['worker'] = job['worker']
+
+    worker['taskcluster-proxy'] = run.pop('taskcluster-proxy', None)
 
     setup_secrets(config, job, taskdesc)
 
@@ -273,8 +274,10 @@ def mozharness_on_generic_worker(config, job, taskdesc):
     if run.pop('use-simple-package'):
         env.update({'MOZ_SIMPLE_PACKAGE_NAME': 'target'})
 
-    if 'extra-config' in run:
-        env['EXTRA_MOZHARNESS_CONFIG'] = json.dumps(run.pop('extra-config'))
+    extra_config = run.pop('extra-config', {})
+    extra_config['objdir'] = 'obj-build'
+    env['EXTRA_MOZHARNESS_CONFIG'] = six.ensure_text(
+        json.dumps(extra_config, sort_keys=True))
 
     # The windows generic worker uses batch files to pass environment variables
     # to commands.  Setting a variable to empty in a batch file unsets, so if
@@ -300,7 +303,7 @@ def mozharness_on_generic_worker(config, job, taskdesc):
         mh_command.append('--config ' + cfg)
     if run.pop('use-magic-mh-args'):
         mh_command.append('--branch ' + config.params['project'])
-    mh_command.append(r'--work-dir %cd:Z:=z:%\build')
+    mh_command.append(r'--work-dir %cd:Z:=z:%\workspace')
     for action in run.pop('actions', []):
         mh_command.append('--' + action)
 
@@ -315,7 +318,6 @@ def mozharness_on_generic_worker(config, job, taskdesc):
     run.pop('secrets')
     run.pop('requires-signed-builds')
     run.pop('job-script', None)
-    run.pop('extra-workspace-cache-key', None)
     configure_taskdesc_for_run(config, job, taskdesc, worker['implementation'])
 
     # TODO We should run the mozharness script with `mach python` so these
@@ -330,7 +332,7 @@ def mozharness_on_generic_worker(config, job, taskdesc):
         "{}/third_party/python/six".format(env['GECKO_PATH']),
     ])
 
-    if taskdesc.get('needs-sccache'):
+    if taskdesc.get('use-sccache'):
         worker['command'] = [
             # Make the comment part of the first command, as it will help users to
             # understand what is going on, and why these steps are implemented.

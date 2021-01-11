@@ -14,10 +14,6 @@ const TEST_URI =
 const dpr = "--dpr 1";
 
 add_task(async function() {
-  // Run DevTools in a chrome frame temporarily, otherwise this test is intermittent.
-  // See Bug 1571421.
-  await pushPref("devtools.toolbox.content-frame", false);
-
   const hud = await openNewTabAndConsole(TEST_URI);
   ok(hud, "web console opened");
 
@@ -71,7 +67,7 @@ async function testSelectorClipboard(hud) {
   await executeScreenshotClipboardCommand(hud, command);
 
   const imgSize1 = await getImageSizeFromClipboard();
-  await ContentTask.spawn(gBrowser.selectedBrowser, imgSize1, function(
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [imgSize1], function(
     imgSize
   ) {
     const img = content.document.querySelector("#testImage");
@@ -134,15 +130,15 @@ async function createScrollbarOverflow() {
   // (non-floating scrollbars).  With default OS settings, this means Windows
   // and Linux are affected, but Mac is not.  For Mac to exhibit this behavior,
   // change System Preferences -> General -> Show scroll bars to Always.
-  await ContentTask.spawn(gBrowser.selectedBrowser, {}, function() {
+  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
     content.document.body.classList.add("overflow");
   });
 }
 
 async function getScrollbarSize() {
-  const scrollbarSize = await ContentTask.spawn(
+  const scrollbarSize = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
-    {},
+    [],
     function() {
       const winUtils = content.windowUtils;
       const scrollbarHeight = {};
@@ -159,9 +155,9 @@ async function getScrollbarSize() {
 }
 
 async function getContentSize() {
-  const contentSize = await ContentTask.spawn(
+  const contentSize = await SpecialPowers.spawn(
     gBrowser.selectedBrowser,
-    {},
+    [],
     function() {
       return {
         scrollMaxY: content.scrollMaxY,
@@ -176,67 +172,4 @@ async function getContentSize() {
 
   info(`content size: ${contentSize.innerWidth}x${contentSize.innerHeight}`);
   return contentSize;
-}
-
-async function getImageSizeFromClipboard() {
-  const clipid = Ci.nsIClipboard;
-  const clip = Cc["@mozilla.org/widget/clipboard;1"].getService(clipid);
-  const trans = Cc["@mozilla.org/widget/transferable;1"].createInstance(
-    Ci.nsITransferable
-  );
-  const flavor = "image/png";
-  trans.init(null);
-  trans.addDataFlavor(flavor);
-
-  clip.getData(trans, clipid.kGlobalClipboard);
-  const data = {};
-  trans.getTransferData(flavor, data);
-
-  ok(data.value, "screenshot exists");
-
-  let image = data.value;
-
-  // Due to the differences in how images could be stored in the clipboard the
-  // checks below are needed. The clipboard could already provide the image as
-  // byte streams or as image container. If it's not possible obtain a
-  // byte stream, the function throws.
-
-  if (image instanceof Ci.imgIContainer) {
-    image = Cc["@mozilla.org/image/tools;1"]
-      .getService(Ci.imgITools)
-      .encodeImage(image, flavor);
-  }
-
-  let url;
-  if (image instanceof Ci.nsIInputStream) {
-    const binaryStream = Cc["@mozilla.org/binaryinputstream;1"].createInstance(
-      Ci.nsIBinaryInputStream
-    );
-    binaryStream.setInputStream(image);
-    const available = binaryStream.available();
-    const buffer = new ArrayBuffer(available);
-    is(
-      binaryStream.readArrayBuffer(available, buffer),
-      available,
-      "Read expected amount of data"
-    );
-    url = URL.createObjectURL(new Blob([buffer], { type: flavor }));
-  } else {
-    throw new Error("Unable to read image data");
-  }
-
-  const img = document.createElementNS("http://www.w3.org/1999/xhtml", "img");
-
-  const loaded = once(img, "load");
-
-  img.src = url;
-  document.documentElement.appendChild(img);
-  await loaded;
-  img.remove();
-  URL.revokeObjectURL(url);
-
-  return {
-    width: img.width,
-    height: img.height,
-  };
 }

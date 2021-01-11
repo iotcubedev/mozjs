@@ -57,7 +57,7 @@ function waitForCondition(condition, nextTest, errorMsg) {
  *        The name of the field to write to.
  */
 let typeInSearchField = async function(browser, text, fieldName) {
-  await ContentTask.spawn(browser, [fieldName, text], async function([
+  await SpecialPowers.spawn(browser, [[fieldName, text]], async function([
     contentFieldName,
     contentText,
   ]) {
@@ -81,17 +81,16 @@ let typeInSearchField = async function(browser, text, fieldName) {
 function makeMockPermissionRequest(browser) {
   let type = {
     options: Cc["@mozilla.org/array;1"].createInstance(Ci.nsIArray),
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionType]),
+    QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionType"]),
   };
   let types = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
   types.appendElement(type);
+  let principal = browser.contentPrincipal;
   let result = {
     types,
-    documentDOMContentLoadedTimestamp: 0,
     isHandlingUserInput: false,
-    userHadInteractedWithDocument: false,
-    principal: browser.contentPrincipal,
-    topLevelPrincipal: browser.contentPrincipal,
+    principal,
+    topLevelPrincipal: principal,
     requester: null,
     _cancelled: false,
     cancel() {
@@ -101,7 +100,10 @@ function makeMockPermissionRequest(browser) {
     allow() {
       this._allowed = true;
     },
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIContentPermissionRequest]),
+    getDelegatePrincipal(aType) {
+      return principal;
+    },
+    QueryInterface: ChromeUtils.generateQI(["nsIContentPermissionRequest"]),
   };
 
   // In the e10s-case, nsIContentPermissionRequest will have

@@ -1,11 +1,11 @@
-// |reftest| skip -- class-methods-private,class-fields-private is not supported
+// |reftest| skip -- class-methods-private is not supported
 // This file was procedurally generated from the following sources:
 // - src/class-elements/prod-private-method-initialize-order.case
 // - src/class-elements/private-methods/cls-decl.template
 /*---
 description: Private methods are added before any field initializer is run, even if they appear textually later (private method definitions in a class declaration)
 esid: prod-MethodDefinition
-features: [class-methods-private, class-fields-private, class]
+features: [class-methods-private, class-fields-private, class-fields-public, class]
 flags: [generated]
 info: |
     ClassElement :

@@ -1,9 +1,4 @@
-import {
-  EventEmitter,
-  FakePerformance,
-  FakePrefs,
-  GlobalOverrider,
-} from "test/unit/utils";
+import { EventEmitter, FakePrefs, GlobalOverrider } from "test/unit/utils";
 import Adapter from "enzyme-adapter-react-16";
 import { chaiAssertions } from "test/schemas/pings";
 import chaiJsonSchema from "chai-json-schema";
@@ -36,14 +31,41 @@ chai.use(chaiAssertions);
 chai.use(chaiJsonSchema);
 
 const overrider = new GlobalOverrider();
+
+const RemoteSettings = name => ({
+  get: () => {
+    if (name === "attachment") {
+      return Promise.resolve([{ attachment: {} }]);
+    }
+    return Promise.resolve([]);
+  },
+  on: () => {},
+  off: () => {},
+});
+RemoteSettings.pollChanges = () => {};
+
 const TEST_GLOBAL = {
+  AboutReaderParent: {
+    addMessageListener: (messageName, listener) => {},
+    removeMessageListener: (messageName, listener) => {},
+  },
   AddonManager: {
     getActiveAddons() {
       return Promise.resolve({ addons: [], fullData: false });
     },
   },
-  AppConstants: { MOZILLA_OFFICIAL: true, MOZ_APP_VERSION: "69.0a1" },
+  AppConstants: {
+    MOZILLA_OFFICIAL: true,
+    MOZ_APP_VERSION: "69.0a1",
+    platform: "win",
+  },
   UpdateUtils: { getUpdateChannel() {} },
+  BasePromiseWorker: class {
+    constructor() {
+      this.ExceptionHandlers = [];
+    }
+    post() {}
+  },
   BrowserWindowTracker: { getTopWindow() {} },
   ChromeUtils: {
     defineModuleGetter() {},
@@ -73,8 +95,11 @@ const TEST_GLOBAL = {
     },
     isSuccessCode: () => true,
   },
+  // NB: These are functions/constructors
   // eslint-disable-next-line object-shorthand
-  ContentSearchUIController: function() {}, // NB: This is a function/constructor
+  ContentSearchUIController: function() {},
+  // eslint-disable-next-line object-shorthand
+  ContentSearchHandoffUIController: function() {},
   Cc: {
     "@mozilla.org/browser/nav-bookmarks-service;1": {
       addObserver() {},
@@ -114,6 +139,16 @@ const TEST_GLOBAL = {
       },
     },
     "@mozilla.org/updates/update-checker;1": { createInstance() {} },
+    "@mozilla.org/streamConverters;1": {
+      getService() {
+        return this;
+      },
+    },
+    "@mozilla.org/network/stream-loader;1": {
+      createInstance() {
+        return {};
+      },
+    },
   },
   Ci: {
     nsICryptoHash: {},
@@ -121,6 +156,13 @@ const TEST_GLOBAL = {
     nsITimer: { TYPE_ONE_SHOT: 1 },
     nsIWebProgressListener: { LOCATION_CHANGE_SAME_DOCUMENT: 1 },
     nsIDOMWindow: Object,
+    nsITrackingDBService: {
+      TRACKERS_ID: 1,
+      TRACKING_COOKIES_ID: 2,
+      CRYPTOMINERS_ID: 3,
+      FINGERPRINTERS_ID: 4,
+      SOCIAL_ID: 5,
+    },
   },
   Cu: {
     importGlobalProperties() {},
@@ -128,6 +170,10 @@ const TEST_GLOBAL = {
     reportError() {},
   },
   dump() {},
+  EveryWindow: {
+    registerCallback: (id, init, uninit) => {},
+    unregisterCallback: id => {},
+  },
   fetch() {},
   // eslint-disable-next-line object-shorthand
   Image: function() {}, // NB: This is a function/constructor
@@ -142,6 +188,8 @@ const TEST_GLOBAL = {
       writeAtomic() {},
       makeDir() {},
       stat() {},
+      Error: {},
+      read() {},
       exists() {},
       remove() {},
       removeEmptyDir() {},
@@ -171,7 +219,10 @@ const TEST_GLOBAL = {
   },
   PluralForm: { get() {} },
   Preferences: FakePrefs,
-  PrivateBrowsingUtils: { isWindowPrivate: () => false },
+  PrivateBrowsingUtils: {
+    isBrowserPrivate: () => false,
+    isWindowPrivate: () => false,
+  },
   DownloadsViewUI: {
     getDisplayName: () => "filename.ext",
     getSizeWithUnits: () => "1.5 MB",
@@ -180,29 +231,35 @@ const TEST_GLOBAL = {
     // eslint-disable-next-line object-shorthand
     File: function() {}, // NB: This is a function/constructor
   },
+  Region: {
+    home: "US",
+    REGION_TOPIC: "browser-region",
+    REGION_UPDATED: "region-updated",
+  },
   Services: {
     dirsvc: {
       get: () => ({ parent: { parent: { path: "appPath" } } }),
     },
     locale: {
-      get appLocaleAsLangTag() {
+      get appLocaleAsBCP47() {
         return "en-US";
       },
       negotiateLanguages() {},
     },
     urlFormatter: { formatURL: str => str, formatURLPref: str => str },
     mm: {
-      addMessageListener: (msg, cb) => cb(),
+      addMessageListener: (msg, cb) => this.receiveMessage(),
       removeMessageListener() {},
     },
-    appShell: { hiddenDOMWindow: { performance: new FakePerformance() } },
     obs: {
       addObserver() {},
       removeObserver() {},
+      notifyObservers() {},
     },
     telemetry: {
       setEventRecordingEnabled: () => {},
       recordEvent: eventDetails => {},
+      scalarSet: () => {},
     },
     console: { logStringMessage: () => {} },
     prefs: {
@@ -243,6 +300,9 @@ const TEST_GLOBAL = {
       getBaseDomain({ spec }) {
         return spec.match(/\/([^/]+)/)[1];
       },
+      getBaseDomainFromHost(host) {
+        return host.match(/.*?(\w+\.\w+)$/)[1];
+      },
       getPublicSuffix() {},
     },
     io: {
@@ -272,11 +332,14 @@ const TEST_GLOBAL = {
           __internalAliases: ["@google"],
         },
       },
-      currentEngine: {
-        identifier: "google",
-        searchForm:
-          "https://www.google.com/search?q=&ie=utf-8&oe=utf-8&client=firefox-b",
+      defaultPrivateEngine: {
+        identifier: "bing",
+        searchForm: "https://www.bing.com",
+        wrappedJSObject: {
+          __internalAliases: ["@bing"],
+        },
       },
+      getEngineByAlias: () => null,
     },
     scriptSecurityManager: {
       createNullPrincipal() {},
@@ -289,6 +352,18 @@ const TEST_GLOBAL = {
     },
     ww: { registerNotification() {}, unregisterNotification() {} },
     appinfo: { appBuildID: "20180710100040", version: "69.0a1" },
+    scriptloader: { loadSubScript: () => {} },
+    startup: {
+      getStartupInfo() {
+        return {
+          process: {
+            getTime() {
+              return 1588010448000;
+            },
+          },
+        };
+      },
+    },
   },
   XPCOMUtils: {
     defineLazyGetter(object, name, f) {
@@ -303,7 +378,12 @@ const TEST_GLOBAL = {
     defineLazyModuleGetters() {},
     defineLazyServiceGetter() {},
     defineLazyServiceGetters() {},
-    defineLazyPreferenceGetter() {},
+    defineLazyPreferenceGetter(obj, name) {
+      Object.defineProperty(obj, name, {
+        configurable: true,
+        get: () => "",
+      });
+    },
     generateQI() {
       return {};
     },
@@ -315,17 +395,7 @@ const TEST_GLOBAL = {
       return Promise.resolve(false);
     },
   },
-  RemoteSettings(name) {
-    return {
-      get() {
-        if (name === "attachment") {
-          return Promise.resolve([{ attachment: {} }]);
-        }
-        return Promise.resolve([]);
-      },
-      on() {},
-    };
-  },
+  RemoteSettings,
   Localization: class {
     async formatMessages(stringsIds) {
       return Promise.resolve(
@@ -334,17 +404,43 @@ const TEST_GLOBAL = {
     }
   },
   FxAccountsConfig: {
-    promiseEmailFirstURI(id) {
+    promiseConnectAccountURI(id) {
       return Promise.resolve(id);
     },
   },
+  FX_MONITOR_OAUTH_CLIENT_ID: "fake_client_id",
   TelemetryEnvironment: {
     setExperimentActive() {},
+    currentEnvironment: { profile: { creationDate: 16587 } },
+  },
+  TelemetryStopwatch: {
+    start: () => {},
+    finish: () => {},
   },
   Sampling: {
     ratioSample(seed, ratios) {
       return Promise.resolve(0);
     },
+  },
+  BrowserHandler: {
+    get kiosk() {
+      return false;
+    },
+  },
+  TelemetrySession: {
+    getMetadata(reason) {
+      return {
+        reason,
+        sessionId: "fake_session_id",
+      };
+    },
+  },
+  PageThumbs: {
+    addExpirationFilter() {},
+    removeExpirationFilter() {},
+  },
+  gUUIDGenerator: {
+    generateUUID: () => "{foo-123-foo}",
   },
 };
 overrider.set(TEST_GLOBAL);

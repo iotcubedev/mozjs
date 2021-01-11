@@ -8,6 +8,9 @@
 var EXPORTED_SYMBOLS = ["BrowserUtils"];
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
+);
 ChromeUtils.defineModuleGetter(
   this,
   "PlacesUtils",
@@ -53,6 +56,64 @@ var BrowserUtils = {
       Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart
     );
     return undefined;
+  },
+
+  /**
+   * Check whether a page can be considered as 'empty', that its URI
+   * reflects its origin, and that if it's loaded in a tab, that tab
+   * could be considered 'empty' (e.g. like the result of opening
+   * a 'blank' new tab).
+   *
+   * We have to do more than just check the URI, because especially
+   * for things like about:blank, it is possible that the opener or
+   * some other page has control over the contents of the page.
+   *
+   * @param {Browser} browser
+   *        The browser whose page we're checking.
+   * @param {nsIURI} [uri]
+   *        The URI against which we're checking (the browser's currentURI
+   *        if omitted).
+   *
+   * @return {boolean} false if the page was opened by or is controlled by
+   *         arbitrary web content, unless that content corresponds with the URI.
+   *         true if the page is blank and controlled by a principal matching
+   *         that URI (or the system principal if the principal has no URI)
+   */
+  checkEmptyPageOrigin(browser, uri = browser.currentURI) {
+    // If another page opened this page with e.g. window.open, this page might
+    // be controlled by its opener.
+    if (browser.hasContentOpener) {
+      return false;
+    }
+    let contentPrincipal = browser.contentPrincipal;
+    // Not all principals have URIs...
+    if (contentPrincipal.URI) {
+      // There are two special-cases involving about:blank. One is where
+      // the user has manually loaded it and it got created with a null
+      // principal. The other involves the case where we load
+      // some other empty page in a browser and the current page is the
+      // initial about:blank page (which has that as its principal, not
+      // just URI in which case it could be web-based). Especially in
+      // e10s, we need to tackle that case specifically to avoid race
+      // conditions when updating the URL bar.
+      //
+      // Note that we check the documentURI here, since the currentURI on
+      // the browser might have been set by SessionStore in order to
+      // support switch-to-tab without having actually loaded the content
+      // yet.
+      let uriToCheck = browser.documentURI || uri;
+      if (
+        (uriToCheck.spec == "about:blank" &&
+          contentPrincipal.isNullPrincipal) ||
+        contentPrincipal.URI.spec == "about:blank"
+      ) {
+        return true;
+      }
+      return contentPrincipal.URI.equals(uri);
+    }
+    // ... so for those that don't have them, enforce that the page has the
+    // system principal (this matches e.g. on about:newtab).
+    return contentPrincipal.isSystemPrincipal;
   },
 
   /**
@@ -153,10 +214,6 @@ var BrowserUtils = {
     return Services.io.newFileURI(aFile);
   },
 
-  makeURIFromCPOW(aCPOWURI) {
-    return Services.io.newURI(aCPOWURI.spec);
-  },
-
   /**
    * For a given DOM element, returns its position in "screen"
    * coordinates. In a content process, the coordinates returned will
@@ -177,8 +234,8 @@ var BrowserUtils = {
     let rect = aElement.getBoundingClientRect();
     let win = aElement.ownerGlobal;
 
-    let x = rect.left,
-      y = rect.top;
+    let x = rect.left;
+    let y = rect.top;
 
     // We need to compensate for any iframes that might shift things
     // over. We also need to compensate for zooming.
@@ -200,15 +257,32 @@ var BrowserUtils = {
       parentFrame = win.frameElement;
     }
 
+    rect = {
+      left: x,
+      top: y,
+      width: rect.width,
+      height: rect.height,
+    };
+    rect = win.windowUtils.transformRectLayoutToVisual(
+      rect.left,
+      rect.top,
+      rect.width,
+      rect.height
+    );
+
     if (aInScreenCoords) {
-      x += win.mozInnerScreenX;
-      y += win.mozInnerScreenY;
+      rect = {
+        left: rect.left + win.mozInnerScreenX,
+        top: rect.top + win.mozInnerScreenY,
+        width: rect.width,
+        height: rect.height,
+      };
     }
 
     let fullZoom = win.windowUtils.fullZoom;
     rect = {
-      left: x * fullZoom,
-      top: y * fullZoom,
+      left: rect.left * fullZoom,
+      top: rect.top * fullZoom,
       width: rect.width * fullZoom,
       height: rect.height * fullZoom,
     };
@@ -294,45 +368,8 @@ var BrowserUtils = {
       mimeType == "application/x-javascript" ||
       mimeType == "application/javascript" ||
       mimeType == "application/json" ||
-      mimeType == "application/xml" ||
-      mimeType == "mozilla.application/cached-xul"
+      mimeType == "application/xml"
     );
-  },
-
-  /**
-   * Return true if we should FAYT for this node + window (could be CPOW):
-   *
-   * @param elt
-   *        The element that is focused
-   */
-  shouldFastFind(elt) {
-    if (elt) {
-      let win = elt.ownerGlobal;
-      if (elt instanceof win.HTMLInputElement && elt.mozIsTextField(false)) {
-        return false;
-      }
-
-      if (elt.isContentEditable || win.document.designMode == "on") {
-        return false;
-      }
-
-      if (
-        elt instanceof win.HTMLTextAreaElement ||
-        elt instanceof win.HTMLSelectElement ||
-        elt instanceof win.HTMLObjectElement ||
-        elt instanceof win.HTMLEmbedElement
-      ) {
-        return false;
-      }
-
-      if (elt instanceof win.HTMLIFrameElement && elt.mozbrowser) {
-        // If we're targeting a mozbrowser iframe, it should be allowed to
-        // handle FastFind itself.
-        return false;
-      }
-    }
-
-    return true;
   },
 
   /**
@@ -345,6 +382,9 @@ var BrowserUtils = {
   canFindInPage(location) {
     return (
       !location.startsWith("about:addons") &&
+      !location.startsWith(
+        "chrome://mozapps/content/extensions/aboutaddons.html"
+      ) &&
       !location.startsWith("about:preferences")
     );
   },
@@ -438,7 +478,7 @@ var BrowserUtils = {
    * @return {nsIDOMWindow}
    */
   getRootWindow(docShell) {
-    return docShell.sameTypeRootTreeItem.domWindow;
+    return docShell.browsingContext.top.window;
   },
 
   /**
@@ -587,20 +627,6 @@ var BrowserUtils = {
       linkURL: url ? url.spec : null,
       linkText: url ? linkText : "",
     };
-  },
-
-  // Iterates through every docshell in the window and calls PermitUnload.
-  canCloseWindow(window) {
-    let docShell = window.docShell;
-    for (let i = 0; i < docShell.childCount; ++i) {
-      let childShell = docShell.getChildAt(i).QueryInterface(Ci.nsIDocShell);
-      let contentViewer = childShell.contentViewer;
-      if (contentViewer && !contentViewer.permitUnload()) {
-        return false;
-      }
-    }
-
-    return true;
   },
 
   /**
@@ -778,39 +804,168 @@ var BrowserUtils = {
     });
   },
 
+  removeSingleTrailingSlashFromURL(aURL) {
+    // remove single trailing slash for http/https/ftp URLs
+    return aURL.replace(/^((?:http|https|ftp):\/\/[^/]+)\/$/, "$1");
+  },
+
   /**
    * Returns a URL which has been trimmed by removing 'http://' and any
    * trailing slash (in http/https/ftp urls).
+   * Note that a trimmed url may not load the same page as the original url, so
+   * before loading it, it must be passed through URIFixup, to check trimming
+   * doesn't change its destination. We don't run the URIFixup check here,
+   * because trimURL is in the page load path (see onLocationChange), so it
+   * must be fast and simple.
    *
    * @param {string} aURL The URL to trim.
    * @returns {string} The trimmed string.
    */
+  get trimURLProtocol() {
+    return "http://";
+  },
   trimURL(aURL) {
-    // This function must not modify the given URL such that calling
-    // nsIURIFixup::createFixupURI with the result will produce a different URI.
+    let url = this.removeSingleTrailingSlashFromURL(aURL);
+    // Remove "http://" prefix.
+    return url.startsWith(this.trimURLProtocol)
+      ? url.substring(this.trimURLProtocol.length)
+      : url;
+  },
 
-    // remove single trailing slash for http/https/ftp URLs
-    let url = aURL.replace(/^((?:http|https|ftp):\/\/[^/]+)\/$/, "$1");
+  recordSiteOriginTelemetry(aWindows, aIsGeckoView) {
+    Services.tm.idleDispatchToMainThread(() => {
+      this._recordSiteOriginTelemetry(aWindows, aIsGeckoView);
+    });
+  },
 
-    // remove http://
-    if (!url.startsWith("http://")) {
-      return url;
-    }
-    let urlWithoutProtocol = url.substring(7);
+  _recordSiteOriginTelemetry(aWindows, aIsGeckoView) {
+    let currentTime = Date.now();
 
-    let flags =
-      Services.uriFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP |
-      Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS;
-    let fixedUpURL, expectedURLSpec;
-    try {
-      fixedUpURL = Services.uriFixup.createFixupURI(urlWithoutProtocol, flags);
-      expectedURLSpec = Services.io.newURI(aURL).displaySpec;
-    } catch (ex) {
-      return url;
+    // default is 5 minutes
+    if (!this.min_interval) {
+      this.min_interval = Services.prefs.getIntPref(
+        "telemetry.number_of_site_origin.min_interval",
+        300000
+      );
     }
-    if (fixedUpURL.displaySpec == expectedURLSpec) {
-      return urlWithoutProtocol;
+
+    // Discard the first load because most of the time the first load only has 1
+    // tab and 1 window open, so it is useless to report it.
+    if (
+      !this._lastRecordSiteOrigin ||
+      currentTime < this._lastRecordSiteOrigin + this.min_interval
+    ) {
+      if (!this._lastRecordSiteOrigin) {
+        this._lastRecordSiteOrigin = currentTime;
+      }
+      return;
     }
-    return url;
+
+    this._lastRecordSiteOrigin = currentTime;
+
+    // Geckoview and Desktop work differently. On desktop, aBrowser objects
+    // holds an array of tabs which we can use to get the <browser> objects.
+    // In Geckoview, it is apps' responsibility to keep track of the tabs, so
+    // there isn't an easy way for us to get the tabs.
+    let tabs = [];
+    if (aIsGeckoView) {
+      // To get all active windows; Each tab has its own window
+      tabs = aWindows;
+    } else {
+      for (const win of aWindows) {
+        tabs = tabs.concat(win.gBrowser.tabs);
+      }
+    }
+
+    let topLevelBC = [];
+
+    for (const tab of tabs) {
+      let browser;
+      if (aIsGeckoView) {
+        browser = tab.browser;
+      } else {
+        browser = tab.linkedBrowser;
+      }
+
+      if (browser.browsingContext) {
+        // This is the top level browsingContext
+        topLevelBC.push(browser.browsingContext);
+      }
+    }
+
+    const count = CanonicalBrowsingContext.countSiteOrigins(topLevelBC);
+
+    Services.telemetry
+      .getHistogramById("FX_NUMBER_OF_UNIQUE_SITE_ORIGINS_ALL_TABS")
+      .add(count);
+  },
+
+  /**
+   * Converts a property bag to object.
+   * @param {nsIPropertyBag} bag - The property bag to convert
+   * @returns {Object} - The object representation of the nsIPropertyBag
+   */
+  propBagToObject(bag) {
+    function toValue(property) {
+      if (typeof property != "object") {
+        return property;
+      }
+      if (Array.isArray(property)) {
+        return property.map(this.toValue, this);
+      }
+      if (property && property instanceof Ci.nsIPropertyBag) {
+        return this.propBagToObject(property);
+      }
+      return property;
+    }
+    if (!(bag instanceof Ci.nsIPropertyBag)) {
+      throw new TypeError("Not a property bag");
+    }
+    let result = {};
+    for (let { name, value: property } of bag.enumerator) {
+      let value = toValue(property);
+      result[name] = value;
+    }
+    return result;
+  },
+
+  /**
+   * Converts an object to a property bag.
+   * @param {Object} obj - The object to convert.
+   * @returns {nsIPropertyBag} - The property bag representation of the object.
+   */
+  objectToPropBag(obj) {
+    function fromValue(value) {
+      if (typeof value == "function") {
+        return null; // Emulating the behavior of JSON.stringify with functions
+      }
+      if (Array.isArray(value)) {
+        return value.map(this.fromValue, this);
+      }
+      if (value == null || typeof value != "object") {
+        // Auto-converted to nsIVariant
+        return value;
+      }
+      return this.objectToPropBag(value);
+    }
+
+    if (obj == null || typeof obj != "object") {
+      throw new TypeError("Invalid object: " + obj);
+    }
+    let bag = Cc["@mozilla.org/hash-property-bag;1"].createInstance(
+      Ci.nsIWritablePropertyBag
+    );
+    for (let k of Object.keys(obj)) {
+      let value = fromValue(obj[k]);
+      bag.setProperty(k, value);
+    }
+    return bag;
   },
 };
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  BrowserUtils,
+  "navigationRequireUserInteraction",
+  "browser.navigation.requireUserInteraction",
+  false
+);

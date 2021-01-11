@@ -20,26 +20,21 @@ add_task(async function() {
   const { inspector, view } = await openRuleView();
   await selectNode("#testid", inspector);
 
-  const rule = getRuleViewRuleEditor(view, 1).rule;
-  const prop = rule.textProps[0];
+  const prop = getTextProperty(view, 1, { "background-color": "blue" });
 
   info("Disabling a property");
   await togglePropStatus(view, prop);
 
-  const newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "background-color",
-  });
+  const newValue = await getRulePropertyValue(0, 0, "background-color");
   is(newValue, "", "background-color should have been unset.");
 
-  await testEditDisableProperty(view, rule, prop, "name", "VK_ESCAPE");
-  await testEditDisableProperty(view, rule, prop, "value", "VK_ESCAPE");
-  await testEditDisableProperty(view, rule, prop, "value", "VK_TAB");
-  await testEditDisableProperty(view, rule, prop, "value", "VK_RETURN");
+  await testEditDisableProperty(view, prop, "name", "VK_ESCAPE");
+  await testEditDisableProperty(view, prop, "value", "VK_ESCAPE");
+  await testEditDisableProperty(view, prop, "value", "VK_TAB");
+  await testEditDisableProperty(view, prop, "value", "VK_RETURN");
 });
 
-async function testEditDisableProperty(view, rule, prop, fieldType, commitKey) {
+async function testEditDisableProperty(view, prop, fieldType, commitKey) {
   const field =
     fieldType === "name" ? prop.editor.nameSpan : prop.editor.valueSpan;
 
@@ -55,11 +50,7 @@ async function testEditDisableProperty(view, rule, prop, fieldType, commitKey) {
     "property enable checkbox is hidden."
   );
 
-  let newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "background-color",
-  });
+  let newValue = await getRulePropertyValue(0, 0, "background-color");
   is(newValue, "", "background-color should remain unset.");
 
   let onChangeDone;
@@ -87,10 +78,6 @@ async function testEditDisableProperty(view, rule, prop, fieldType, commitKey) {
     "property enable checkbox is not checked."
   );
 
-  newValue = await executeInContent("Test:GetRulePropertyValue", {
-    styleSheetIndex: 0,
-    ruleIndex: 0,
-    name: "background-color",
-  });
+  newValue = await getRulePropertyValue(0, 0, "background-color");
   is(newValue, "", "background-color should remain unset.");
 }

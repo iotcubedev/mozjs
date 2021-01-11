@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
+import attr
 
 from ..result import Issue
 
@@ -22,12 +22,12 @@ class CompactFormatter(object):
     def __call__(self, result):
         message = []
         num_problems = 0
-        for path, errors in sorted(result.issues.iteritems()):
+        for path, errors in sorted(result.issues.items()):
             num_problems += len(errors)
             for err in errors:
                 assert isinstance(err, Issue)
 
-                d = {s: getattr(err, s) for s in err.__slots__}
+                d = attr.asdict(err)
                 d["column"] = ", col %s" % d["column"] if d["column"] else ""
                 d['level'] = d['level'].capitalize()
                 d['rule'] = d['rule'] or d['linter']

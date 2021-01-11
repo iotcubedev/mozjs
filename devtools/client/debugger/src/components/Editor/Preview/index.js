@@ -9,30 +9,43 @@ import { connect } from "../../../utils/connect";
 
 import Popup from "./Popup";
 
-import { getPreview, getThreadContext } from "../../../selectors";
+import {
+  getPreview,
+  getThreadContext,
+  getCurrentThread,
+  getHighlightedCalls,
+} from "../../../selectors";
 import actions from "../../../actions";
 
-import type { ThreadContext } from "../../../types";
+import type { ThreadContext, HighlightedCalls } from "../../../types";
 
 import type { Preview as PreviewType } from "../../../reducers/types";
 
+type OwnProps = {|
+  editor: any,
+  editorRef: ?HTMLDivElement,
+|};
 type Props = {
   cx: ThreadContext,
   editor: any,
   editorRef: ?HTMLDivElement,
+  highlightedCalls: ?HighlightedCalls,
   preview: ?PreviewType,
   clearPreview: typeof actions.clearPreview,
   addExpression: typeof actions.addExpression,
   updatePreview: typeof actions.updatePreview,
+  setExceptionPreview: typeof actions.setExceptionPreview,
 };
 
 type State = {
   selecting: boolean,
 };
 
+const EXCEPTION_MARKER = "mark-text-exception";
+
 class Preview extends PureComponent<Props, State> {
   target = null;
-  constructor(props) {
+  constructor(props: Props) {
     super(props);
     this.state = { selecting: false };
   }
@@ -60,10 +73,27 @@ class Preview extends PureComponent<Props, State> {
     codeMirrorWrapper.addEventListener("mousedown", this.onMouseDown);
   }
 
-  onTokenEnter = ({ target, tokenPos }) => {
-    const { cx, editor, updatePreview } = this.props;
+  onTokenEnter = ({ target, tokenPos }: any) => {
+    const {
+      cx,
+      editor,
+      updatePreview,
+      highlightedCalls,
+      setExceptionPreview,
+    } = this.props;
 
-    if (cx.isPaused && !this.state.selecting) {
+    const isTargetException = target.classList.contains(EXCEPTION_MARKER);
+
+    if (isTargetException) {
+      return setExceptionPreview(cx, target, tokenPos, editor.codeMirror);
+    }
+
+    if (
+      cx.isPaused &&
+      !this.state.selecting &&
+      highlightedCalls === null &&
+      !isTargetException
+    ) {
       updatePreview(cx, target, tokenPos, editor.codeMirror);
     }
   };
@@ -104,16 +134,18 @@ class Preview extends PureComponent<Props, State> {
   }
 }
 
-const mapStateToProps = state => ({
-  cx: getThreadContext(state),
-  preview: getPreview(state),
-});
+const mapStateToProps = state => {
+  const thread = getCurrentThread(state);
+  return {
+    highlightedCalls: getHighlightedCalls(state, thread),
+    cx: getThreadContext(state),
+    preview: getPreview(state),
+  };
+};
 
-export default connect(
-  mapStateToProps,
-  {
-    clearPreview: actions.clearPreview,
-    addExpression: actions.addExpression,
-    updatePreview: actions.updatePreview,
-  }
-)(Preview);
+export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+  clearPreview: actions.clearPreview,
+  addExpression: actions.addExpression,
+  updatePreview: actions.updatePreview,
+  setExceptionPreview: actions.setExceptionPreview,
+})(Preview);

@@ -55,6 +55,10 @@ function testIFrameWithoutAllowFullscreen() {
   // we should not receive a fullscreenchange event in this document.
   var iframe = document.createElement("iframe");
   iframe.src = INNER_FILE;
+  // The iframe is same-origin so when we use feature policy otherwise we'd hit
+  // the "allowed" code-path (as intended). It is a bug that this test passes
+  // without the allow attribute.
+  iframe.allow = "fullscreen 'none'";
   setupForInnerTest("an iframe without allowfullscreen", () => {
     document.body.removeChild(iframe);
     SimpleTest.executeSoon(testFrameElement);
@@ -98,12 +102,13 @@ function testNonTrustContext() {
 }
 
 function testLongRunningEventHandler() {
+  let timeout = SpecialPowers.getIntPref("dom.user_activation.transient.timeout") + 1000;
+
   function longRunningHandler() {
     window.removeEventListener("keypress", longRunningHandler);
-    // Busy loop until 2s has passed. We should then be past the one
-    // second threshold, and so our request for fullscreen should be
-    // rejected.
-    var end = (new Date()).getTime() + 2000;
+    // Busy loop until transient useractivation is timed out, so our request for
+    // fullscreen should be rejected.
+    var end = (new Date()).getTime() + timeout;
     while ((new Date()).getTime() < end) {
       ; // Wait...
     }

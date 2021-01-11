@@ -28,7 +28,6 @@ const SECURE_TESTROOT = "https://example.com/" + RELATIVE_DIR;
 const TESTROOT2 = "http://example.org/" + RELATIVE_DIR;
 const SECURE_TESTROOT2 = "https://example.org/" + RELATIVE_DIR;
 const CHROMEROOT = pathParts.join("/") + "/";
-const PREF_DISCOVERURL = "extensions.webservice.discoverURL";
 const PREF_DISCOVER_ENABLED = "extensions.getAddons.showPane";
 const PREF_XPI_ENABLED = "xpinstall.enabled";
 const PREF_UPDATEURL = "extensions.update.url";
@@ -116,12 +115,10 @@ function checkOpenWindows(aWindowID) {
 // Tools to disable and re-enable the background update and blocklist timers
 // so that tests can protect themselves from unwanted timer events.
 var gCatMan = Services.catMan;
-// Default values from toolkit/mozapps/extensions/extensions.manifest, but disable*UpdateTimer()
+// Default value from toolkit/mozapps/extensions/extensions.manifest, but disable*UpdateTimer()
 // records the actual value so we can put it back in enable*UpdateTimer()
 var backgroundUpdateConfig =
   "@mozilla.org/addons/integration;1,getService,addon-background-update-timer,extensions.update.interval,86400";
-var blocklistUpdateConfig =
-  "@mozilla.org/extensions/blocklist;1,getService,blocklist-background-update-timer,extensions.blocklist.interval,86400";
 
 var UTIMER = "update-timer";
 var AMANAGER = "addonManager";
@@ -139,23 +136,6 @@ function enableBackgroundUpdateTimer() {
     UTIMER,
     AMANAGER,
     backgroundUpdateConfig,
-    false,
-    true
-  );
-}
-
-function disableBlocklistUpdateTimer() {
-  info("Disabling " + UTIMER + " " + BLOCKLIST);
-  blocklistUpdateConfig = gCatMan.getCategoryEntry(UTIMER, BLOCKLIST);
-  gCatMan.deleteCategoryEntry(UTIMER, BLOCKLIST, true);
-}
-
-function enableBlocklistUpdateTimer() {
-  info("Enabling " + UTIMER + " " + BLOCKLIST);
-  gCatMan.addCategoryEntry(
-    UTIMER,
-    BLOCKLIST,
-    blocklistUpdateConfig,
     false,
     true
   );
@@ -230,7 +210,7 @@ function run_next_test() {
     info("Test " + gTestsRun + " took " + (Date.now() - gTestStart) + "ms");
   }
 
-  if (gPendingTests.length == 0) {
+  if (!gPendingTests.length) {
     executeSoon(end_test);
     return;
   }
@@ -330,8 +310,12 @@ function check_all_in_list(aManager, aIds, aIgnoreExtras) {
 }
 
 function get_addon_element(aManager, aId) {
-  const doc = aManager.getHtmlBrowser().contentDocument;
-  return doc.querySelector(`addon-card[addon-id="${aId}"]`);
+  const win = aManager.getHtmlBrowser().contentWindow;
+  return getAddonCard(win, aId);
+}
+
+function getAddonCard(win, id) {
+  return win.document.querySelector(`addon-card[addon-id="${id}"]`);
 }
 
 function wait_for_view_load(
@@ -503,7 +487,7 @@ function get_string(aName, ...aArgs) {
   var bundle = Services.strings.createBundle(
     "chrome://mozapps/locale/extensions/extensions.properties"
   );
-  if (aArgs.length == 0) {
+  if (!aArgs.length) {
     return bundle.GetStringFromName(aName);
   }
   return bundle.formatStringFromName(aName, aArgs);
@@ -553,9 +537,9 @@ function promiseAddonsByIDs(aIDs) {
  *
  * The callback will receive the Addon for the installed add-on.
  */
-function install_addon(path, cb, pathPrefix = TESTROOT) {
-  let p = new Promise(async (resolve, reject) => {
-    let install = await AddonManager.getInstallForURL(pathPrefix + path);
+async function install_addon(path, cb, pathPrefix = TESTROOT) {
+  let install = await AddonManager.getInstallForURL(pathPrefix + path);
+  let p = new Promise((resolve, reject) => {
     install.addListener({
       onInstallEnded: () => resolve(install.addon),
     });
@@ -567,20 +551,32 @@ function install_addon(path, cb, pathPrefix = TESTROOT) {
 }
 
 function CategoryUtilities(aManagerWindow) {
-  this.window = aManagerWindow;
+  this.window = aManagerWindow.getHtmlBrowser().contentWindow;
+  this.managerWindow = aManagerWindow;
 
-  var self = this;
-  this.window.addEventListener(
+  this.window.addEventListener("unload", () => (this.window = null), {
+    once: true,
+  });
+  this.managerWindow.addEventListener(
     "unload",
-    function() {
-      self.window = null;
-    },
+    () => (this.managerWindow = null),
     { once: true }
   );
 }
 
 CategoryUtilities.prototype = {
   window: null,
+  managerWindow: null,
+
+  get _categoriesBox() {
+    return this.window.document.querySelector("categories-box");
+  },
+
+  getSelectedViewId() {
+    let selectedItem = this._categoriesBox.querySelector("[selected]");
+    isnot(selectedItem, null, "A category should be selected");
+    return selectedItem.getAttribute("viewid");
+  },
 
   get selectedCategory() {
     isnot(
@@ -588,89 +584,69 @@ CategoryUtilities.prototype = {
       null,
       "Should not get selected category when manager window is not loaded"
     );
-    var selectedItem = this.window.document.getElementById("categories")
-      .selectedItem;
-    isnot(selectedItem, null, "A category should be selected");
-    var view = this.window.gViewController.parseViewId(selectedItem.value);
+    let viewId = this.getSelectedViewId();
+    let view = this.managerWindow.gViewController.parseViewId(viewId);
     return view.type == "list" ? view.param : view.type;
   },
 
-  get(aCategoryType, aAllowMissing) {
+  get(categoryType) {
     isnot(
       this.window,
       null,
       "Should not get category when manager window is not loaded"
     );
-    var categories = this.window.document.getElementById("categories");
 
-    var viewId = "addons://list/" + aCategoryType;
-    var items = categories.getElementsByAttribute("value", viewId);
-    if (items.length) {
-      return items[0];
+    let button = this._categoriesBox.querySelector(`[name="${categoryType}"]`);
+    if (button) {
+      return button;
     }
 
-    viewId = "addons://" + aCategoryType + "/";
-    items = categories.getElementsByAttribute("value", viewId);
-    if (items.length) {
-      return items[0];
-    }
-
-    if (!aAllowMissing) {
-      ok(false, "Should have found a category with type " + aCategoryType);
-    }
+    ok(false, "Should have found a category with type " + categoryType);
     return null;
   },
 
-  getViewId(aCategoryType) {
-    isnot(
-      this.window,
-      null,
-      "Should not get view id when manager window is not loaded"
-    );
-    return this.get(aCategoryType).value;
-  },
-
-  isVisible(aCategory) {
+  isVisible(categoryButton) {
     isnot(
       this.window,
       null,
       "Should not check visible state when manager window is not loaded"
     );
-    if (
-      aCategory.hasAttribute("disabled") &&
-      aCategory.getAttribute("disabled") == "true"
-    ) {
+
+    // There are some tests checking this before the categories have loaded.
+    if (!categoryButton) {
       return false;
     }
 
-    return !is_hidden(aCategory);
+    if (categoryButton.disabled || categoryButton.hidden) {
+      return false;
+    }
+
+    return !is_hidden(categoryButton);
   },
 
-  isTypeVisible(aCategoryType) {
-    return this.isVisible(this.get(aCategoryType));
+  isTypeVisible(categoryType) {
+    return this.isVisible(this.get(categoryType));
   },
 
-  open(aCategory, aCallback) {
+  open(categoryButton) {
     isnot(
       this.window,
       null,
       "Should not open category when manager window is not loaded"
     );
     ok(
-      this.isVisible(aCategory),
+      this.isVisible(categoryButton),
       "Category should be visible if attempting to open it"
     );
 
-    EventUtils.synthesizeMouse(aCategory, 2, 2, {}, this.window);
-    let p = new Promise((resolve, reject) =>
-      wait_for_view_load(this.window, resolve)
-    );
+    EventUtils.synthesizeMouseAtCenter(categoryButton, {}, this.window);
 
-    return log_callback(p, aCallback);
+    // Use wait_for_view_load until all open_manager calls are gone.
+    return wait_for_view_load(this.managerWindow);
   },
 
-  openType(aCategoryType, aCallback) {
-    return this.open(this.get(aCategoryType), aCallback);
+  openType(categoryType) {
+    return this.open(this.get(categoryType));
   },
 };
 
@@ -731,26 +707,19 @@ function addCertOverrides() {
 
 /** *** Mock Provider *****/
 
-function MockProvider(aUseAsyncCallbacks, aTypes) {
+function MockProvider() {
   this.addons = [];
   this.installs = [];
-  this.callbackTimers = [];
-  this.timerLocations = new Map();
-  this.useAsyncCallbacks =
-    aUseAsyncCallbacks === undefined ? true : aUseAsyncCallbacks;
-  this.types =
-    aTypes === undefined
-      ? [
-          {
-            id: "extension",
-            name: "Extensions",
-            uiPriority: 4000,
-            flags:
-              AddonManager.TYPE_UI_VIEW_LIST |
-              AddonManager.TYPE_SUPPORTS_UNDO_RESTARTLESS_UNINSTALL,
-          },
-        ]
-      : aTypes;
+  this.types = [
+    {
+      id: "extension",
+      name: "Extensions",
+      uiPriority: 4000,
+      flags:
+        AddonManager.TYPE_UI_VIEW_LIST |
+        AddonManager.TYPE_SUPPORTS_UNDO_RESTARTLESS_UNINSTALL,
+    },
+  ];
 
   var self = this;
   registerCleanupFunction(function() {
@@ -766,11 +735,23 @@ MockProvider.prototype = {
   addons: null,
   installs: null,
   started: null,
-  apiDelay: 10,
-  callbackTimers: null,
-  timerLocations: null,
-  useAsyncCallbacks: null,
   types: null,
+  queryDelayPromise: Promise.resolve(),
+
+  blockQueryResponses() {
+    this.queryDelayPromise = new Promise(resolve => {
+      this._unblockQueries = resolve;
+    });
+  },
+
+  unblockQueryResponses() {
+    if (this._unblockQueries) {
+      this._unblockQueries();
+      this._unblockQueries = null;
+    } else {
+      throw new Error("Queries are not blocked");
+    }
+  },
 
   /** *** Utility functions *****/
 
@@ -799,7 +780,7 @@ MockProvider.prototype = {
    */
   addAddon: function MP_addAddon(aAddon) {
     var oldAddons = this.addons.filter(aOldAddon => aOldAddon.id == aAddon.id);
-    var oldAddon = oldAddons.length > 0 ? oldAddons[0] : null;
+    var oldAddon = oldAddons.length ? oldAddons[0] : null;
 
     this.addons = this.addons.filter(aOldAddon => aOldAddon.id != aAddon.id);
 
@@ -968,26 +949,6 @@ MockProvider.prototype = {
    * Called when the provider should shutdown.
    */
   shutdown: function MP_shutdown() {
-    if (this.callbackTimers.length) {
-      info(
-        "MockProvider: pending callbacks at shutdown(): calling immediately"
-      );
-    }
-    while (this.callbackTimers.length > 0) {
-      // When we notify the callback timer, it removes itself from our array
-      let timer = this.callbackTimers[0];
-      try {
-        let setAt = this.timerLocations.get(timer);
-        info("Notifying timer set at " + (setAt || "unknown location"));
-        timer.callback.notify(timer);
-        timer.cancel();
-      } catch (e) {
-        info("Timer notify failed: " + e);
-      }
-    }
-    this.callbackTimers = [];
-    this.timerLocations = null;
-
     this.started = false;
   },
 
@@ -998,6 +959,8 @@ MockProvider.prototype = {
    *         The ID of the add-on to retrieve
    */
   async getAddonByID(aId) {
+    await this.queryDelayPromise;
+
     for (let addon of this.addons) {
       if (addon.id == aId) {
         return addon;
@@ -1014,8 +977,10 @@ MockProvider.prototype = {
    *         An array of types to fetch. Can be null to get all types.
    */
   async getAddonsByTypes(aTypes) {
+    await this.queryDelayPromise;
+
     var addons = this.addons.filter(function(aAddon) {
-      if (aTypes && aTypes.length > 0 && !aTypes.includes(aAddon.type)) {
+      if (aTypes && !!aTypes.length && !aTypes.includes(aAddon.type)) {
         return false;
       }
       return true;
@@ -1030,13 +995,15 @@ MockProvider.prototype = {
    *         An array of types or null to get all types
    */
   async getInstallsByTypes(aTypes) {
+    await this.queryDelayPromise;
+
     var installs = this.installs.filter(function(aInstall) {
       // Appear to have actually removed cancelled installs from the provider
       if (aInstall.state == AddonManager.STATE_CANCELLED) {
         return false;
       }
 
-      if (aTypes && aTypes.length > 0 && !aTypes.includes(aInstall.type)) {
+      if (aTypes && !!aTypes.length && !aTypes.includes(aInstall.type)) {
         return false;
       }
 
@@ -1434,7 +1401,7 @@ MockInstall.prototype = {
         this.callListeners("onInstallEnded");
         break;
       case AddonManager.STATE_DOWNLOADING:
-      case AddonManager.STATE_CHECKING:
+      case AddonManager.STATE_CHECKING_UPDATE:
       case AddonManager.STATE_INSTALLING:
         // Installation is already running
         return;
@@ -1663,16 +1630,48 @@ function assertAboutAddonsTelemetryEvents(events, filters = {}) {
 }
 
 /* HTML view helpers */
-async function loadInitialView(type) {
-  // Force the first page load to be the view we want.
-  let viewId = type == "discover" ? "discover/" : `list/${type}`;
-  Services.prefs.setCharPref(PREF_UI_LASTCATEGORY, `addons://${viewId}`);
+async function loadInitialView(type, opts) {
+  if (type) {
+    // Force the first page load to be the view we want.
+    let viewId;
+    if (type.startsWith("addons://")) {
+      viewId = type;
+    } else {
+      viewId =
+        type == "discover" ? "addons://discover/" : `addons://list/${type}`;
+    }
+    Services.prefs.setCharPref(PREF_UI_LASTCATEGORY, viewId);
+  }
 
-  let managerWindow = await open_manager(null);
+  let loadCallback;
+  let loadCallbackDone = Promise.resolve();
+
+  if (opts && opts.loadCallback) {
+    // Make sure the HTML browser is loaded and pass its window to the callback
+    // function instead of the XUL window.
+    loadCallback = managerWindow => {
+      loadCallbackDone = managerWindow
+        .promiseHtmlBrowserLoaded()
+        .then(async browser => {
+          let win = browser.contentWindow;
+          win.managerWindow = managerWindow;
+          // Wait for the test code to finish running before proceeding.
+          await opts.loadCallback(win);
+        });
+    };
+  }
+  let managerWindow = await open_manager(null, null, loadCallback);
 
   let browser = managerWindow.document.getElementById("html-view-browser");
   let win = browser.contentWindow;
+  if (!opts || !opts.withAnimations) {
+    win.document.body.setAttribute("skip-animations", "");
+  }
   win.managerWindow = managerWindow;
+
+  // Let any load callback code to run before the rest of the test continues.
+  await loadCallbackDone;
+
   return win;
 }
 
@@ -1688,12 +1687,16 @@ function switchView(win, type) {
   return new CategoryUtilities(win.managerWindow).openType(type);
 }
 
+function isCategoryVisible(win, type) {
+  return new CategoryUtilities(win.managerWindow).isTypeVisible(type);
+}
+
 function mockPromptService() {
   let { prompt } = Services;
   let promptService = {
     // The prompt returns 1 for cancelled and 0 for accepted.
     _response: 1,
-    QueryInterface: ChromeUtils.generateQI([Ci.nsIPromptService]),
+    QueryInterface: ChromeUtils.generateQI(["nsIPromptService"]),
     confirmEx: () => promptService._response,
   };
   Services.prompt = promptService;
@@ -1752,4 +1755,8 @@ async function testUndoPendingUninstall(addonList, addon) {
     addon && !(addon.pendingOperations & AddonManager.PENDING_UNINSTALL),
     "The addon pending uninstall cancelled"
   );
+}
+
+function loadTestSubscript(filePath) {
+  Services.scriptloader.loadSubScript(new URL(filePath, gTestPath).href, this);
 }

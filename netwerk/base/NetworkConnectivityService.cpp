@@ -7,8 +7,11 @@
 #include "mozilla/Services.h"
 #include "xpcpublic.h"
 #include "nsSocketTransport2.h"
-#include "nsIURIMutator.h"
 #include "nsINetworkLinkService.h"
+
+static LazyLogModule gNCSLog("NetworkConnectivityService");
+#undef LOG
+#define LOG(args) MOZ_LOG(gNCSLog, mozilla::LogLevel::Debug, args)
 
 namespace mozilla {
 namespace net {
@@ -21,6 +24,10 @@ static StaticRefPtr<NetworkConnectivityService> gConnService;
 // static
 already_AddRefed<NetworkConnectivityService>
 NetworkConnectivityService::GetSingleton() {
+  if (!XRE_IsParentProcess()) {
+    return nullptr;
+  }
+
   if (gConnService) {
     return do_AddRef(gConnService);
   }
@@ -28,7 +35,7 @@ NetworkConnectivityService::GetSingleton() {
   RefPtr<NetworkConnectivityService> service = new NetworkConnectivityService();
   service->Init();
 
-  gConnService = service.forget();
+  gConnService = std::move(service);
   ClearOnShutdown(&gConnService);
   return do_AddRef(gConnService);
 }
@@ -109,13 +116,6 @@ NetworkConnectivityService::OnLookupComplete(nsICancelable* aRequest,
 }
 
 NS_IMETHODIMP
-NetworkConnectivityService::OnLookupByTypeComplete(nsICancelable* aRequest,
-                                                   nsIDNSByTypeRecord* aRes,
-                                                   nsresult aStatus) {
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 NetworkConnectivityService::RecheckDNS() {
   bool enabled =
       Preferences::GetBool("network.connectivity-service.enabled", false);
@@ -166,7 +166,8 @@ NetworkConnectivityService::Observe(nsISupports* aSubject, const char* aTopic,
                                     "network:captive-portal-connectivity");
     observerService->RemoveObserver(this, NS_NETWORK_LINK_TOPIC);
   } else if (!strcmp(aTopic, NS_NETWORK_LINK_TOPIC) &&
-             !NS_LITERAL_STRING(NS_NETWORK_LINK_DATA_UNKNOWN).Equals(aData)) {
+             !NS_LITERAL_STRING_FROM_CSTRING(NS_NETWORK_LINK_DATA_UNKNOWN)
+                  .Equals(aData)) {
     PerformChecks();
   }
 
@@ -191,16 +192,28 @@ static inline already_AddRefed<nsIChannel> SetupIPCheckChannel(bool ipv4) {
   nsCOMPtr<nsIChannel> channel;
   rv = NS_NewChannel(
       getter_AddRefs(channel), uri, nsContentUtils::GetSystemPrincipal(),
-      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
       nsIContentPolicy::TYPE_OTHER,
-      nullptr,  // nsICookieSettings
+      nullptr,  // nsICookieJarSettings
       nullptr,  // aPerformanceStorage
       nullptr,  // aLoadGroup
       nullptr,
-      nsIRequest::LOAD_BYPASS_CACHE |     // don't read from the cache
-          nsIRequest::INHIBIT_CACHING |   // don't write the response to cache
-          nsIRequest::LOAD_DISABLE_TRR |  // check network capabilities not TRR
-          nsIRequest::LOAD_ANONYMOUS);    // prevent privacy leaks
+      nsIRequest::LOAD_BYPASS_CACHE |    // don't read from the cache
+          nsIRequest::INHIBIT_CACHING |  // don't write the response to cache
+          nsIRequest::LOAD_ANONYMOUS);   // prevent privacy leaks
+
+  channel->SetTRRMode(nsIRequest::TRR_DISABLED_MODE);
+
+  {
+    // Prevent HTTPS-Only Mode from upgrading the OCSP request.
+    nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+    uint32_t httpsOnlyStatus = loadInfo->GetHttpsOnlyStatus();
+    httpsOnlyStatus |= nsILoadInfo::HTTPS_ONLY_EXEMPT;
+    loadInfo->SetHttpsOnlyStatus(httpsOnlyStatus);
+
+    // allow deprecated HTTP request from SystemPrincipal
+    loadInfo->SetAllowDeprecatedSystemRequests(true);
+  }
 
   NS_ENSURE_SUCCESS(rv, nullptr);
 
@@ -239,6 +252,8 @@ NetworkConnectivityService::RecheckIPConnectivity() {
   }
 
   nsresult rv;
+  mHasNetworkId = false;
+  mCheckedNetworkId = false;
   mIPv4Channel = SetupIPCheckChannel(/* ipv4 = */ true);
   if (mIPv4Channel) {
     rv = mIPv4Channel->AsyncOpen(this);
@@ -271,20 +286,16 @@ NetworkConnectivityService::OnStopRequest(nsIRequest* aRequest,
   if (aRequest == mIPv4Channel) {
     mIPv4 = status;
     mIPv4Channel = nullptr;
-  } else if (aRequest == mIPv6Channel) {
-#ifdef DEBUG
-    // Verify that the check was performed over IPv6
-    nsCOMPtr<nsIHttpChannelInternal> v6Internal = do_QueryInterface(aRequest);
-    MOZ_ASSERT(v6Internal);
-    nsAutoCString peerAddr;
-    Unused << v6Internal->GetRemoteAddress(peerAddr);
-    MOZ_ASSERT(peerAddr.Contains(':') || NS_FAILED(aStatusCode));
-#endif
 
+    if (mIPv4 == nsINetworkConnectivityService::OK) {
+      Telemetry::AccumulateCategorical(
+          mHasNetworkId ? Telemetry::LABELS_NETWORK_ID_ONLINE::present
+                        : Telemetry::LABELS_NETWORK_ID_ONLINE::absent);
+      LOG(("mHasNetworkId : %d\n", mHasNetworkId));
+    }
+  } else if (aRequest == mIPv6Channel) {
     mIPv6 = status;
     mIPv6Channel = nullptr;
-  } else {
-    MOZ_ASSERT(false, "Unknown request");
   }
 
   if (!mIPv6Channel && !mIPv4Channel) {
@@ -299,6 +310,22 @@ NetworkConnectivityService::OnDataAvailable(nsIRequest* aRequest,
                                             nsIInputStream* aInputStream,
                                             uint64_t aOffset, uint32_t aCount) {
   nsAutoCString data;
+
+  // We perform this check here, instead of doing it in OnStopRequest in case
+  // a network down event occurs after the data has arrived but before we fire
+  // OnStopRequest. That would cause us to report a missing networkID, even
+  // though it was not empty while receiving data.
+  if (aRequest == mIPv4Channel && !mCheckedNetworkId) {
+    nsCOMPtr<nsINetworkLinkService> nls =
+        do_GetService(NS_NETWORK_LINK_SERVICE_CONTRACTID);
+    nsAutoCString networkId;
+    if (nls) {
+      nls->GetNetworkID(networkId);
+    }
+    mHasNetworkId = !networkId.IsEmpty();
+    mCheckedNetworkId = true;
+  }
+
   Unused << NS_ReadInputStreamToString(aInputStream, data, aCount);
   return NS_OK;
 }

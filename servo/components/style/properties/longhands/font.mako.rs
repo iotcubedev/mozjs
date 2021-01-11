@@ -11,7 +11,6 @@ ${helpers.predefined_type(
     "font-family",
     "FontFamily",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_value="computed::FontFamily::serif()",
     animation_value_type="discrete",
     spec="https://drafts.csswg.org/css-fonts/#propdef-font-family",
@@ -22,7 +21,6 @@ ${helpers.predefined_type(
     "font-style",
     "FontStyle",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_value="computed::FontStyle::normal()",
     initial_specified_value="specified::FontStyle::normal()",
     animation_value_type="FontStyle",
@@ -40,7 +38,6 @@ ${helpers.single_keyword_system(
     "font-variant-caps",
     "normal small-caps",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     extra_gecko_values="all-small-caps petite-caps all-petite-caps unicase titling-caps",
     gecko_constant_prefix="NS_FONT_VARIANT_CAPS",
     gecko_ffi_name="mFont.variantCaps",
@@ -54,7 +51,6 @@ ${helpers.predefined_type(
     "font-weight",
     "FontWeight",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_value="computed::FontWeight::normal()",
     initial_specified_value="specified::FontWeight::normal()",
     animation_value_type="Number",
@@ -97,7 +93,6 @@ ${helpers.predefined_type(
     "font-stretch",
     "FontStretch",
     engines="gecko servo-2013 servo-2020",
-    servo_2020_pref="layout.2020.unimplemented",
     initial_value="computed::FontStretch::hundred()",
     initial_specified_value="specified::FontStretch::normal()",
     animation_value_type="Percentage",
@@ -235,7 +230,7 @@ ${helpers.predefined_type(
 ${helpers.predefined_type(
     "-moz-script-level",
     "MozScriptLevel",
-    0,
+    "0",
     engines="gecko",
     animation_value_type="none",
     enabled_in="ua",
@@ -312,7 +307,6 @@ ${helpers.predefined_type(
         //! variable reference. We may want to improve this behavior at some
         //! point. See also https://github.com/w3c/csswg-drafts/issues/1586.
 
-        use app_units::Au;
         use cssparser::{Parser, ToCss};
         use crate::values::computed::font::GenericFontFamily;
         use crate::properties::longhands;
@@ -367,13 +361,14 @@ ${helpers.predefined_type(
                 use crate::gecko_bindings::structs::{LookAndFeel_FontID, nsFont};
                 use std::mem;
                 use crate::values::computed::Percentage;
+                use crate::values::specified::font::KeywordInfo;
                 use crate::values::computed::font::{FontFamily, FontSize, FontStretch, FontStyle, FontFamilyList};
                 use crate::values::generics::NonNegative;
 
                 let id = match *self {
                     % for font in system_fonts:
                         SystemFont::${to_camel_case(font)} => {
-                            LookAndFeel_FontID::eFont_${to_camel_case(font.replace("-moz-", ""))}
+                            LookAndFeel_FontID::${to_camel_case(font.replace("-moz-", ""))}
                         }
                     % endfor
                 };
@@ -401,8 +396,8 @@ ${helpers.predefined_type(
                         is_system_font: true,
                     },
                     font_size: FontSize {
-                        size: NonNegative(cx.maybe_zoom_text(Au(system.size).into())),
-                        keyword_info: None
+                        size: NonNegative(cx.maybe_zoom_text(system.size.0)),
+                        keyword_info: KeywordInfo::none()
                     },
                     font_weight,
                     font_stretch,

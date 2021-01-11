@@ -9,6 +9,7 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import json
+import logging
 import os
 import shutil
 import socket
@@ -18,7 +19,11 @@ import sys
 import mozfile
 from mach.decorators import Command, CommandProvider
 from mozboot.util import get_state_dir
-from mozbuild.base import MachCommandBase, MozbuildObject
+from mozbuild.base import (
+    MachCommandBase,
+    MozbuildObject,
+    BinaryNotFoundException,
+)
 from mozbuild.base import MachCommandConditions as Conditions
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -26,7 +31,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BENCHMARK_REPOSITORY = 'https://github.com/mozilla/perf-automation'
 BENCHMARK_REVISION = 'e19a0865c946ae2f9a64dd25614b1c275a3996b2'
 
-FIREFOX_ANDROID_BROWSERS = ["fennec", "geckoview", "refbrow", "fenix"]
+ANDROID_BROWSERS = ["fennec", "geckoview", "refbrow", "fenix", "chrome-m"]
 
 
 class RaptorRunner(MozbuildObject):
@@ -57,8 +62,12 @@ class RaptorRunner(MozbuildObject):
         self.memory_test = kwargs['memory_test']
         self.power_test = kwargs['power_test']
         self.cpu_test = kwargs['cpu_test']
+        self.live_sites = kwargs['live_sites']
+        self.disable_perf_tuning = kwargs['disable_perf_tuning']
+        self.conditioned_profile_scenario = kwargs['conditioned_profile_scenario']
+        self.device_name = kwargs['device_name']
 
-        if Conditions.is_android(self) or kwargs["app"] in FIREFOX_ANDROID_BROWSERS:
+        if Conditions.is_android(self) or kwargs["app"] in ANDROID_BROWSERS:
             self.binary_path = None
         else:
             self.binary_path = kwargs.get("binary") or self.get_binary_path()
@@ -154,7 +163,11 @@ class RaptorRunner(MozbuildObject):
             'power_test': self.power_test,
             'memory_test': self.memory_test,
             'cpu_test': self.cpu_test,
+            'live_sites': self.live_sites,
+            'disable_perf_tuning': self.disable_perf_tuning,
+            'conditioned_profile_scenario': self.conditioned_profile_scenario,
             'is_release_build': self.is_release_build,
+            'device_name': self.device_name,
         }
 
         sys.path.insert(0, os.path.join(self.topsrcdir, 'tools', 'browsertime'))
@@ -162,6 +175,9 @@ class RaptorRunner(MozbuildObject):
             import mach_commands as browsertime
             # We don't set `browsertime_{chromedriver,geckodriver} -- those will be found by
             # browsertime in its `node_modules` directory, which is appropriate for local builds.
+            # We don't set `browsertime_ffmpeg` yet: it will need to be on the path.  There is code
+            # to configure the environment including the path in
+            # `tools/browsertime/mach_commands.py` but integrating it here will take more effort.
             self.config.update({
                 'browsertime_node': browsertime.node_path(),
                 'browsertime_browsertimejs': browsertime.browsertime_path(),
@@ -177,7 +193,7 @@ class RaptorRunner(MozbuildObject):
 
     def write_config(self):
         try:
-            config_file = open(self.config_file_path, 'wb')
+            config_file = open(self.config_file_path, 'w')
             config_file.write(json.dumps(self.config))
             config_file.close()
         except IOError as e:
@@ -205,17 +221,26 @@ class MachRaptor(MachCommandBase):
              description='Run Raptor performance tests.',
              parser=create_parser)
     def run_raptor(self, **kwargs):
+        # Defers this import so that a transitive dependency doesn't
+        # stop |mach bootstrap| from running
+        from raptor.power import enable_charging, disable_charging
+
         build_obj = self
 
         is_android = Conditions.is_android(build_obj) or \
-            kwargs['app'] in FIREFOX_ANDROID_BROWSERS
+            kwargs['app'] in ANDROID_BROWSERS
 
         if is_android:
-            from mozrunner.devices.android_device import verify_android_device
-            from mozdevice import ADBAndroid, ADBHost
-            if not verify_android_device(build_obj,
-                                         install=not kwargs.pop('noinstall', False),
+            from mozrunner.devices.android_device import (verify_android_device, InstallIntent)
+            from mozdevice import ADBAndroid
+            install = InstallIntent.NO if kwargs.pop('noinstall', False) else InstallIntent.YES
+            verbose = False
+            if kwargs.get('log_mach_verbose') or kwargs.get('log_tbpl_level') == 'debug' or \
+               kwargs.get('log_mach_level') == 'debug' or kwargs.get('log_raw_level') == 'debug':
+                verbose = True
+            if not verify_android_device(build_obj, install=install,
                                          app=kwargs['binary'],
+                                         verbose=verbose,
                                          xre=True):  # Equivalent to 'run_local' = True.
                 return 1
 
@@ -224,33 +249,27 @@ class MachRaptor(MachCommandBase):
             sys.argv.remove(debug_command)
 
         raptor = self._spawn(RaptorRunner)
+        device = None
 
         try:
-            if is_android and kwargs['power_test']:
+            if kwargs['power_test'] and is_android:
                 device = ADBAndroid(verbose=True)
-                adbhost = ADBHost(verbose=True)
-                device_serial = "{}:5555".format(device.get_ip_address())
-                device.command_output(["tcpip", "5555"])
-                raw_input("Please disconnect your device from USB then press Enter/return...")
-                adbhost.command_output(["connect", device_serial])
-                while len(adbhost.devices()) > 1:
-                    raw_input("You must disconnect your device from USB before continuing.")
-                # must reset the environment DEVICE_SERIAL which was set during
-                # verify_android_device to match our new tcpip value.
-                os.environ["DEVICE_SERIAL"] = device_serial
+                disable_charging(device)
             return raptor.run_test(sys.argv[2:], kwargs)
+        except BinaryNotFoundException as e:
+            self.log(logging.ERROR, 'raptor',
+                     {'error': str(e)},
+                     'ERROR: {error}')
+            self.log(logging.INFO, 'raptor',
+                     {'help': e.help()},
+                     '{help}')
+            return 1
         except Exception as e:
             print(repr(e))
             return 1
         finally:
-            try:
-                if is_android and kwargs['power_test']:
-                    raw_input("Connect device via USB and press Enter/return...")
-                    device = ADBAndroid(device=device_serial, verbose=True)
-                    device.command_output(["usb"])
-                    adbhost.command_output(["disconnect", device_serial])
-            except Exception:
-                adbhost.command_output(["kill-server"])
+            if kwargs['power_test'] and device:
+                enable_charging(device)
 
     @Command('raptor-test', category='testing',
              description='Run Raptor performance tests.',

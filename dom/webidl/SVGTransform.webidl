@@ -10,6 +10,7 @@
  * liability, trademark and document use rules apply.
  */
 
+[Exposed=Window]
 interface SVGTransform {
 
   // Transform Types
@@ -27,7 +28,7 @@ interface SVGTransform {
   readonly attribute float angle;
 
   [Throws]
-  void setMatrix(SVGMatrix matrix);
+  void setMatrix(optional DOMMatrix2DInit matrix = {});
   [Throws]
   void setTranslate(float tx, float ty);
   [Throws]

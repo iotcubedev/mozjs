@@ -22,7 +22,6 @@
 #include "nsNPAPIPlugin.h"
 #include "nsPluginsDirUtils.h"
 
-#include "nsILocalFileMac.h"
 #include "mozilla/UniquePtr.h"
 
 #include "nsCocoaFeatures.h"
@@ -415,7 +414,7 @@ nsresult nsPluginFile::GetPluginInfo(nsPluginInfo& info,
   // See bug 1086977.
   if (nsCocoaFeatures::OnYosemiteOrLater()) {
     if (fileName.EqualsLiteral("fbplugin") ||
-        StringBeginsWith(fileName, NS_LITERAL_CSTRING("fbplugin_"))) {
+        StringBeginsWith(fileName, "fbplugin_"_ns)) {
       nsAutoCString msg;
       msg.AppendPrintf("Preventing load of %s (see bug 1086977)",
                        fileName.get());

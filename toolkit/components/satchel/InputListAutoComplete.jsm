@@ -10,15 +10,14 @@ function InputListAutoComplete() {}
 
 InputListAutoComplete.prototype = {
   classID: Components.ID("{bf1e01d0-953e-11df-981c-0800200c9a66}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIInputListAutoComplete]),
+  QueryInterface: ChromeUtils.generateQI(["nsIInputListAutoComplete"]),
 
   autoCompleteSearch(aUntrimmedSearchString, aField) {
     let [values, labels] = this.getListSuggestions(aField);
-    let searchResult =
-      values.length > 0
-        ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS
-        : Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
-    let defaultIndex = values.length > 0 ? 0 : -1;
+    let searchResult = values.length
+      ? Ci.nsIAutoCompleteResult.RESULT_SUCCESS
+      : Ci.nsIAutoCompleteResult.RESULT_NOMATCH;
+    let defaultIndex = values.length ? 0 : -1;
 
     return new FormAutoCompleteResult(
       aUntrimmedSearchString,

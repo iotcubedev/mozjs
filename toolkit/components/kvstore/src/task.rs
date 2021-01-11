@@ -6,6 +6,7 @@ extern crate xpcom;
 
 use crossbeam_utils::atomic::AtomicCell;
 use error::KeyValueError;
+use manager::Manager;
 use moz_task::Task;
 use nserror::{nsresult, NS_ERROR_FAILURE};
 use nsstring::nsCString;
@@ -20,14 +21,13 @@ use storage_variant::VariantType;
 use xpcom::{
     interfaces::{
         nsIKeyValueDatabaseCallback, nsIKeyValueEnumeratorCallback, nsIKeyValueVariantCallback,
-        nsIKeyValueVoidCallback, nsIThread, nsIVariant,
+        nsIKeyValueVoidCallback, nsIVariant,
     },
     RefPtr, ThreadBoundRefPtr,
 };
 use KeyValueDatabase;
 use KeyValueEnumerator;
 use KeyValuePairResult;
-use manager::Manager;
 
 /// A macro to generate a done() implementation for a Task.
 /// Takes one argument that specifies the type of the Task's callback function:
@@ -54,7 +54,8 @@ macro_rules! task_done {
                 Some(Ok(value)) => unsafe { callback.Resolve(self.convert(value)?.coerce()) },
                 Some(Err(err)) => unsafe { callback.Reject(&*nsCString::from(err.to_string())) },
                 None => unsafe { callback.Reject(&*nsCString::from("unexpected")) },
-            }.to_result()
+            }
+            .to_result()
         }
     };
 
@@ -74,7 +75,8 @@ macro_rules! task_done {
                 Some(Ok(())) => unsafe { callback.Resolve() },
                 Some(Err(err)) => unsafe { callback.Reject(&*nsCString::from(err.to_string())) },
                 None => unsafe { callback.Reject(&*nsCString::from("unexpected")) },
-            }.to_result()
+            }
+            .to_result()
         }
     };
 }
@@ -157,7 +159,6 @@ fn passive_resize(env: &Rkv, wanted: usize) -> Result<(), StoreError> {
 
 pub struct GetOrCreateTask {
     callback: AtomicCell<Option<ThreadBoundRefPtr<nsIKeyValueDatabaseCallback>>>,
-    thread: AtomicCell<Option<ThreadBoundRefPtr<nsIThread>>>,
     path: nsCString,
     name: nsCString,
     result: AtomicCell<Option<Result<RkvStoreTuple, KeyValueError>>>,
@@ -166,13 +167,11 @@ pub struct GetOrCreateTask {
 impl GetOrCreateTask {
     pub fn new(
         callback: RefPtr<nsIKeyValueDatabaseCallback>,
-        thread: RefPtr<nsIThread>,
         path: nsCString,
         name: nsCString,
     ) -> GetOrCreateTask {
         GetOrCreateTask {
             callback: AtomicCell::new(Some(ThreadBoundRefPtr::new(callback))),
-            thread: AtomicCell::new(Some(ThreadBoundRefPtr::new(thread))),
             path,
             name,
             result: AtomicCell::default(),
@@ -180,8 +179,7 @@ impl GetOrCreateTask {
     }
 
     fn convert(&self, result: RkvStoreTuple) -> Result<RefPtr<KeyValueDatabase>, KeyValueError> {
-        let thread = self.thread.swap(None).ok_or(NS_ERROR_FAILURE)?;
-        Ok(KeyValueDatabase::new(result.0, result.1, thread))
+        Ok(KeyValueDatabase::new(result.0, result.1)?)
     }
 }
 
@@ -262,13 +260,13 @@ impl Task for PutTask {
                         writer.abort();
 
                         // calculate the size of pairs and resize the store accordingly.
-                        let pair_size = key.len()
-                            + v.serialized_size().map_err(StoreError::from)? as usize;
+                        let pair_size =
+                            key.len() + v.serialized_size().map_err(StoreError::from)? as usize;
                         let wanted = round_to_pagesize(pair_size);
                         passive_resize(&env, wanted)?;
                         resized = true;
                         continue;
-                    },
+                    }
 
                     Err(err) => return Err(KeyValueError::StoreError(err)),
                 }
@@ -357,11 +355,11 @@ impl Task for WriteManyTask {
                                     passive_resize(&env, wanted)?;
                                     resized = true;
                                     continue 'outer;
-                                },
+                                }
 
                                 Err(err) => return Err(KeyValueError::StoreError(err)),
                             }
-                        },
+                        }
                         // To delete.
                         None => {
                             match self.store.delete(&mut writer, key) {
@@ -379,7 +377,7 @@ impl Task for WriteManyTask {
                 }
 
                 writer.commit()?;
-                break;  // 'outer: loop
+                break; // 'outer: loop
             }
 
             Ok(())

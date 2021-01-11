@@ -17,7 +17,7 @@ namespace mozilla {
 namespace net {
 
 nsHttpRequestHead::nsHttpRequestHead()
-    : mMethod(NS_LITERAL_CSTRING("GET")),
+    : mMethod("GET"_ns),
       mVersion(HttpVersion::v1_1),
       mParsedMethod(kMethod_Get),
       mHTTPS(false),
@@ -26,7 +26,42 @@ nsHttpRequestHead::nsHttpRequestHead()
   MOZ_COUNT_CTOR(nsHttpRequestHead);
 }
 
+nsHttpRequestHead::nsHttpRequestHead(const nsHttpRequestHead& aRequestHead)
+    : mRecursiveMutex("nsHttpRequestHead.mRecursiveMutex"),
+      mInVisitHeaders(false) {
+  nsHttpRequestHead& other = const_cast<nsHttpRequestHead&>(aRequestHead);
+  RecursiveMutexAutoLock monitor(other.mRecursiveMutex);
+
+  mHeaders = other.mHeaders;
+  mMethod = other.mMethod;
+  mVersion = other.mVersion;
+  mRequestURI = other.mRequestURI;
+  mPath = other.mPath;
+  mOrigin = other.mOrigin;
+  mParsedMethod = other.mParsedMethod;
+  mHTTPS = other.mHTTPS;
+  mInVisitHeaders = false;
+}
+
 nsHttpRequestHead::~nsHttpRequestHead() { MOZ_COUNT_DTOR(nsHttpRequestHead); }
+
+nsHttpRequestHead& nsHttpRequestHead::operator=(
+    const nsHttpRequestHead& aRequestHead) {
+  nsHttpRequestHead& other = const_cast<nsHttpRequestHead&>(aRequestHead);
+  RecursiveMutexAutoLock monitorOther(other.mRecursiveMutex);
+  RecursiveMutexAutoLock monitor(mRecursiveMutex);
+
+  mHeaders = other.mHeaders;
+  mMethod = other.mMethod;
+  mVersion = other.mVersion;
+  mRequestURI = other.mRequestURI;
+  mPath = other.mPath;
+  mOrigin = other.mOrigin;
+  mParsedMethod = other.mParsedMethod;
+  mHTTPS = other.mHTTPS;
+  mInVisitHeaders = false;
+  return *this;
+}
 
 // Don't use this function. It is only used by HttpChannelParent to avoid
 // copying of request headers!!!
@@ -241,22 +276,29 @@ bool nsHttpRequestHead::IsHTTPS() {
 
 void nsHttpRequestHead::SetMethod(const nsACString& method) {
   RecursiveMutexAutoLock mon(mRecursiveMutex);
-  mParsedMethod = kMethod_Custom;
+
   mMethod = method;
-  if (!strcmp(mMethod.get(), "GET")) {
-    mParsedMethod = kMethod_Get;
-  } else if (!strcmp(mMethod.get(), "POST")) {
-    mParsedMethod = kMethod_Post;
-  } else if (!strcmp(mMethod.get(), "OPTIONS")) {
-    mParsedMethod = kMethod_Options;
-  } else if (!strcmp(mMethod.get(), "CONNECT")) {
-    mParsedMethod = kMethod_Connect;
-  } else if (!strcmp(mMethod.get(), "HEAD")) {
-    mParsedMethod = kMethod_Head;
-  } else if (!strcmp(mMethod.get(), "PUT")) {
-    mParsedMethod = kMethod_Put;
-  } else if (!strcmp(mMethod.get(), "TRACE")) {
-    mParsedMethod = kMethod_Trace;
+  ParseMethod(mMethod, mParsedMethod);
+}
+
+// static
+void nsHttpRequestHead::ParseMethod(const nsCString& aRawMethod,
+                                    ParsedMethodType& aParsedMethod) {
+  aParsedMethod = kMethod_Custom;
+  if (!strcmp(aRawMethod.get(), "GET")) {
+    aParsedMethod = kMethod_Get;
+  } else if (!strcmp(aRawMethod.get(), "POST")) {
+    aParsedMethod = kMethod_Post;
+  } else if (!strcmp(aRawMethod.get(), "OPTIONS")) {
+    aParsedMethod = kMethod_Options;
+  } else if (!strcmp(aRawMethod.get(), "CONNECT")) {
+    aParsedMethod = kMethod_Connect;
+  } else if (!strcmp(aRawMethod.get(), "HEAD")) {
+    aParsedMethod = kMethod_Head;
+  } else if (!strcmp(aRawMethod.get(), "PUT")) {
+    aParsedMethod = kMethod_Put;
+  } else if (!strcmp(aRawMethod.get(), "TRACE")) {
+    aParsedMethod = kMethod_Trace;
   }
 }
 

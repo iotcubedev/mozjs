@@ -48,9 +48,6 @@ with Files('tests/xpcshell/test_UpdateUtils*.js'):
 with Files('AsyncPrefs.jsm'):
     BUG_COMPONENT = ('Core', 'Security: Process Sandboxing')
 
-with Files('AutoScrollController.jsm'):
-    BUG_COMPONENT = ('Core', 'Panning and Zooming')
-
 with Files('CharsetMenu.jsm'):
     BUG_COMPONENT = ('Firefox', 'Toolbars and Customization')
 
@@ -69,6 +66,9 @@ with Files('DeferredTask.jsm'):
 with Files("E10SUtils.jsm"):
     BUG_COMPONENT = ("Core", "Security: Process Sandboxing")
 
+with Files("nsIE10SUtils.idl"):
+    BUG_COMPONENT = ("Core", "Security: Process Sandboxing")
+
 with Files('Finder*.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Find Toolbar')
 
@@ -79,7 +79,7 @@ with Files('IndexedDB.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Async Tooling')
 
 with Files('InlineSpellChecker*.jsm'):
-    BUG_COMPONENT = ('Core', 'Spell Checker')
+    BUG_COMPONENT = ('Core', 'Spelling checker')
 
 with Files('Integration.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Async Tooling')
@@ -109,22 +109,13 @@ with Files('PermissionsUtils.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Add-ons Manager')
 
 with Files('PopupNotifications.jsm'):
-    BUG_COMPONENT = ('Toolkit', 'Password Manager')
+    BUG_COMPONENT = ('Toolkit', 'Notifications and Alerts')
 
 with Files('PrivateBrowsingUtils.jsm'):
     BUG_COMPONENT = ('Firefox', 'Private Browsing')
 
 with Files('Promise*.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Async Tooling')
-
-with Files('RemoteController.js'):
-    BUG_COMPONENT = ('Core', 'Widget')
-
-with Files('RemoteSecurityUI.jsm'):
-    BUG_COMPONENT = ('Firefox', 'Tabbed Browser')
-
-with Files('RemoteWebProgress.jsm'):
-    BUG_COMPONENT = ('Core', 'Document Navigation')
 
 with Files('ResponsivenessMonitor.jsm'):
     BUG_COMPONENT = ('Firefox', 'Migration')
@@ -134,6 +125,9 @@ with Files('ShortcutUtils.jsm'):
 
 with Files('Sqlite.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Storage')
+
+with Files("SubDialog.jsm"):
+    BUG_COMPONENT = ("Toolkit", "Notifications and Alerts")
 
 with Files('UpdateUtils.jsm'):
     BUG_COMPONENT = ('Toolkit', 'Application Update')
@@ -148,6 +142,7 @@ MOCHITEST_CHROME_MANIFESTS += ['tests/chrome/chrome.ini']
 
 TESTING_JS_MODULES += [
     'tests/modules/MockDocument.jsm',
+    'tests/modules/OSKeyStoreTestUtils.jsm',
     'tests/modules/PromiseTestUtils.jsm',
     'tests/modules/Task.jsm',
     'tests/xpcshell/TestIntegration.jsm',
@@ -165,8 +160,6 @@ EXTRA_JS_MODULES += [
     'ActorManagerParent.jsm',
     'AppMenuNotifications.jsm',
     'AsyncPrefs.jsm',
-    'AutoCompletePopupContent.jsm',
-    'AutoScrollController.jsm',
     'BinarySearch.jsm',
     'BrowserUtils.jsm',
     'CanonicalJSON.jsm',
@@ -176,7 +169,6 @@ EXTRA_JS_MODULES += [
     'Console.jsm',
     'ContentDOMReference.jsm',
     'CreditCard.jsm',
-    'css-selector.js',
     'DateTimePickerPanel.jsm',
     'DeferredTask.jsm',
     'Deprecated.jsm',
@@ -191,9 +183,6 @@ EXTRA_JS_MODULES += [
     'FirstStartup.jsm',
     'FormLikeFactory.jsm',
     'Geometry.jsm',
-    'GMPExtractorWorker.js',
-    'GMPInstallManager.jsm',
-    'GMPUtils.jsm',
     'HiddenFrame.jsm',
     'Http.jsm',
     'IgnoreLists.jsm',
@@ -207,6 +196,7 @@ EXTRA_JS_MODULES += [
     'NLP.jsm',
     'ObjectUtils.jsm',
     'offlineAppCache.jsm',
+    'OSKeyStore.jsm',
     'PageMenu.jsm',
     'PermissionsUtils.jsm',
     'PopupNotifications.jsm',
@@ -215,22 +205,20 @@ EXTRA_JS_MODULES += [
     'ProfileAge.jsm',
     'Promise-backend.js',
     'Promise.jsm',
-    'PromiseMessage.jsm',
     'PromiseUtils.jsm',
-    'RemoteController.js',
-    'RemoteSecurityUI.jsm',
-    'RemoteWebProgress.jsm',
+    'Region.jsm',
+    'RemotePageAccessManager.jsm',
     'ResetProfile.jsm',
     'ResponsivenessMonitor.jsm',
     'ServiceRequest.jsm',
     'Services.jsm',
     'ShortcutUtils.jsm',
     'Sqlite.jsm',
+    'SubDialog.jsm',
     'Timer.jsm',
     'Troubleshoot.jsm',
     'UpdateUtils.jsm',
     'WebChannel.jsm',
-    'ZipUtils.jsm',
 ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
@@ -246,6 +234,8 @@ EXTRA_JS_MODULES.sessionstore += [
     'sessionstore/Utils.jsm',
 ]
 
+EXTRA_JS_MODULES.third_party.fathom += ['third_party/fathom/fathom.jsm']
+
 if CONFIG['MOZ_WIDGET_TOOLKIT'] in ('windows', 'gtk'):
     DEFINES['MENUBAR_CAN_AUTOHIDE'] = 1
 
@@ -258,6 +248,9 @@ EXTRA_PP_JS_MODULES += [
 
 if 'Android' != CONFIG['OS_TARGET']:
     EXTRA_JS_MODULES += [
+        'GMPExtractorWorker.js',
+        'GMPInstallManager.jsm',
+        'GMPUtils.jsm',
         'LightweightThemeConsumer.jsm',
     ]
 
@@ -279,6 +272,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
 
 for var in ('ANDROID_PACKAGE_NAME',
             'MOZ_APP_NAME',
+            'MOZ_APP_BASENAME',
             'MOZ_APP_VERSION',
             'MOZ_APP_VERSION_DISPLAY',
             'MOZ_BING_API_CLIENTID',
@@ -294,15 +288,21 @@ for var in ('ANDROID_PACKAGE_NAME',
             'OMNIJAR_NAME'):
             DEFINES[var] = CONFIG[var]
 
-for var in ('MOZ_SYSTEM_NSS',
+for var in ('MOZ_ALLOW_ADDON_SIDELOAD',
+            'MOZ_SYSTEM_NSS',
             'MOZ_UNSIGNED_APP_SCOPE',
             'MOZ_UNSIGNED_SYSTEM_SCOPE',
-            'MOZ_UPDATER',
-            'MOZ_ANDROID_MOZILLA_ONLINE',
-            'MOZ_SWITCHBOARD'):
+            'MOZ_UPDATER'):
     if CONFIG[var]:
         DEFINES[var] = True
 
 JAR_MANIFESTS += ['jar.mn']
 
 DEFINES['TOPOBJDIR'] = TOPOBJDIR
+
+XPIDL_SOURCES += [
+    'nsIE10SUtils.idl',
+    'nsIRegion.idl',
+]
+
+XPIDL_MODULE = 'toolkit_modules'

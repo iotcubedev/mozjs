@@ -18,7 +18,8 @@ function test() {
     true,
     Date.now() / 1000 + 60,
     {},
-    Ci.nsICookie.SAMESITE_NONE
+    Ci.nsICookie.SAMESITE_NONE,
+    Ci.nsICookie.SCHEME_HTTP
   );
 
   PermissionTestUtils.add(
@@ -53,7 +54,6 @@ function finish_test(count) {
     "example.org",
     "xpinstall",
     "/browser/" + RELATIVE_DIR,
-    false,
     {}
   );
 

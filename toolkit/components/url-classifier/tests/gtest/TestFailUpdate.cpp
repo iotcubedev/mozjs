@@ -3,20 +3,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "string.h"
-
-#include "gtest/gtest.h"
 #include "HashStore.h"
 #include "mozilla/Unused.h"
 #include "nsPrintfCString.h"
+#include "string.h"
+
+#include "Common.h"
 
 static const char* kFilesInV2[] = {".vlpset", ".sbstore"};
 static const char* kFilesInV4[] = {".vlpset", ".metadata"};
 
-#define GTEST_MALWARE_TABLE_V4 NS_LITERAL_CSTRING("goog-malware-proto")
-#define GTEST_PHISH_TABLE_V4 NS_LITERAL_CSTRING("goog-phish-proto")
+#define GTEST_MALWARE_TABLE_V4 "goog-malware-proto"_ns
+#define GTEST_PHISH_TABLE_V4 "goog-phish-proto"_ns
 
-#define ROOT_DIR NS_LITERAL_STRING("safebrowsing")
+#define ROOT_DIR u"safebrowsing"_ns
 #define SB_FILE(x, y) NS_ConvertUTF8toUTF16(nsPrintfCString("%s%s", x, y))
 
 template <typename T, size_t N>

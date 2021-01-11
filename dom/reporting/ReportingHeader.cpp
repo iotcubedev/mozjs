@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/ReportingHeader.h"
 
+#include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject
 #include "js/JSON.h"
 #include "mozilla/dom/ReportingBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
@@ -14,6 +15,7 @@
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPtr.h"
+#include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsIHttpChannel.h"
@@ -164,8 +166,7 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
   }
 
   nsAutoCString headerValue;
-  rv =
-      aChannel->GetResponseHeader(NS_LITERAL_CSTRING("Report-To"), headerValue);
+  rv = aChannel->GetResponseHeader("Report-To"_ns, headerValue);
   if (NS_FAILED(rv)) {
     return;
   }
@@ -272,30 +273,22 @@ void ReportingHeader::ReportingFromChannel(nsIHttpChannel* aChannel) {
     MOZ_ASSERT(endpoints);
 
     bool isArray = false;
-    if (!JS_IsArrayObject(cx, endpoints, &isArray) || !isArray) {
+    if (!JS::IsArrayObject(cx, endpoints, &isArray) || !isArray) {
       LogToConsoleIncompleteItem(aChannel, aURI, groupName);
       continue;
     }
 
     uint32_t endpointsLength;
-    if (!JS_GetArrayLength(cx, endpoints, &endpointsLength) ||
+    if (!JS::GetArrayLength(cx, endpoints, &endpointsLength) ||
         endpointsLength == 0) {
       LogToConsoleIncompleteItem(aChannel, aURI, groupName);
       continue;
     }
 
-    bool found = false;
-    nsTObserverArray<Group>::ForwardIterator iter(client->mGroups);
-    while (iter.HasMore()) {
-      const Group& group = iter.GetNext();
-
-      if (group.mName == groupName) {
-        found = true;
-        break;
-      }
-    }
-
-    if (found) {
+    const auto [begin, end] = client->mGroups.NonObservingRange();
+    if (std::any_of(begin, end, [&groupName](const Group& group) {
+          return group.mName == groupName;
+        })) {
       LogToConsoleDuplicateGroup(aChannel, aURI, groupName);
       continue;
     }
@@ -470,8 +463,7 @@ void ReportingHeader::LogToConsoleInternal(nsIHttpChannel* aChannel,
   }
 
   rv = nsContentUtils::ReportToConsoleByWindowID(
-      localizedMsg, nsIScriptError::infoFlag, NS_LITERAL_CSTRING("Reporting"),
-      windowID, aURI);
+      localizedMsg, nsIScriptError::infoFlag, "Reporting"_ns, windowID, aURI);
   Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 
@@ -480,19 +472,27 @@ void ReportingHeader::GetEndpointForReport(
     const nsAString& aGroupName,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     nsACString& aEndpointURI) {
+  auto principalOrErr = PrincipalInfoToPrincipal(aPrincipalInfo);
+  if (NS_WARN_IF(principalOrErr.isErr())) {
+    return;
+  }
+
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+  GetEndpointForReport(aGroupName, principal, aEndpointURI);
+}
+
+/* static */
+void ReportingHeader::GetEndpointForReport(const nsAString& aGroupName,
+                                           nsIPrincipal* aPrincipal,
+                                           nsACString& aEndpointURI) {
   MOZ_ASSERT(aEndpointURI.IsEmpty());
 
   if (!gReporting) {
     return;
   }
 
-  nsCOMPtr<nsIPrincipal> principal = PrincipalInfoToPrincipal(aPrincipalInfo);
-  if (NS_WARN_IF(!principal)) {
-    return;
-  }
-
   nsAutoCString origin;
-  nsresult rv = principal->GetOrigin(origin);
+  nsresult rv = aPrincipal->GetOrigin(origin);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
@@ -502,15 +502,15 @@ void ReportingHeader::GetEndpointForReport(
     return;
   }
 
-  nsTObserverArray<Group>::ForwardIterator iter(client->mGroups);
-  while (iter.HasMore()) {
-    const Group& group = iter.GetNext();
-
-    if (group.mName == aGroupName) {
-      GetEndpointForReportInternal(group, aEndpointURI);
-      break;
-    }
+  const auto [begin, end] = client->mGroups.NonObservingRange();
+  const auto foundIt = std::find_if(
+      begin, end,
+      [&aGroupName](const Group& group) { return group.mName == aGroupName; });
+  if (foundIt != end) {
+    GetEndpointForReportInternal(*foundIt, aEndpointURI);
   }
+
+  // XXX More explicitly report an error if not found?
 }
 
 /* static */
@@ -529,10 +529,7 @@ void ReportingHeader::GetEndpointForReportInternal(
   int64_t minPriority = -1;
   uint32_t totalWeight = 0;
 
-  nsTObserverArray<Endpoint>::ForwardIterator iter(aGroup.mEndpoints);
-  while (iter.HasMore()) {
-    const Endpoint& endpoint = iter.GetNext();
-
+  for (const Endpoint& endpoint : aGroup.mEndpoints.NonObservingRange()) {
     if (minPriority == -1 || minPriority > endpoint.mPriority) {
       minPriority = endpoint.mPriority;
       totalWeight = endpoint.mWeight;
@@ -561,15 +558,16 @@ void ReportingHeader::GetEndpointForReportInternal(
 
   totalWeight = randomNumber % totalWeight;
 
-  nsTObserverArray<Endpoint>::ForwardIterator iter2(aGroup.mEndpoints);
-  while (iter2.HasMore()) {
-    const Endpoint& endpoint = iter2.GetNext();
-
-    if (minPriority == endpoint.mPriority && totalWeight < endpoint.mWeight) {
-      Unused << NS_WARN_IF(NS_FAILED(endpoint.mUrl->GetSpec(aEndpointURI)));
-      break;
-    }
+  const auto [begin, end] = aGroup.mEndpoints.NonObservingRange();
+  const auto foundIt = std::find_if(
+      begin, end, [minPriority, totalWeight](const Endpoint& endpoint) {
+        return minPriority == endpoint.mPriority &&
+               totalWeight < endpoint.mWeight;
+      });
+  if (foundIt != end) {
+    Unused << NS_WARN_IF(NS_FAILED(foundIt->mUrl->GetSpec(aEndpointURI)));
   }
+  // XXX More explicitly report an error if not found?
 }
 
 /* static */
@@ -586,13 +584,13 @@ void ReportingHeader::RemoveEndpoint(
     return;
   }
 
-  nsCOMPtr<nsIPrincipal> principal = PrincipalInfoToPrincipal(aPrincipalInfo);
-  if (NS_WARN_IF(!principal)) {
+  auto principalOrErr = PrincipalInfoToPrincipal(aPrincipalInfo);
+  if (NS_WARN_IF(principalOrErr.isErr())) {
     return;
   }
 
   nsAutoCString origin;
-  rv = principal->GetOrigin(origin);
+  rv = principalOrErr.unwrap()->GetOrigin(origin);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
@@ -745,8 +743,7 @@ void ReportingHeader::MaybeCreateCleanupTimer() {
   uint32_t timeout = StaticPrefs::dom_reporting_cleanup_timeout() * 1000;
   nsresult rv =
       NS_NewTimerWithCallback(getter_AddRefs(mCleanupTimer), this, timeout,
-                              nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY,
-                              SystemGroup::EventTargetFor(TaskCategory::Other));
+                              nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY);
   Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 

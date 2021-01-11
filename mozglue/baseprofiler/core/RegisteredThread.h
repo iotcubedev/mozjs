@@ -8,8 +8,6 @@
 #define RegisteredThread_h
 
 #include "platform.h"
-#include "ProfilerMarker.h"
-#include "BaseProfilerMarkerPayload.h"
 #include "ThreadInfo.h"
 
 #include "mozilla/UniquePtr.h"
@@ -34,25 +32,6 @@ class RacyRegisteredThread final {
   }
 
   bool IsBeingProfiled() const { return mIsBeingProfiled; }
-
-  void AddPendingMarker(const char* aMarkerName,
-                        ProfilingCategoryPair aCategoryPair,
-                        UniquePtr<ProfilerMarkerPayload> aPayload,
-                        double aTime) {
-    // Note: We don't assert on mIsBeingProfiled, because it could have changed
-    // between the check in the caller and now.
-    ProfilerMarker* marker = new ProfilerMarker(
-        aMarkerName, aCategoryPair, mThreadId, std::move(aPayload), aTime);
-    mPendingMarkers.insert(marker);
-  }
-
-  // Called within signal. Function must be reentrant.
-  ProfilerMarkerLinkedList* GetPendingMarkers() {
-    // The profiled thread is interrupted, so we can access the list safely.
-    // Unless the profiled thread was in the middle of changing the list when
-    // we interrupted it - in that case, accessList() will return null.
-    return mPendingMarkers.accessList();
-  }
 
   // This is called on every profiler restart. Put things that should happen at
   // that time here.
@@ -103,9 +82,6 @@ class RacyRegisteredThread final {
  private:
   class ProfilingStack mProfilingStack;
 
-  // A list of pending markers that must be moved to the circular buffer.
-  ProfilerSignalSafeLinkedList<ProfilerMarker> mPendingMarkers;
-
   // mThreadId contains the thread ID of the current thread. It is safe to read
   // this from multiple threads concurrently, as it will never be mutated.
   const int mThreadId;
@@ -149,10 +125,7 @@ class RacyRegisteredThread final {
   Atomic<int> mSleep;
 
   // Is this thread being profiled? (e.g., should markers be recorded?)
-  // Accesses to this atomic are not recorded by web replay as they may occur
-  // at non-deterministic points.
-  Atomic<bool, MemoryOrdering::Relaxed, recordreplay::Behavior::DontPreserve>
-      mIsBeingProfiled;
+  Atomic<bool, MemoryOrdering::Relaxed> mIsBeingProfiled;
 };
 
 // This class contains information that's relevant to a single thread only

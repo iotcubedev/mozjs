@@ -9,12 +9,12 @@ import React, { Component } from "react";
 
 import { connect } from "../../utils/connect";
 import classnames from "classnames";
-import { features } from "../../utils/prefs";
+import { features, prefs } from "../../utils/prefs";
 import {
   getIsWaitingOnBreak,
-  getCanRewind,
   getSkipPausing,
   getCurrentThread,
+  isTopFrameSelected,
   getThreadContext,
 } from "../../selectors";
 import { formatKeyShortcut } from "../../utils/text";
@@ -26,11 +26,19 @@ import "./CommandBar.css";
 import { appinfo } from "devtools-services";
 import type { ThreadContext } from "../../types";
 
+// $FlowIgnore
+const MenuButton = require("devtools/client/shared/components/menu/MenuButton");
+// $FlowIgnore
+const MenuItem = require("devtools/client/shared/components/menu/MenuItem");
+// $FlowIgnore
+const MenuList = require("devtools/client/shared/components/menu/MenuList");
+
 const isMacOS = appinfo.OS === "Darwin";
 
 // NOTE: the "resume" command will call either the resume or breakOnNext action
 // depending on whether or not the debugger is paused or running
 const COMMANDS = ["resume", "stepOver", "stepIn", "stepOut"];
+type CommandActionType = "resume" | "stepOver" | "stepIn" | "stepOut";
 
 const KEYS = {
   WINNT: {
@@ -74,34 +82,41 @@ function formatKey(action) {
   return formatKeyShortcut(key);
 }
 
+type OwnProps = {|
+  horizontal: boolean,
+|};
 type Props = {
   cx: ThreadContext,
   isWaitingOnBreak: boolean,
   horizontal: boolean,
-  canRewind: boolean,
   skipPausing: boolean,
+  javascriptEnabled: boolean,
+  topFrameSelected: boolean,
   resume: typeof actions.resume,
   stepIn: typeof actions.stepIn,
   stepOut: typeof actions.stepOut,
   stepOver: typeof actions.stepOver,
   breakOnNext: typeof actions.breakOnNext,
-  rewind: typeof actions.rewind,
-  reverseStepOver: typeof actions.reverseStepOver,
   pauseOnExceptions: typeof actions.pauseOnExceptions,
   toggleSkipPausing: typeof actions.toggleSkipPausing,
+  toggleInlinePreview: typeof actions.toggleInlinePreview,
+  toggleSourceMapsEnabled: typeof actions.toggleSourceMapsEnabled,
+  toggleJavaScriptEnabled: typeof actions.toggleJavaScriptEnabled,
 };
 
 class CommandBar extends Component<Props> {
   componentWillUnmount() {
-    const shortcuts = this.context.shortcuts;
+    const { shortcuts } = this.context;
+
     COMMANDS.forEach(action => shortcuts.off(getKey(action)));
+
     if (isMacOS) {
       COMMANDS.forEach(action => shortcuts.off(getKeyForOS("WINNT", action)));
     }
   }
 
   componentDidMount() {
-    const shortcuts = this.context.shortcuts;
+    const { shortcuts } = this.context;
 
     COMMANDS.forEach(action =>
       shortcuts.on(getKey(action), (_, e) => this.handleEvent(e, action))
@@ -118,7 +133,7 @@ class CommandBar extends Component<Props> {
     }
   }
 
-  handleEvent(e, action) {
+  handleEvent(e: Event, action: CommandActionType) {
     const { cx } = this.props;
     e.preventDefault();
     e.stopPropagation();
@@ -132,7 +147,7 @@ class CommandBar extends Component<Props> {
   }
 
   renderStepButtons() {
-    const { cx } = this.props;
+    const { cx, topFrameSelected } = this.props;
     const className = cx.isPaused ? "active" : "disabled";
     const isDisabled = !cx.isPaused;
 
@@ -150,7 +165,7 @@ class CommandBar extends Component<Props> {
         "stepIn",
         className,
         L10N.getFormatStr("stepInTooltip", formatKey("stepIn")),
-        isDisabled
+        isDisabled || (features.frameStep && !topFrameSelected)
       ),
       debugBtn(
         () => this.props.stepOut(cx),
@@ -196,68 +211,6 @@ class CommandBar extends Component<Props> {
     );
   }
 
-  renderReplayButtons() {
-    const { cx } = this.props;
-
-    const className = cx.isPaused ? "active" : "disabled";
-
-    return [
-      debugBtn(
-        () => this.props.breakOnNext(cx),
-        "pause",
-        !cx.isPaused ? "active" : "disabled",
-        L10N.getFormatStr("pauseButtonTooltip", formatKey("resume")),
-        cx.isPaused
-      ),
-      <div key="divider-1" className="divider" />,
-      debugBtn(
-        () => this.props.rewind(cx),
-        "rewind",
-        className,
-        "Rewind Execution",
-        !cx.isPaused
-      ),
-      debugBtn(
-        () => this.props.resume(cx),
-        "resume",
-        className,
-        L10N.getFormatStr("resumeButtonTooltip", formatKey("resume")),
-        !cx.isPaused
-      ),
-      <div key="divider-2" className="divider" />,
-      debugBtn(
-        () => this.props.reverseStepOver(cx),
-        "reverseStepOver",
-        className,
-        "Reverse step over",
-        !cx.isPaused
-      ),
-      debugBtn(
-        () => this.props.stepOver(cx),
-        "stepOver",
-        className,
-        L10N.getFormatStr("stepOverTooltip", formatKey("stepOver")),
-        !cx.isPaused
-      ),
-      <div key="divider-3" className="divider" />,
-      debugBtn(
-        () => this.props.stepOut(cx),
-        "stepOut",
-        className,
-        L10N.getFormatStr("stepOutTooltip", formatKey("stepOut")),
-        !cx.isPaused
-      ),
-
-      debugBtn(
-        () => this.props.stepIn(cx),
-        "stepIn",
-        className,
-        L10N.getFormatStr("stepInTooltip", formatKey("stepIn")),
-        !cx.isPaused
-      ),
-    ];
-  }
-
   renderSkipPausingButton() {
     const { skipPausing, toggleSkipPausing } = this.props;
 
@@ -281,8 +234,60 @@ class CommandBar extends Component<Props> {
         }
         onClick={toggleSkipPausing}
       >
-        <AccessibleImage className="disable-pausing" />
+        <AccessibleImage
+          className={skipPausing ? "enable-pausing" : "disable-pausing"}
+        />
       </button>
+    );
+  }
+
+  renderSettingsButton() {
+    const { toolboxDoc } = this.context;
+
+    return (
+      <MenuButton
+        menuId="debugger-settings-menu-button"
+        toolboxDoc={toolboxDoc}
+        className="devtools-button command-bar-button debugger-settings-menu-button"
+        title={L10N.getStr("settings.button.label")}
+      >
+        {() => this.renderSettingsMenuItems()}
+      </MenuButton>
+    );
+  }
+
+  renderSettingsMenuItems() {
+    return (
+      <MenuList id="debugger-settings-menu-list">
+        <MenuItem
+          key="debugger-settings-menu-item-disable-javascript"
+          className="menu-item debugger-settings-menu-item-disable-javascript"
+          checked={!this.props.javascriptEnabled}
+          label={L10N.getStr("settings.disableJavaScript.label")}
+          tooltip={L10N.getStr("settings.disableJavaScript.tooltip")}
+          onClick={() => {
+            this.props.toggleJavaScriptEnabled(!this.props.javascriptEnabled);
+          }}
+        />
+        <MenuItem
+          key="debugger-settings-menu-item-disable-inline-previews"
+          checked={features.inlinePreview}
+          label={L10N.getStr("inlinePreview.toggle.label")}
+          tooltip={L10N.getStr("inlinePreview.toggle.tooltip")}
+          onClick={() =>
+            this.props.toggleInlinePreview(!features.inlinePreview)
+          }
+        />
+        <MenuItem
+          key="debugger-settings-menu-item-disable-sourcemaps"
+          checked={prefs.clientSourceMapsEnabled}
+          label={L10N.getStr("settings.toggleSourceMaps.label")}
+          tooltip={L10N.getStr("settings.toggleSourceMaps.tooltip")}
+          onClick={() =>
+            this.props.toggleSourceMapsEnabled(!prefs.clientSourceMapsEnabled)
+          }
+        />
+      </MenuList>
     );
   }
 
@@ -293,11 +298,11 @@ class CommandBar extends Component<Props> {
           vertical: !this.props.horizontal,
         })}
       >
-        {this.props.canRewind
-          ? this.renderReplayButtons()
-          : this.renderStepButtons()}
+        {this.renderStepButtons()}
         <div className="filler" />
         {this.renderSkipPausingButton()}
+        <div className="devtools-separator" />
+        {this.renderSettingsButton()}
       </div>
     );
   }
@@ -305,26 +310,26 @@ class CommandBar extends Component<Props> {
 
 CommandBar.contextTypes = {
   shortcuts: PropTypes.object,
+  toolboxDoc: PropTypes.object,
 };
 
 const mapStateToProps = state => ({
   cx: getThreadContext(state),
   isWaitingOnBreak: getIsWaitingOnBreak(state, getCurrentThread(state)),
-  canRewind: getCanRewind(state),
   skipPausing: getSkipPausing(state),
+  topFrameSelected: isTopFrameSelected(state, getCurrentThread(state)),
+  javascriptEnabled: state.ui.javascriptEnabled,
 });
 
-export default connect(
-  mapStateToProps,
-  {
-    resume: actions.resume,
-    stepIn: actions.stepIn,
-    stepOut: actions.stepOut,
-    stepOver: actions.stepOver,
-    breakOnNext: actions.breakOnNext,
-    rewind: actions.rewind,
-    reverseStepOver: actions.reverseStepOver,
-    pauseOnExceptions: actions.pauseOnExceptions,
-    toggleSkipPausing: actions.toggleSkipPausing,
-  }
-)(CommandBar);
+export default connect<Props, OwnProps, _, _, _, _>(mapStateToProps, {
+  resume: actions.resume,
+  stepIn: actions.stepIn,
+  stepOut: actions.stepOut,
+  stepOver: actions.stepOver,
+  breakOnNext: actions.breakOnNext,
+  pauseOnExceptions: actions.pauseOnExceptions,
+  toggleSkipPausing: actions.toggleSkipPausing,
+  toggleInlinePreview: actions.toggleInlinePreview,
+  toggleSourceMapsEnabled: actions.toggleSourceMapsEnabled,
+  toggleJavaScriptEnabled: actions.toggleJavaScriptEnabled,
+})(CommandBar);

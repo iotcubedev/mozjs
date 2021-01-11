@@ -16,7 +16,7 @@ from taskgraph import decision
 from taskgraph.util.yaml import load_yaml
 
 
-FAKE_GRAPH_CONFIG = {'product-dir': 'browser'}
+FAKE_GRAPH_CONFIG = {'product-dir': 'browser', 'taskgraph': {}}
 
 
 class TestDecision(unittest.TestCase):
@@ -90,7 +90,7 @@ class TestGetDecisionParameters(unittest.TestCase):
     @patch('taskgraph.decision.get_hg_revision_branch')
     @patch('taskgraph.decision.get_hg_commit_message')
     def test_try_options(self, mock_get_hg_commit_message, mock_get_hg_revision_branch):
-        mock_get_hg_commit_message.return_value = 'try: -b do -t all'
+        mock_get_hg_commit_message.return_value = 'try: -b do -t all --artifact'
         mock_get_hg_revision_branch.return_value = 'default'
         self.options['project'] = 'try'
         with MockedOpen({self.ttc_file: None}):
@@ -98,14 +98,18 @@ class TestGetDecisionParameters(unittest.TestCase):
         self.assertEqual(params['try_mode'], 'try_option_syntax')
         self.assertEqual(params['try_options']['build_types'], 'do')
         self.assertEqual(params['try_options']['unittests'], 'all')
-        self.assertEqual(params['try_task_config'], {})
+        self.assertEqual(params['try_task_config'], {
+            'gecko-profile': False,
+            'use-artifact-builds': True,
+            'env': {},
+        })
 
     @patch('taskgraph.decision.get_hg_revision_branch')
     @patch('taskgraph.decision.get_hg_commit_message')
     def test_try_task_config(self, mock_get_hg_commit_message, mock_get_hg_revision_branch):
         mock_get_hg_commit_message.return_value = 'Fuzzy query=foo'
         mock_get_hg_revision_branch.return_value = 'default'
-        ttc = {'tasks': ['a', 'b'], 'templates': {}}
+        ttc = {'tasks': ['a', 'b']}
         self.options['project'] = 'try'
         with MockedOpen({self.ttc_file: json.dumps(ttc)}):
             params = decision.get_decision_parameters(FAKE_GRAPH_CONFIG, self.options)

@@ -8,13 +8,14 @@
 run talos tests in a virtualenv
 """
 
-import argparse
+import io
 import os
 import sys
 import pprint
 import copy
 import re
 import shutil
+import string
 import subprocess
 import json
 
@@ -127,18 +128,6 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
           "default": None,
           "help": "extra options to talos"
           }],
-        [["--geckoProfile"], {
-            "dest": "gecko_profile",
-            "action": "store_true",
-            "default": False,
-            "help": argparse.SUPPRESS
-        }],
-        [["--geckoProfileInterval"], {
-            "dest": "gecko_profile_interval",
-            "type": "int",
-            "default": 0,
-            "help": argparse.SUPPRESS
-        }],
         [["--gecko-profile"], {
             "dest": "gecko_profile",
             "action": "store_true",
@@ -162,6 +151,12 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
             "dest": "enable_webrender",
             "default": False,
             "help": "Enable the WebRender compositor in Gecko.",
+        }],
+        [["--enable-fission"], {
+            "action": "store_true",
+            "dest": "enable_fission",
+            "default": False,
+            "help": "Enable Fission (site isolation) in Gecko.",
         }],
         [["--setpref"], {
             "action": "append",
@@ -202,7 +197,6 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
         self.obj_path = self.config.get("obj_path")
         self.tests = None
         self.gecko_profile = self.config.get('gecko_profile') or \
-            "--geckoProfile" in self.config.get("talos_extra_options", []) or \
             "--gecko-profile" in self.config.get("talos_extra_options", [])
         self.gecko_profile_interval = self.config.get('gecko_profile_interval')
         self.pagesets_name = None
@@ -243,6 +237,72 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
         self.talos_json_config = parse_config_file(self.talos_json)
         self.info(pprint.pformat(self.talos_json_config))
         return self.talos_json_config
+
+    def make_talos_domain(self, host):
+        return host + "-talos"
+
+    def split_path(self, path):
+        result = []
+        while True:
+            path, folder = os.path.split(path)
+            if folder:
+                result.append(folder)
+                continue
+            elif path:
+                result.append(path)
+            break
+
+        result.reverse()
+        return result
+
+    def merge_paths(self, lhs, rhs):
+        backtracks = 0
+        for subdir in rhs:
+            if subdir == '..':
+                backtracks += 1
+            else:
+                break
+        return lhs[:-backtracks] + rhs[backtracks:]
+
+    def replace_relative_iframe_paths(self, directory, filename):
+        """This will find iframes with relative paths and replace them with
+        absolute paths containing domains derived from the original source's
+        domain. This helps us better simulate real-world cases for fission
+        """
+        if not filename.endswith('.html'):
+            return
+
+        directory_pieces = self.split_path(directory)
+        while directory_pieces and directory_pieces[0] != 'fis':
+            directory_pieces = directory_pieces[1:]
+        path = os.path.join(directory, filename)
+
+        # XXX: ugh, is there a better way to account for multiple encodings than just
+        # trying each of them?
+        encodings = ['utf-8', 'latin-1']
+        iframe_pattern = re.compile(r'(iframe.*")(\.\./.*\.html)"')
+        for encoding in encodings:
+            try:
+                with io.open(path, 'r', encoding=encoding) as f:
+                    content = f.read()
+
+                def replace_iframe_src(match):
+                    src = match.group(2)
+                    split = self.split_path(src)
+                    merged = self.merge_paths(directory_pieces, split)
+                    host = merged[3]
+                    site_origin_hash = self.make_talos_domain(host)
+                    new_url = 'http://%s/%s"' % (site_origin_hash, string.join(merged, '/'))
+                    self.info("Replacing %s with %s in iframe inside %s" %
+                              (match.group(2), new_url, path))
+                    return (match.group(1) + new_url)
+
+                content = re.sub(iframe_pattern, replace_iframe_src, content)
+                with io.open(path, 'w', encoding=encoding) as f:
+                    f.write(content)
+                break
+            except UnicodeDecodeError:
+                pass
 
     def query_pagesets_name(self):
         """Certain suites require external pagesets to be downloaded and
@@ -350,11 +410,15 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
             options.extend(['--setpref={}'.format(p) for p in self.config['extra_prefs']])
         if self.config['enable_webrender']:
             options.extend(['--enable-webrender'])
+        # enabling fission can come from the --enable-fission cmd line argument; or in CI
+        # it comes from a taskcluster transform which adds a --setpref for fission.autostart
+        if self.config['enable_fission'] or "fission.autostart=true" in self.config['extra_prefs']:
+            options.extend(['--enable-fission'])
 
         return options
 
     def populate_webroot(self):
-        """Populate the production test slaves' webroots"""
+        """Populate the production test machines' webroots"""
         self.talos_path = os.path.join(
             self.query_abs_dirs()['abs_test_install_dir'], 'talos'
         )
@@ -381,12 +445,24 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
 
         tooltool_artifacts = []
         src_talos_pageset_dest = os.path.join(self.talos_path, 'talos', 'tests')
+        # unfortunately this path has to be short and can't be descriptive, because
+        # on Windows we tend to already push the boundaries of the max path length
+        # constraint. This will contain the tp5 pageset, but adjusted to have
+        # absolute URLs on iframes for the purposes of better modeling things for
+        # fission.
+        src_talos_pageset_multidomain_dest = os.path.join(self.talos_path,
+                                                          'talos',
+                                                          'fis')
         webextension_dest = os.path.join(self.talos_path, 'talos', 'webextensions')
 
         if self.query_pagesets_name():
             tooltool_artifacts.append({'name': self.pagesets_name,
                                        'manifest': self.pagesets_name_manifest,
                                        'dest': src_talos_pageset_dest})
+            tooltool_artifacts.append({'name': self.pagesets_name,
+                                       'manifest': self.pagesets_name_manifest,
+                                       'dest': src_talos_pageset_multidomain_dest,
+                                       'postprocess': self.replace_relative_iframe_paths})
 
         if self.query_benchmark_zip():
             tooltool_artifacts.append({'name': self.benchmark_zip,
@@ -404,19 +480,26 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
             if '--no-download' not in self.config.get('talos_extra_options', []):
                 self.info("Downloading %s with tooltool..." % artifact)
 
-                if not os.path.exists(os.path.join(artifact['dest'], artifact['name'])):
+                archive = os.path.join(artifact['dest'], artifact['name'])
+                output_dir_path = re.sub(r'\.zip$', '', archive)
+                if not os.path.exists(archive):
                     manifest_file = os.path.join(self.talos_path, artifact['manifest'])
                     self.tooltool_fetch(
                         manifest_file,
                         output_dir=artifact['dest'],
                         cache=self.config.get('tooltool_cache')
                     )
-                    archive = os.path.join(artifact['dest'], artifact['name'])
                     unzip = self.query_exe('unzip')
                     unzip_cmd = [unzip, '-q', '-o', archive, '-d', artifact['dest']]
                     self.run_command(unzip_cmd, halt_on_failure=True)
+
+                    if 'postprocess' in artifact:
+                        for subdir, dirs, files in os.walk(output_dir_path):
+                            for file in files:
+                                artifact['postprocess'](subdir, file)
                 else:
                     self.info("%s already available" % artifact)
+
             else:
                 self.info("Not downloading %s because the no-download option was specified" %
                           artifact)
@@ -473,10 +556,6 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
                                      os.path.basename(_python_interp),
                                      'site-packages')
 
-            # if  running gecko profiling  install the requirements
-            if self.gecko_profile:
-                self._install_view_gecko_profile_req()
-
             sys.path.append(_path)
             return
 
@@ -506,18 +585,6 @@ class Talos(TestingMixin, MercurialScript, TooltoolMixin,
             requirements=[os.path.join(self.talos_path,
                                        'requirements.txt')]
         )
-        self._install_view_gecko_profile_req()
-
-    def _install_view_gecko_profile_req(self):
-        # if running locally and gecko profiing is on, we will be using the
-        # view-gecko-profile tool which has its own requirements too
-        if self.gecko_profile and self.run_local:
-            tools = os.path.join(self.config['repo_path'], 'testing', 'tools')
-            view_gecko_profile_req = os.path.join(tools,
-                                                  'view_gecko_profile',
-                                                  'requirements.txt')
-            self.info("installing requirements for the view-gecko-profile tool")
-            self.install_module(requirements=[view_gecko_profile_req])
 
     def _validate_treeherder_data(self, parser):
         # late import is required, because install is done in create_virtualenv

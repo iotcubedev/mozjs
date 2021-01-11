@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-@import url(resource://devtools/client/themes/variables.css);
-@import url(resource://devtools/client/themes/common.css);
+@import url(chrome://devtools/skin/variables.css);
+@import url(chrome://devtools/skin/common.css);
 @import url(chrome://devtools/skin/toolbars.css);
 @import url(chrome://devtools/skin/tooltips.css);
 
@@ -27,13 +27,8 @@ body {
   color: var(--theme-selection-color);
 }
 
-.theme-bg-contrast,
 .variable-or-property:not([overridden])[changed] {
   background: var(--theme-contrast-background);
-}
-
-.theme-bg-yellow-contrast {
-  background: var(--theme-bg-yellow);
 }
 
 .theme-link,
@@ -162,8 +157,12 @@ body {
   border-color: var(--theme-splitter-color);
 }
 
-.theme-fg-contrast { /* To be used for text on theme-bg-contrast */
-  color: black;
+.theme-bg-contrast {
+  background: var(--theme-contrast-background);
+}
+
+.theme-fg-contrast {
+  color: var(--theme-contrast-color);
 }
 
 .ruleview-swatch,
@@ -181,7 +180,9 @@ body {
   background: transparent;
 }
 
-.CodeMirror.cm-s-mozilla  pre {
+.CodeMirror.cm-s-mozilla  pre,
+.CodeMirror.cm-s-mozilla  pre.CodeMirror-line,
+.CodeMirror.cm-s-mozilla  pre.CodeMirror-line-like {
   color: var(--theme-text-color-strong);
 }
 
@@ -196,6 +197,9 @@ body {
 
 .cm-s-mozilla .CodeMirror-lines .CodeMirror-cursor {
   border-left: solid 1px #fff;
+}
+.cm-s-mozilla .CodeMirror-lines .CodeMirror-cursor.CodeMirror-secondarycursor {
+  border-left-color: #aaa;
 }
 
 .cm-s-mozilla.CodeMirror-focused .CodeMirror-selected { /* selected text (focused) */
@@ -240,11 +244,6 @@ div.CodeMirror span.eval-text {
 .cm-s-mozilla .CodeMirror-gutters { /* vertical line next to line numbers */
   border-right-color: var(--theme-toolbar-background);
   background-color: var(--theme-sidebar-background);
-}
-
-.cm-s-markup-view pre {
-  line-height: 1.4em;
-  min-height: 1.4em;
 }
 
 .CodeMirror-Tern-fname {

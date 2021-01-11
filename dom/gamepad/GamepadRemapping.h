@@ -50,6 +50,8 @@ enum class GamepadId : uint32_t {
   kPrototypeVendorProduct9401 = 0x66669401,
   // Razer Serval Controller
   kRazer1532Product0900 = 0x15320900,
+  // Playstation 3 Controller
+  kSonyProduct0268 = 0x054c0268,
   // Playstation Dualshock 4
   kSonyProduct05c4 = 0x054c05c4,
   // Dualshock 4 (PS4 Slim)
@@ -102,7 +104,8 @@ struct GamepadRemappingData {
 };
 
 already_AddRefed<GamepadRemapper> GetGamepadRemapper(const uint16_t aVendorId,
-                                                     const uint16_t aProductId);
+                                                     const uint16_t aProductId,
+                                                     bool& aUsingDefault);
 
 }  // namespace dom
 }  // namespace mozilla

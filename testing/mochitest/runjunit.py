@@ -9,6 +9,7 @@ import os
 import posixpath
 import re
 import shutil
+import six
 import sys
 import tempfile
 import traceback
@@ -17,8 +18,9 @@ import mozcrash
 import mozinfo
 import mozlog
 import moznetwork
-from mozdevice import ADBDevice, ADBError, ADBTimeoutError
+from mozdevice import ADBDeviceFactory, ADBError, ADBTimeoutError
 from mozprofile import Profile, DEFAULT_PORTS
+from mozprofile.cli import parse_preferences
 from mozprofile.permissions import ServerLocations
 from runtests import MochitestDesktop, update_mozinfo
 
@@ -35,6 +37,10 @@ except ImportError:
     conditions = None
 
 
+class JavaTestHarnessException(Exception):
+    pass
+
+
 class JUnitTestRunner(MochitestDesktop):
     """
        A test harness to run geckoview junit tests on a remote device.
@@ -45,14 +51,16 @@ class JUnitTestRunner(MochitestDesktop):
         verbose = False
         if options.log_tbpl_level == 'debug' or options.log_mach_level == 'debug':
             verbose = True
-        self.device = ADBDevice(adb=options.adbPath or 'adb',
-                                device=options.deviceSerial,
-                                test_root=options.remoteTestRoot,
-                                verbose=verbose)
+        self.device = ADBDeviceFactory(adb=options.adbPath or 'adb',
+                                       device=options.deviceSerial,
+                                       test_root=options.remoteTestRoot,
+                                       verbose=verbose,
+                                       run_as_package=options.app)
         self.options = options
         self.log.debug("options=%s" % vars(options))
         update_mozinfo()
         self.remote_profile = posixpath.join(self.device.test_root, 'junit-profile')
+        self.remote_filter_list = posixpath.join(self.device.test_root, 'junit-filters.list')
 
         if self.options.coverage and not self.options.coverage_output_dir:
             raise Exception("--coverage-output-dir is required when using --enable-coverage")
@@ -114,12 +122,13 @@ class JUnitTestRunner(MochitestDesktop):
         self.options.profilePath = self.profile.profile
 
         # Set preferences
-        self.merge_base_profiles(self.options)
+        self.merge_base_profiles(self.options, 'geckoview-junit')
+        prefs = parse_preferences(self.options.extra_prefs)
+        self.profile.set_preferences(prefs)
 
         if self.fillCertificateDB(self.options):
             self.log.error("Certificate integration failed")
 
-        self.device.mkdir(self.remote_profile, parents=True)
         self.device.push(self.profile.profile, self.remote_profile)
         self.log.debug("profile %s -> %s" %
                        (str(self.profile.profile), str(self.remote_profile)))
@@ -132,11 +141,12 @@ class JUnitTestRunner(MochitestDesktop):
             self.device.rm(self.remote_profile, force=True, recursive=True)
             if hasattr(self, 'profile'):
                 del self.profile
+            self.device.rm(self.remote_filter_list, force=True)
         except Exception:
             traceback.print_exc()
             self.log.info("Caught and ignored an exception during cleanup")
 
-    def build_command_line(self, test_filters):
+    def build_command_line(self, test_filters_file, test_filters):
         """
            Construct and return the 'am instrument' command line.
         """
@@ -152,10 +162,37 @@ class JUnitTestRunner(MochitestDesktop):
         if shards is not None and shard is not None:
             shard -= 1  # shard index is 0 based
             cmd = cmd + " -e numShards %d -e shardIndex %d" % (shards, shard)
+
         # test filters: limit run to specific test(s)
-        for f in test_filters:
-            # filter can be class-name or 'class-name#method-name' (single test)
-            cmd = cmd + " -e class %s" % f
+        # filter can be class-name or 'class-name#method-name' (single test)
+        # Multiple filters must be specified as a line-separated text file
+        # and then pushed to the device.
+        filter_list_name = None
+
+        if test_filters_file:
+            # We specified a pre-existing file, so use that
+            filter_list_name = test_filters_file
+        elif test_filters:
+            if len(test_filters) > 1:
+                # Generate the list file from test_filters
+                with tempfile.NamedTemporaryFile(delete=False) as filter_list:
+                    for f in test_filters:
+                        print(f, file=filter_list)
+                    filter_list_name = filter_list.name
+            else:
+                # A single filter may be directly appended to the command line
+                cmd = cmd + " -e class %s" % test_filters[0]
+
+        if filter_list_name:
+            self.device.push(filter_list_name, self.remote_filter_list)
+
+            if test_filters:
+                # We only remove the filter list if we generated it as a
+                # temporary file.
+                os.remove(filter_list_name)
+
+            cmd = cmd + " -e testFile %s" % self.remote_filter_list
+
         # enable code coverage reports
         if self.options.coverage:
             cmd = cmd + " -e coverage true"
@@ -163,10 +200,8 @@ class JUnitTestRunner(MochitestDesktop):
         # environment
         env = {}
         env["MOZ_CRASHREPORTER"] = "1"
-        env["MOZ_CRASHREPORTER_NO_REPORT"] = "1"
         env["MOZ_CRASHREPORTER_SHUTDOWN"] = "1"
         env["XPCOM_DEBUG_BREAK"] = "stack"
-        env["DISABLE_UNSAFE_CPOW_WARNINGS"] = "1"
         env["MOZ_DISABLE_NONLOCAL_CONNECTIONS"] = "1"
         env["MOZ_IN_AUTOMATION"] = "1"
         env["R_LOG_VERBOSE"] = "1"
@@ -176,7 +211,11 @@ class JUnitTestRunner(MochitestDesktop):
             env["MOZ_WEBRENDER"] = '1'
         else:
             env["MOZ_WEBRENDER"] = '0'
-        for (env_count, (env_key, env_val)) in enumerate(env.iteritems()):
+        # Add additional env variables
+        for [key, value] in [p.split('=', 1) for p in self.options.add_env]:
+            env[key] = value
+
+        for (env_count, (env_key, env_val)) in enumerate(six.iteritems(env)):
             cmd = cmd + " -e env%d %s=%s" % (env_count, env_key, env_val)
         # runner
         cmd = cmd + " %s/%s" % (self.options.app, self.options.runner)
@@ -190,7 +229,14 @@ class JUnitTestRunner(MochitestDesktop):
         self._locations = ServerLocations(locations_file)
         return self._locations
 
-    def run_tests(self, test_filters=None):
+    def need_more_runs(self):
+        if self.options.run_until_failure and (self.fail_count == 0):
+            return True
+        if self.runs <= self.options.repeat:
+            return True
+        return False
+
+    def run_tests(self, test_filters_file=None, test_filters=None):
         """
            Run the tests.
         """
@@ -200,19 +246,21 @@ class JUnitTestRunner(MochitestDesktop):
         if self.device.process_exist(self.options.app):
             raise Exception("%s already running before starting tests" %
                             self.options.app)
+        # test_filters_file and test_filters must be mutually-exclusive
+        if test_filters_file and test_filters:
+            raise Exception("Test filters may not be specified when test-filters-file is provided")
 
         self.test_started = False
         self.pass_count = 0
         self.fail_count = 0
         self.todo_count = 0
-        self.class_name = ""
-        self.test_name = ""
-        self.current_full_name = ""
+        self.runs = 0
 
         def callback(line):
             # Output callback: Parse the raw junit log messages, translating into
             # treeherder-friendly test start/pass/fail messages.
 
+            line = six.ensure_str(line)
             self.log.process_output(self.options.app, str(line))
             # Expect per-test info like: "INSTRUMENTATION_STATUS: class=something"
             match = re.match(r'INSTRUMENTATION_STATUS:\s*class=(.*)', line)
@@ -222,6 +270,13 @@ class JUnitTestRunner(MochitestDesktop):
             match = re.match(r'INSTRUMENTATION_STATUS:\s*test=(.*)', line)
             if match:
                 self.test_name = match.group(1)
+            match = re.match(r'INSTRUMENTATION_STATUS:\s*stack=(.*)', line)
+            if match:
+                self.exception_message = match.group(1)
+            if "org.mozilla.geckoview.test.rule.TestHarnessException" in self.exception_message:
+                # This is actually a problem in the test harness itself
+                raise JavaTestHarnessException(self.exception_message)
+
             # Expect per-test info like: "INSTRUMENTATION_STATUS_CODE: 0|1|..."
             match = re.match(r'INSTRUMENTATION_STATUS_CODE:\s*([+-]?\d+)', line)
             if match:
@@ -244,7 +299,10 @@ class JUnitTestRunner(MochitestDesktop):
                         expected = 'FAIL'
                         self.todo_count += 1
                     else:
-                        message = 'status %s' % status
+                        if self.exception_message:
+                            message = self.exception_message
+                        else:
+                            message = 'status %s' % status
                         status = 'FAIL'
                         expected = 'PASS'
                         self.fail_count += 1
@@ -267,12 +325,19 @@ class JUnitTestRunner(MochitestDesktop):
         self.log.suite_start(["geckoview-junit"])
         try:
             self.device.grant_runtime_permissions(self.options.app)
-            cmd = self.build_command_line(test_filters)
-            self.log.info("launching %s" % cmd)
-            p = self.device.shell(cmd, timeout=self.options.max_time, stdout_callback=callback)
-            if p.timedout:
-                self.log.error("TEST-UNEXPECTED-TIMEOUT | runjunit.py | "
-                               "Timed out after %d seconds" % self.options.max_time)
+            cmd = self.build_command_line(test_filters_file=test_filters_file,
+                                          test_filters=test_filters)
+            while self.need_more_runs():
+                self.class_name = ""
+                self.exception_message = ""
+                self.test_name = ""
+                self.current_full_name = ""
+                self.runs += 1
+                self.log.info("launching %s" % cmd)
+                p = self.device.shell(cmd, timeout=self.options.max_time, stdout_callback=callback)
+                if p.timedout:
+                    self.log.error("TEST-UNEXPECTED-TIMEOUT | runjunit.py | "
+                                   "Timed out after %d seconds" % self.options.max_time)
             self.log.info("Passed: %d" % self.pass_count)
             self.log.info("Failed: %d" % self.fail_count)
             self.log.info("Todo: %d" % self.todo_count)
@@ -295,22 +360,12 @@ class JUnitTestRunner(MochitestDesktop):
         return 1 if self.fail_count else 0
 
     def check_for_crashes(self):
-        logcat = self.device.get_logcat()
-        if logcat:
-            if mozcrash.check_for_java_exception(logcat, self.current_full_name):
-                return True
         symbols_path = self.options.symbolsPath
         try:
             dump_dir = tempfile.mkdtemp()
             remote_dir = posixpath.join(self.remote_profile, 'minidumps')
             if not self.device.is_dir(remote_dir):
-                # If crash reporting is enabled (MOZ_CRASHREPORTER=1), the
-                # minidumps directory is automatically created when the app
-                # (first) starts, so its lack of presence is a hint that
-                # something went wrong.
-                print("Automation Error: " +
-                      "No crash directory ({}) found on remote device".format(remote_dir))
-                return True
+                return False
             self.device.pull(remote_dir, dump_dir)
             crashed = mozcrash.log_crashes(self.log, dump_dir, symbols_path,
                                            test=self.current_full_name)
@@ -348,12 +403,15 @@ class JunitArgumentParser(argparse.ArgumentParser):
                           help="adb serial number of remote device. This is required "
                                "when more than one device is connected to the host. "
                                "Use 'adb devices' to see connected devices. ")
+        self.add_argument("--setenv",
+                          dest='add_env', action='append', default=[],
+                          help='Set target environment variable, like FOO=BAR')
         self.add_argument("--remoteTestRoot",
                           action="store",
                           type=str,
                           dest="remoteTestRoot",
                           help="Remote directory to use as test root "
-                               "(eg. /mnt/sdcard/tests or /data/local/tests).")
+                               "(eg. /data/local/tmp/test_root).")
         self.add_argument("--disable-e10s",
                           action="store_false",
                           dest="e10s",
@@ -369,7 +427,7 @@ class JunitArgumentParser(argparse.ArgumentParser):
                           action="store",
                           type=str,
                           dest="runner",
-                          default="android.support.test.runner.AndroidJUnitRunner",
+                          default="androidx.test.runner.AndroidJUnitRunner",
                           help="Test runner name.")
         self.add_argument("--symbols-path",
                           action="store",
@@ -407,6 +465,26 @@ class JunitArgumentParser(argparse.ArgumentParser):
                           dest="coverage_output_dir",
                           default=None,
                           help="If collecting code coverage, save the report file in this dir.")
+        self.add_argument("--enable-webrender",
+                          action="store_true",
+                          dest="enable_webrender",
+                          default=False,
+                          help="Enable the WebRender compositor in Gecko.")
+        self.add_argument("--repeat",
+                          type=int,
+                          default=0,
+                          help="Repeat the tests the given number of times.")
+        self.add_argument("--run-until-failure",
+                          action="store_true",
+                          dest="run_until_failure",
+                          default=False,
+                          help="Run tests repeatedly but stop the first time a test fails.")
+        self.add_argument("--setpref",
+                          action="append",
+                          dest="extra_prefs",
+                          default=[],
+                          metavar="PREF=VALUE",
+                          help="Defines an extra user preference.")
         # Additional options for server.
         self.add_argument("--certificate-path",
                           action="store",
@@ -431,11 +509,12 @@ class JunitArgumentParser(argparse.ArgumentParser):
                           dest="sslPort",
                           default=DEFAULT_PORTS['https'],
                           help="ssl port of the remote web server.")
-        self.add_argument("--enable-webrender",
-                          action="store_true",
-                          dest="enable_webrender",
-                          default=False,
-                          help="Enable the WebRender compositor in Gecko.")
+        self.add_argument("--test-filters-file",
+                          action="store",
+                          type=str,
+                          dest="test_filters_file",
+                          default=None,
+                          help="Line-delimited file containing test filter(s)")
         # Remaining arguments are test filters.
         self.add_argument("test_filters",
                           nargs="*",
@@ -454,10 +533,14 @@ def run_test_harness(parser, options):
     result = -1
     try:
         device_exception = False
-        result = runner.run_tests(options.test_filters)
+        result = runner.run_tests(test_filters_file=options.test_filters_file,
+                                  test_filters=options.test_filters)
     except KeyboardInterrupt:
         log.info("runjunit.py | Received keyboard interrupt")
         result = -1
+    except JavaTestHarnessException as e:
+        log.error("TEST-UNEXPECTED-FAIL | runjunit.py | The previous test failed because "
+                  "of an error in the test harness | %s" % (str(e)))
     except Exception as e:
         traceback.print_exc()
         log.error(

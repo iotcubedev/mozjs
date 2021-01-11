@@ -25,7 +25,7 @@ namespace dom {
 class MediaList;
 
 class MediaQueryList final : public DOMEventTargetHelper,
-                             public mozilla::LinkedListElement<MediaQueryList> {
+                             public LinkedListElement<MediaQueryList> {
  public:
   // The caller who constructs is responsible for calling Evaluate
   // before calling any other methods.
@@ -41,7 +41,10 @@ class MediaQueryList final : public DOMEventTargetHelper,
 
   nsISupports* GetParentObject() const;
 
-  void MaybeNotify();
+  // Returns whether we need to notify of the change event using
+  // FireChangeEvent().
+  [[nodiscard]] bool MediaFeatureValuesChanged();
+  void FireChangeEvent();
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;

@@ -19,7 +19,7 @@
 #include "nsDisplayList.h"
 #include "nsIScriptError.h"
 #include "nsContentUtils.h"
-#include "nsMathMLElement.h"
+#include "mozilla/dom/MathMLElement.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -74,9 +74,7 @@ class nsDisplayMathMLError : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayMathMLError);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayMathMLError() { MOZ_COUNT_DTOR(nsDisplayMathMLError); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayMathMLError)
 
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   NS_DISPLAY_DECL_NAME("MathMLError", TYPE_MATHML_ERROR)
@@ -93,12 +91,12 @@ void nsDisplayMathMLError::Paint(nsDisplayListBuilder* aBuilder,
   DrawTarget* drawTarget = aCtx->GetDrawTarget();
   Rect rect = NSRectToSnappedRect(nsRect(pt, mFrame->GetSize()),
                                   appUnitsPerDevPixel, *drawTarget);
-  ColorPattern red(ToDeviceColor(Color(1.f, 0.f, 0.f, 1.f)));
+  ColorPattern red(ToDeviceColor(sRGBColor(1.f, 0.f, 0.f, 1.f)));
   drawTarget->FillRect(rect, red);
 
-  aCtx->SetColor(Color(1.f, 1.f, 1.f));
+  aCtx->SetColor(sRGBColor::OpaqueWhite());
   nscoord ascent = fm->MaxAscent();
-  NS_NAMED_LITERAL_STRING(errorMsg, "invalid-markup");
+  constexpr auto errorMsg = u"invalid-markup"_ns;
   nsLayoutUtils::DrawUniDirString(errorMsg.get(), uint32_t(errorMsg.Length()),
                                   nsPoint(pt.x, pt.y + ascent), *fm, *aCtx);
 }
@@ -158,7 +156,7 @@ void nsMathMLContainerFrame::GetReflowAndBoundingMetricsFor(
 void nsMathMLContainerFrame::ClearSavedChildMetrics() {
   nsIFrame* childFrame = mFrames.FirstChild();
   while (childFrame) {
-    childFrame->DeleteProperty(HTMLReflowOutputProperty());
+    childFrame->RemoveProperty(HTMLReflowOutputProperty());
     childFrame = childFrame->GetNextSibling();
   }
 }
@@ -398,8 +396,9 @@ nsMathMLContainerFrame::Stretch(DrawTarget* aDrawTarget,
           aDesiredStretchSize.Width() = mBoundingMetrics.width;
           aDesiredStretchSize.mBoundingMetrics.width = mBoundingMetrics.width;
 
-          nscoord dx = (StyleVisibility()->mDirection ? coreData.trailingSpace
-                                                      : coreData.leadingSpace);
+          nscoord dx = StyleVisibility()->mDirection == StyleDirection::Rtl
+                           ? coreData.trailingSpace
+                           : coreData.leadingSpace;
           if (dx != 0) {
             mBoundingMetrics.leftBearing += dx;
             mBoundingMetrics.rightBearing += dx;
@@ -519,7 +518,7 @@ nsresult nsMathMLContainerFrame::FinalizeReflow(DrawTarget* aDrawTarget,
         // The Place() call above didn't request FinishReflowChild(),
         // so let's check that we eventually did through Stretch().
         for (nsIFrame* childFrame : PrincipalChildList()) {
-          NS_ASSERTION(!(childFrame->GetStateBits() & NS_FRAME_IN_REFLOW),
+          NS_ASSERTION(!childFrame->HasAnyStateBits(NS_FRAME_IN_REFLOW),
                        "DidReflow() was never called");
         }
       }
@@ -604,9 +603,7 @@ void nsMathMLContainerFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     return;
   }
 
-  DisplayBorderBackgroundOutline(aBuilder, aLists);
-
-  BuildDisplayListForNonBlockChildren(aBuilder, aLists, DISPLAY_CHILD_INLINE);
+  BuildDisplayListForInline(aBuilder, aLists);
 
 #if defined(DEBUG) && defined(SHOW_BOUNDING_BOX)
   // for visual debug
@@ -760,7 +757,7 @@ bool nsMathMLContainerFrame::ComputeCustomOverflow(
       mBoundingMetrics.rightBearing - mBoundingMetrics.leftBearing,
       mBoundingMetrics.ascent + mBoundingMetrics.descent);
 
-  // REVIEW: Maybe this should contribute only to visual overflow
+  // REVIEW: Maybe this should contribute only to ink overflow
   // and not scrollable?
   aOverflowAreas.UnionAllWith(boundingBox);
   return nsContainerFrame::ComputeCustomOverflow(aOverflowAreas);
@@ -798,7 +795,7 @@ void nsMathMLContainerFrame::ReflowChild(nsIFrame* aChildFrame,
     if (!nsLayoutUtils::GetLastLineBaseline(wm, aChildFrame, &ascent)) {
       // We don't expect any other block children so just place the frame on
       // the baseline instead of going through DidReflow() and
-      // GetBaseline().  This is what nsFrame::GetBaseline() will do anyway.
+      // GetBaseline().  This is what nsIFrame::GetBaseline() will do anyway.
       aDesiredSize.SetBlockStartAscent(aDesiredSize.BSize(wm));
     } else {
       aDesiredSize.SetBlockStartAscent(ascent);
@@ -1102,7 +1099,7 @@ static nscoord GetInterFrameSpacing(int32_t aScriptLevel,
 }
 
 static nscoord GetThinSpace(const nsStyleFont* aStyleFont) {
-  return NSToCoordRound(float(aStyleFont->mFont.size) * float(3) / float(18));
+  return aStyleFont->mFont.size.ScaledBy(3.0f / 18.0f).ToAppUnits();
 }
 
 class nsMathMLContainerFrame::RowChildFrameIterator {
@@ -1114,7 +1111,8 @@ class nsMathMLContainerFrame::RowChildFrameIterator {
         mChildFrameType(eMathMLFrameType_UNKNOWN),
         mCarrySpace(0),
         mFromFrameType(eMathMLFrameType_UNKNOWN),
-        mRTL(aParentFrame->StyleVisibility()->mDirection) {
+        mRTL(aParentFrame->StyleVisibility()->mDirection ==
+             StyleDirection::Rtl) {
     if (!mRTL) {
       mChildFrame = aParentFrame->mFrames.FirstChild();
     } else {
@@ -1339,7 +1337,7 @@ void nsMathMLContainerFrame::DidReflowChildren(nsIFrame* aFirst,
   for (nsIFrame* frame = aFirst; frame != aStop;
        frame = frame->GetNextSibling()) {
     NS_ASSERTION(frame, "aStop isn't a sibling");
-    if (frame->GetStateBits() & NS_FRAME_IN_REFLOW) {
+    if (frame->HasAnyStateBits(NS_FRAME_IN_REFLOW)) {
       // finish off principal descendants, too
       nsIFrame* grandchild = frame->PrincipalChildList().FirstChild();
       if (grandchild) DidReflowChildren(grandchild, nullptr);
@@ -1434,9 +1432,8 @@ void nsMathMLContainerFrame::PropagateFrameFlagFor(nsIFrame* aFrame,
 nsresult nsMathMLContainerFrame::ReportErrorToConsole(
     const char* errorMsgId, const nsTArray<nsString>& aParams) {
   return nsContentUtils::ReportToConsole(
-      nsIScriptError::errorFlag, NS_LITERAL_CSTRING("Layout: MathML"),
-      mContent->OwnerDoc(), nsContentUtils::eMATHML_PROPERTIES, errorMsgId,
-      aParams);
+      nsIScriptError::errorFlag, "Layout: MathML"_ns, mContent->OwnerDoc(),
+      nsContentUtils::eMATHML_PROPERTIES, errorMsgId, aParams);
 }
 
 nsresult nsMathMLContainerFrame::ReportParseError(const char16_t* aAttribute,

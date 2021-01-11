@@ -22,11 +22,11 @@ FINAL_TARGET_FILES += [
 ]
 
 FINAL_TARGET_FILES.content += [
-    'browser-harness.xul',
+    'browser-harness.xhtml',
     'browser-test.js',
     'chrome-harness.js',
     'chunkifyTests.js',
-    'harness.xul',
+    'harness.xhtml',
     'manifestLibrary.js',
     'mochitest-e10s-utils.js',
     'redirect.html',
@@ -46,7 +46,6 @@ FINAL_TARGET_FILES.content.static += [
 FINAL_TARGET_FILES.content.tests.SimpleTest += [
     '../../docshell/test/chrome/docshell_helpers.js',
     '../modules/StructuredLog.jsm',
-    'tests/SimpleTest/AsyncUtilsContent.js',
     'tests/SimpleTest/EventUtils.js',
     'tests/SimpleTest/ExtensionTestUtils.js',
     'tests/SimpleTest/iframe-between-tests.html',
@@ -61,12 +60,13 @@ FINAL_TARGET_FILES.content.tests.SimpleTest += [
     'tests/SimpleTest/test.css',
     'tests/SimpleTest/TestRunner.js',
     'tests/SimpleTest/WindowSnapshot.js',
+    'tests/SimpleTest/WorkerHandler.js',
+    'tests/SimpleTest/WorkerSimpleTest.js'
 ]
 
 FINAL_TARGET_FILES.content.tests.BrowserTestUtils += [
     'BrowserTestUtils/content/content-about-page-utils.js',
     'BrowserTestUtils/content/content-task.js',
-    'BrowserTestUtils/content/content-utils.js',
 ]
 
 MOCHITEST_MANIFESTS += [
@@ -86,19 +86,18 @@ BROWSER_CHROME_MANIFESTS += [
 TEST_HARNESS_FILES.testing.mochitest += [
     '/build/mobile/remoteautomation.py',
     '/build/pgo/server-locations.txt',
-    '/build/sanitizers/lsan_suppressions.txt',
-    '/build/sanitizers/ubsan_suppressions.txt',
     '/build/valgrind/cross-architecture.sup',
     '/build/valgrind/i386-pc-linux-gnu.sup',
     '/build/valgrind/x86_64-pc-linux-gnu.sup',
     '/netwerk/test/httpserver/httpd.js',
     'bisection.py',
-    'browser-harness.xul',
+    'browser-harness.xhtml',
     'browser-test.js',
     'chrome-harness.js',
     'chunkifyTests.js',
+    'document-builder.sjs',
     'favicon.ico',
-    'harness.xul',
+    'harness.xhtml',
     'leaks.py',
     'mach_test_package_commands.py',
     'manifest.webapp',
@@ -107,7 +106,6 @@ TEST_HARNESS_FILES.testing.mochitest += [
     'pywebsocket_wrapper.py',
     'redirect.html',
     'runjunit.py',
-    'runrobocop.py',
     'runtests.py',
     'runtestsremote.py',
     'server.js',
@@ -119,34 +117,28 @@ TEST_HARNESS_FILES.testing.mochitest.embed += [
     'embed/Xm5i5kbIXzc^headers^',
 ]
 
-TEST_HARNESS_FILES.testing.mochitest.pywebsocket += [
-    'pywebsocket/standalone.py',
+TEST_HARNESS_FILES.testing.mochitest.pywebsocket3.mod_pywebsocket += [
+    'pywebsocket3/mod_pywebsocket/__init__.py',
+    'pywebsocket3/mod_pywebsocket/_stream_exceptions.py',
+    'pywebsocket3/mod_pywebsocket/common.py',
+    'pywebsocket3/mod_pywebsocket/dispatch.py',
+    'pywebsocket3/mod_pywebsocket/extensions.py',
+    'pywebsocket3/mod_pywebsocket/fast_masking.i',
+    'pywebsocket3/mod_pywebsocket/http_header_util.py',
+    'pywebsocket3/mod_pywebsocket/memorizingfile.py',
+    'pywebsocket3/mod_pywebsocket/msgutil.py',
+    'pywebsocket3/mod_pywebsocket/request_handler.py',
+    'pywebsocket3/mod_pywebsocket/server_util.py',
+    'pywebsocket3/mod_pywebsocket/standalone.py',
+    'pywebsocket3/mod_pywebsocket/stream.py',
+    'pywebsocket3/mod_pywebsocket/util.py',
+    'pywebsocket3/mod_pywebsocket/websocket_server.py',
 ]
 
-TEST_HARNESS_FILES.testing.mochitest.pywebsocket.mod_pywebsocket += [
-    'pywebsocket/mod_pywebsocket/__init__.py',
-    'pywebsocket/mod_pywebsocket/_stream_base.py',
-    'pywebsocket/mod_pywebsocket/_stream_hixie75.py',
-    'pywebsocket/mod_pywebsocket/_stream_hybi.py',
-    'pywebsocket/mod_pywebsocket/common.py',
-    'pywebsocket/mod_pywebsocket/dispatch.py',
-    'pywebsocket/mod_pywebsocket/extensions.py',
-    'pywebsocket/mod_pywebsocket/fast_masking.i',
-    'pywebsocket/mod_pywebsocket/headerparserhandler.py',
-    'pywebsocket/mod_pywebsocket/http_header_util.py',
-    'pywebsocket/mod_pywebsocket/memorizingfile.py',
-    'pywebsocket/mod_pywebsocket/msgutil.py',
-    'pywebsocket/mod_pywebsocket/mux.py',
-    'pywebsocket/mod_pywebsocket/stream.py',
-    'pywebsocket/mod_pywebsocket/util.py',
-    'pywebsocket/mod_pywebsocket/xhr_benchmark_handler.py',
-]
-
-TEST_HARNESS_FILES.testing.mochitest.pywebsocket.mod_pywebsocket.handshake += [
-    'pywebsocket/mod_pywebsocket/handshake/__init__.py',
-    'pywebsocket/mod_pywebsocket/handshake/_base.py',
-    'pywebsocket/mod_pywebsocket/handshake/hybi.py',
-    'pywebsocket/mod_pywebsocket/handshake/hybi00.py',
+TEST_HARNESS_FILES.testing.mochitest.pywebsocket3.mod_pywebsocket.handshake += [
+    'pywebsocket3/mod_pywebsocket/handshake/__init__.py',
+    'pywebsocket3/mod_pywebsocket/handshake/_base.py',
+    'pywebsocket3/mod_pywebsocket/handshake/hybi.py',
 ]
 
 TEST_HARNESS_FILES.testing.mochitest.dynamic += [
@@ -213,7 +205,7 @@ TEST_HARNESS_FILES.testing.mochitest.websocketprocessbridge += [
 
 with Files("**"):
     BUG_COMPONENT = ("Testing", "Mochitest")
-    SCHEDULES.exclusive = ['mochitest', 'robocop']
+    SCHEDULES.exclusive = ['mochitest']
 
 with Files("*remote*"):
-    BUG_COMPONENT = ("Firefox for Android", "Testing")
+    BUG_COMPONENT = ("GeckoView", "General")

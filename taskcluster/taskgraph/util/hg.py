@@ -7,10 +7,11 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import requests
+import six
 import subprocess
 from redo import retry
 
-PUSHLOG_TMPL = '{}/json-pushes?version=2&changeset={}&tipsonly=1&full=1'
+PUSHLOG_TMPL = '{}/json-pushes?version=2&changeset={}&tipsonly=1'
 
 
 def find_hg_revision_push_info(repository, revision):
@@ -37,7 +38,7 @@ def find_hg_revision_push_info(repository, revision):
         query_pushlog, args=(pushlog_url,),
         attempts=5, sleeptime=10,
     )
-    pushid = pushes.keys()[0]
+    pushid = list(pushes.keys())[0]
     return {
         'pushdate': pushes[pushid]['date'],
         'pushid': pushid,
@@ -48,19 +49,23 @@ def find_hg_revision_push_info(repository, revision):
 def get_hg_revision_branch(root, revision):
     """Given the parameters for a revision, find the hg_branch (aka
     relbranch) of the revision."""
-    return subprocess.check_output([
+    return six.ensure_text(subprocess.check_output([
         'hg', 'identify',
         '-T', '{branch}',
         '--rev', revision,
-    ], cwd=root)
+    ], cwd=root, universal_newlines=True))
 
 
 # For these functions, we assume that run-task has correctly checked out the
 # revision indicated by GECKO_HEAD_REF, so all that remains is to see what the
 # current revision is.  Mercurial refers to that as `.`.
 def get_hg_commit_message(root):
-    return subprocess.check_output(['hg', 'log', '-r', '.', '-T', '{desc}'], cwd=root)
+    return six.ensure_text(
+        subprocess.check_output(['hg', 'log', '-r', '.', '-T', '{desc}'], cwd=root)
+    )
 
 
 def calculate_head_rev(root):
-    return subprocess.check_output(['hg', 'log', '-r', '.', '-T', '{node}'], cwd=root)
+    return six.ensure_text(
+        subprocess.check_output(['hg', 'log', '-r', '.', '-T', '{node}'], cwd=root)
+    )

@@ -59,13 +59,46 @@ impl<LengthPercentage> LengthPercentageOrAuto<LengthPercentage> {
             &mut Parser<'i, 't>,
         ) -> Result<LengthPercentage, ParseError<'i>>,
     ) -> Result<Self, ParseError<'i>> {
-        if input.try(|i| i.expect_ident_matching("auto")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
             return Ok(LengthPercentageOrAuto::Auto);
         }
 
         Ok(LengthPercentageOrAuto::LengthPercentage(parser(
             context, input,
         )?))
+    }
+}
+
+impl<LengthPercentage> LengthPercentageOrAuto<LengthPercentage>
+where
+    LengthPercentage: Clone,
+{
+    /// Resolves `auto` values by calling `f`.
+    #[inline]
+    pub fn auto_is(&self, f: impl Fn() -> LengthPercentage) -> LengthPercentage {
+        match self {
+            LengthPercentageOrAuto::LengthPercentage(length) => length.clone(),
+            LengthPercentageOrAuto::Auto => f(),
+        }
+    }
+
+    /// Returns the non-`auto` value, if any.
+    #[inline]
+    pub fn non_auto(&self) -> Option<LengthPercentage> {
+        match self {
+            LengthPercentageOrAuto::LengthPercentage(length) => Some(length.clone()),
+            LengthPercentageOrAuto::Auto => None,
+        }
+    }
+
+    /// Maps the length of this value.
+    pub fn map<T>(&self, f: impl FnOnce(LengthPercentage) -> T) -> LengthPercentageOrAuto<T> {
+        match self {
+            LengthPercentageOrAuto::LengthPercentage(l) => {
+                LengthPercentageOrAuto::LengthPercentage(f(l.clone()))
+            },
+            LengthPercentageOrAuto::Auto => LengthPercentageOrAuto::Auto,
+        }
     }
 }
 
@@ -141,13 +174,13 @@ impl<LengthPercentage> Size<LengthPercentage> {
 
 /// A generic value for the `max-width` or `max-height` property.
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
 #[derive(
     Animate,
     Clone,
     ComputeSquaredDistance,
     Copy,
     Debug,
+    MallocSizeOf,
     PartialEq,
     SpecifiedValueInfo,
     ToAnimatedValue,

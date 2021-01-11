@@ -12,17 +12,22 @@
 #include "mozilla/dom/EffectsInfo.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "nsILoadContext.h"
+#include "nsIPrincipal.h"
 #include "nsISupports.h"
 #include "nsISupportsImpl.h"
 #include "nsIURI.h"
 #include "nsRect.h"
 #include "Units.h"
 
+class nsFrameLoader;
+
 namespace mozilla {
+
 namespace dom {
 
 class BrowserHost;
 class BrowserBridgeHost;
+class OwnerShowInfo;
 
 /**
  * An interface to control a browser hosted in another process.
@@ -52,12 +57,12 @@ class RemoteBrowser : public nsISupports {
   virtual BrowsingContext* GetBrowsingContext() const = 0;
   virtual nsILoadContext* GetLoadContext() const = 0;
 
-  virtual void LoadURL(nsIURI* aURI) = 0;
+  virtual void LoadURL(nsIURI* aURI, nsIPrincipal* aTriggeringPrincipal) = 0;
   virtual void ResumeLoad(uint64_t aPendingSwitchId) = 0;
   virtual void DestroyStart() = 0;
   virtual void DestroyComplete() = 0;
 
-  virtual bool Show(const ScreenIntSize& aSize, bool aParentIsActive) = 0;
+  virtual bool Show(const OwnerShowInfo&) = 0;
   virtual void UpdateDimensions(const nsIntRect& aRect,
                                 const ScreenIntSize& aSize) = 0;
 

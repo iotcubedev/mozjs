@@ -9,12 +9,14 @@
 
 #include "mozilla/Attributes.h"  // MOZ_MUST_USE
 
+#include "jstypes.h"        // JS_PUBLIC_API
 #include "js/RootingAPI.h"  // JS::Handle
 
-struct JSContext;
+struct JS_PUBLIC_API JSContext;
 
 namespace js {
 
+class PromiseObject;
 class ReadableByteStreamController;
 class ReadableStreamController;
 
@@ -26,7 +28,7 @@ extern MOZ_MUST_USE bool ReadableByteStreamControllerClose(
     JSContext* cx,
     JS::Handle<ReadableByteStreamController*> unwrappedController);
 
-extern MOZ_MUST_USE JSObject* ReadableStreamControllerPullSteps(
+extern MOZ_MUST_USE PromiseObject* ReadableStreamControllerPullSteps(
     JSContext* cx, JS::Handle<ReadableStreamController*> unwrappedController);
 
 }  // namespace js

@@ -5,11 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/Span.h"
 #include "mozilla/StaticPrefs_dom.h"
-
 #include "DataTransfer.h"
 
 #include "nsISupportsPrimitives.h"
@@ -19,6 +19,7 @@
 #include "nsError.h"
 #include "nsIDragService.h"
 #include "nsIClipboard.h"
+#include "nsIXPConnect.h"
 #include "nsContentUtils.h"
 #include "nsIContent.h"
 #include "nsIObjectInputStream.h"
@@ -42,8 +43,6 @@
 #include "mozilla/dom/Promise.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
-
-#define MOZ_CALLS_ENABLED_PREF "dom.datatransfer.mozAtAPIs"
 
 namespace mozilla {
 namespace dom {
@@ -191,8 +190,8 @@ DataTransfer::DataTransfer(nsISupports* aParent, EventMessage aEventMessage,
 
   RefPtr<nsVariantCC> variant = new nsVariantCC();
   variant->SetAsAString(aString);
-  DebugOnly<nsresult> rvIgnored = SetDataWithPrincipal(
-      NS_LITERAL_STRING("text/plain"), variant, 0, sysPrincipal, false);
+  DebugOnly<nsresult> rvIgnored =
+      SetDataWithPrincipal(u"text/plain"_ns, variant, 0, sysPrincipal, false);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
                        "Failed to set given string to the DataTransfer object");
 }
@@ -232,11 +231,11 @@ DataTransfer::DataTransfer(nsISupports* aParent, EventMessage aEventMessage,
                "invalid event type for DataTransfer constructor");
 }
 
-DataTransfer::~DataTransfer() {}
+DataTransfer::~DataTransfer() = default;
 
 // static
 already_AddRefed<DataTransfer> DataTransfer::Constructor(
-    const GlobalObject& aGlobal, ErrorResult& aRv) {
+    const GlobalObject& aGlobal) {
   RefPtr<DataTransfer> transfer =
       new DataTransfer(aGlobal.GetAsSupports(), eCopy, /* is external */ false,
                        /* clipboard type */ -1);
@@ -301,20 +300,8 @@ void DataTransfer::GetMozTriggeringPrincipalURISpec(
     return;
   }
 
-  nsCOMPtr<nsIURI> uri;
-  principal->GetURI(getter_AddRefs(uri));
-  if (!uri) {
-    aPrincipalURISpec.Truncate(0);
-    return;
-  }
-
   nsAutoCString spec;
-  nsresult rv = uri->GetSpec(spec);
-  if (NS_FAILED(rv)) {
-    aPrincipalURISpec.Truncate(0);
-    return;
-  }
-
+  principal->GetAsciiSpec(spec);
   CopyUTF8toUTF16(spec, aPrincipalURISpec);
 }
 
@@ -339,43 +326,14 @@ void DataTransfer::GetTypes(nsTArray<nsString>& aTypes,
   // Gecko-internal callers too, clear it to be safe.
   aTypes.Clear();
 
-  const nsTArray<RefPtr<DataTransferItem>>* items = mItems->MozItemsAt(0);
-  if (NS_WARN_IF(!items)) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < items->Length(); i++) {
-    DataTransferItem* item = items->ElementAt(i);
-    MOZ_ASSERT(item);
-
-    if (item->ChromeOnly() && aCallerType != CallerType::System) {
-      continue;
-    }
-
-    // NOTE: The reason why we get the internal type here is because we want
-    // kFileMime to appear in the types list for backwards compatibility
-    // reasons.
-    nsAutoString type;
-    item->GetInternalType(type);
-    if (item->Kind() != DataTransferItem::KIND_FILE ||
-        type.EqualsASCII(kFileMime)) {
-      // If the entry has kind KIND_STRING or KIND_OTHER we want to add it to
-      // the list.
-      aTypes.AppendElement(type);
-    }
-  }
-
-  for (uint32_t i = 0; i < mItems->Length(); ++i) {
-    bool found = false;
-    DataTransferItem* item = mItems->IndexedGetter(i, found);
-    MOZ_ASSERT(found);
-    if (item->Kind() != DataTransferItem::KIND_FILE) {
-      continue;
-    }
-    aTypes.AppendElement(NS_LITERAL_STRING("Files"));
-    break;
-  }
+  return mItems->GetTypes(aTypes, aCallerType);
 }
+
+bool DataTransfer::HasType(const nsAString& aType) const {
+  return mItems->HasType(aType);
+}
+
+bool DataTransfer::HasFile() const { return mItems->HasFile(); }
 
 void DataTransfer::GetData(const nsAString& aFormat, nsAString& aData,
                            nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
@@ -514,7 +472,7 @@ already_AddRefed<DOMStringList> DataTransfer::MozTypesAt(
     }
 
     if (addFile) {
-      types->Add(NS_LITERAL_STRING("Files"));
+      types->Add(u"Files"_ns);
     }
   }
 
@@ -561,8 +519,7 @@ nsresult DataTransfer::GetDataAtInternal(const nsAString& aFormat,
   }
 
   // If we have chrome only content, and we aren't chrome, don't allow access
-  if (!nsContentUtils::IsSystemPrincipal(aSubjectPrincipal) &&
-      item->ChromeOnly()) {
+  if (!aSubjectPrincipal->IsSystemPrincipal() && item->ChromeOnly()) {
     return NS_OK;
   }
 
@@ -605,7 +562,7 @@ void DataTransfer::MozGetDataAt(JSContext* aCx, const nsAString& aFormat,
 bool DataTransfer::PrincipalMaySetData(const nsAString& aType,
                                        nsIVariant* aData,
                                        nsIPrincipal* aPrincipal) {
-  if (!nsContentUtils::IsSystemPrincipal(aPrincipal)) {
+  if (!aPrincipal->IsSystemPrincipal()) {
     DataTransferItem::eKind kind = DataTransferItem::KindFromData(aData);
     if (kind == DataTransferItem::KIND_OTHER) {
       NS_WARNING("Disallowing adding non string/file types to DataTransfer");
@@ -624,7 +581,7 @@ bool DataTransfer::PrincipalMaySetData(const nsAString& aType,
     // pass to WebExtensions.
     auto principal = BasePrincipal::Cast(aPrincipal);
     if (!principal->AddonPolicy() &&
-        StringBeginsWith(aType, NS_LITERAL_STRING("text/x-moz-place"))) {
+        StringBeginsWith(aType, u"text/x-moz-place"_ns)) {
       NS_WARNING("Disallowing adding moz-place types to DataTransfer");
       return false;
     }
@@ -717,9 +674,9 @@ void DataTransfer::GetExternalTransferableFormats(
   aTransferable->FlavorsTransferableCanExport(flavors);
 
   if (aPlainTextOnly) {
-    auto index = flavors.IndexOf(NS_LITERAL_CSTRING(kUnicodeMime));
+    auto index = flavors.IndexOf(nsLiteralCString(kUnicodeMime));
     if (index != flavors.NoIndex) {
-      aResult->AppendElement(NS_LITERAL_CSTRING(kUnicodeMime));
+      aResult->AppendElement(nsLiteralCString(kUnicodeMime));
     }
     return;
   }
@@ -735,7 +692,6 @@ void DataTransfer::GetExternalTransferableFormats(
       aResult->AppendElement(nsCString(format));
     }
   }
-  return;
 }
 
 nsresult DataTransfer::SetDataAtInternal(const nsAString& aFormat,
@@ -1344,9 +1300,8 @@ nsresult DataTransfer::CacheExternalData(const char* aFormat, uint32_t aIndex,
   RefPtr<DataTransferItem> item;
 
   if (strcmp(aFormat, kUnicodeMime) == 0) {
-    item =
-        mItems->SetDataWithPrincipal(NS_LITERAL_STRING("text/plain"), nullptr,
-                                     aIndex, aPrincipal, false, aHidden, rv);
+    item = mItems->SetDataWithPrincipal(u"text/plain"_ns, nullptr, aIndex,
+                                        aPrincipal, false, aHidden, rv);
     if (NS_WARN_IF(rv.Failed())) {
       return rv.StealNSResult();
     }
@@ -1354,9 +1309,8 @@ nsresult DataTransfer::CacheExternalData(const char* aFormat, uint32_t aIndex,
   }
 
   if (strcmp(aFormat, kURLDataMime) == 0) {
-    item = mItems->SetDataWithPrincipal(NS_LITERAL_STRING("text/uri-list"),
-                                        nullptr, aIndex, aPrincipal, false,
-                                        aHidden, rv);
+    item = mItems->SetDataWithPrincipal(u"text/uri-list"_ns, nullptr, aIndex,
+                                        aPrincipal, false, aHidden, rv);
     if (NS_WARN_IF(rv.Failed())) {
       return rv.StealNSResult();
     }
@@ -1510,7 +1464,8 @@ void DataTransfer::FillAllExternalData() {
 void DataTransfer::FillInExternalCustomTypes(uint32_t aIndex,
                                              nsIPrincipal* aPrincipal) {
   RefPtr<DataTransferItem> item = new DataTransferItem(
-      this, NS_LITERAL_STRING(kCustomTypesMime), DataTransferItem::KIND_STRING);
+      this, NS_LITERAL_STRING_FROM_CSTRING(kCustomTypesMime),
+      DataTransferItem::KIND_STRING);
   item->SetIndex(aIndex);
 
   nsCOMPtr<nsIVariant> variant = item->DataNoSecurityCheck();
@@ -1587,17 +1542,9 @@ void DataTransfer::SetMode(DataTransfer::Mode aMode) {
 
 /* static */
 bool DataTransfer::MozAtAPIsEnabled(JSContext* aCx, JSObject* aObj /*unused*/) {
-  // Read the pref
-  static bool sPrefCached = false;
-  static bool sPrefCacheValue = false;
-
-  if (!sPrefCached) {
-    sPrefCached = true;
-    Preferences::AddBoolVarCache(&sPrefCacheValue, MOZ_CALLS_ENABLED_PREF);
-  }
-
   // We can expose moz* APIs if we are chrome code or if pref is enabled
-  return nsContentUtils::IsSystemCaller(aCx) || sPrefCacheValue;
+  return nsContentUtils::IsSystemCaller(aCx) ||
+         StaticPrefs::dom_datatransfer_mozAtAPIs_DoNotUseDirectly();
 }
 
 }  // namespace dom

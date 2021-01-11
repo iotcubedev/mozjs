@@ -25,9 +25,7 @@
 #include "nsComponentManagerUtils.h"
 #include "nsDependentString.h"
 #include "nsHashKeys.h"
-#include "nsIDirectoryEnumerator.h"
 #include "nsIFile.h"
-#include "nsIFileStreams.h"
 #include "nsIInputStream.h"
 #include "nsIStringEnumerator.h"
 #include "nsIZipReader.h"
@@ -419,7 +417,7 @@ nsresult ParseSF(const char* filebuf, SECOidTag digestAlgorithm,
 
   const char* nextLineStart = filebuf;
   nsresult rv =
-      CheckManifestVersion(nextLineStart, NS_LITERAL_CSTRING(JAR_SF_HEADER));
+      CheckManifestVersion(nextLineStart, nsLiteralCString(JAR_SF_HEADER));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -494,7 +492,7 @@ nsresult ParseMF(const char* filebuf, nsIZipReader* zip,
 
   const char* nextLineStart = filebuf;
   nsresult rv =
-      CheckManifestVersion(nextLineStart, NS_LITERAL_CSTRING(JAR_MF_HEADER));
+      CheckManifestVersion(nextLineStart, nsLiteralCString(JAR_MF_HEADER));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -808,7 +806,7 @@ class CoseVerificationContext {
  public:
   explicit CoseVerificationContext(AppTrustedRoot aTrustedRoot)
       : mTrustedRoot(aTrustedRoot), mCertDER(nullptr), mCertDERLen(0) {}
-  ~CoseVerificationContext() {}
+  ~CoseVerificationContext() = default;
 
   AppTrustedRoot GetTrustedRoot() { return mTrustedRoot; }
   nsresult SetCert(SECItem* aCertDER) {
@@ -1043,7 +1041,7 @@ class SignaturePolicy {
       mSHA256Allowed = true;
     }
   }
-  ~SignaturePolicy() {}
+  ~SignaturePolicy() = default;
   bool ProcessCOSE() { return mProcessCose; }
   bool COSERequired() { return mCoseRequired; }
   bool PK7Required() { return mPK7Required; }
@@ -1080,9 +1078,8 @@ nsresult VerifyCOSESignature(AppTrustedRoot aTrustedRoot, nsIZipReader* aZip,
   // Read COSE signature file.
   nsAutoCString coseFilename;
   ScopedAutoSECItem coseBuffer;
-  nsresult rv =
-      FindAndLoadOneEntry(aZip, NS_LITERAL_CSTRING(JAR_COSE_SEARCH_STRING),
-                          coseFilename, coseBuffer);
+  nsresult rv = FindAndLoadOneEntry(
+      aZip, nsLiteralCString(JAR_COSE_SEARCH_STRING), coseFilename, coseBuffer);
   if (NS_FAILED(rv)) {
     return required ? NS_ERROR_SIGNED_JAR_WRONG_SIGNATURE : NS_OK;
   }
@@ -1090,7 +1087,7 @@ nsresult VerifyCOSESignature(AppTrustedRoot aTrustedRoot, nsIZipReader* aZip,
   // Verify COSE signature.
   nsAutoCString mfFilename;
   ScopedAutoSECItem manifestBuffer;
-  rv = FindAndLoadOneEntry(aZip, NS_LITERAL_CSTRING(JAR_COSE_MF_SEARCH_STRING),
+  rv = FindAndLoadOneEntry(aZip, nsLiteralCString(JAR_COSE_MF_SEARCH_STRING),
                            mfFilename, manifestBuffer);
   if (NS_FAILED(rv)) {
     return required ? NS_ERROR_SIGNED_JAR_WRONG_SIGNATURE : rv;
@@ -1146,7 +1143,7 @@ nsresult VerifyPK7Signature(
   // Signature (SF) file
   nsAutoCString sfFilename;
   ScopedAutoSECItem sfBuffer;
-  rv = FindAndLoadOneEntry(aZip, NS_LITERAL_CSTRING(JAR_SF_SEARCH_STRING),
+  rv = FindAndLoadOneEntry(aZip, nsLiteralCString(JAR_SF_SEARCH_STRING),
                            sfFilename, sfBuffer);
   if (NS_FAILED(rv)) {
     return required ? NS_ERROR_SIGNED_JAR_MANIFEST_INVALID : NS_OK;
@@ -1194,7 +1191,7 @@ nsresult VerifyPK7Signature(
   ScopedAutoSECItem manifestBuffer;
   Digest mfCalculatedDigest;
   nsAutoCString mfFilename;
-  rv = FindAndLoadOneEntry(aZip, NS_LITERAL_CSTRING(JAR_MF_SEARCH_STRING),
+  rv = FindAndLoadOneEntry(aZip, nsLiteralCString(JAR_MF_SEARCH_STRING),
                            mfFilename, manifestBuffer, digestToUse,
                            &mfCalculatedDigest);
   if (NS_FAILED(rv)) {
@@ -1282,7 +1279,6 @@ nsresult OpenSignedAppFile(AppTrustedRoot aTrustedRoot, nsIFile* aJarFile,
   }
 
   // Return the signer's certificate to the reader if they want it.
-  // XXX: We should return an nsIX509CertList with the whole validated chain.
   if (aSignerCert) {
     // The COSE certificate is authoritative.
     if (aPolicy.COSERequired() || (coseCertItem && coseCertItem->len != 0)) {

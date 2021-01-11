@@ -7,6 +7,7 @@
 #ifndef mozilla_dom_Animation_h
 #define mozilla_dom_Animation_h
 
+#include "X11UndefineNone.h"
 #include "nsWrapperCache.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/AnimationPerformanceWarning.h"
@@ -15,6 +16,7 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EffectCompositor.h"  // For EffectCompositor::CascadeLevel
 #include "mozilla/LinkedList.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/PostRestyleMode.h"
 #include "mozilla/TimeStamp.h"             // for TimeStamp, TimeDuration
 #include "mozilla/dom/AnimationBinding.h"  // for AnimationPlayState
@@ -23,11 +25,6 @@
 #include "mozilla/dom/Promise.h"
 #include "nsCSSPropertyID.h"
 #include "nsIGlobalObject.h"
-
-// X11 has a #define for CurrentTime.
-#ifdef CurrentTime
-#  undef CurrentTime
-#endif
 
 struct JSContext;
 class nsCSSPropertyIDSet;
@@ -47,16 +44,31 @@ class Document;
 class Animation : public DOMEventTargetHelper,
                   public LinkedListElement<Animation> {
  protected:
-  virtual ~Animation() {}
+  virtual ~Animation() = default;
 
  public:
   explicit Animation(nsIGlobalObject* aGlobal)
       : DOMEventTargetHelper(aGlobal), mAnimationIndex(sNextAnimationIndex++) {}
 
+  // Constructs a copy of |aOther| with a new effect and timeline.
+  // This is only intended to be used while making a static clone of a document
+  // during printing, and does not assume that |aOther| is in the same document
+  // as any of the other arguments.
+  static already_AddRefed<Animation> ClonePausedAnimation(
+      nsIGlobalObject* aGlobal, const Animation& aOther,
+      AnimationEffect& aEffect, AnimationTimeline& aTimeline);
+
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(Animation, DOMEventTargetHelper)
 
   nsIGlobalObject* GetParentObject() const { return GetOwnerGlobal(); }
+
+  /**
+   * Utility function to get the target (pseudo-)element associated with an
+   * animation.
+   */
+  NonOwningAnimationTarget GetTargetForAnimation() const;
+
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
@@ -82,17 +94,18 @@ class Animation : public DOMEventTargetHelper,
   void SetId(const nsAString& aId);
 
   AnimationEffect* GetEffect() const { return mEffect; }
-  void SetEffect(AnimationEffect* aEffect);
+  virtual void SetEffect(AnimationEffect* aEffect);
   void SetEffectNoUpdate(AnimationEffect* aEffect);
 
   AnimationTimeline* GetTimeline() const { return mTimeline; }
+  // Animation.timeline setter is supported only on Nightly.
   void SetTimeline(AnimationTimeline* aTimeline);
   void SetTimelineNoUpdate(AnimationTimeline* aTimeline);
 
   Nullable<TimeDuration> GetStartTime() const { return mStartTime; }
   Nullable<double> GetStartTimeAsDouble() const;
   void SetStartTime(const Nullable<TimeDuration>& aNewStartTime);
-  void SetStartTimeAsDouble(const Nullable<double>& aStartTime);
+  virtual void SetStartTimeAsDouble(const Nullable<double>& aStartTime);
 
   // This is deliberately _not_ called GetCurrentTime since that would clash
   // with a macro defined in winbase.h
@@ -125,24 +138,19 @@ class Animation : public DOMEventTargetHelper,
 
   void Finish(ErrorResult& aRv);
 
-  virtual void Play(ErrorResult& aRv, LimitBehavior aLimitBehavior);
+  void Play(ErrorResult& aRv, LimitBehavior aLimitBehavior);
   virtual void PlayFromJS(ErrorResult& aRv) {
     Play(aRv, LimitBehavior::AutoRewind);
   }
 
-  virtual void Pause(ErrorResult& aRv);
-  /**
-   * PauseFromJS is currently only here for symmetry with PlayFromJS but
-   * in future we will likely have to flush style in
-   * CSSAnimation::PauseFromJS so we leave it for now.
-   */
-  void PauseFromJS(ErrorResult& aRv) { Pause(aRv); }
+  void Pause(ErrorResult& aRv);
+  virtual void PauseFromJS(ErrorResult& aRv) { Pause(aRv); }
 
   void UpdatePlaybackRate(double aPlaybackRate);
-  void Reverse(ErrorResult& aRv);
+  virtual void Reverse(ErrorResult& aRv);
 
   void Persist();
-  void CommitStyles(ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT void CommitStyles(ErrorResult& aRv);
 
   bool IsRunningOnCompositor() const;
 
@@ -413,6 +421,30 @@ class Animation : public DOMEventTargetHelper,
 
   int32_t& CachedChildIndexRef() { return mCachedChildIndex; }
 
+  void SetPartialPrerendered(uint64_t aIdOnCompositor) {
+    mIdOnCompositor = aIdOnCompositor;
+    mIsPartialPrerendered = true;
+  }
+  bool IsPartialPrerendered() const { return mIsPartialPrerendered; }
+  uint64_t IdOnCompositor() const { return mIdOnCompositor; }
+  /**
+   * Needs to be called when the pre-rendered animation is going to no longer
+   * run on the compositor.
+   */
+  void ResetPartialPrerendered() {
+    MOZ_ASSERT(mIsPartialPrerendered);
+    mIsPartialPrerendered = false;
+    mIdOnCompositor = 0;
+  }
+  /**
+   * Called via NotifyJankedAnimations IPC call from the compositor to update
+   * pre-rendered area on the main-thread.
+   */
+  void UpdatePartialPrerendered() {
+    ResetPartialPrerendered();
+    PostUpdate();
+  }
+
  protected:
   void SilentlySetCurrentTime(const TimeDuration& aNewCurrentTime);
   void CancelNoUpdate();
@@ -610,6 +642,11 @@ class Animation : public DOMEventTargetHelper,
   RefPtr<MicroTaskRunnable> mFinishNotificationTask;
 
   nsString mId;
+
+ private:
+  // The id for this animaiton on the compositor.
+  uint64_t mIdOnCompositor = 0;
+  bool mIsPartialPrerendered = false;
 };
 
 }  // namespace dom

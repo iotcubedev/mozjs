@@ -4,28 +4,28 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGTextContentElement_h
-#define mozilla_dom_SVGTextContentElement_h
+#ifndef DOM_SVG_SVGTEXTCONTENTELEMENT_H_
+#define DOM_SVG_SVGTEXTCONTENTELEMENT_H_
 
 #include "mozilla/dom/SVGGraphicsElement.h"
 #include "DOMSVGAnimatedEnumeration.h"
 #include "SVGAnimatedEnumeration.h"
 #include "SVGAnimatedLength.h"
 
-class SVGTextFrame;
-
 namespace mozilla {
-class nsISVGPoint;
+
+class SVGTextFrame;
 
 namespace dom {
 
 struct DOMPointInit;
+class nsISVGPoint;
 class SVGRect;
 
-typedef SVGGraphicsElement SVGTextContentElementBase;
+using SVGTextContentElementBase = SVGGraphicsElement;
 
 class SVGTextContentElement : public SVGTextContentElementBase {
-  friend class ::SVGTextFrame;
+  friend class mozilla::SVGTextFrame;
 
  public:
   using FragmentOrElement::TextLength;
@@ -73,4 +73,4 @@ class SVGTextContentElement : public SVGTextContentElementBase {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGTextContentElement_h
+#endif  // DOM_SVG_SVGTEXTCONTENTELEMENT_H_

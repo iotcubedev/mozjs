@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SVGAnimatedTransformList_h
-#define mozilla_dom_SVGAnimatedTransformList_h
+#ifndef DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_
+#define DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_
 
 #include "nsCycleCollectionParticipant.h"
 #include "SVGElement.h"
@@ -15,10 +15,11 @@
 
 namespace mozilla {
 
-class DOMSVGTransformList;
 class SVGAnimatedTransformList;
 
 namespace dom {
+
+class DOMSVGTransformList;
 
 /**
  * Class DOMSVGAnimatedTransformList
@@ -37,7 +38,7 @@ namespace dom {
  * true weak refs).
  */
 class DOMSVGAnimatedTransformList final : public nsWrapperCache {
-  friend class mozilla::DOMSVGTransformList;
+  friend class DOMSVGTransformList;
 
  public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(
@@ -124,4 +125,4 @@ class DOMSVGAnimatedTransformList final : public nsWrapperCache {
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // mozilla_dom_SVGAnimatedTransformList_h
+#endif  // DOM_SVG_DOMSVGANIMATEDTRANSFORMLIST_H_

@@ -18,7 +18,6 @@
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
 #include "nsContentUtils.h"
-#include "nsICertOverrideService.h"
 #include "nsIHttpChannelInternal.h"
 #include "nsIPrompt.h"
 #include "nsIProtocolProxyService.h"
@@ -30,6 +29,7 @@
 #include "nsNSSCertHelper.h"
 #include "nsNSSCertificate.h"
 #include "nsNSSComponent.h"
+#include "nsNSSHelper.h"
 #include "nsNSSIOLayer.h"
 #include "nsNetUtil.h"
 #include "nsProtectedAuthThread.h"
@@ -38,6 +38,7 @@
 #include "mozpkix/pkixtypes.h"
 #include "ssl.h"
 #include "sslproto.h"
+#include "SSLTokensCache.h"
 
 #include "TrustOverrideUtils.h"
 #include "TrustOverride-SymantecData.inc"
@@ -198,9 +199,8 @@ nsresult OCSPRequest::GetResponse(/*out*/ Vector<uint8_t>& response) {
   return NS_OK;
 }
 
-static NS_NAMED_LITERAL_CSTRING(OCSP_REQUEST_MIME_TYPE,
-                                "application/ocsp-request");
-static NS_NAMED_LITERAL_CSTRING(OCSP_REQUEST_METHOD, "POST");
+static constexpr auto OCSP_REQUEST_MIME_TYPE = "application/ocsp-request"_ns;
+static constexpr auto OCSP_REQUEST_METHOD = "POST"_ns;
 
 NS_IMETHODIMP
 OCSPRequest::Run() {
@@ -247,7 +247,7 @@ OCSPRequest::Run() {
                        nullptr,  // aLoadingNode
                        nsContentUtils::GetSystemPrincipal(),
                        nullptr,  // aTriggeringPrincipal
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER, getter_AddRefs(channel));
   if (NS_FAILED(rv)) {
     return NotifyDone(rv, lock);
@@ -264,6 +264,16 @@ OCSPRequest::Run() {
                         nsIChannel::LOAD_BYPASS_SERVICE_WORKER |
                         nsIChannel::LOAD_BYPASS_URL_CLASSIFIER);
 
+  nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+
+  // Prevent HTTPS-Only Mode from upgrading the OCSP request.
+  uint32_t httpsOnlyStatus = loadInfo->GetHttpsOnlyStatus();
+  httpsOnlyStatus |= nsILoadInfo::HTTPS_ONLY_EXEMPT;
+  loadInfo->SetHttpsOnlyStatus(httpsOnlyStatus);
+
+  // allow deprecated HTTP request from SystemPrincipal
+  loadInfo->SetAllowDeprecatedSystemRequests(true);
+
   // For OCSP requests, only the first party domain and private browsing id
   // aspects of origin attributes are used. This means that:
   // a) if first party isolation is enabled, OCSP requests will be isolated
@@ -276,7 +286,6 @@ OCSPRequest::Run() {
     attrs.mFirstPartyDomain = mOriginAttributes.mFirstPartyDomain;
     attrs.mPrivateBrowsingId = mOriginAttributes.mPrivateBrowsingId;
 
-    nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
     rv = loadInfo->SetOriginAttributes(attrs);
     if (NS_FAILED(rv)) {
       return NotifyDone(rv, lock);
@@ -560,11 +569,11 @@ void PK11PasswordPromptRunnable::RunOnTargetThread() {
 
   nsAutoString promptString;
   if (PK11_IsInternal(mSlot)) {
-    rv = GetPIPNSSBundleString("CertPassPromptDefault", promptString);
+    rv = GetPIPNSSBundleString("CertPasswordPromptDefault", promptString);
   } else {
     AutoTArray<nsString, 1> formatStrings = {
         NS_ConvertUTF8toUTF16(PK11_GetTokenName(mSlot))};
-    rv = PIPBundleFormatStringFromName("CertPassPrompt", formatStrings,
+    rv = PIPBundleFormatStringFromName("CertPasswordPrompt", formatStrings,
                                        promptString);
   }
   if (NS_FAILED(rv)) {
@@ -593,91 +602,91 @@ char* PK11PasswordPrompt(PK11SlotInfo* slot, PRBool /*retry*/, void* arg) {
   return runnable->mResult;
 }
 
-static nsCString getKeaGroupName(uint32_t aKeaGroup) {
+nsCString getKeaGroupName(uint32_t aKeaGroup) {
   nsCString groupName;
   switch (aKeaGroup) {
     case ssl_grp_ec_secp256r1:
-      groupName = NS_LITERAL_CSTRING("P256");
+      groupName = "P256"_ns;
       break;
     case ssl_grp_ec_secp384r1:
-      groupName = NS_LITERAL_CSTRING("P384");
+      groupName = "P384"_ns;
       break;
     case ssl_grp_ec_secp521r1:
-      groupName = NS_LITERAL_CSTRING("P521");
+      groupName = "P521"_ns;
       break;
     case ssl_grp_ec_curve25519:
-      groupName = NS_LITERAL_CSTRING("x25519");
+      groupName = "x25519"_ns;
       break;
     case ssl_grp_ffdhe_2048:
-      groupName = NS_LITERAL_CSTRING("FF 2048");
+      groupName = "FF 2048"_ns;
       break;
     case ssl_grp_ffdhe_3072:
-      groupName = NS_LITERAL_CSTRING("FF 3072");
+      groupName = "FF 3072"_ns;
       break;
     case ssl_grp_none:
-      groupName = NS_LITERAL_CSTRING("none");
+      groupName = "none"_ns;
       break;
     case ssl_grp_ffdhe_custom:
-      groupName = NS_LITERAL_CSTRING("custom");
+      groupName = "custom"_ns;
       break;
     // All other groups are not enabled in Firefox. See namedGroups in
     // nsNSSIOLayer.cpp.
     default:
       // This really shouldn't happen!
       MOZ_ASSERT_UNREACHABLE("Invalid key exchange group.");
-      groupName = NS_LITERAL_CSTRING("unknown group");
+      groupName = "unknown group"_ns;
   }
   return groupName;
 }
 
-static nsCString getSignatureName(uint32_t aSignatureScheme) {
+nsCString getSignatureName(uint32_t aSignatureScheme) {
   nsCString signatureName;
   switch (aSignatureScheme) {
     case ssl_sig_none:
-      signatureName = NS_LITERAL_CSTRING("none");
+      signatureName = "none"_ns;
       break;
     case ssl_sig_rsa_pkcs1_sha1:
-      signatureName = NS_LITERAL_CSTRING("RSA-PKCS1-SHA1");
+      signatureName = "RSA-PKCS1-SHA1"_ns;
       break;
     case ssl_sig_rsa_pkcs1_sha256:
-      signatureName = NS_LITERAL_CSTRING("RSA-PKCS1-SHA256");
+      signatureName = "RSA-PKCS1-SHA256"_ns;
       break;
     case ssl_sig_rsa_pkcs1_sha384:
-      signatureName = NS_LITERAL_CSTRING("RSA-PKCS1-SHA384");
+      signatureName = "RSA-PKCS1-SHA384"_ns;
       break;
     case ssl_sig_rsa_pkcs1_sha512:
-      signatureName = NS_LITERAL_CSTRING("RSA-PKCS1-SHA512");
+      signatureName = "RSA-PKCS1-SHA512"_ns;
       break;
     case ssl_sig_ecdsa_secp256r1_sha256:
-      signatureName = NS_LITERAL_CSTRING("ECDSA-P256-SHA256");
+      signatureName = "ECDSA-P256-SHA256"_ns;
       break;
     case ssl_sig_ecdsa_secp384r1_sha384:
-      signatureName = NS_LITERAL_CSTRING("ECDSA-P384-SHA384");
+      signatureName = "ECDSA-P384-SHA384"_ns;
       break;
     case ssl_sig_ecdsa_secp521r1_sha512:
-      signatureName = NS_LITERAL_CSTRING("ECDSA-P521-SHA512");
+      signatureName = "ECDSA-P521-SHA512"_ns;
       break;
     case ssl_sig_rsa_pss_sha256:
-      signatureName = NS_LITERAL_CSTRING("RSA-PSS-SHA256");
+      signatureName = "RSA-PSS-SHA256"_ns;
       break;
     case ssl_sig_rsa_pss_sha384:
-      signatureName = NS_LITERAL_CSTRING("RSA-PSS-SHA384");
+      signatureName = "RSA-PSS-SHA384"_ns;
       break;
     case ssl_sig_rsa_pss_sha512:
-      signatureName = NS_LITERAL_CSTRING("RSA-PSS-SHA512");
+      signatureName = "RSA-PSS-SHA512"_ns;
       break;
     case ssl_sig_ecdsa_sha1:
-      signatureName = NS_LITERAL_CSTRING("ECDSA-SHA1");
+      signatureName = "ECDSA-SHA1"_ns;
       break;
     case ssl_sig_rsa_pkcs1_sha1md5:
-      signatureName = NS_LITERAL_CSTRING("RSA-PKCS1-SHA1MD5");
+      signatureName = "RSA-PKCS1-SHA1MD5"_ns;
       break;
     // All other groups are not enabled in Firefox. See sEnabledSignatureSchemes
     // in nsNSSIOLayer.cpp.
     default:
       // This really shouldn't happen!
       MOZ_ASSERT_UNREACHABLE("Invalid signature scheme.");
-      signatureName = NS_LITERAL_CSTRING("unknown signature");
+      signatureName = "unknown signature"_ns;
   }
   return signatureName;
 }
@@ -706,6 +715,12 @@ static void PreliminaryHandshakeDone(PRFileDesc* fd) {
       infoObject->SetKEAUsed(channelInfo.keaType);
       infoObject->SetKEAKeyBits(channelInfo.keaKeyBits);
       infoObject->SetMACAlgorithmUsed(cipherInfo.macAlgorithm);
+      infoObject->mIsDelegatedCredential = channelInfo.peerDelegCred;
+
+      if (infoObject->mIsDelegatedCredential) {
+        Telemetry::ScalarAdd(
+            Telemetry::ScalarID::SECURITY_TLS_DELEGATED_CREDENTIALS_TXN, 1);
+      }
     }
   }
 
@@ -872,10 +887,12 @@ static void AccumulateNonECCKeySize(Telemetry::HistogramID probe,
 // named curves for a given size (e.g. secp256k1 vs. secp256r1). We punt on
 // that for now. See also NSS bug 323674.
 static void AccumulateECCCurve(Telemetry::HistogramID probe, uint32_t bits) {
-  unsigned int value = bits == 256 ? 23                              // P-256
-                                   : bits == 384 ? 24                // P-384
-                                                 : bits == 521 ? 25  // P-521
-                                                               : 0;  // Unknown
+  unsigned int value =
+      bits == 255 ? 29                                            // Curve25519
+                  : bits == 256 ? 23                              // P-256
+                                : bits == 384 ? 24                // P-384
+                                              : bits == 521 ? 25  // P-521
+                                                            : 0;  // Unknown
   Telemetry::Accumulate(probe, value);
 }
 
@@ -992,6 +1009,12 @@ static void AccumulateCipherSuite(Telemetry::HistogramID probe,
     case TLS_RSA_WITH_SEED_CBC_SHA:
       value = 67;
       break;
+    case TLS_RSA_WITH_AES_128_GCM_SHA256:
+      value = 68;
+      break;
+    case TLS_RSA_WITH_AES_256_GCM_SHA384:
+      value = 69;
+      break;
     // TLS 1.3 PSK resumption
     case TLS_AES_128_GCM_SHA256:
       value = 70;
@@ -1035,6 +1058,27 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
     return;
   }
 
+  Maybe<nsTArray<nsTArray<uint8_t>>> maybePeerCertsBytes;
+  UniqueCERTCertList peerCertChain(SSL_PeerCertificateChain(fd));
+  if (!peerCertChain) {
+    MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
+            ("RebuildVerifiedCertificateInformation: failed to get peer "
+             "certificate chain"));
+  } else {
+    nsTArray<nsTArray<uint8_t>> peerCertsBytes;
+    for (CERTCertListNode* n = CERT_LIST_HEAD(peerCertChain);
+         !CERT_LIST_END(n, peerCertChain); n = CERT_LIST_NEXT(n)) {
+      // Don't include the end-entity certificate.
+      if (n == CERT_LIST_HEAD(peerCertChain)) {
+        continue;
+      }
+      nsTArray<uint8_t> certBytes;
+      certBytes.AppendElements(n->cert->derCert.data, n->cert->derCert.len);
+      peerCertsBytes.AppendElement(std::move(certBytes));
+    }
+    maybePeerCertsBytes.emplace(std::move(peerCertsBytes));
+  }
+
   RefPtr<SharedCertVerifier> certVerifier(GetDefaultCertVerifier());
   MOZ_ASSERT(certVerifier,
              "Certificate verifier uninitialized in TLS handshake callback?");
@@ -1044,17 +1088,22 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
 
   // We don't own these pointers.
   const SECItemArray* stapledOCSPResponses = SSL_PeerStapledOCSPResponses(fd);
-  const SECItem* stapledOCSPResponse = nullptr;
+  Maybe<nsTArray<uint8_t>> stapledOCSPResponse;
   // we currently only support single stapled responses
   if (stapledOCSPResponses && stapledOCSPResponses->len == 1) {
-    stapledOCSPResponse = &stapledOCSPResponses->items[0];
+    stapledOCSPResponse.emplace();
+    stapledOCSPResponse->SetCapacity(stapledOCSPResponses->items[0].len);
+    stapledOCSPResponse->AppendElements(stapledOCSPResponses->items[0].data,
+                                        stapledOCSPResponses->items[0].len);
   }
-  const SECItem* sctsFromTLSExtension = SSL_PeerSignedCertTimestamps(fd);
-  if (sctsFromTLSExtension && sctsFromTLSExtension->len == 0) {
-    // SSL_PeerSignedCertTimestamps returns null on error and empty item
-    // when no extension was returned by the server. We always use null when
-    // no extension was received (for whatever reason), ignoring errors.
-    sctsFromTLSExtension = nullptr;
+
+  Maybe<nsTArray<uint8_t>> sctsFromTLSExtension;
+  const SECItem* sctsFromTLSExtensionSECItem = SSL_PeerSignedCertTimestamps(fd);
+  if (sctsFromTLSExtensionSECItem) {
+    sctsFromTLSExtension.emplace();
+    sctsFromTLSExtension->SetCapacity(sctsFromTLSExtensionSECItem->len);
+    sctsFromTLSExtension->AppendElements(sctsFromTLSExtensionSECItem->data,
+                                         sctsFromTLSExtensionSECItem->len);
   }
 
   int flags = mozilla::psm::CertVerifier::FLAG_LOCAL_ONLY;
@@ -1067,15 +1116,19 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
   CertificateTransparencyInfo certificateTransparencyInfo;
   UniqueCERTCertList builtChain;
   const bool saveIntermediates = false;
+  bool isBuiltCertChainRootBuiltInRoot = false;
   mozilla::pkix::Result rv = certVerifier->VerifySSLServerCert(
-      cert, stapledOCSPResponse, sctsFromTLSExtension, mozilla::pkix::Now(),
-      infoObject, infoObject->GetHostName(), builtChain, saveIntermediates,
-      flags, infoObject->GetOriginAttributes(), &evOidPolicy,
+      cert, mozilla::pkix::Now(), infoObject, infoObject->GetHostName(),
+      builtChain, flags, maybePeerCertsBytes, stapledOCSPResponse,
+      sctsFromTLSExtension, Nothing(), infoObject->GetOriginAttributes(),
+      saveIntermediates, &evOidPolicy,
       nullptr,  // OCSP stapling telemetry
       nullptr,  // key size telemetry
       nullptr,  // SHA-1 telemetry
       nullptr,  // pinning telemetry
-      &certificateTransparencyInfo);
+      &certificateTransparencyInfo,
+      nullptr,  // CRLite telemetry,
+      &isBuiltCertChainRootBuiltInRoot);
 
   if (rv != Success) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
@@ -1084,7 +1137,6 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
 
   RefPtr<nsNSSCertificate> nssc(nsNSSCertificate::Create(cert.get()));
   if (rv == Success && evOidPolicy != SEC_OID_UNKNOWN) {
-    infoObject->SetCertificateTransparencyInfo(certificateTransparencyInfo);
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
             ("HandshakeCallback using NEW cert %p (is EV)", nssc.get()));
     infoObject->SetServerCert(nssc, EVStatus::EV);
@@ -1095,23 +1147,31 @@ static void RebuildVerifiedCertificateInformation(PRFileDesc* fd,
   }
 
   if (rv == Success) {
-    infoObject->SetCertificateTransparencyInfo(certificateTransparencyInfo);
-    infoObject->SetSucceededCertChain(std::move(builtChain));
+    uint16_t status =
+        TransportSecurityInfo::ConvertCertificateTransparencyInfoToStatus(
+            certificateTransparencyInfo);
+    infoObject->SetCertificateTransparencyStatus(status);
+    nsTArray<nsTArray<uint8_t>> certBytesArray =
+        TransportSecurityInfo::CreateCertBytesArray(builtChain);
+    infoObject->SetSucceededCertChain(std::move(certBytesArray));
+    infoObject->SetIsBuiltCertChainRootBuiltInRoot(
+        isBuiltCertChainRootBuiltInRoot);
   }
 }
 
-static nsresult IsCertificateDistrustImminent(nsIX509CertList* aCertList,
-                                              /* out */ bool& isDistrusted) {
-  if (!aCertList) {
-    return NS_ERROR_INVALID_POINTER;
+nsresult IsCertificateDistrustImminent(
+    const nsTArray<RefPtr<nsIX509Cert>>& aCertArray,
+    /* out */ bool& isDistrusted) {
+  if (aCertArray.IsEmpty()) {
+    return NS_ERROR_INVALID_ARG;
   }
 
   nsCOMPtr<nsIX509Cert> rootCert;
-  nsCOMPtr<nsIX509CertList> intCerts;
+  nsTArray<RefPtr<nsIX509Cert>> intCerts;
   nsCOMPtr<nsIX509Cert> eeCert;
 
-  RefPtr<nsNSSCertList> certList = aCertList->GetCertList();
-  nsresult rv = certList->SegmentCertificateChain(rootCert, intCerts, eeCert);
+  nsresult rv = nsNSSCertificate::SegmentCertificateChain(aCertArray, rootCert,
+                                                          intCerts, eeCert);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -1150,6 +1210,48 @@ static nsresult IsCertificateDistrustImminent(nsIX509CertList* aCertList,
     }
   }
   return NS_OK;
+}
+
+static void RebuildCertificateInfoFromSSLTokenCache(
+    nsNSSSocketInfo* aInfoObject) {
+  MOZ_ASSERT(aInfoObject);
+
+  if (!aInfoObject) {
+    return;
+  }
+
+  nsAutoCString key;
+  aInfoObject->GetPeerId(key);
+  mozilla::net::SessionCacheInfo info;
+  if (!mozilla::net::SSLTokensCache::GetSessionCacheInfo(key, info)) {
+    MOZ_LOG(
+        gPIPNSSLog, LogLevel::Debug,
+        ("RebuildCertificateInfoFromSSLTokenCache cannot find cached info."));
+    return;
+  }
+
+  RefPtr<nsNSSCertificate> nssc = nsNSSCertificate::ConstructFromDER(
+      BitwiseCast<char*, uint8_t*>(info.mServerCertBytes.Elements()),
+      info.mServerCertBytes.Length());
+  if (!nssc) {
+    MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
+            ("RebuildCertificateInfoFromSSLTokenCache failed to construct "
+             "server cert"));
+    return;
+  }
+
+  aInfoObject->SetServerCert(nssc, info.mEVStatus);
+  aInfoObject->SetCertificateTransparencyStatus(
+      info.mCertificateTransparencyStatus);
+  if (info.mSucceededCertChainBytes) {
+    aInfoObject->SetSucceededCertChain(
+        std::move(*info.mSucceededCertChainBytes));
+  }
+
+  if (info.mIsBuiltCertChainRootBuiltInRoot) {
+    aInfoObject->SetIsBuiltCertChainRootBuiltInRoot(
+        *info.mIsBuiltCertChainRootBuiltInRoot);
+  }
 }
 
 void HandshakeCallback(PRFileDesc* fd, void* client_data) {
@@ -1289,18 +1391,23 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
             ("HandshakeCallback KEEPING existing cert\n"));
   } else {
-    RebuildVerifiedCertificateInformation(fd, infoObject);
+    if (StaticPrefs::network_ssl_tokens_cache_enabled()) {
+      RebuildCertificateInfoFromSSLTokenCache(infoObject);
+    } else {
+      RebuildVerifiedCertificateInformation(fd, infoObject);
+    }
   }
 
-  nsCOMPtr<nsIX509CertList> succeededCertChain;
-  // This always returns NS_OK, but the list could be empty. This is a
-  // best-effort check for now. Bug 731478 will reduce the incidence of empty
+  nsTArray<RefPtr<nsIX509Cert>> succeededCertArray;
+  // The list could be empty. Bug 731478 will reduce the incidence of empty
   // succeeded cert chains through better caching.
-  Unused << infoObject->GetSucceededCertChain(
-      getter_AddRefs(succeededCertChain));
+  nsresult srv = infoObject->GetSucceededCertChain(succeededCertArray);
+
   bool distrustImminent;
-  nsresult srv =
-      IsCertificateDistrustImminent(succeededCertChain, distrustImminent);
+  if (NS_SUCCEEDED(srv)) {
+    srv = IsCertificateDistrustImminent(succeededCertArray, distrustImminent);
+  }
+
   if (NS_SUCCEEDED(srv) && distrustImminent) {
     state |= nsIWebProgressListener::STATE_CERT_DISTRUST_IMMINENT;
   }

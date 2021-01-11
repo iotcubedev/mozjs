@@ -18,11 +18,10 @@ using mozilla::ipc::PrincipalInfoToPrincipal;
 ClientInfo::ClientInfo(const nsID& aId, ClientType aType,
                        const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
                        const TimeStamp& aCreationTime)
-    : mData(MakeUnique<IPCClientInfo>(aId, aType, aPrincipalInfo, aCreationTime,
-                                      EmptyCString(),
-                                      mozilla::dom::FrameType::None,
-                                      mozilla::Nothing(), mozilla::Nothing())) {
-}
+    : mData(MakeUnique<IPCClientInfo>(
+          aId, mozilla::Nothing(), aType, aPrincipalInfo, aCreationTime,
+          EmptyCString(), mozilla::dom::FrameType::None, mozilla::Nothing(),
+          mozilla::Nothing())) {}
 
 ClientInfo::ClientInfo(const IPCClientInfo& aData)
     : mData(MakeUnique<IPCClientInfo>(aData)) {}
@@ -43,13 +42,27 @@ ClientInfo& ClientInfo::operator=(ClientInfo&& aRight) {
   return *this;
 }
 
-ClientInfo::~ClientInfo() {}
+ClientInfo::~ClientInfo() = default;
 
 bool ClientInfo::operator==(const ClientInfo& aRight) const {
   return *mData == *aRight.mData;
 }
 
+bool ClientInfo::operator!=(const ClientInfo& aRight) const {
+  return *mData != *aRight.mData;
+}
+
 const nsID& ClientInfo::Id() const { return mData->id(); }
+
+void ClientInfo::SetAgentClusterId(const nsID& aId) {
+  MOZ_ASSERT(mData->agentClusterId().isNothing() ||
+             mData->agentClusterId().ref().Equals(aId));
+  mData->agentClusterId() = Some(aId);
+}
+
+const Maybe<nsID>& ClientInfo::AgentClusterId() const {
+  return mData->agentClusterId();
+}
 
 ClientType ClientInfo::Type() const { return mData->type(); }
 
@@ -93,10 +106,9 @@ bool ClientInfo::IsPrivateBrowsing() const {
   }
 }
 
-nsCOMPtr<nsIPrincipal> ClientInfo::GetPrincipal() const {
+Result<nsCOMPtr<nsIPrincipal>, nsresult> ClientInfo::GetPrincipal() const {
   MOZ_ASSERT(NS_IsMainThread());
-  nsCOMPtr<nsIPrincipal> ref = PrincipalInfoToPrincipal(PrincipalInfo());
-  return ref;
+  return PrincipalInfoToPrincipal(PrincipalInfo());
 }
 
 const Maybe<mozilla::ipc::CSPInfo>& ClientInfo::GetCspInfo() const {

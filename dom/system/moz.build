@@ -21,7 +21,7 @@ with Files("mac/*LocationProvider*"):
     BUG_COMPONENT = ("Core", "DOM: Geolocation")
 
 with Files("mac/*OSPermissionRequest*"):
-    BUG_COMPONENT = ("Firefox", "Device Permissions")
+    BUG_COMPONENT = ("Firefox", "Site Permissions")
 
 with Files("linux/*LocationProvider*"):
     BUG_COMPONENT = ("Core", "DOM: Geolocation")
@@ -73,7 +73,12 @@ EXPORTS.mozilla += [
     'OSFileConstants.h',
 ]
 
+EXPORTS.mozilla.dom += [
+    'IOUtils.h',
+]
+
 UNIFIED_SOURCES += [
+    'IOUtils.cpp',
     'nsDeviceSensors.cpp',
     'nsOSPermissionRequestBase.cpp',
     'OSFileConstants.cpp',

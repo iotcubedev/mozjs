@@ -53,9 +53,6 @@
 
 # NOTE: If you add new phases here the current next phase kind number can be
 # found at the end of js/src/gc/StatsPhasesGenerated.inc
-# You must also update
-# toolkit/components/telemetry/other/GCTelemetry.jsm and
-# toolkit/components/telemetry/tests/browser/browser_TelemetryGC.js
 
 import re
 import collections
@@ -81,8 +78,6 @@ MarkRootsPhaseKind = PhaseKind("MARK_ROOTS", "Mark Roots", 48, [
 
 JoinParallelTasksPhaseKind = PhaseKind("JOIN_PARALLEL_TASKS", "Join Parallel Tasks", 67)
 
-UnmarkGrayPhaseKind = PhaseKind("UNMARK_GRAY", "Unmark gray", 56)
-
 PhaseKindGraphRoots = [
     PhaseKind("MUTATOR", "Mutator Running", 0),
     PhaseKind("GC_BEGIN", "Begin Callback", 1),
@@ -92,6 +87,7 @@ PhaseKindGraphRoots = [
     PhaseKind("WAIT_BACKGROUND_THREAD", "Wait Background Thread", 2),
     PhaseKind("PREPARE", "Prepare For Collection", 69, [
         PhaseKind("UNMARK", "Unmark", 7),
+        PhaseKind("UNMARK_WEAKMAPS", "Unmark WeakMaps", 76),
         PhaseKind("BUFFER_GRAY_ROOTS", "Buffer Gray Roots", 49),
         PhaseKind("MARK_DISCARD_CODE", "Mark Discard Code", 3),
         PhaseKind("RELAZIFY_FUNCTIONS", "Relazify Functions", 4),
@@ -102,23 +98,16 @@ PhaseKindGraphRoots = [
     ]),
     PhaseKind("MARK", "Mark", 6, [
         MarkRootsPhaseKind,
-        UnmarkGrayPhaseKind,
-        PhaseKind("MARK_DELAYED", "Mark Delayed", 8, [
-            UnmarkGrayPhaseKind,
-        ]),
+        PhaseKind("MARK_DELAYED", "Mark Delayed", 8)
     ]),
     PhaseKind("SWEEP", "Sweep", 9, [
         PhaseKind("SWEEP_MARK", "Mark During Sweeping", 10, [
-            UnmarkGrayPhaseKind,
-            PhaseKind("SWEEP_MARK_INCOMING_BLACK", "Mark Incoming Black Pointers", 12, [
-                UnmarkGrayPhaseKind,
-            ]),
+            PhaseKind("SWEEP_MARK_INCOMING_BLACK", "Mark Incoming Black Pointers", 12),
             PhaseKind("SWEEP_MARK_WEAK", "Mark Weak", 13, [
-                UnmarkGrayPhaseKind,
+                PhaseKind("SWEEP_MARK_GRAY_WEAK", "Mark Gray and Weak", 16)
             ]),
             PhaseKind("SWEEP_MARK_INCOMING_GRAY", "Mark Incoming Gray Pointers", 14),
             PhaseKind("SWEEP_MARK_GRAY", "Mark Gray", 15),
-            PhaseKind("SWEEP_MARK_GRAY_WEAK", "Mark Gray and Weak", 16)
         ]),
         PhaseKind("FINALIZE_START", "Finalize Start Callbacks", 17, [
             PhaseKind("WEAK_ZONES_CALLBACK", "Per-Slice Weak Callback", 57),
@@ -133,12 +122,12 @@ PhaseKindGraphRoots = [
             PhaseKind("SWEEP_BASE_SHAPE", "Sweep Base Shapes", 24),
             PhaseKind("SWEEP_INITIAL_SHAPE", "Sweep Initial Shapes", 25),
             PhaseKind("SWEEP_TYPE_OBJECT", "Sweep Type Objects", 26),
-            PhaseKind("SWEEP_BREAKPOINT", "Sweep Breakpoints", 27),
             PhaseKind("SWEEP_REGEXP", "Sweep Regexps", 28),
             PhaseKind("SWEEP_COMPRESSION", "Sweep Compression Tasks", 62),
-            PhaseKind("SWEEP_LAZYSCRIPTS", "Sweep LazyScripts", 71),
             PhaseKind("SWEEP_WEAKMAPS", "Sweep WeakMaps", 63),
             PhaseKind("SWEEP_UNIQUEIDS", "Sweep Unique IDs", 64),
+            PhaseKind("SWEEP_FINALIZATION_REGISTRIES", "Sweep FinalizationRegistries", 74),
+            PhaseKind("SWEEP_WEAKREFS", "Sweep WeakRefs", 75),
             PhaseKind("SWEEP_JIT_DATA", "Sweep JIT Data", 65),
             PhaseKind("SWEEP_WEAK_CACHES", "Sweep Weak Caches", 66),
             PhaseKind("SWEEP_MISC", "Sweep Miscellaneous", 29),
@@ -178,7 +167,7 @@ PhaseKindGraphRoots = [
         MarkRootsPhaseKind,
     ]),
     PhaseKind("BARRIER", "Barriers", 55, [
-        UnmarkGrayPhaseKind
+        PhaseKind("UNMARK_GRAY", "Unmark gray", 56)
     ])
 ]
 
@@ -277,7 +266,7 @@ def writeList(out, items):
 
 
 def writeEnumClass(out, name, type, items, extraItems):
-    items = ["FIRST"] + items + ["LIMIT"] + extraItems
+    items = ["FIRST"] + list(items) + ["LIMIT"] + list(extraItems)
     items[1] += " = " + items[0]
     out.write("enum class %s : %s {\n" % (name, type))
     writeList(out, items)
@@ -353,5 +342,4 @@ def generateCpp(out):
     # Print in a comment the next available phase kind number.
     #
     out.write("// The next available phase kind number is: %d\n" %
-            (MaxBucket + 1))
-
+              (MaxBucket + 1))

@@ -10,7 +10,11 @@ const {
 
 // Checks for the AccessibleWalkerActor audit.
 add_task(async function() {
-  const { target, accessibility } = await initAccessibilityFrontForUrl(
+  const {
+    target,
+    a11yWalker,
+    parentAccessibility,
+  } = await initAccessibilityFrontsForUrl(
     MAIN_DOMAIN + "doc_accessibility_audit.html"
   );
 
@@ -87,11 +91,11 @@ add_task(async function() {
   ];
   const total = accessibles.length;
   const auditProgress = [
-    { total, percentage: 20 },
-    { total, percentage: 40 },
-    { total, percentage: 60 },
-    { total, percentage: 80 },
-    { total, percentage: 100 },
+    { total, percentage: 20, completed: 1 },
+    { total, percentage: 40, completed: 2 },
+    { total, percentage: 60, completed: 3 },
+    { total, percentage: 80, completed: 4 },
+    { total, percentage: 100, completed: 5 },
   ];
 
   function findAccessible(name, role) {
@@ -145,15 +149,10 @@ add_task(async function() {
     }
   }
 
-  const a11yWalker = await accessibility.getWalker();
-  ok(a11yWalker, "The AccessibleWalkerFront was returned");
-  await accessibility.enable();
-
   await checkWalkerAudit(a11yWalker, 3);
   await checkWalkerAudit(a11yWalker, 2, { types: [AUDIT_TYPE.CONTRAST] });
 
-  await accessibility.disable();
-  await waitForA11yShutdown();
+  await waitForA11yShutdown(parentAccessibility);
   await target.destroy();
   gBrowser.removeCurrentTab();
 });

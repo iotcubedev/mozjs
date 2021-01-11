@@ -7,7 +7,7 @@
 #include "mozilla/dom/ChannelSplitterNode.h"
 #include "mozilla/dom/ChannelSplitterNodeBinding.h"
 #include "AudioNodeEngine.h"
-#include "AudioNodeStream.h"
+#include "AudioNodeTrack.h"
 
 namespace mozilla {
 namespace dom {
@@ -19,7 +19,7 @@ class ChannelSplitterNodeEngine final : public AudioNodeEngine {
     MOZ_ASSERT(NS_IsMainThread());
   }
 
-  void ProcessBlocksOnPorts(AudioNodeStream* aStream,
+  void ProcessBlocksOnPorts(AudioNodeTrack* aTrack, GraphTime aFrom,
                             Span<const AudioBlock> aInput,
                             Span<AudioBlock> aOutput,
                             bool* aFinished) override {
@@ -50,9 +50,9 @@ ChannelSplitterNode::ChannelSplitterNode(AudioContext* aContext,
     : AudioNode(aContext, aOutputCount, ChannelCountMode::Explicit,
                 ChannelInterpretation::Discrete),
       mOutputCount(aOutputCount) {
-  mStream = AudioNodeStream::Create(
-      aContext, new ChannelSplitterNodeEngine(this),
-      AudioNodeStream::NO_STREAM_FLAGS, aContext->Graph());
+  mTrack =
+      AudioNodeTrack::Create(aContext, new ChannelSplitterNodeEngine(this),
+                             AudioNodeTrack::NO_TRACK_FLAGS, aContext->Graph());
 }
 
 /* static */
@@ -61,7 +61,8 @@ already_AddRefed<ChannelSplitterNode> ChannelSplitterNode::Create(
     ErrorResult& aRv) {
   if (aOptions.mNumberOfOutputs == 0 ||
       aOptions.mNumberOfOutputs > WebAudioUtils::MaxChannelCount) {
-    aRv.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
+    aRv.ThrowIndexSizeError(nsPrintfCString(
+        "%u is not a valid number of outputs", aOptions.mNumberOfOutputs));
     return nullptr;
   }
 
@@ -71,22 +72,25 @@ already_AddRefed<ChannelSplitterNode> ChannelSplitterNode::Create(
   // Manually check that the other options are valid, this node has
   // channelCount, channelCountMode and channelInterpretation constraints: they
   // cannot be changed from the default.
-  if (aOptions.mChannelCount.WasPassed() &&
-      aOptions.mChannelCount.Value() != audioNode->ChannelCount()) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
-    return nullptr;
+  if (aOptions.mChannelCount.WasPassed()) {
+    audioNode->SetChannelCount(aOptions.mChannelCount.Value(), aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
   }
-  if (aOptions.mChannelInterpretation.WasPassed() &&
-      aOptions.mChannelInterpretation.Value() !=
-          audioNode->ChannelInterpretationValue()) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
-    return nullptr;
+  if (aOptions.mChannelInterpretation.WasPassed()) {
+    audioNode->SetChannelInterpretationValue(
+        aOptions.mChannelInterpretation.Value(), aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
   }
-  if (aOptions.mChannelCountMode.WasPassed() &&
-      aOptions.mChannelCountMode.Value() !=
-          audioNode->ChannelCountModeValue()) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
-    return nullptr;
+  if (aOptions.mChannelCountMode.WasPassed()) {
+    audioNode->SetChannelCountModeValue(aOptions.mChannelCountMode.Value(),
+                                        aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
   }
 
   return audioNode.forget();

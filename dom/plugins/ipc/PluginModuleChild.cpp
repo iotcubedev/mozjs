@@ -222,7 +222,7 @@ void PluginModuleChild::SetFlashRoamingPath(const std::wstring& aRoamingPath) {
 bool PluginModuleChild::InitForChrome(const std::string& aPluginFilename,
                                       base::ProcessId aParentPid,
                                       MessageLoop* aIOLoop,
-                                      IPC::Channel* aChannel) {
+                                      UniquePtr<IPC::Channel> aChannel) {
   NS_ASSERTION(aChannel, "need a channel");
 
 #if defined(OS_WIN) && defined(MOZ_SANDBOX)
@@ -255,7 +255,7 @@ bool PluginModuleChild::InitForChrome(const std::string& aPluginFilename,
   mAsyncRenderSupport = info.fSupportsAsyncRender;
 #endif
 #if defined(MOZ_X11)
-  NS_NAMED_LITERAL_CSTRING(flash10Head, "Shockwave Flash 10.");
+  constexpr auto flash10Head = "Shockwave Flash 10."_ns;
   if (StringBeginsWith(nsDependentCString(info.fDescription), flash10Head)) {
     AddQuirk(QUIRK_FLASH_EXPOSE_COORD_TRANSLATION);
   }
@@ -278,7 +278,7 @@ bool PluginModuleChild::InitForChrome(const std::string& aPluginFilename,
 
   CommonInit();
 
-  if (!Open(aChannel, aParentPid, aIOLoop)) {
+  if (!Open(std::move(aChannel), aParentPid, aIOLoop)) {
     return false;
   }
 
@@ -715,8 +715,8 @@ mozilla::ipc::IPCResult PluginModuleChild::RecvInitPluginFunctionBroker(
 }
 
 mozilla::ipc::IPCResult PluginModuleChild::AnswerInitCrashReporter(
-    Shmem&& aShmem, mozilla::dom::NativeThreadId* aOutId) {
-  CrashReporterClient::InitSingletonWithShmem(aShmem);
+    mozilla::dom::NativeThreadId* aOutId) {
+  CrashReporterClient::InitSingleton();
   *aOutId = CrashReporter::CurrentThreadId();
 
   return IPC_OK();
@@ -1818,13 +1818,14 @@ void PluginModuleChild::EnteredCall() { mIncallPumpingStack.AppendElement(); }
 
 void PluginModuleChild::ExitedCall() {
   NS_ASSERTION(mIncallPumpingStack.Length(), "mismatched entered/exited");
-  uint32_t len = mIncallPumpingStack.Length();
-  const IncallFrame& f = mIncallPumpingStack[len - 1];
+  const IncallFrame& f = mIncallPumpingStack.LastElement();
   if (f._spinning)
     MessageLoop::current()->SetNestableTasksAllowed(
         f._savedNestableTasksAllowed);
 
-  mIncallPumpingStack.TruncateLength(len - 1);
+  // XXX Is RemoveLastElement intentionally called only after calling
+  // SetNestableTasksAllowed? Otherwise, PopLastElement could be used above.
+  mIncallPumpingStack.RemoveLastElement();
 }
 
 LRESULT CALLBACK PluginModuleChild::CallWindowProcHook(int nCode, WPARAM wParam,

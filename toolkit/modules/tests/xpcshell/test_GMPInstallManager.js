@@ -4,6 +4,7 @@
 
 var Cm = Components.manager;
 const URL_HOST = "http://localhost";
+const PR_USEC_PER_MSEC = 1000;
 
 var GMPScope = ChromeUtils.import(
   "resource://gre/modules/GMPInstallManager.jsm",
@@ -169,7 +170,7 @@ add_task(async function test_checkForAddons_noAddonsElement() {
   overrideXHR(200, "<updates></updates>");
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 0);
+  Assert.equal(res.addons.length, 0);
   installManager.uninit();
 });
 
@@ -180,7 +181,7 @@ add_task(async function test_checkForAddons_emptyAddonsElement() {
   overrideXHR(200, "<updates><addons/></updates>");
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 0);
+  Assert.equal(res.addons.length, 0);
   installManager.uninit();
 });
 
@@ -322,8 +323,8 @@ add_task(async function test_checkForAddons_singleAddon() {
   overrideXHR(200, responseXML);
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 1);
-  let gmpAddon = res.gmpAddons[0];
+  Assert.equal(res.addons.length, 1);
+  let gmpAddon = res.addons[0];
   Assert.equal(gmpAddon.id, "gmp-gmpopenh264");
   Assert.equal(gmpAddon.URL, "http://127.0.0.1:8011/gmp-gmpopenh264-1.1.zip");
   Assert.equal(gmpAddon.hashFunction, "sha256");
@@ -357,8 +358,8 @@ add_task(async function test_checkForAddons_singleAddonWithSize() {
   overrideXHR(200, responseXML);
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 1);
-  let gmpAddon = res.gmpAddons[0];
+  Assert.equal(res.addons.length, 1);
+  let gmpAddon = res.addons[0];
   Assert.equal(gmpAddon.id, "openh264-plugin-no-at-symbol");
   Assert.equal(gmpAddon.URL, "http://127.0.0.1:8011/gmp-gmpopenh264-1.1.zip");
   Assert.equal(gmpAddon.hashFunction, "sha256");
@@ -430,8 +431,8 @@ add_task(
     overrideXHR(200, responseXML);
     let installManager = new GMPInstallManager();
     let res = await installManager.checkForAddons();
-    Assert.equal(res.gmpAddons.length, 7);
-    let gmpAddon = res.gmpAddons[0];
+    Assert.equal(res.addons.length, 7);
+    let gmpAddon = res.addons[0];
     Assert.equal(gmpAddon.id, "gmp-gmpopenh264");
     Assert.equal(gmpAddon.URL, "http://127.0.0.1:8011/gmp-gmpopenh264-1.1.zip");
     Assert.equal(gmpAddon.hashFunction, "sha256");
@@ -443,7 +444,7 @@ add_task(
     Assert.ok(gmpAddon.isValid);
     Assert.ok(!gmpAddon.isInstalled);
 
-    gmpAddon = res.gmpAddons[1];
+    gmpAddon = res.addons[1];
     Assert.equal(gmpAddon.id, "NOT-gmp-gmpopenh264");
     Assert.equal(
       gmpAddon.URL,
@@ -458,9 +459,9 @@ add_task(
     Assert.ok(gmpAddon.isValid);
     Assert.ok(!gmpAddon.isInstalled);
 
-    for (let i = 2; i < res.gmpAddons.length; i++) {
-      Assert.ok(!res.gmpAddons[i].isValid);
-      Assert.ok(!res.gmpAddons[i].isInstalled);
+    for (let i = 2; i < res.addons.length; i++) {
+      Assert.ok(!res.addons[i].isValid);
+      Assert.ok(!res.addons[i].isInstalled);
     }
     installManager.uninit();
   }
@@ -488,8 +489,8 @@ add_task(async function test_checkForAddons_updatesWithAddons() {
   overrideXHR(200, responseXML);
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 1);
-  let gmpAddon = res.gmpAddons[0];
+  Assert.equal(res.addons.length, 1);
+  let gmpAddon = res.addons[0];
   Assert.equal(gmpAddon.id, "gmp-gmpopenh264");
   Assert.equal(gmpAddon.URL, "http://127.0.0.1:8011/gmp-gmpopenh264-1.1.zip");
   Assert.equal(gmpAddon.hashFunction, "sha256");
@@ -565,8 +566,8 @@ async function test_checkForAddons_installAddon(
   overrideXHR(200, responseXML);
   let installManager = new GMPInstallManager();
   let res = await installManager.checkForAddons();
-  Assert.equal(res.gmpAddons.length, 1);
-  let gmpAddon = res.gmpAddons[0];
+  Assert.equal(res.addons.length, 1);
+  let gmpAddon = res.addons[0];
   Assert.ok(!gmpAddon.isInstalled);
 
   try {
@@ -715,8 +716,8 @@ add_test(function test_installAddon_noServer() {
   let checkPromise = installManager.checkForAddons();
   checkPromise.then(
     res => {
-      Assert.equal(res.gmpAddons.length, 1);
-      let gmpAddon = res.gmpAddons[0];
+      Assert.equal(res.addons.length, 1);
+      let gmpAddon = res.addons[0];
 
       GMPInstallManager.overrideLeaveDownloadedZip = true;
       let installPromise = installManager.installAddon(gmpAddon);
@@ -950,7 +951,7 @@ function createNewZipFile(zipName, data) {
   zipWriter.open(zipFile, PR_RDWR | PR_CREATE_FILE | PR_TRUNCATE);
   zipWriter.addEntryStream(
     "entry1.info",
-    Date.now(),
+    Date.now() * PR_USEC_PER_MSEC,
     Ci.nsIZipWriter.COMPRESSION_BEST,
     stream,
     false

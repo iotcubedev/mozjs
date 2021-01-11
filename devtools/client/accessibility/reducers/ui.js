@@ -9,7 +9,6 @@ const Services = require("Services");
 const {
   AUDIT,
   ENABLE,
-  DISABLE,
   RESET,
   SELECT,
   HIGHLIGHT,
@@ -20,7 +19,7 @@ const {
   UPDATE_DETAILS,
   PREF_KEYS,
   PREFS,
-} = require("../constants");
+} = require("devtools/client/accessibility/constants");
 
 const TreeView = require("devtools/client/shared/components/tree/TreeView");
 
@@ -50,8 +49,6 @@ function ui(state = getInitialState(), action) {
   switch (action.type) {
     case ENABLE:
       return onToggle(state, action, true);
-    case DISABLE:
-      return onToggle(state, action, false);
     case UPDATE_CAN_BE_DISABLED:
       return onCanBeDisabledChange(state, action);
     case UPDATE_CAN_BE_ENABLED:
@@ -119,7 +116,7 @@ function onAudit(state, { response: ancestries, error }) {
 
 function onHighlight(state, { accessible, response: ancestry, error }) {
   if (error) {
-    console.warn("Error fetching ancestry", accessible, error);
+    console.warn("Error fetching ancestry", error);
     return state;
   }
 
@@ -129,7 +126,7 @@ function onHighlight(state, { accessible, response: ancestry, error }) {
 
 function onSelect(state, { accessible, response: ancestry, error }) {
   if (error) {
-    console.warn("Error fetching ancestry", accessible, error);
+    console.warn("Error fetching ancestry", error);
     return state;
   }
 
@@ -178,17 +175,14 @@ function onPrefChange(state, { name, value }) {
  * @param  {Object}  action  Redux action object
  * @return {Object}  updated state
  */
-function onReset(state, { accessibility, supports }) {
-  const { enabled, canBeDisabled, canBeEnabled } = accessibility;
+function onReset(state, { enabled, canBeDisabled, canBeEnabled, supports }) {
   const newState = {
     ...getInitialState(),
     enabled,
     canBeDisabled,
     canBeEnabled,
+    supports,
   };
-  if (supports) {
-    newState.supports = supports;
-  }
 
   return newState;
 }

@@ -55,7 +55,6 @@ const accessibleSpec = generateActorSpec({
       type: "nameChange",
       name: Arg(0, "string"),
       parent: Arg(1, "nullable:accessible"),
-      walker: Arg(2, "nullable:accessiblewalker"),
     },
     "value-change": {
       type: "valueChange",
@@ -80,11 +79,9 @@ const accessibleSpec = generateActorSpec({
     reorder: {
       type: "reorder",
       childCount: Arg(0, "number"),
-      walker: Arg(1, "nullable:accessiblewalker"),
     },
     "text-change": {
       type: "textChange",
-      walker: Arg(0, "nullable:accessiblewalker"),
     },
     "index-in-parent-change": {
       type: "indexInParentChange",
@@ -134,10 +131,6 @@ const accessibleWalkerSpec = generateActorSpec({
   typeName: "accessiblewalker",
 
   events: {
-    "accessible-destroy": {
-      type: "accessibleDestroy",
-      accessible: Arg(0, "accessible"),
-    },
     "document-ready": {
       type: "documentReady",
     },
@@ -176,7 +169,7 @@ const accessibleWalkerSpec = generateActorSpec({
     getAccessibleFor: {
       request: { node: Arg(0, "domnode") },
       response: {
-        accessible: RetVal("accessible"),
+        accessible: RetVal("nullable:accessible"),
       },
     },
     getAncestry: {
@@ -229,14 +222,6 @@ const accessibilitySpec = generateActorSpec({
     shutdown: {
       type: "shutdown",
     },
-    "can-be-disabled-change": {
-      type: "canBeDisabledChange",
-      canBeDisabled: Arg(0, "boolean"),
-    },
-    "can-be-enabled-change": {
-      type: "canBeEnabledChange",
-      canBeEnabled: Arg(0, "boolean"),
-    },
   },
 
   methods: {
@@ -258,6 +243,30 @@ const accessibilitySpec = generateActorSpec({
         simulator: RetVal("nullable:simulator"),
       },
     },
+  },
+});
+
+const parentAccessibilitySpec = generateActorSpec({
+  typeName: "parentaccessibility",
+
+  events: {
+    "can-be-disabled-change": {
+      type: "canBeDisabledChange",
+      canBeDisabled: Arg(0, "boolean"),
+    },
+    "can-be-enabled-change": {
+      type: "canBeEnabledChange",
+      canBeEnabled: Arg(0, "boolean"),
+    },
+  },
+
+  methods: {
+    bootstrap: {
+      request: {},
+      response: {
+        state: RetVal("json"),
+      },
+    },
     enable: {
       request: {},
       response: {},
@@ -272,4 +281,5 @@ const accessibilitySpec = generateActorSpec({
 exports.accessibleSpec = accessibleSpec;
 exports.accessibleWalkerSpec = accessibleWalkerSpec;
 exports.accessibilitySpec = accessibilitySpec;
+exports.parentAccessibilitySpec = parentAccessibilitySpec;
 exports.simulatorSpec = simulatorSpec;

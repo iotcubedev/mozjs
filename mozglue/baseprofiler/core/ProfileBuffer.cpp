@@ -4,56 +4,68 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "ProfileBuffer.h"
+
+#include "mozilla/MathAlgorithms.h"
+
 #include "BaseProfiler.h"
-
-#ifdef MOZ_BASE_PROFILER
-
-#  include "ProfileBuffer.h"
-
-#  include "ProfilerMarker.h"
-
-#  include "mozilla/MathAlgorithms.h"
 
 namespace mozilla {
 namespace baseprofiler {
 
-ProfileBuffer::ProfileBuffer(PowerOfTwo32 aCapacity)
-    : mEntries(MakeUnique<ProfileBufferEntry[]>(aCapacity.Value())),
-      mEntryIndexMask(aCapacity.Mask()),
-      mRangeStart(0),
-      mRangeEnd(0) {}
+ProfileBuffer::ProfileBuffer(ProfileChunkedBuffer& aBuffer)
+    : mEntries(aBuffer) {
+  // Assume the given buffer is in-session.
+  MOZ_ASSERT(mEntries.IsInSession());
+}
 
 ProfileBuffer::~ProfileBuffer() {
-  while (mStoredMarkers.peek()) {
-    delete mStoredMarkers.popHead();
+  // Only ProfileBuffer controls this buffer, and it should be empty when there
+  // is no ProfileBuffer using it.
+  mEntries.ResetChunkManager();
+  MOZ_ASSERT(!mEntries.IsInSession());
+}
+
+/* static */
+ProfileBufferBlockIndex ProfileBuffer::AddEntry(
+    ProfileChunkedBuffer& aProfileChunkedBuffer,
+    const ProfileBufferEntry& aEntry) {
+  switch (aEntry.GetKind()) {
+#define SWITCH_KIND(KIND, TYPE, SIZE)                          \
+  case ProfileBufferEntry::Kind::KIND: {                       \
+    return aProfileChunkedBuffer.PutFrom(&aEntry, 1 + (SIZE)); \
+    break;                                                     \
+  }
+
+    FOR_EACH_PROFILE_BUFFER_ENTRY_KIND(SWITCH_KIND)
+
+#undef SWITCH_KIND
+    default:
+      MOZ_ASSERT(false, "Unhandled baseprofiler::ProfilerBuffer entry KIND");
+      return ProfileBufferBlockIndex{};
   }
 }
 
 // Called from signal, call only reentrant functions
-void ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry) {
-  GetEntry(mRangeEnd++) = aEntry;
+uint64_t ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry) {
+  return AddEntry(mEntries, aEntry).ConvertToProfileBufferIndex();
+}
 
-  // The distance between mRangeStart and mRangeEnd must never exceed
-  // capacity, so advance mRangeStart if necessary.
-  if (mRangeEnd - mRangeStart > mEntryIndexMask.MaskValue() + 1) {
-    mRangeStart++;
-  }
+/* static */
+ProfileBufferBlockIndex ProfileBuffer::AddThreadIdEntry(
+    ProfileChunkedBuffer& aProfileChunkedBuffer, int aThreadId) {
+  return AddEntry(aProfileChunkedBuffer,
+                  ProfileBufferEntry::ThreadId(aThreadId));
 }
 
 uint64_t ProfileBuffer::AddThreadIdEntry(int aThreadId) {
-  uint64_t pos = mRangeEnd;
-  AddEntry(ProfileBufferEntry::ThreadId(aThreadId));
-  return pos;
-}
-
-void ProfileBuffer::AddStoredMarker(ProfilerMarker* aStoredMarker) {
-  aStoredMarker->SetPositionInBuffer(mRangeEnd);
-  mStoredMarkers.insert(aStoredMarker);
+  return AddThreadIdEntry(mEntries, aThreadId).ConvertToProfileBufferIndex();
 }
 
 void ProfileBuffer::CollectCodeLocation(
     const char* aLabel, const char* aStr, uint32_t aFrameFlags,
-    const Maybe<uint32_t>& aLineNumber, const Maybe<uint32_t>& aColumnNumber,
+    uint64_t aInnerWindowID, const Maybe<uint32_t>& aLineNumber,
+    const Maybe<uint32_t>& aColumnNumber,
     const Maybe<ProfilingCategoryPair>& aCategoryPair) {
   AddEntry(ProfileBufferEntry::Label(aLabel));
   AddEntry(ProfileBufferEntry::FrameFlags(uint64_t(aFrameFlags)));
@@ -61,18 +73,42 @@ void ProfileBuffer::CollectCodeLocation(
   if (aStr) {
     // Store the string using one or more DynamicStringFragment entries.
     size_t strLen = strlen(aStr) + 1;  // +1 for the null terminator
-    for (size_t j = 0; j < strLen;) {
+    // If larger than the prescribed limit, we will cut the string and end it
+    // with an ellipsis.
+    const bool tooBig = strLen > kMaxFrameKeyLength;
+    if (tooBig) {
+      strLen = kMaxFrameKeyLength;
+    }
+    char chars[ProfileBufferEntry::kNumChars];
+    for (size_t j = 0;; j += ProfileBufferEntry::kNumChars) {
       // Store up to kNumChars characters in the entry.
-      char chars[ProfileBufferEntry::kNumChars];
       size_t len = ProfileBufferEntry::kNumChars;
-      if (j + len >= strLen) {
+      const bool last = j + len >= strLen;
+      if (last) {
+        // Only the last entry may be smaller than kNumChars.
         len = strLen - j;
+        if (tooBig) {
+          // That last entry is part of a too-big string, replace the end
+          // characters with an ellipsis "...".
+          len = std::max(len, size_t(4));
+          chars[len - 4] = '.';
+          chars[len - 3] = '.';
+          chars[len - 2] = '.';
+          chars[len - 1] = '\0';
+          // Make sure the memcpy will not overwrite our ellipsis!
+          len -= 4;
+        }
       }
       memcpy(chars, &aStr[j], len);
-      j += ProfileBufferEntry::kNumChars;
-
       AddEntry(ProfileBufferEntry::DynamicStringFragment(chars));
+      if (last) {
+        break;
+      }
     }
+  }
+
+  if (aInnerWindowID) {
+    AddEntry(ProfileBufferEntry::InnerWindowID(aInnerWindowID));
   }
 
   if (aLineNumber) {
@@ -88,27 +124,15 @@ void ProfileBuffer::CollectCodeLocation(
   }
 }
 
-void ProfileBuffer::DeleteExpiredStoredMarkers() {
-  AUTO_PROFILER_STATS(base_ProfileBuffer_DeleteExpiredStoredMarkers);
-
-  // Delete markers of samples that have been overwritten due to circular
-  // buffer wraparound.
-  while (mStoredMarkers.peek() &&
-         mStoredMarkers.peek()->HasExpired(mRangeStart)) {
-    delete mStoredMarkers.popHead();
-  }
-}
-
-size_t ProfileBuffer::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
-  size_t n = aMallocSizeOf(this);
-  n += aMallocSizeOf(mEntries.get());
-
+size_t ProfileBuffer::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
   // Measurement of the following members may be added later if DMD finds it
   // is worthwhile:
   // - memory pointed to by the elements within mEntries
-  // - mStoredMarkers
+  return mEntries.SizeOfExcludingThis(aMallocSizeOf);
+}
 
-  return n;
+size_t ProfileBuffer::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
+  return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
 }
 
 void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
@@ -152,9 +176,16 @@ void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
 }
 
 ProfilerBufferInfo ProfileBuffer::GetProfilerBufferInfo() const {
-  return {mRangeStart,  mRangeEnd,    mEntryIndexMask.MaskValue() + 1,
-          mIntervalsNs, mOverheadsNs, mLockingsNs,
-          mCleaningsNs, mCountersNs,  mThreadsNs};
+  return {BufferRangeStart(),
+          BufferRangeEnd(),
+          static_cast<uint32_t>(*mEntries.BufferLength() /
+                                8),  // 8 bytes per entry.
+          mIntervalsNs,
+          mOverheadsNs,
+          mLockingsNs,
+          mCleaningsNs,
+          mCountersNs,
+          mThreadsNs};
 }
 
 /* ProfileBufferCollector */
@@ -172,26 +203,15 @@ void ProfileBufferCollector::CollectProfilingStackFrame(
 
   const char* label = aFrame.label();
   const char* dynamicString = aFrame.dynamicString();
-  bool isChromeJSEntry = false;
   Maybe<uint32_t> line;
   Maybe<uint32_t> column;
 
   MOZ_ASSERT(aFrame.isLabelFrame());
 
-  if (dynamicString) {
-    // Adjust the dynamic string as necessary.
-    if (ProfilerFeature::HasPrivacy(mFeatures) && !isChromeJSEntry) {
-      dynamicString = "(private)";
-    } else if (strlen(dynamicString) >= ProfileBuffer::kMaxFrameKeyLength) {
-      dynamicString = "(too long)";
-    }
-  }
-
-  mBuf.CollectCodeLocation(label, dynamicString, aFrame.flags(), line, column,
+  mBuf.CollectCodeLocation(label, dynamicString, aFrame.flags(),
+                           aFrame.realmID(), line, column,
                            Some(aFrame.categoryPair()));
 }
 
 }  // namespace baseprofiler
 }  // namespace mozilla
-
-#endif  // MOZ_BASE_PROFILER

@@ -25,6 +25,13 @@ async function run_test() {
   do_test_pending();
   createAppInfo("xpcshell@tests.mozilla.org", "XPCShell", "1", "1.9.2");
   Services.prefs.setBoolPref("plugin.load_flash_only", false);
+  // plugin.load_flash_only is only respected if xpc::IsInAutomation is true.
+  // This is not the case by default in xpcshell tests, unless the following
+  // pref is also set. Fixing this generically is bug 1598804
+  Services.prefs.setBoolPref(
+    "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
+    true
+  );
 
   setTestPluginState(Ci.nsIPluginTag.STATE_CLICKTOPLAY);
 
@@ -81,7 +88,7 @@ async function run_test_1() {
   Assert.notEqual(testPlugin, null);
 
   let addons = await AddonManager.getAddonsByTypes(["plugin"]);
-  Assert.ok(addons.length > 0);
+  Assert.ok(!!addons.length);
 
   addons.forEach(function(p) {
     if (p.description == TEST_PLUGIN_DESCRIPTION) {

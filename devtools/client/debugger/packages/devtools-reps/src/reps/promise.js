@@ -3,19 +3,19 @@
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
 // ReactJS
-const PropTypes = require("prop-types");
+const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
+const { span } = require("devtools/client/shared/vendor/react-dom-factories");
+
 // Dependencies
 const { getGripType, isGrip, wrapRender } = require("./rep-utils");
 
 const PropRep = require("./prop-rep");
 const { MODE } = require("./constants");
 
-const dom = require("react-dom-factories");
-const { span } = dom;
-
 /**
  * Renders a DOM Promise object.
  */
+
 PromiseRep.propTypes = {
   object: PropTypes.object.isRequired,
   // @TODO Change this to Object.values when supported in Node's version of V8
@@ -23,15 +23,18 @@ PromiseRep.propTypes = {
   onDOMNodeMouseOver: PropTypes.func,
   onDOMNodeMouseOut: PropTypes.func,
   onInspectIconClick: PropTypes.func,
+  shouldRenderTooltip: PropTypes.bool,
 };
 
 function PromiseRep(props) {
   const object = props.object;
+  const shouldRenderTooltip = props.shouldRenderTooltip;
   const { promiseState } = object;
 
   const config = {
     "data-link-actor-id": object.actor,
     className: "objectBox objectBox-object",
+    title: shouldRenderTooltip ? "Promise" : null,
   };
 
   if (props.mode === MODE.TINY) {
@@ -98,7 +101,7 @@ function getProps(props, promiseState) {
         ...props,
         mode: MODE.TINY,
         name: `<${key}>`,
-        object,
+        object: object.getGrip ? object.getGrip() : object,
         equal: ": ",
         suppressQuotes: true,
       })

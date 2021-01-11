@@ -36,7 +36,7 @@ add_task(async function setup_to_default_browserish_state() {
       manifest_version: 2,
       name: "Web Extension Name",
       version: "1.0",
-      theme: { images: { headerURL: "example.png" } },
+      theme: { images: { theme_frame: "example.png" } },
       applications: {
         gecko: {
           id: THEME_IDS[0],
@@ -266,8 +266,8 @@ add_task(async function default_locale_themes() {
       description: "__MSG_description__",
       theme: {
         colors: {
-          accentcolor: "black",
-          textcolor: "white",
+          frame: "black",
+          tab_background_text: "white",
         },
       },
     },
@@ -288,4 +288,14 @@ add_task(async function default_locale_themes() {
   equal(addon.description, "the description");
   equal(addon.type, "theme");
   await addon.uninstall();
+});
+
+add_task(async function test_theme_update() {
+  let addon = await AddonManager.getAddonByID(DEFAULT_THEME);
+  ok(!addon.userDisabled, "default theme is enabled");
+
+  await AddonTestUtils.promiseRestartManager(2);
+
+  addon = await AddonManager.getAddonByID(DEFAULT_THEME);
+  ok(!addon.userDisabled, "default theme is enabled after upgrade");
 });

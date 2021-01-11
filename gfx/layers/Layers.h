@@ -28,6 +28,7 @@
 #include "mozilla/RefPtr.h"                // for already_AddRefed
 #include "mozilla/TimeStamp.h"             // for TimeStamp, TimeDuration
 #include "mozilla/UniquePtr.h"             // for UniquePtr
+#include "mozilla/dom/Animation.h"         // for dom::Animation
 #include "mozilla/gfx/BaseMargin.h"        // for BaseMargin
 #include "mozilla/gfx/BasePoint.h"         // for BasePoint
 #include "mozilla/gfx/Point.h"             // for IntSize
@@ -39,13 +40,14 @@
 #include "mozilla/layers/CanvasRenderer.h"
 #include "mozilla/layers/LayerAttributes.h"
 #include "mozilla/layers/LayersTypes.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/mozalloc.h"        // for operator delete, etc
-#include "nsAutoPtr.h"               // for nsAutoPtr, nsRefPtr, etc
 #include "nsCOMPtr.h"                // for already_AddRefed
 #include "nsCSSPropertyID.h"         // for nsCSSPropertyID
 #include "nsDebug.h"                 // for NS_ASSERTION
 #include "nsISupportsImpl.h"         // for Layer::Release, etc
 #include "nsRect.h"                  // for mozilla::gfx::IntRect
+#include "nsRefPtrHashtable.h"       // for nsRefPtrHashtable
 #include "nsRegion.h"                // for nsIntRegion
 #include "nsString.h"                // for nsCString
 #include "nsTArray.h"                // for nsTArray
@@ -77,7 +79,6 @@ class DrawTarget;
 namespace layers {
 
 class Animation;
-class AsyncCanvasRenderer;
 class AsyncPanZoomController;
 class BasicLayerManager;
 class ClientLayerManager;
@@ -257,6 +258,7 @@ class LayerManager : public FrameRecorder {
     mDestroyed = true;
     mUserData.Destroy();
     mRoot = nullptr;
+    mPartialPrerenderedAnimations.Clear();
   }
   bool IsDestroyed() { return mDestroyed; }
 
@@ -754,6 +756,13 @@ class LayerManager : public FrameRecorder {
 
   void SetContainsSVG(bool aContainsSVG) { mContainsSVG = aContainsSVG; }
 
+  void AddPartialPrerenderedAnimation(uint64_t aCompositorAnimationId,
+                                      dom::Animation* aAnimation);
+  void RemovePartialPrerenderedAnimation(uint64_t aCompositorAnimationId,
+                                         dom::Animation* aAnimation);
+  void UpdatePartialPrerenderedAnimations(
+      const nsTArray<uint64_t>& aJankedAnimations);
+
  protected:
   RefPtr<Layer> mRoot;
   gfx::UserData mUserData;
@@ -791,6 +800,12 @@ class LayerManager : public FrameRecorder {
   // IMPORTANT: Clients should take care to clear this or risk it slowly
   // growing out of control.
   nsTArray<CompositionPayload> mPayload;
+  // Transform animations which are not fully pre-rendered because it's on a
+  // large frame.  We need to update the pre-rendered area once after we tried
+  // to composite area which is outside of the pre-rendered area on the
+  // compositor.
+  nsRefPtrHashtable<nsUint64HashKey, dom::Animation>
+      mPartialPrerenderedAnimations;
 
  public:
   /*
@@ -800,14 +815,14 @@ class LayerManager : public FrameRecorder {
    */
   virtual bool SetPendingScrollUpdateForNextTransaction(
       ScrollableLayerGuid::ViewID aScrollId,
-      const ScrollUpdateInfo& aUpdateInfo, wr::RenderRoot aRenderRoot);
+      const ScrollUpdateInfo& aUpdateInfo);
   Maybe<ScrollUpdateInfo> GetPendingScrollInfoUpdate(
       ScrollableLayerGuid::ViewID aScrollId);
   std::unordered_set<ScrollableLayerGuid::ViewID>
   ClearPendingScrollInfoUpdate();
 
  protected:
-  wr::RenderRootArray<ScrollUpdatesMap> mPendingScrollUpdates;
+  ScrollUpdatesMap mPendingScrollUpdates;
 };
 
 /**
@@ -817,7 +832,7 @@ class LayerManager : public FrameRecorder {
 class Layer {
   NS_INLINE_DECL_REFCOUNTING(Layer)
 
-  typedef nsTArray<Animation> AnimationArray;
+  using AnimationArray = nsTArray<layers::Animation>;
 
  public:
   // Keep these in alphabetical order
@@ -897,7 +912,12 @@ class Layer {
      * This layer is hidden if the backface of the layer is visible
      * to user.
      */
-    CONTENT_BACKFACE_HIDDEN = 0x80
+    CONTENT_BACKFACE_HIDDEN = 0x80,
+
+    /**
+     * This layer should be snapped to the pixel grid.
+     */
+    CONTENT_SNAP_TO_GRID = 0x100
   };
   /**
    * CONSTRUCTION PHASE ONLY
@@ -984,7 +1004,7 @@ class Layer {
     if (mScrollMetadata != aMetadataArray) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this,
                                    ("Layer::Mutated(%p) FrameMetrics", this));
-      mScrollMetadata = aMetadataArray;
+      mScrollMetadata = aMetadataArray.Clone();
       ScrollMetadataChanged();
       Mutated();
     }
@@ -1160,7 +1180,7 @@ class Layer {
     if (aLayers != mAncestorMaskLayers) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(
           this, ("Layer::Mutated(%p) AncestorMaskLayers", this));
-      mAncestorMaskLayers = aLayers;
+      mAncestorMaskLayers = aLayers.Clone();
       Mutated();
     }
   }
@@ -1200,7 +1220,7 @@ class Layer {
    * the next transaction is opened.
    */
   void SetBaseTransformForNextTransaction(const gfx::Matrix4x4& aMatrix) {
-    mPendingTransform = new gfx::Matrix4x4(aMatrix);
+    mPendingTransform = mozilla::MakeUnique<gfx::Matrix4x4>(aMatrix);
   }
 
   void SetPostScale(float aXScale, float aYScale) {
@@ -1250,6 +1270,7 @@ class Layer {
   // This is only called when the layer tree is updated. Do not call this from
   // layout code.  To add an animation to this layer, use AddAnimation.
   void SetCompositorAnimations(
+      const LayersId& aLayersId,
       const CompositorAnimations& aCompositorAnimations);
   // Go through all animations in this layer and its children and, for
   // any animations with a null start time, update their start time such
@@ -1278,7 +1299,7 @@ class Layer {
    *     combining appropriate values from mozilla::SideBits.
    */
   void SetFixedPositionData(ScrollableLayerGuid::ViewID aScrollId,
-                            const LayerPoint& aAnchor, int32_t aSides) {
+                            const LayerPoint& aAnchor, SideBits aSides) {
     if (mSimpleAttrs.SetFixedPositionData(aScrollId, aAnchor, aSides)) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(
           this, ("Layer::Mutated(%p) FixedPositionData", this));
@@ -1346,10 +1367,9 @@ class Layer {
     return mScrollMetadata;
   }
   bool HasScrollableFrameMetrics() const;
-  bool HasRootScrollableFrameMetrics() const;
   bool IsScrollableWithoutContent() const;
   const EventRegions& GetEventRegions() const { return mEventRegions; }
-  ContainerLayer* GetParent() { return mParent; }
+  ContainerLayer* GetParent() const { return mParent; }
   Layer* GetNextSibling() {
     if (mNextSibling) {
       mNextSibling->CheckCanary();
@@ -1390,7 +1410,7 @@ class Layer {
   LayerPoint GetFixedPositionAnchor() {
     return mSimpleAttrs.GetFixedPositionAnchor();
   }
-  int32_t GetFixedPositionSides() {
+  SideBits GetFixedPositionSides() {
     return mSimpleAttrs.GetFixedPositionSides();
   }
   ScrollableLayerGuid::ViewID GetStickyScrollContainerId() {
@@ -1407,7 +1427,7 @@ class Layer {
   }
   bool IsScrollbarContainer() const;
   Layer* GetMaskLayer() const { return mMaskLayer; }
-  bool HasPendingTransform() const { return mPendingTransform; }
+  bool HasPendingTransform() const { return !!mPendingTransform; }
 
   void CheckCanary() const { mCanary.Check(); }
 
@@ -1462,10 +1482,18 @@ class Layer {
   nsTArray<PropertyAnimationGroup>& GetPropertyAnimationGroups() {
     return mAnimationInfo.GetPropertyAnimationGroups();
   }
+  const Maybe<TransformData>& GetTransformData() const {
+    return mAnimationInfo.GetTransformData();
+  }
+  const LayersId& GetAnimationLayersId() const {
+    return mAnimationInfo.GetLayersId();
+  }
 
   Maybe<uint64_t> GetAnimationGeneration() const {
     return mAnimationInfo.GetAnimationGeneration();
   }
+
+  gfx::Path* CachedMotionPath() { return mAnimationInfo.CachedMotionPath(); }
 
   bool HasTransformAnimation() const;
 
@@ -1971,7 +1999,7 @@ class Layer {
   // A mutation of |mTransform| that we've queued to be applied at the
   // end of the next transaction (if nothing else overrides it in the
   // meantime).
-  nsAutoPtr<gfx::Matrix4x4> mPendingTransform;
+  UniquePtr<gfx::Matrix4x4> mPendingTransform;
   gfx::Matrix4x4 mEffectiveTransform;
   AnimationInfo mAnimationInfo;
   Maybe<ParentLayerIntRect> mClipRect;
@@ -2419,7 +2447,7 @@ class ContainerLayer : public Layer {
   // be part of mTransform.
   float mInheritedXScale;
   float mInheritedYScale;
-  // For layers corresponding to an nsDisplayResolution, the resolution of the
+  // For layers corresponding to an nsDisplayAsyncZoom, the resolution of the
   // associated pres shell; for other layers, 1.0.
   float mPresShellResolution;
   bool mUseIntermediateSurface;
@@ -2443,7 +2471,7 @@ class ColorLayer : public Layer {
    * CONSTRUCTION PHASE ONLY
    * Set the color of the layer.
    */
-  virtual void SetColor(const gfx::Color& aColor) {
+  virtual void SetColor(const gfx::DeviceColor& aColor) {
     if (mColor != aColor) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) Color", this));
       mColor = aColor;
@@ -2461,7 +2489,7 @@ class ColorLayer : public Layer {
   const gfx::IntRect& GetBounds() { return mBounds; }
 
   // This getter can be used anytime.
-  virtual const gfx::Color& GetColor() { return mColor; }
+  virtual const gfx::DeviceColor& GetColor() { return mColor; }
 
   MOZ_LAYER_DECL_NAME("ColorLayer", TYPE_COLOR)
 
@@ -2482,7 +2510,7 @@ class ColorLayer : public Layer {
                   const void* aParent) override;
 
   gfx::IntRect mBounds;
-  gfx::Color mColor;
+  gfx::DeviceColor mColor;
 };
 
 /**
@@ -2531,7 +2559,7 @@ class CanvasLayer : public Layer {
 
   const nsIntRect& GetBounds() const { return mBounds; }
 
-  CanvasRenderer* CreateOrGetCanvasRenderer();
+  RefPtr<CanvasRenderer> CreateOrGetCanvasRenderer();
 
  public:
   /**
@@ -2572,9 +2600,9 @@ class CanvasLayer : public Layer {
   void DumpPacket(layerscope::LayersPacket* aPacket,
                   const void* aParent) override;
 
-  virtual CanvasRenderer* CreateCanvasRendererInternal() = 0;
+  virtual RefPtr<CanvasRenderer> CreateCanvasRendererInternal() = 0;
 
-  UniquePtr<CanvasRenderer> mCanvasRenderer;
+  RefPtr<CanvasRenderer> mCanvasRenderer;
   gfx::SamplingFilter mSamplingFilter;
 
   /**
@@ -2676,6 +2704,22 @@ class RefLayer : public ContainerLayer {
   }
 
   /**
+   * CONSTRUCTION PHASE ONLY
+   * Set remote subdocument iframe size.
+   */
+  void SetRemoteDocumentSize(const LayerIntSize& aRemoteDocumentSize) {
+    if (mRemoteDocumentSize == aRemoteDocumentSize) {
+      return;
+    }
+    mRemoteDocumentSize = aRemoteDocumentSize;
+    Mutated();
+  }
+
+  const LayerIntSize& GetRemoteDocumentSize() const {
+    return mRemoteDocumentSize;
+  }
+
+  /**
    * DRAWING PHASE ONLY
    * |aLayer| is the same as the argument to ConnectReferentLayer().
    */
@@ -2710,6 +2754,9 @@ class RefLayer : public ContainerLayer {
   // 0 is a special value that means "no ID".
   LayersId mId;
   EventRegionsOverride mEventRegionsOverride;
+  // The remote documents only need their size because their origin is always
+  // (0, 0).
+  LayerIntSize mRemoteDocumentSize;
 };
 
 void SetAntialiasingFlags(Layer* aLayer, gfx::DrawTarget* aTarget);

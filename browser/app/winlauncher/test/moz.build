@@ -8,6 +8,7 @@ DisableStlWrapping()
 
 GeckoCppUnitTests(
     [
+        'TestSafeThreadLocal',
         'TestSameBinary',
     ],
     linkage=None
@@ -18,7 +19,6 @@ LOCAL_INCLUDES += [
 ]
 
 OS_LIBS += [
-    'mincore',
     'ntdll',
 ]
 

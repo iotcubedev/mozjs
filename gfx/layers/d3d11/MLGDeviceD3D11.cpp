@@ -23,6 +23,7 @@
 #include "TextureD3D11.h"
 #include "gfxConfig.h"
 #include "mozilla/StaticPrefs_layers.h"
+#include "FxROutputHandler.h"
 
 namespace mozilla {
 namespace layers {
@@ -30,7 +31,6 @@ namespace layers {
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
 using namespace mozilla::layers::mlg;
-using namespace std;
 
 // Defined in CompositorD3D11.cpp.
 bool CanUsePartialPresents(ID3D11Device* aDevice);
@@ -268,6 +268,10 @@ bool MLGSwapChainD3D11::Initialize(CompositorWidget* aWidget) {
       mSwapChain1->SetBackgroundColor(&color);
       mSwapChain = mSwapChain1;
       mIsDoubleBuffered = true;
+    } else if (aWidget->AsWindows()->GetCompositorHwnd()) {
+      // Destroy compositor window.
+      aWidget->AsWindows()->DestroyCompositorWindow();
+      hwnd = aWidget->AsWindows()->GetHwnd();
     }
   }
 
@@ -380,8 +384,6 @@ void MLGSwapChainD3D11::UpdateBackBufferContents(ID3D11Texture2D* aBack) {
 }
 
 bool MLGSwapChainD3D11::ResizeBuffers(const IntSize& aSize) {
-  mWidget->AsWindows()->UpdateCompositorWndSizeIfNecessary();
-
   // We have to clear all references to the old backbuffer before resizing.
   mRT = nullptr;
 
@@ -415,6 +417,17 @@ void MLGSwapChainD3D11::Present() {
 
   // See bug 1260611 comment #28 for why we do this.
   mParent->InsertPresentWaitQuery();
+
+  if (mWidget->AsWindows()->HasFxrOutputHandler()) {
+    // There is a Firefox Reality handler for this swapchain. Update this
+    // window's contents to the VR window.
+    FxROutputHandler* fxrHandler = mWidget->AsWindows()->GetFxrOutputHandler();
+    if (fxrHandler->TryInitialize(mSwapChain, mDevice)) {
+      RefPtr<ID3D11DeviceContext> context;
+      mDevice->GetImmediateContext(getter_AddRefs(context));
+      fxrHandler->UpdateOutput(context);
+    }
+  }
 
   HRESULT hr;
   if (mCanUsePartialPresents && mSwapChain1) {
@@ -1563,7 +1576,8 @@ RefPtr<MLGRenderTarget> MLGDeviceD3D11::CreateRenderTarget(
   return rt;
 }
 
-void MLGDeviceD3D11::Clear(MLGRenderTarget* aRT, const gfx::Color& aColor) {
+void MLGDeviceD3D11::Clear(MLGRenderTarget* aRT,
+                           const gfx::DeviceColor& aColor) {
   MLGRenderTargetD3D11* rt = aRT->AsD3D11();
   FLOAT rgba[4] = {aColor.r, aColor.g, aColor.b, aColor.a};
   mCtx->ClearRenderTargetView(rt->GetRenderTargetView(), rgba);
@@ -1579,7 +1593,7 @@ void MLGDeviceD3D11::ClearDepthBuffer(MLGRenderTarget* aRT) {
   }
 }
 
-void MLGDeviceD3D11::ClearView(MLGRenderTarget* aRT, const Color& aColor,
+void MLGDeviceD3D11::ClearView(MLGRenderTarget* aRT, const DeviceColor& aColor,
                                const IntRect* aRects, size_t aNumRects) {
   MOZ_ASSERT(mCanUseClearView);
   MOZ_ASSERT(mCtx1);
@@ -1832,7 +1846,7 @@ void MLGDeviceD3D11::HandleDeviceReset(const char* aWhere) {
     return;
   }
 
-  Fail(NS_LITERAL_CSTRING("FEATURE_FAILURE_DEVICE_RESET"), nullptr);
+  Fail("FEATURE_FAILURE_DEVICE_RESET"_ns, nullptr);
 
   gfxCriticalNote << "GFX: D3D11 detected a device reset in " << aWhere;
   if (XRE_IsGPUProcess()) {
@@ -1943,16 +1957,18 @@ bool MLGDeviceD3D11::VerifyConstantBufferOffsetting() {
       return false;
     }
 
-    *reinterpret_cast<Color*>(map.mData) = Color(1.0f, 0.2f, 0.3f, 1.0f);
-    *reinterpret_cast<Color*>(map.mData + kConstantSize * kMinConstants) =
-        Color(0.4f, 0.0f, 0.5f, 1.0f);
-    *reinterpret_cast<Color*>(map.mData + (kConstantSize * kMinConstants) * 2) =
-        Color(0.6f, 0.7f, 1.0f, 1.0f);
+    *reinterpret_cast<DeviceColor*>(map.mData) =
+        DeviceColor(1.0f, 0.2f, 0.3f, 1.0f);
+    *reinterpret_cast<DeviceColor*>(map.mData + kConstantSize * kMinConstants) =
+        DeviceColor(0.4f, 0.0f, 0.5f, 1.0f);
+    *reinterpret_cast<DeviceColor*>(map.mData +
+                                    (kConstantSize * kMinConstants) * 2) =
+        DeviceColor(0.6f, 0.7f, 1.0f, 1.0f);
 
     Unmap(buffer);
   }
 
-  Clear(rt, Color(0.0f, 0.0f, 0.0f, 1.0f));
+  Clear(rt, DeviceColor(0.0f, 0.0f, 0.0f, 1.0f));
   SetRenderTarget(rt);
   SetViewport(IntRect(0, 0, 2, 2));
   SetScissorRect(Nothing());

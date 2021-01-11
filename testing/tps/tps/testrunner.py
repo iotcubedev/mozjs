@@ -83,7 +83,8 @@ class TPSTestRunner(object):
         'xpinstall.signatures.required': False,
         'services.sync.testing.tps': True,
         'engine.bookmarks.repair.enabled': False,
-        'extensions.legacy.enabled': True,
+        'extensions.experiments.enabled': True,
+        'webextensions.storage.sync.kinto': False,
     }
 
     debug_preferences = {

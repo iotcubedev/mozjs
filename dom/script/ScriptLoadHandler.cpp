@@ -9,8 +9,7 @@
 #include "ScriptTrace.h"
 
 #include "nsContentUtils.h"
-#include "nsIEncodedChannel.h"
-#include "nsIStringEnumerator.h"
+#include "nsICacheInfoChannel.h"
 #include "nsMimeTypes.h"
 
 #include "mozilla/dom/ScriptDecoding.h"  // mozilla::dom::ScriptDecoding
@@ -27,19 +26,19 @@ namespace dom {
 #define LOG_ENABLED() \
   MOZ_LOG_TEST(ScriptLoader::gScriptLoaderLog, mozilla::LogLevel::Debug)
 
-ScriptLoadHandler::ScriptLoadHandler(ScriptLoader* aScriptLoader,
-                                     ScriptLoadRequest* aRequest,
-                                     SRICheckDataVerifier* aSRIDataVerifier)
+ScriptLoadHandler::ScriptLoadHandler(
+    ScriptLoader* aScriptLoader, ScriptLoadRequest* aRequest,
+    UniquePtr<SRICheckDataVerifier>&& aSRIDataVerifier)
     : mScriptLoader(aScriptLoader),
       mRequest(aRequest),
-      mSRIDataVerifier(aSRIDataVerifier),
+      mSRIDataVerifier(std::move(aSRIDataVerifier)),
       mSRIStatus(NS_OK),
       mDecoder() {
   MOZ_ASSERT(mRequest->IsUnknownDataType());
   MOZ_ASSERT(mRequest->IsLoading());
 }
 
-ScriptLoadHandler::~ScriptLoadHandler() {}
+ScriptLoadHandler::~ScriptLoadHandler() = default;
 
 NS_IMPL_ISUPPORTS(ScriptLoadHandler, nsIIncrementalStreamLoaderObserver)
 
@@ -71,22 +70,6 @@ nsresult ScriptLoadHandler::DecodeRawDataHelper(const uint8_t* aData,
       MakeSpan(scriptText.begin() + haveRead, needed.value()), aEndOfStream);
   MOZ_ASSERT(written <= needed.value());
 
-  // Telemetry: Measure the throughput at which bytes are streamed and the ratio
-  // of streamed bytes, such that we can determine the effectiveness of a
-  // streaming parser for JavaScript.
-  using namespace mozilla::Telemetry;
-  if (aEndOfStream && haveRead) {
-    // Compute the percent of data transfered incrementally.
-    Accumulate(DOM_SCRIPT_LOAD_INCREMENTAL_RATIO, 100 * haveRead / (haveRead + written));
-    // Compute the rate of transfer of the incremental data calls averaged
-    // across the time needed to complete the request.
-    double ms = (TimeStamp::Now() - mFirstOnIncrementalData).ToMilliseconds();
-    Accumulate(DOM_SCRIPT_LOAD_INCREMENTAL_AVG_TRANSFER_RATE, haveRead / ms);
-  }
-  if (!aEndOfStream && !haveRead) {
-    mFirstOnIncrementalData = TimeStamp::Now();
-  }
-
   haveRead += written;
   MOZ_ASSERT(haveRead <= capacity.value(),
              "mDecoder produced more data than expected");
@@ -111,6 +94,14 @@ ScriptLoadHandler::OnIncrementalData(nsIIncrementalStreamLoader* aLoader,
                                      nsISupports* aContext,
                                      uint32_t aDataLength, const uint8_t* aData,
                                      uint32_t* aConsumedLength) {
+  nsCOMPtr<nsIRequest> channelRequest;
+  aLoader->GetRequest(getter_AddRefs(channelRequest));
+
+  if (!mPreloadStartNotified) {
+    mPreloadStartNotified = true;
+    mRequest->NotifyStart(channelRequest);
+  }
+
   if (mRequest->IsCanceled()) {
     // If request cancelled, ignore any incoming data.
     *aConsumedLength = aDataLength;
@@ -162,8 +153,6 @@ ScriptLoadHandler::OnIncrementalData(nsIIncrementalStreamLoader* aLoader,
     *aConsumedLength = aDataLength;
     rv = MaybeDecodeSRI();
     if (NS_FAILED(rv)) {
-      nsCOMPtr<nsIRequest> channelRequest;
-      aLoader->GetRequest(getter_AddRefs(channelRequest));
       return channelRequest->Cancel(mScriptLoader->RestartLoad(mRequest));
     }
   }
@@ -220,7 +209,7 @@ bool ScriptLoadHandler::TrySetDecoder(nsIIncrementalStreamLoader* aLoader,
   // request.
   nsAutoString hintCharset;
   if (!mRequest->IsPreload()) {
-    mRequest->Element()->GetScriptCharset(hintCharset);
+    mRequest->GetScriptElement()->GetScriptCharset(hintCharset);
   } else {
     nsTArray<ScriptLoader::PreloadInfo>::index_type i =
         mScriptLoader->mPreloads.IndexOf(
@@ -290,7 +279,7 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
 
   if (mRequest->IsLoadingSource()) {
     mRequest->SetTextSource();
-    TRACE_FOR_TEST(mRequest->Element(), "scriptloader_load_source");
+    TRACE_FOR_TEST(mRequest->GetScriptElement(), "scriptloader_load_source");
     return NS_OK;
   }
 
@@ -300,7 +289,8 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
     cic->GetAlternativeDataType(altDataType);
     if (altDataType.Equals(nsContentUtils::JSBytecodeMimeType())) {
       mRequest->SetBytecode();
-      TRACE_FOR_TEST(mRequest->Element(), "scriptloader_load_bytecode");
+      TRACE_FOR_TEST(mRequest->GetScriptElement(),
+                     "scriptloader_load_bytecode");
       return NS_OK;
     }
     MOZ_ASSERT(altDataType.IsEmpty());
@@ -314,7 +304,8 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
       if (mimeType.LowerCaseEqualsASCII(APPLICATION_JAVASCRIPT_BINAST)) {
         if (mRequest->ShouldAcceptBinASTEncoding()) {
           mRequest->SetBinASTSource();
-          TRACE_FOR_TEST(mRequest->Element(), "scriptloader_load_source");
+          TRACE_FOR_TEST(mRequest->GetScriptElement(),
+                         "scriptloader_load_source");
           return NS_OK;
         }
 
@@ -328,7 +319,7 @@ nsresult ScriptLoadHandler::EnsureKnownDataType(
   }
 
   mRequest->SetTextSource();
-  TRACE_FOR_TEST(mRequest->Element(), "scriptloader_load_source");
+  TRACE_FOR_TEST(mRequest->GetScriptElement(), "scriptloader_load_source");
 
   MOZ_ASSERT(!mRequest->IsUnknownDataType());
   MOZ_ASSERT(mRequest->IsLoading());
@@ -350,6 +341,14 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
 
   nsCOMPtr<nsIRequest> channelRequest;
   aLoader->GetRequest(getter_AddRefs(channelRequest));
+
+  if (!mPreloadStartNotified) {
+    mPreloadStartNotified = true;
+    mRequest->NotifyStart(channelRequest);
+  }
+
+  auto notifyStop =
+      MakeScopeExit([&] { mRequest->NotifyStop(channelRequest, rv); });
 
   if (!mRequest->IsCanceled()) {
     if (mRequest->IsUnknownDataType()) {
@@ -420,7 +419,7 @@ ScriptLoadHandler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
 
   // we have to mediate and use mRequest.
   rv = mScriptLoader->OnStreamComplete(aLoader, mRequest, aStatus, mSRIStatus,
-                                       mSRIDataVerifier);
+                                       mSRIDataVerifier.get());
 
   // In case of failure, clear the mCacheInfoChannel to avoid keeping it alive.
   if (NS_FAILED(rv)) {

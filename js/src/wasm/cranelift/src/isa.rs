@@ -21,6 +21,7 @@
 //! The main entry point is the `make_isa()` function which allocates a configured `TargetISA`
 //! object.
 
+use log::warn;
 use std::env;
 
 use cranelift_codegen::isa;
@@ -28,6 +29,79 @@ use cranelift_codegen::settings::{self, Configurable};
 
 use crate::bindings::StaticEnvironment;
 use crate::utils::{BasicError, DashResult};
+
+#[cfg(target_pointer_width = "64")]
+pub const POINTER_SIZE: usize = 8;
+#[cfg(target_pointer_width = "32")]
+pub const POINTER_SIZE: usize = 4;
+
+#[cfg(feature = "cranelift_x86")]
+pub mod platform {
+    use super::*;
+
+    pub const IS_SUPPORTED: bool = true;
+    pub const USES_HEAP_REG: bool = true;
+
+    pub fn make_isa_builder(env: &StaticEnvironment) -> DashResult<isa::Builder> {
+        let mut ib = isa::lookup_by_name("x86_64-unknown-unknown").map_err(BasicError::from)?;
+
+        if !env.has_sse2 {
+            return Err("SSE2 is mandatory for Baldrdash!".into());
+        }
+
+        if env.has_sse3 {
+            ib.enable("has_sse3").map_err(BasicError::from)?;
+        }
+        if env.has_sse41 {
+            ib.enable("has_sse41").map_err(BasicError::from)?;
+        }
+        if env.has_sse42 {
+            ib.enable("has_sse42").map_err(BasicError::from)?;
+        }
+        if env.has_popcnt {
+            ib.enable("has_popcnt").map_err(BasicError::from)?;
+        }
+        if env.has_avx {
+            ib.enable("has_avx").map_err(BasicError::from)?;
+        }
+        if env.has_bmi1 {
+            ib.enable("has_bmi1").map_err(BasicError::from)?;
+        }
+        if env.has_bmi2 {
+            ib.enable("has_bmi2").map_err(BasicError::from)?;
+        }
+        if env.has_lzcnt {
+            ib.enable("has_lzcnt").map_err(BasicError::from)?;
+        }
+
+        Ok(ib)
+    }
+}
+
+#[cfg(feature = "cranelift_arm64")]
+pub mod platform {
+    use super::*;
+
+    pub const IS_SUPPORTED: bool = true;
+    pub const USES_HEAP_REG: bool = true;
+
+    pub fn make_isa_builder(_env: &StaticEnvironment) -> DashResult<isa::Builder> {
+        let ib = isa::lookup_by_name("aarch64-unknown-unknown").map_err(BasicError::from)?;
+        Ok(ib)
+    }
+}
+
+#[cfg(not(any(feature = "cranelift_x86", feature = "cranelift_arm64")))]
+pub mod platform {
+    use super::*;
+
+    pub const IS_SUPPORTED: bool = false;
+    pub const USES_HEAP_REG: bool = false;
+
+    pub fn make_isa_builder(_env: &StaticEnvironment) -> DashResult<isa::Builder> {
+        Err("Platform not supported yet!".into())
+    }
+}
 
 impl From<isa::LookupError> for BasicError {
     fn from(err: isa::LookupError) -> BasicError {
@@ -104,16 +178,14 @@ fn make_shared_flags(
     sb.enable("avoid_div_traps")?;
 
     // Cranelift needs to know how many words are pushed by `GenerateFunctionPrologue` so it can
-    // compute frame pointer offsets accurately.
-    //
-    // 1. Return address (whether explicitly pushed on ARM or implicitly on x86).
-    // 2. TLS register.
-    // 3. Previous frame pointer.
-    //
-    sb.set("baldrdash_prologue_words", "3")?;
+    // compute frame pointer offsets accurately. C++'s "sizeof" gives us the number of bytes, which
+    // we translate to the number of words, as expected by Cranelift.
+    debug_assert_eq!(env.size_of_wasm_frame % POINTER_SIZE, 0);
+    let num_words = env.size_of_wasm_frame / POINTER_SIZE;
+    sb.set("baldrdash_prologue_words", &num_words.to_string())?;
 
     // Make sure that libcalls use the supplementary VMContext argument.
-    let libcall_call_conv = if env.platformIsWindows {
+    let libcall_call_conv = if env.platform_is_windows {
         "baldrdash_windows"
     } else {
         "baldrdash_system_v"
@@ -122,7 +194,7 @@ fn make_shared_flags(
 
     // Assembler::PatchDataWithValueCheck expects -1 stored where a function address should be
     // patched in.
-    sb.enable("allones_funcaddrs")?;
+    sb.enable("emit_all_ones_funcaddrs")?;
 
     // Enable the verifier if assertions are enabled. Otherwise leave it disabled,
     // as it's quite slow.
@@ -131,72 +203,37 @@ fn make_shared_flags(
     }
 
     // Baldrdash does its own stack overflow checks, so we don't need Cranelift doing any for us.
-    sb.set("probestack_enabled", "false")?;
+    sb.set("enable_probestack", "false")?;
 
     // Let's optimize for speed by default.
     let opt_level = match env_flags {
         Some(env_flags) => env_flags.opt_level,
         None => None,
     }
-    .unwrap_or("best");
+    .unwrap_or("speed");
     sb.set("opt_level", opt_level)?;
 
     // Enable jump tables by default.
-    let jump_tables_enabled = match env_flags {
+    let enable_jump_tables = match env_flags {
         Some(env_flags) => env_flags.jump_tables,
         None => None,
     }
     .unwrap_or(true);
     sb.set(
-        "jump_tables_enabled",
-        if jump_tables_enabled { "true" } else { "false" },
+        "enable_jump_tables",
+        if enable_jump_tables { "true" } else { "false" },
     )?;
 
+    if platform::USES_HEAP_REG {
+        sb.enable("enable_pinned_reg")?;
+        sb.enable("use_pinned_reg_as_heap_base")?;
+    }
+
+    if env.ref_types_enabled {
+        sb.enable("enable_safepoints")?;
+    }
+
     Ok(settings::Flags::new(sb))
-}
-
-#[cfg(feature = "cranelift_x86")]
-fn make_isa_specific(env: &StaticEnvironment) -> DashResult<isa::Builder> {
-    use std::str::FromStr; // for the triple! macro below.
-
-    let mut ib = isa::lookup(triple!("x86_64-unknown-unknown")).map_err(BasicError::from)?;
-
-    if !env.hasSse2 {
-        return Err("SSE2 is mandatory for Baldrdash!".into());
-    }
-
-    if env.hasSse3 {
-        ib.enable("has_sse3").map_err(BasicError::from)?;
-    }
-    if env.hasSse41 {
-        ib.enable("has_sse41").map_err(BasicError::from)?;
-    }
-    if env.hasSse42 {
-        ib.enable("has_sse42").map_err(BasicError::from)?;
-    }
-    if env.hasPopcnt {
-        ib.enable("has_popcnt").map_err(BasicError::from)?;
-    }
-    if env.hasAvx {
-        ib.enable("has_avx").map_err(BasicError::from)?;
-    }
-    if env.hasBmi1 {
-        ib.enable("has_bmi1").map_err(BasicError::from)?;
-    }
-    if env.hasBmi2 {
-        ib.enable("has_bmi2").map_err(BasicError::from)?;
-    }
-    if env.hasLzcnt {
-        ib.enable("has_lzcnt").map_err(BasicError::from)?;
-    }
-
-    Ok(ib)
-}
-
-/// TODO: SM runs on more than x86 chips. Support them.
-#[cfg(not(feature = "cranelift_x86"))]
-fn make_isa_specific(_env: &StaticEnvironment) -> DashResult<isa::Builder> {
-    Err("Platform not supported yet!".into())
 }
 
 /// Allocate a `TargetISA` object that can be used to generate code for the CPU we're running on.
@@ -205,8 +242,8 @@ pub fn make_isa(env: &StaticEnvironment) -> DashResult<Box<dyn isa::TargetIsa>> 
     let env_flags_str = std::env::var("CRANELIFT_FLAGS");
     let env_flags = EnvVariableFlags::parse(&env_flags_str);
 
-    // Start with the ISA-independent settings.
     let shared_flags = make_shared_flags(env, &env_flags).map_err(BasicError::from)?;
-    let ib = make_isa_specific(env)?;
+
+    let ib = platform::make_isa_builder(env)?;
     Ok(ib.finish(shared_flags))
 }

@@ -7,8 +7,8 @@ package org.mozilla.geckoview.test
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.StorageController
 
-import android.support.test.filters.MediumTest
-import android.support.test.runner.AndroidJUnit4
+import androidx.test.filters.MediumTest
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.hamcrest.Matchers.*
 import org.json.JSONObject
 import org.junit.Test
@@ -98,9 +98,18 @@ class StorageControllerTest : BaseSessionTest() {
             document.cookie || 'null'
         """) as String
 
-        assertThat("Local storage value should match",
-                   localStorage,
-                   equalTo("test"))
+        // With LSNG disabled, storage is also cleared when cookies are,
+        // see bug 1592752.
+        if (sessionRule.getPrefs("dom.storage.next_gen")[0] as Boolean == true) {
+          assertThat("Local storage value should match",
+                     localStorage,
+                     equalTo("test"))
+        } else {
+          assertThat("Local storage value should match",
+                     localStorage,
+                     equalTo("null"))
+        }
+
         assertThat("Cookie value should match",
                    cookie,
                    equalTo("null"))
@@ -217,9 +226,9 @@ class StorageControllerTest : BaseSessionTest() {
                    equalTo("null"))
     }
 
-    @Test fun sessionContext() {
+    private fun testSessionContext(baseSettings: GeckoSessionSettings) {
         val session1 = sessionRule.createOpenSession(
-                GeckoSessionSettings.Builder(mainSession.settings)
+                GeckoSessionSettings.Builder(baseSettings)
                 .contextId("1")
                 .build())
         session1.loadUri("https://example.com")
@@ -249,7 +258,7 @@ class StorageControllerTest : BaseSessionTest() {
                    equalTo("1"))
 
         val session2 = sessionRule.createOpenSession(
-                GeckoSessionSettings.Builder(mainSession.settings)
+                GeckoSessionSettings.Builder(baseSettings)
                 .contextId("2")
                 .build())
 
@@ -260,7 +269,7 @@ class StorageControllerTest : BaseSessionTest() {
             localStorage.getItem('ctx') || 'null'
         """) as String
 
-        assertThat("Local storage value should match",
+        assertThat("Local storage value should be null",
                    localStorage,
                    equalTo("null"))
 
@@ -288,7 +297,7 @@ class StorageControllerTest : BaseSessionTest() {
                    equalTo("1"))
 
         val session3 = sessionRule.createOpenSession(
-                GeckoSessionSettings.Builder(mainSession.settings)
+                GeckoSessionSettings.Builder(baseSettings)
                 .contextId("2")
                 .build())
 
@@ -302,6 +311,17 @@ class StorageControllerTest : BaseSessionTest() {
         assertThat("Local storage value should match",
                    localStorage,
                    equalTo("2"))
+    }
+
+    @Test fun sessionContext() {
+        testSessionContext(mainSession.settings)
+    }
+
+    @Test fun sessionContextPrivateMode() {
+        testSessionContext(
+                GeckoSessionSettings.Builder(mainSession.settings)
+                .usePrivateMode(true)
+                .build())
     }
 
     @Test fun clearDataForSessionContext() {

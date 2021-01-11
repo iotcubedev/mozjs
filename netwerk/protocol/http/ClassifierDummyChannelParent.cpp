@@ -7,7 +7,6 @@
 #include "ClassifierDummyChannelParent.h"
 #include "mozilla/net/AsyncUrlChannelClassifier.h"
 #include "mozilla/Unused.h"
-#include "nsIChannel.h"
 #include "nsIPrincipal.h"
 #include "nsNetUtil.h"
 
@@ -19,10 +18,9 @@ ClassifierDummyChannelParent::ClassifierDummyChannelParent()
 
 ClassifierDummyChannelParent::~ClassifierDummyChannelParent() = default;
 
-void ClassifierDummyChannelParent::Init(
-    nsIURI* aURI, nsIURI* aTopWindowURI,
-    nsIPrincipal* aContentBlockingAllowListPrincipal,
-    nsresult aTopWindowURIResult, nsILoadInfo* aLoadInfo) {
+void ClassifierDummyChannelParent::Init(nsIURI* aURI, nsIURI* aTopWindowURI,
+                                        nsresult aTopWindowURIResult,
+                                        nsILoadInfo* aLoadInfo) {
   MOZ_ASSERT(mIPCActive);
 
   RefPtr<ClassifierDummyChannelParent> self = this;
@@ -34,13 +32,12 @@ void ClassifierDummyChannelParent::Init(
   }
 
   RefPtr<ClassifierDummyChannel> channel = new ClassifierDummyChannel(
-      aURI, aTopWindowURI, aContentBlockingAllowListPrincipal,
-      aTopWindowURIResult, aLoadInfo);
+      aURI, aTopWindowURI, aTopWindowURIResult, aLoadInfo);
 
   bool willCallback = NS_SUCCEEDED(AsyncUrlChannelClassifier::CheckChannel(
       channel, [self = std::move(self), channel]() {
         if (self->mIPCActive) {
-          Unused << Send__delete__(self, channel->ClassificationFlags());
+          Unused << Send__delete__(self, channel->GetClassificationFlags());
         }
       }));
 

@@ -3,12 +3,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
-#include "nsIServiceManager.h"
 #include "nsICategoryManager.h"
 #include "nsXPCOM.h"
-#include "nsISupportsPrimitives.h"
 #include "nsAppStartupNotifier.h"
 #include "mozilla/SimpleEnumerator.h"
 
@@ -39,7 +38,7 @@ nsresult nsAppStartupNotifier::NotifyObservers(const char* aCategory) {
     // If we see the word "service," in the beginning
     // of the contractId then we create it as a service
     // if not we do a createInstance
-    if (StringBeginsWith(contractId, NS_LITERAL_CSTRING("service,"))) {
+    if (StringBeginsWith(contractId, "service,"_ns)) {
       startupInstance = do_GetService(contractId.get() + 8, &rv);
     } else {
       startupInstance = do_CreateInstance(contractId.get(), &rv);

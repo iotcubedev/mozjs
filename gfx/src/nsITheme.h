@@ -94,9 +94,9 @@ class nsITheme : public nsISupports {
   /**
    * Return the border for the widget, in device pixels.
    */
-  virtual MOZ_MUST_USE LayoutDeviceIntMargin
-  GetWidgetBorder(nsDeviceContext* aContext, nsIFrame* aFrame,
-                  StyleAppearance aWidgetType) = 0;
+  [[nodiscard]] virtual LayoutDeviceIntMargin GetWidgetBorder(
+      nsDeviceContext* aContext, nsIFrame* aFrame,
+      StyleAppearance aWidgetType) = 0;
 
   /**
    * This method can return false to indicate that the CSS padding
@@ -122,7 +122,7 @@ class nsITheme : public nsISupports {
    * This overflow area is used to determine what area needs to be
    * repainted when the widget changes.  However, it does not affect the
    * widget's size or what area is reachable by scrollbars.  (In other
-   * words, in layout terms, it affects visual overflow but not
+   * words, in layout terms, it affects ink overflow but not
    * scrollable overflow.)
    */
   virtual bool GetWidgetOverflow(nsDeviceContext* aContext, nsIFrame* aFrame,
@@ -168,11 +168,6 @@ class nsITheme : public nsISupports {
     return false;
   }
 
-  virtual bool NeedToClearBackgroundBehindWidget(nsIFrame* aFrame,
-                                                 StyleAppearance aWidgetType) {
-    return false;
-  }
-
   /**
    * ThemeGeometryType values are used for describing themed nsIFrames in
    * calls to nsIWidget::UpdateThemeGeometries. We don't simply pass the
@@ -214,6 +209,17 @@ class nsITheme : public nsISupports {
   virtual bool ThemeDrawsFocusForWidget(StyleAppearance aWidgetType) = 0;
 
   /**
+   * Whether we want an inner focus ring for buttons and such.
+   *
+   * Usually, we don't want it if we have our own focus indicators, but windows
+   * is special, because it wants it even though focus also alters the border
+   * color and such.
+   */
+  virtual bool ThemeWantsButtonInnerFocusRing(StyleAppearance aAppearance) {
+    return !ThemeDrawsFocusForWidget(aAppearance);
+  }
+
+  /**
    * Should we insert a dropmarker inside of combobox button?
    */
   virtual bool ThemeNeedsComboboxDropmarker() = 0;
@@ -221,7 +227,10 @@ class nsITheme : public nsISupports {
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsITheme, NS_ITHEME_IID)
 
-// Singleton accessor function
-extern already_AddRefed<nsITheme> do_GetNativeTheme();
+// Singleton accessor functions, these should never return null.
+//
+// Do not use directly, use nsPresContext::Theme instead.
+extern already_AddRefed<nsITheme> do_GetNativeThemeDoNotUseDirectly();
+extern already_AddRefed<nsITheme> do_GetBasicNativeThemeDoNotUseDirectly();
 
 #endif

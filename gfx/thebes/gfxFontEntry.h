@@ -24,6 +24,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
+#include "ThebesRLBoxTypes.h"
 #include <math.h>
 
 typedef struct gr_face gr_face;
@@ -250,9 +251,9 @@ class gfxFontEntry {
 
   bool TryGetColorGlyphs();
   bool GetColorLayersInfo(uint32_t aGlyphId,
-                          const mozilla::gfx::Color& aDefaultColor,
+                          const mozilla::gfx::DeviceColor& aDefaultColor,
                           nsTArray<uint16_t>& layerGlyphs,
-                          nsTArray<mozilla::gfx::Color>& layerColors);
+                          nsTArray<mozilla::gfx::DeviceColor>& layerColors);
 
   // Access to raw font table data (needed for Harfbuzz):
   // returns a pointer to data owned by the fontEntry or the OS,
@@ -335,16 +336,32 @@ class gfxFontEntry {
   // Caller must release with hb_face_destroy() when finished with it,
   // and the font entry will be notified via ForgetHBFace.
   hb_face_t* GetHBFace();
-  virtual void ForgetHBFace();
+  void ForgetHBFace();
+
+  // Get the sandbox instance that graphite is running in.
+  rlbox_sandbox_gr* GetGrSandbox();
+
+  // Register and get the callback handle for the glyph advance firefox callback
+  // Since the sandbox instance is shared with multiple test shapers, callback
+  // registration must be handled centrally to ensure multiple instances don't
+  // register the same callback.
+  sandbox_callback_gr<float (*)(const void*, uint16_t)>*
+  GetGrSandboxAdvanceCallbackHandle();
 
   // Get Graphite face corresponding to this font file.
   // Caller must call gfxFontEntry::ReleaseGrFace when finished with it.
-  gr_face* GetGrFace();
-  virtual void ReleaseGrFace(gr_face* aFace);
+  // Graphite is run in a sandbox
+  tainted_opaque_gr<gr_face*> GetGrFace();
+  void ReleaseGrFace(tainted_opaque_gr<gr_face*> aFace);
 
   // Does the font have graphite contextuals that involve the space glyph
   // (and therefore we should bypass the word cache)?
-  bool HasGraphiteSpaceContextuals();
+  // Since this function inspects data from libGraphite stored in sandbox memory
+  // it can only return a "hint" to the correct return value. This is because
+  // a compromised libGraphite could change the sandbox memory maliciously at
+  // any moment. The caller must ensure the calling code performs safe actions
+  // independent of the value returned, to unwrap this return.
+  tainted_boolean_hint HasGraphiteSpaceContextuals();
 
   // Release any SVG-glyphs document this font may have loaded.
   void DisconnectSVG();
@@ -553,6 +570,11 @@ class gfxFontEntry {
   // hasn't handled our SetCharacterMap message yet).
   bool TrySetShmemCharacterMap();
 
+  // Helper for gfxPlatformFontList::CreateFontEntry methods: set properties
+  // of the gfxFontEntry based on shared Face and Family records.
+  void InitializeFrom(mozilla::fontlist::Face* aFace,
+                      const mozilla::fontlist::Family* aFamily);
+
   // Shaper-specific face objects, shared by all instantiations of the same
   // physical font, regardless of size.
   // Usually, only one of these will actually be created for any given font
@@ -570,15 +592,16 @@ class gfxFontEntry {
   // Callback that the hb_face will use to tell us when it is being deleted.
   static void HBFaceDeletedCallback(void* aUserData);
 
+  // All libGraphite functionality is sandboxed in an rlbox sandbox. This
+  // contains data for the sandbox instance.
+  struct GrSandboxData;
+  GrSandboxData* mSandboxData = nullptr;
+
   // gr_face is -not- refcounted, so it will be owned directly by the font
   // entry, and we'll keep a count of how many references we've handed out;
   // each shaper is responsible to call ReleaseGrFace on its entry when
   // finished with it, so that we know when it can be deleted.
-  gr_face* mGrFace = nullptr;
-
-  // hashtable to map raw table data ptr back to its owning blob, for use by
-  // graphite table-release callback
-  nsDataHashtable<nsPtrHashKey<const void>, void*>* mGrTableMap = nullptr;
+  tainted_opaque_gr<gr_face*> mGrFace;
 
   // For AAT font, a strong reference to the 'trak' table (if present).
   hb_blob_t* const kTrakTableUninitialized = (hb_blob_t*)(intptr_t(-1));
@@ -594,10 +617,12 @@ class gfxFontEntry {
   // number of current users of this entry's mGrFace
   nsrefcnt mGrFaceRefCnt = 0;
 
-  static const void* GrGetTable(const void* aAppFaceHandle, unsigned int aName,
-                                size_t* aLen);
-  static void GrReleaseTable(const void* aAppFaceHandle,
-                             const void* aTableBuffer);
+  static tainted_opaque_gr<const void*> GrGetTable(
+      rlbox_sandbox_gr& sandbox, tainted_opaque_gr<const void*> aAppFaceHandle,
+      tainted_opaque_gr<unsigned int> aName, tainted_opaque_gr<size_t*> aLen);
+  static void GrReleaseTable(rlbox_sandbox_gr& sandbox,
+                             tainted_opaque_gr<const void*> aAppFaceHandle,
+                             tainted_opaque_gr<const void*> aTableBuffer);
 
   // For memory reporting: size of user-font data belonging to this entry.
   // We record this in the font entry because the actual data block may be
@@ -740,13 +765,35 @@ struct GlobalFontMatch {
   float mMatchDistance = INFINITY;  // metric indicating closest match
 };
 
+// Installation status (base system / langpack / user-installed) may determine
+// whether the font is visible to CSS font-family or src:local() lookups.
+// (Exactly what these mean and how accurate they are may be vary across
+// platforms -- e.g. on Linux there is no clear "base" set of fonts.)
+enum class FontVisibility : uint8_t {
+  Unknown = 0,   // No categorization of families available on this system
+  Base = 1,      // Standard part of the base OS installation
+  LangPack = 2,  // From an optional OS component such as language support
+  User = 3,      // User-installed font (or installed by another app, etc)
+  Hidden = 4,    // Internal system font, should never exposed to users
+  Webfont = 5,   // Webfont defined by @font-face
+  Count = 6,     // Count of values, for IPC serialization
+};
+
+namespace IPC {
+template <>
+struct ParamTraits<FontVisibility>
+    : public ContiguousEnumSerializer<FontVisibility, FontVisibility::Unknown,
+                                      FontVisibility::Count> {};
+}  // namespace IPC
+
 class gfxFontFamily {
  public:
   // Used by stylo
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(gfxFontFamily)
 
-  explicit gfxFontFamily(const nsACString& aName)
+  gfxFontFamily(const nsACString& aName, FontVisibility aVisibility)
       : mName(aName),
+        mVisibility(aVisibility),
         mOtherFamilyNamesInitialized(false),
         mHasOtherFamilyNames(false),
         mFaceNamesInitialized(false),
@@ -792,11 +839,7 @@ class gfxFontFamily {
     // we need to ensure any null entries are removed, as well as clearing
     // the flag (which may be set again later).
     if (mIsSimpleFamily) {
-      for (size_t i = mAvailableFonts.Length() - 1; i-- > 0;) {
-        if (!mAvailableFonts[i]) {
-          mAvailableFonts.RemoveElementAt(i);
-        }
-      }
+      mAvailableFonts.RemoveElementsBy([](const auto& font) { return !font; });
       mIsSimpleFamily = false;
     }
   }
@@ -856,7 +899,7 @@ class gfxFontFamily {
     mFamilyCharacterMapInitialized = false;
   }
 
-  // mark this family as being in the "bad" underline offset blacklist
+  // mark this family as being in the "bad" underline offset blocklist
   void SetBadUnderlineFamily() {
     mIsBadUnderlineFamily = true;
     if (mHasStyles) {
@@ -901,6 +944,12 @@ class gfxFontFamily {
     return true;
   }
 
+  FontVisibility Visibility() const { return mVisibility; }
+  bool IsHidden() const { return Visibility() == FontVisibility::Hidden; }
+  bool IsWebFontFamily() const {
+    return Visibility() == FontVisibility::Webfont;
+  }
+
  protected:
   // Protected destructor, to discourage deletion outside of Release():
   virtual ~gfxFontFamily();
@@ -909,7 +958,7 @@ class gfxFontFamily {
                                    hb_blob_t* aNameTable,
                                    bool useFullName = false);
 
-  // set whether this font family is in "bad" underline offset blacklist.
+  // set whether this font family is in "bad" underline offset blocklist.
   void SetBadUnderlineFonts() {
     uint32_t i, numFonts = mAvailableFonts.Length();
     for (i = 0; i < numFonts; i++) {
@@ -922,6 +971,9 @@ class gfxFontFamily {
   nsCString mName;
   nsTArray<RefPtr<gfxFontEntry>> mAvailableFonts;
   gfxSparseBitSet mFamilyCharacterMap;
+
+  FontVisibility mVisibility;
+
   bool mOtherFamilyNamesInitialized : 1;
   bool mHasOtherFamilyNames : 1;
   bool mFaceNamesInitialized : 1;
@@ -980,20 +1032,19 @@ struct FontFamily {
 // particular case (so it can be reported to the DevTools font inspector).
 struct FamilyAndGeneric final {
   FamilyAndGeneric()
-      : mFamily(), mGeneric(mozilla::StyleGenericFontFamily::None) {}
-  FamilyAndGeneric(const FamilyAndGeneric& aOther)
-      : mFamily(aOther.mFamily), mGeneric(aOther.mGeneric) {}
+      : mFamily(), mGeneric(mozilla::StyleGenericFontFamily(0)) {}
+  FamilyAndGeneric(const FamilyAndGeneric& aOther) = default;
   explicit FamilyAndGeneric(gfxFontFamily* aFamily,
                             mozilla::StyleGenericFontFamily aGeneric =
-                                mozilla::StyleGenericFontFamily::None)
+                                mozilla::StyleGenericFontFamily(0))
       : mFamily(aFamily), mGeneric(aGeneric) {}
   explicit FamilyAndGeneric(mozilla::fontlist::Family* aFamily,
                             mozilla::StyleGenericFontFamily aGeneric =
-                                mozilla::StyleGenericFontFamily::None)
+                                mozilla::StyleGenericFontFamily(0))
       : mFamily(aFamily), mGeneric(aGeneric) {}
   explicit FamilyAndGeneric(const FontFamily& aFamily,
                             mozilla::StyleGenericFontFamily aGeneric =
-                                mozilla::StyleGenericFontFamily::None)
+                                mozilla::StyleGenericFontFamily(0))
       : mFamily(aFamily), mGeneric(aGeneric) {}
 
   bool operator==(const FamilyAndGeneric& aOther) const {

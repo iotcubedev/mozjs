@@ -76,7 +76,7 @@ void nsDisplayOptionEventGrabber::HitTest(nsDisplayListBuilder* aBuilder,
 
 class nsOptionEventGrabberWrapper : public nsDisplayWrapper {
  public:
-  nsOptionEventGrabberWrapper() {}
+  nsOptionEventGrabberWrapper() = default;
   virtual nsDisplayItem* WrapList(nsDisplayListBuilder* aBuilder,
                                   nsIFrame* aFrame,
                                   nsDisplayList* aList) override {
@@ -106,9 +106,7 @@ class nsDisplayListFocus : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aFrame) {
     MOZ_COUNT_CTOR(nsDisplayListFocus);
   }
-#ifdef NS_BUILD_REFCNT_LOGGING
-  virtual ~nsDisplayListFocus() { MOZ_COUNT_DTOR(nsDisplayListFocus); }
-#endif
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayListFocus)
 
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {
@@ -116,7 +114,7 @@ class nsDisplayListFocus : public nsPaintedDisplayItem {
     // override bounds because the list item focus ring may extend outside
     // the nsSelectsAreaFrame
     nsListControlFrame* listFrame = GetEnclosingListFrame(Frame());
-    return listFrame->GetVisualOverflowRectRelativeToSelf() +
+    return listFrame->InkOverflowRectRelativeToSelf() +
            listFrame->GetOffsetToCrossDoc(ReferenceFrame());
   }
   virtual void Paint(nsDisplayListBuilder* aBuilder,
@@ -176,7 +174,7 @@ void nsSelectsAreaFrame::Reflow(nsPresContext* aPresContext,
   if (isInDropdownMode) {
     // Store the block size now in case it changes during
     // nsBlockFrame::Reflow for some odd reason.
-    if (!(GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
+    if (!HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
       oldBSize = BSize(wm);
     } else {
       oldBSize = NS_UNCONSTRAINEDSIZE;

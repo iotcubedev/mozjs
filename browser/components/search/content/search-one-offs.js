@@ -7,6 +7,10 @@
 /* eslint-env mozilla/browser-window */
 /* globals XULCommandEvent */
 
+XPCOMUtils.defineLazyModuleGetters(this, {
+  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.jsm",
+});
+
 /**
  * Defines the search one-off button elements. These are displayed at the bottom
  * of the address bar or the search bar.
@@ -18,22 +22,24 @@ class SearchOneOffs {
     this.container.appendChild(
       MozXULElement.parseXULToFragment(
         `
-      <hbox class="search-panel-one-offs-header search-panel-header search-panel-current-input">
-        <label class="search-panel-one-offs-header-label" value="&searchWithDesc.label;"/>
+      <hbox class="search-panel-one-offs-header search-panel-header">
+        <label class="search-panel-one-offs-header-label" data-l10n-id="search-one-offs-with-title"/>
       </hbox>
-      <hbox class="search-panel-one-offs" role="group"/>
+      <box class="search-panel-one-offs-container">
+        <hbox class="search-panel-one-offs" role="group"/>
+        <hbox class="search-one-offs-spacer"/>
+        <button class="searchbar-engine-one-off-item search-setting-button-compact" data-l10n-id="search-one-offs-change-settings-compact-button"/>
+      </box>
       <vbox class="search-add-engines"/>
-      <hbox class="search-one-offs-spacer"/>
-      <button class="searchbar-engine-one-off-item search-setting-button-compact" tooltiptext="&changeSearchSettings.tooltip;"/>
-      <button class="search-setting-button" label="&changeSearchSettings.button;"/>
-      <box style="visibiltiy:collapse">
+      <button class="search-setting-button" data-l10n-id="search-one-offs-change-settings-button"/>
+      <box>
         <menupopup class="search-one-offs-context-menu">
-          <menuitem class="search-one-offs-context-open-in-new-tab" label="&searchInNewTab.label;" accesskey="&searchInNewTab.accesskey;"/>
-          <menuitem class="search-one-offs-context-set-default" label="&searchSetAsDefault.label;" accesskey="&searchSetAsDefault.accesskey;"/>
+          <menuitem class="search-one-offs-context-open-in-new-tab" data-l10n-id="search-one-offs-context-open-new-tab"/>
+          <menuitem class="search-one-offs-context-set-default" data-l10n-id="search-one-offs-context-set-as-default"/>
+          <menuitem class="search-one-offs-context-set-default-private" data-l10n-id="search-one-offs-context-set-as-default-private"/>
         </menupopup>
       </box>
-      `,
-        ["chrome://browser/locale/browser.dtd"]
+      `
       )
     );
 
@@ -124,8 +130,8 @@ class SearchOneOffs {
 
     // Add weak referenced observers to invalidate our cached list of engines.
     this.QueryInterface = ChromeUtils.generateQI([
-      Ci.nsIObserver,
-      Ci.nsISupportsWeakReference,
+      "nsIObserver",
+      "nsISupportsWeakReference",
     ]);
     Services.prefs.addObserver("browser.search.hiddenOneOffs", this, true);
     Services.obs.addObserver(this, "browser-search-engine-modified", true);
@@ -210,9 +216,11 @@ class SearchOneOffs {
   set popup(val) {
     if (this._popup) {
       this._popup.removeEventListener("popupshowing", this);
+      this._popup.removeEventListener("popuphidden", this);
     }
     if (val) {
       val.addEventListener("popupshowing", this);
+      val.addEventListener("popuphidden", this);
     }
     this._popup = val;
 
@@ -356,11 +364,17 @@ class SearchOneOffs {
   }
 
   get selectedAutocompleteIndex() {
-    return (this._view || this.popup).selectedIndex;
+    if (!this.compact) {
+      return this.popup.selectedIndex;
+    }
+    return this._view.selectedElementIndex;
   }
 
   set selectedAutocompleteIndex(val) {
-    return ((this._view || this.popup).selectedIndex = val);
+    if (!this.compact) {
+      return (this.popup.selectedIndex = val);
+    }
+    return (this._view.selectedElementIndex = val);
   }
 
   get compact() {
@@ -381,7 +395,12 @@ class SearchOneOffs {
     }
     let currentEngineNameToIgnore;
     if (!this.getAttribute("includecurrentengine")) {
-      currentEngineNameToIgnore = (await Services.search.getDefault()).name;
+      if (PrivateBrowsingUtils.isWindowPrivate(window)) {
+        currentEngineNameToIgnore = (await Services.search.getDefaultPrivate())
+          .name;
+      } else {
+        currentEngineNameToIgnore = (await Services.search.getDefault()).name;
+      }
     }
 
     let pref = Services.prefs.getStringPref("browser.search.hiddenOneOffs");
@@ -425,9 +444,6 @@ class SearchOneOffs {
    * Builds all the UI.
    */
   async __rebuild() {
-    this.selectedButton = null;
-    this._contextEngine = null;
-
     // Handle opensearch items. This needs to be done before building the
     // list of one off providers, as that code will return early if all the
     // alternative engines are hidden.
@@ -436,14 +452,16 @@ class SearchOneOffs {
       this._rebuildAddEngineList();
     }
 
-    // Check if the one-off buttons really need to be rebuilt.
-    if (this._textbox) {
-      // We can't get a reliable value for the popup width without flushing,
-      // but the popup width won't change if the textbox width doesn't.
-      let DOMUtils = window.windowUtils;
-      let textboxWidth = DOMUtils.getBoundsWithoutFlushing(this._textbox).width;
-      // We can return early if neither the list of engines nor the panel
-      // width has changed.
+    // Return early if the list of engines has not changed.
+    if (!this.popup && this._engines) {
+      return;
+    }
+
+    // Return early if the engines and panel width have not changed.
+    if (this.popup && this._textbox) {
+      let textboxWidth = await window.promiseDocumentFlushed(() => {
+        return this._textbox.clientWidth;
+      });
       if (this._engines && this._textboxWidth == textboxWidth) {
         return;
       }
@@ -458,10 +476,13 @@ class SearchOneOffs {
     let headerText = this.header.querySelector(
       ".search-panel-one-offs-header-label"
     );
-    this.buttons.setAttribute("aria-label", headerText.value);
+    headerText.id = this.telemetryOrigin + "-one-offs-header-label";
+    this.buttons.setAttribute("aria-labelledby", headerText.id);
 
     let engines = await this.getEngines();
-    let defaultEngine = await Services.search.getDefault();
+    let defaultEngine = PrivateBrowsingUtils.isWindowPrivate(window)
+      ? await Services.search.getDefaultPrivate()
+      : await Services.search.getDefault();
     let oneOffCount = engines.length;
     let hideOneOffs =
       !oneOffCount ||
@@ -532,11 +553,23 @@ class SearchOneOffs {
       }
       button.setAttribute("image", uri);
       button.setAttribute("class", "searchbar-engine-one-off-item");
-      button.setAttribute("tooltiptext", engine.name);
+      if (this.compact) {
+        let tooltip = engine.name;
+        let aliases = UrlbarSearchUtils.aliasesForEngine(engine);
+        if (aliases.length) {
+          tooltip = tooltip + ` (${aliases[0]})`;
+        }
+
+        button.setAttribute("tooltiptext", tooltip);
+      } else {
+        button.setAttribute("tooltiptext", engine.name);
+      }
       button.engine = engine;
 
       this.buttons.appendChild(button);
     }
+
+    this.dispatchEvent(new Event("rebuild"));
   }
 
   _rebuildAddEngineList() {
@@ -561,10 +594,10 @@ class SearchOneOffs {
     if (tooManyEngines) {
       // Make the top-level menu button.
       let button = document.createXULElement("toolbarbutton");
-      list.appendChild(button);
       button.classList.add("addengine-menu-button", "addengine-item");
       button.setAttribute("badged", "true");
       button.setAttribute("type", "menu");
+      button.setAttribute("wantdropmarker", "true");
       button.setAttribute(
         "label",
         this.bundle.GetStringFromName("cmd_addFoundEngineMenu")
@@ -579,6 +612,7 @@ class SearchOneOffs {
       if (engine.icon) {
         button.setAttribute("image", engine.icon);
       }
+      list.appendChild(button);
 
       // Now make the button's child menupopup.
       list = document.createXULElement("menupopup");
@@ -681,9 +715,12 @@ class SearchOneOffs {
   }
 
   handleSearchCommand(aEvent, aEngine, aForceNewTab) {
+    if (this._view?.oneOffsCommandHandler(aEvent, aEngine)) {
+      return;
+    }
+
     let where = "current";
     let params;
-
     // Open ctrl/cmd clicks on one-off buttons in a new background tab.
     if (aForceNewTab) {
       where = "tab";
@@ -788,11 +825,11 @@ class SearchOneOffs {
    *        to pass anything for this parameter.  (Pass undefined or null.)
    * @returns {boolean} True if the one-offs handled the key press.
    */
-  handleKeyPress(event, numListItems, allowEmptySelection, textboxUserValue) {
+  handleKeyDown(event, numListItems, allowEmptySelection, textboxUserValue) {
     if (!this.popup && !this._view) {
       return false;
     }
-    let handled = this._handleKeyPress(
+    let handled = this._handleKeyDown(
       event,
       numListItems,
       allowEmptySelection,
@@ -805,7 +842,7 @@ class SearchOneOffs {
     return handled;
   }
 
-  _handleKeyPress(event, numListItems, allowEmptySelection, textboxUserValue) {
+  _handleKeyDown(event, numListItems, allowEmptySelection, textboxUserValue) {
     if (this.compact && this.container.hidden) {
       return false;
     }
@@ -1084,6 +1121,10 @@ class SearchOneOffs {
   }
 
   _on_click(event) {
+    if (this._view?.oneOffsClickHandler(event)) {
+      return;
+    }
+
     if (event.button == 2) {
       return; // ignore right clicks.
     }
@@ -1121,10 +1162,9 @@ class SearchOneOffs {
       // On success, hide the panel and tell event listeners to reshow it to
       // show the new engine.
       Services.search
-        .addEngine(
+        .addOpenSearchEngine(
           target.getAttribute("uri"),
-          target.getAttribute("image"),
-          false
+          target.getAttribute("image")
         )
         .then(engine => {
           this._rebuild();
@@ -1146,14 +1186,12 @@ class SearchOneOffs {
             "error_duplicate_engine_msg",
             [brandName, target.getAttribute("uri")]
           );
-          Services.prompt.QueryInterface(Ci.nsIPromptFactory);
-          let prompt = Services.prompt.getPrompt(
-            gBrowser.contentWindow,
-            Ci.nsIPrompt
+          Services.prompt.alertBC(
+            gBrowser.selectedBrowser.browsingContext,
+            Ci.nsIPrompt.MODAL_TYPE_CONTENT,
+            title,
+            text
           );
-          prompt.QueryInterface(Ci.nsIWritablePropertyBag2);
-          prompt.setPropertyAsBool("allowTabModal", true);
-          prompt.alert(title, text);
         });
     }
 
@@ -1164,10 +1202,23 @@ class SearchOneOffs {
       this.handleSearchCommand(event, this._contextEngine, true);
     }
 
-    if (target.classList.contains("search-one-offs-context-set-default")) {
-      let currentEngine = Services.search.defaultEngine;
+    const isPrivateButton = target.classList.contains(
+      "search-one-offs-context-set-default-private"
+    );
+    if (
+      target.classList.contains("search-one-offs-context-set-default") ||
+      isPrivateButton
+    ) {
+      const engineType = isPrivateButton
+        ? "defaultPrivateEngine"
+        : "defaultEngine";
+      let currentEngine = Services.search[engineType];
 
-      if (!this.getAttribute("includecurrentengine")) {
+      const isPrivateWin = PrivateBrowsingUtils.isWindowPrivate(window);
+      if (
+        !this.getAttribute("includecurrentengine") &&
+        isPrivateButton == isPrivateWin
+      ) {
         // Make the target button of the context menu reflect the current
         // search engine first. Doing this as opposed to rebuilding all the
         // one-off buttons avoids flicker.
@@ -1182,7 +1233,7 @@ class SearchOneOffs {
         button.engine = currentEngine;
       }
 
-      Services.search.defaultEngine = this._contextEngine;
+      Services.search[engineType] = this._contextEngine;
     }
   }
 
@@ -1198,7 +1249,30 @@ class SearchOneOffs {
     }
     this.contextMenuPopup
       .querySelector(".search-one-offs-context-set-default")
-      .setAttribute("disabled", target.engine == Services.search.defaultEngine);
+      .setAttribute(
+        "disabled",
+        target.engine == Services.search.defaultEngine.wrappedJSObject
+      );
+
+    const privateDefaultItem = this.contextMenuPopup.querySelector(
+      ".search-one-offs-context-set-default-private"
+    );
+
+    if (
+      Services.prefs.getBoolPref(
+        "browser.search.separatePrivateDefault.ui.enabled",
+        false
+      ) &&
+      Services.prefs.getBoolPref("browser.search.separatePrivateDefault", false)
+    ) {
+      privateDefaultItem.hidden = false;
+      privateDefaultItem.setAttribute(
+        "disabled",
+        target.engine == Services.search.defaultPrivateEngine.wrappedJSObject
+      );
+    } else {
+      privateDefaultItem.hidden = true;
+    }
 
     this.contextMenuPopup.openPopupAtScreen(event.screenX, event.screenY, true);
     event.preventDefault();
@@ -1215,11 +1289,20 @@ class SearchOneOffs {
   }
 
   _on_popupshowing() {
-    this._rebuild();
+    this.onViewOpen();
+  }
+
+  _on_popuphidden() {
+    this.onViewClose();
   }
 
   onViewOpen() {
     this._rebuild();
+  }
+
+  onViewClose() {
+    this.selectedButton = null;
+    this._contextEngine = null;
   }
 }
 

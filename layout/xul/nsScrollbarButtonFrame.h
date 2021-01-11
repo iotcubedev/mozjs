@@ -16,7 +16,6 @@
 
 #include "mozilla/Attributes.h"
 #include "nsButtonBoxFrame.h"
-#include "nsITimer.h"
 #include "nsRepeatService.h"
 
 namespace mozilla {
@@ -72,9 +71,8 @@ class nsScrollbarButtonFrame final : public nsButtonBoxFrame {
 
  protected:
   void StartRepeat() {
-    nsRepeatService::GetInstance()->Start(
-        Notify, this, mContent->OwnerDoc(),
-        NS_LITERAL_CSTRING("nsScrollbarButtonFrame"));
+    nsRepeatService::GetInstance()->Start(Notify, this, mContent->OwnerDoc(),
+                                          "nsScrollbarButtonFrame"_ns);
   }
   void StopRepeat() { nsRepeatService::GetInstance()->Stop(Notify, this); }
   void Notify();

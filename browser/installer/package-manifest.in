@@ -48,7 +48,7 @@
 @RESPATH@/dictionaries/*
 @RESPATH@/browser/localization/*
 @RESPATH@/localization/*
-#if defined(XP_WIN) || defined(XP_LINUX)
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
 @RESPATH@/fonts/*
 #endif
 @RESPATH@/hyphenation/*
@@ -59,6 +59,12 @@
 #ifdef MOZ_UPDATER
 @RESPATH@/update.locale
 @RESPATH@/updater.ini
+#endif
+#ifdef MOZ_DEFAULT_BROWSER_AGENT
+@RESPATH@/defaultagent.ini
+#endif
+#if defined(MOZ_UPDATE_AGENT) || defined(MOZ_DEFAULT_BROWSER_AGENT)
+@RESPATH@/locale.ini
 #endif
 
 [xpcom]
@@ -105,6 +111,12 @@
 @BINPATH@/@DLL_PREFIX@mozwayland@DLL_SUFFIX@
 #endif
 #endif
+#ifdef MOZ_WASM_SANDBOXING_GRAPHITE
+@BINPATH@/@DLL_PREFIX@graphitewasm@DLL_SUFFIX@
+#endif
+#ifdef MOZ_WASM_SANDBOXING_OGG
+@BINPATH@/@DLL_PREFIX@oggwasm@DLL_SUFFIX@
+#endif
 
 ; We don't have a complete view of which dlls to expect when doing an artifact
 ; build because we haven't run the relevant parts of configure, so we guess
@@ -135,17 +147,14 @@
 @RESPATH@/update-settings.ini
 #endif
 @RESPATH@/platform.ini
-#ifndef MOZ_SYSTEM_SQLITE
 #ifndef MOZ_FOLD_LIBS
 @BINPATH@/@DLL_PREFIX@mozsqlite3@DLL_SUFFIX@
-#endif
 #endif
 @BINPATH@/@DLL_PREFIX@lgpllibs@DLL_SUFFIX@
 #ifdef MOZ_FFVPX
 @BINPATH@/@DLL_PREFIX@mozavutil@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@mozavcodec@DLL_SUFFIX@
 #endif
-@RESPATH@/browser/blocklist.xml
 #ifdef XP_WIN
 #ifdef _AMD64_
 @BINPATH@/@DLL_PREFIX@qipcap64@DLL_SUFFIX@
@@ -166,9 +175,6 @@
 
 ; JavaScript components
 @RESPATH@/browser/components/BrowserComponents.manifest
-@RESPATH@/components/EnterprisePolicies.js
-@RESPATH@/components/EnterprisePoliciesContent.js
-@RESPATH@/components/EnterprisePolicies.manifest
 @RESPATH@/components/toolkitsearch.manifest
 @RESPATH@/components/extensions.manifest
 #ifdef MOZ_UPDATER
@@ -243,8 +249,8 @@
 @RESPATH@/browser/chrome.manifest
 @RESPATH@/browser/chrome/browser@JAREXT@
 @RESPATH@/browser/chrome/browser.manifest
-@RESPATH@/browser/chrome/pdfjs.manifest
-@RESPATH@/browser/chrome/pdfjs/*
+@RESPATH@/chrome/pdfjs.manifest
+@RESPATH@/chrome/pdfjs/*
 @RESPATH@/chrome/toolkit@JAREXT@
 @RESPATH@/chrome/toolkit.manifest
 @RESPATH@/chrome/recording.manifest
@@ -257,10 +263,6 @@
 @RESPATH@/browser/chrome/icons/default/default128.png
 #endif
 @RESPATH@/browser/features/*
-
-; [Webide Files]
-@RESPATH@/browser/chrome/webide@JAREXT@
-@RESPATH@/browser/chrome/webide.manifest
 
 ; [DevTools Startup Files]
 @RESPATH@/browser/chrome/devtools-startup@JAREXT@
@@ -325,12 +327,14 @@
 @RESPATH@/res/grabber.gif
 #ifdef XP_MACOSX
 @RESPATH@/res/cursors/*
-@RESPATH@/res/touchbar/*
 #endif
 @RESPATH@/res/fonts/*
 @RESPATH@/res/dtd/*
 @RESPATH@/res/language.properties
 @RESPATH@/res/locale/layout/HtmlForm.properties
+@RESPATH@/res/locale/layout/MediaDocument.properties
+@RESPATH@/res/locale/layout/xmlparser.properties
+@RESPATH@/res/locale/dom/dom.properties
 #ifdef XP_MACOSX
 @RESPATH@/res/MainMenu.nib/
 #endif
@@ -363,9 +367,6 @@ bin/libfreebl_64int_3.so
 #endif
 @BINPATH@/@DLL_PREFIX@nss3@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@nssckbi@DLL_SUFFIX@
-#ifndef NSS_DISABLE_DBM
-@BINPATH@/@DLL_PREFIX@nssdbm3@DLL_SUFFIX@
-#endif
 #ifndef MOZ_FOLD_LIBS
 @BINPATH@/@DLL_PREFIX@nssutil3@DLL_SUFFIX@
 @BINPATH@/@DLL_PREFIX@smime3@DLL_SUFFIX@
@@ -375,6 +376,14 @@ bin/libfreebl_64int_3.so
 #endif
 @RESPATH@/chrome/pippki@JAREXT@
 @RESPATH@/chrome/pippki.manifest
+
+; preprocessor.py doesn't handle parentheses, so while the following could be
+; expressed in a single line, it's more clear to break them up.
+#if defined(XP_WIN) || defined(XP_MACOSX)
+#if !defined(_ARM64_)
+@BINPATH@/@DLL_PREFIX@osclientcerts@DLL_SUFFIX@
+#endif
+#endif
 
 ; For process sandboxing
 #if defined(MOZ_SANDBOX)
@@ -400,6 +409,11 @@ bin/libfreebl_64int_3.so
 @BINPATH@/maintenanceservice_installer.exe
 #endif
 
+; [Background Update Agent]
+#ifdef MOZ_UPDATE_AGENT
+@BINPATH@/updateagent@BIN_SUFFIX@
+#endif
+
 ; [Crash Reporter]
 ;
 #ifdef MOZ_CRASHREPORTER
@@ -408,7 +422,6 @@ bin/libfreebl_64int_3.so
 #else
 @BINPATH@/crashreporter@BIN_SUFFIX@
 @RESPATH@/crashreporter.ini
-@BINPATH@/minidump-analyzer@BIN_SUFFIX@
 #ifdef XP_UNIX
 @RESPATH@/Throbber-small.gif
 #endif
@@ -417,6 +430,12 @@ bin/libfreebl_64int_3.so
 #ifdef MOZ_CRASHREPORTER_INJECTOR
 @BINPATH@/breakpadinjector.dll
 #endif
+#endif
+
+; [ minidump-analyzer ]
+;
+#ifdef MOZ_CRASHREPORTER
+@BINPATH@/minidump-analyzer@BIN_SUFFIX@
 #endif
 
 ; [ Ping Sender ]
@@ -438,7 +457,6 @@ bin/libfreebl_64int_3.so
 @BINPATH@/@MOZ_CLANG_RT_ASAN_LIB@
 #endif
 
-
 ; media
 @RESPATH@/gmp-clearkey/0.1/@DLL_PREFIX@clearkey@DLL_SUFFIX@
 @RESPATH@/gmp-clearkey/0.1/manifest.json
@@ -446,17 +464,15 @@ bin/libfreebl_64int_3.so
 #ifdef MOZ_DMD
 ; DMD
 @RESPATH@/dmd.py
-@RESPATH@/fix_stack_using_bpsyms.py
-#ifdef XP_MACOSX
-@RESPATH@/fix_macosx_stack.py
-#endif
-#ifdef XP_LINUX
-@RESPATH@/fix_linux_stack.py
-#endif
+@RESPATH@/fix_stacks.py
 #endif
 
 #ifdef PKG_LOCALE_MANIFEST
 #include @PKG_LOCALE_MANIFEST@
+#endif
+
+#if defined(XP_WIN) && defined(MOZ_DEFAULT_BROWSER_AGENT)
+@BINPATH@/default-browser-agent@BIN_SUFFIX@
 #endif
 
 #ifdef MOZ_EME_WIN32_ARTIFACT

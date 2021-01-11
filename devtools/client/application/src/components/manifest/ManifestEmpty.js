@@ -4,34 +4,75 @@
 
 "use strict";
 
+const { openDocLink } = require("devtools/client/shared/link");
+
 const {
   createFactory,
   PureComponent,
 } = require("devtools/client/shared/vendor/react");
 const {
+  a,
   article,
+  aside,
+  div,
   h1,
+  img,
   p,
 } = require("devtools/client/shared/vendor/react-dom-factories");
 
 const FluentReact = require("devtools/client/shared/vendor/fluent-react");
 const Localized = createFactory(FluentReact.Localized);
 
+const DOC_URL =
+  "https://developer.mozilla.org/en-US/docs/Web/Manifest" +
+  "?utm_source=devtools&utm_medium=sw-panel-blank";
+
 /**
  * This component displays help information when no manifest is found for the
  * current target.
  */
 class ManifestEmpty extends PureComponent {
+  openDocumentation() {
+    openDocLink(DOC_URL);
+  }
+
   render() {
     return article(
-      { className: "manifest-empty" },
-      Localized(
-        {
-          id: "manifest-view-header",
-        },
-        h1({ className: "app-page__title" })
+      { className: "app-page__icon-container js-manifest-empty" },
+      aside(
+        {},
+        Localized(
+          {
+            id: "sidebar-item-manifest",
+            attrs: {
+              alt: true,
+            },
+          },
+          img({
+            className: "app-page__icon",
+            src: "chrome://devtools/skin/images/application-manifest.svg",
+          })
+        )
       ),
-      Localized({ id: "manifest-non-existing" }, p({}))
+      div(
+        {},
+        Localized(
+          {
+            id: "manifest-empty-intro2",
+          },
+          h1({ className: "app-page__title" })
+        ),
+        p(
+          {},
+          Localized(
+            { id: "manifest-empty-intro-link" },
+            a({
+              onClick: () => this.openDocumentation(),
+            })
+          )
+        ),
+        Localized({ id: "manifest-non-existing" }, p({}))
+      )
     );
   }
 }

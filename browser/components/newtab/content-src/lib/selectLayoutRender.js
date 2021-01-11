@@ -2,7 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-export const selectLayoutRender = (state, prefs, rickRollCache) => {
+export const selectLayoutRender = ({
+  state = {},
+  prefs = {},
+  rollCache = [],
+  locale = "",
+}) => {
   const { layout, feeds, spocs } = state;
   let spocIndexMap = {};
   let bufferRollCache = [];
@@ -23,11 +28,11 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
 
       // Cache random number for a position
       let rickRoll;
-      if (!rickRollCache.length) {
+      if (!rollCache.length) {
         rickRoll = Math.random();
         bufferRollCache.push(rickRoll);
       } else {
-        rickRoll = rickRollCache.shift();
+        rickRoll = rollCache.shift();
         bufferRollCache.push(rickRoll);
       }
 
@@ -50,8 +55,10 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
     "Message",
     "TextPromo",
     "SectionTitle",
+    "Signup",
     "Navigation",
     "CardGrid",
+    "CollectionCardGrid",
     "Hero",
     "HorizontalRule",
     "List",
@@ -63,7 +70,13 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
     filterArray.push("TopSites");
   }
 
-  if (!prefs["feeds.section.topstories"]) {
+  if (!locale.startsWith("en-")) {
+    filterArray.push("Navigation");
+  }
+
+  const pocketEnabled =
+    prefs["feeds.section.topstories"] && prefs["feeds.system.topstories"];
+  if (!pocketEnabled) {
     filterArray.push(...DS_COMPONENTS);
   }
 
@@ -105,11 +118,16 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
       const placementName = placement.name || "spocs";
       const spocsData = spocs.data[placementName];
       // We expect a spoc, spocs are loaded, and the server returned spocs.
-      if (spocs.loaded && spocsData && spocsData.length) {
+      if (
+        spocs.loaded &&
+        spocsData &&
+        spocsData.items &&
+        spocsData.items.length
+      ) {
         result = rollForSpocs(
           result,
           component.spocs,
-          spocsData,
+          spocsData.items,
           placementName
         );
       }
@@ -118,10 +136,37 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
   };
 
   const handleComponent = component => {
+    if (
+      component.spocs &&
+      component.spocs.positions &&
+      component.spocs.positions.length
+    ) {
+      const placement = component.placement || {};
+      const placementName = placement.name || "spocs";
+      const spocsData = spocs.data[placementName];
+      if (
+        spocs.loaded &&
+        spocsData &&
+        spocsData.items &&
+        spocsData.items.length
+      ) {
+        return {
+          ...component,
+          data: {
+            spocs: spocsData.items
+              .filter(spoc => spoc && !spocs.blocked.includes(spoc.url))
+              .map((spoc, index) => ({
+                ...spoc,
+                pos: index,
+              })),
+          },
+        };
+      }
+    }
     return {
       ...component,
       data: {
-        spocs: handleSpocs([], component),
+        spocs: [],
       },
     };
   };
@@ -213,9 +258,9 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
 
   const layoutRender = renderLayout();
 
-  // If empty, fill rickRollCache with random probability values from bufferRollCache
-  if (!rickRollCache.length) {
-    rickRollCache.push(...bufferRollCache);
+  // If empty, fill rollCache with random probability values from bufferRollCache
+  if (!rollCache.length) {
+    rollCache.push(...bufferRollCache);
   }
 
   // Generate the payload for the SPOCS Fill ping. Note that a SPOC could be rejected
@@ -223,7 +268,12 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
   // all other SPOCS that never went through the probabilistic selection, its reason will
   // be "out_of_position".
   let spocsFill = [];
-  if (spocs.loaded && feeds.loaded && spocs.data.spocs) {
+  if (
+    spocs.loaded &&
+    feeds.loaded &&
+    spocs.data.spocs &&
+    spocs.data.spocs.items
+  ) {
     const chosenSpocsFill = [...chosenSpocs].map(spoc => ({
       id: spoc.id,
       reason: "n/a",
@@ -238,7 +288,7 @@ export const selectLayoutRender = (state, prefs, rickRollCache) => {
         displayed: 0,
         full_recalc: 0,
       }));
-    const outOfPositionSpocsFill = spocs.data.spocs
+    const outOfPositionSpocsFill = spocs.data.spocs.items
       .slice(spocIndexMap.spocs)
       .filter(spoc => !unchosenSpocs.has(spoc))
       .map(spoc => ({

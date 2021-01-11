@@ -68,6 +68,9 @@ class RtpRtcp : public Module {
     // stream.
     RtcpBandwidthObserver* bandwidth_callback = nullptr;
 
+    // Called when we receive a RTCP bye or timeout
+    RtcpEventObserver* event_callback = nullptr;
+
     TransportFeedbackObserver* transport_feedback_callback = nullptr;
     VideoBitrateAllocationObserver* bitrate_allocation_observer = nullptr;
     RtcpRttStats* rtt_stats = nullptr;
@@ -323,9 +326,10 @@ class RtpRtcp : public Module {
       uint32_t ssrc,
       struct RtpPacketLossStats* loss_stats) const = 0;
 
-  // Returns packet count and octet count from RTCP sender report.
+  // Returns packet count, octet count, and timestamp from RTCP sender report.
   virtual void RemoteRTCPSenderInfo(uint32_t* packet_count,
-                                    uint32_t* octet_count) const = 0;
+                                    uint32_t* octet_count,
+                                    NtpTime* ntp_timestamp) const = 0;
 
   // Returns received RTCP report block.
   // Returns -1 on failure else 0.

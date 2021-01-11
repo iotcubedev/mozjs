@@ -19,7 +19,6 @@ namespace jit {
 enum IonRegisterAllocator {
   RegisterAllocator_Backtracking,
   RegisterAllocator_Testbed,
-  RegisterAllocator_Stupid
 };
 
 static inline mozilla::Maybe<IonRegisterAllocator> LookupRegisterAllocator(
@@ -29,9 +28,6 @@ static inline mozilla::Maybe<IonRegisterAllocator> LookupRegisterAllocator(
   }
   if (!strcmp(name, "testbed")) {
     return mozilla::Some(RegisterAllocator_Testbed);
-  }
-  if (!strcmp(name, "stupid")) {
-    return mozilla::Some(RegisterAllocator_Stupid);
   }
   return mozilla::Nothing();
 }
@@ -50,7 +46,6 @@ struct DefaultJitOptions {
   bool disableGvn;
   bool disableInlining;
   bool disableLicm;
-  bool disableOptimizationTracking;
   bool disablePgo;
   bool disableInstructionReordering;
   bool disableRangeAnalysis;
@@ -62,6 +57,12 @@ struct DefaultJitOptions {
   bool baselineInterpreter;
   bool baselineJit;
   bool ion;
+#ifdef NIGHTLY_BUILD
+  bool typeInference;
+#endif
+  bool warpBuilder;
+  bool warpTrialInlining;
+  bool jitForTrustedPrincipals;
   bool nativeRegExp;
   bool forceInlineCaches;
   bool fullDebugChecks;
@@ -72,6 +73,10 @@ struct DefaultJitOptions {
 #ifdef JS_TRACE_LOGGING
   bool enableTraceLogger;
 #endif
+  bool traceRegExpParser;
+  bool traceRegExpAssembler;
+  bool traceRegExpInterpreter;
+  bool traceRegExpPeephole;
   bool enableWasmJitExit;
   bool enableWasmJitEntry;
   bool enableWasmIonFastCalls;
@@ -81,8 +86,10 @@ struct DefaultJitOptions {
 #endif
   uint32_t baselineInterpreterWarmUpThreshold;
   uint32_t baselineJitWarmUpThreshold;
+  uint32_t trialInliningWarmUpThreshold;
   uint32_t normalIonWarmUpThreshold;
   uint32_t fullIonWarmUpThreshold;
+  uint32_t regexpWarmUpThreshold;
   uint32_t exceptionBailoutThreshold;
   uint32_t frequentBailoutThreshold;
   uint32_t maxStackArgs;
@@ -98,8 +105,9 @@ struct DefaultJitOptions {
   uint32_t ionMaxScriptSizeMainThread;
   uint32_t ionMaxLocalsAndArgs;
   uint32_t ionMaxLocalsAndArgsMainThread;
-  uint32_t wasmBatchIonThreshold;
   uint32_t wasmBatchBaselineThreshold;
+  uint32_t wasmBatchIonThreshold;
+  uint32_t wasmBatchCraneliftThreshold;
   mozilla::Maybe<IonRegisterAllocator> forcedRegisterAllocator;
 
   // Spectre mitigation flags. Each mitigation has its own flag in order to
@@ -138,13 +146,17 @@ inline bool IsBaselineInterpreterEnabled() {
 #endif
 }
 
-inline bool IsBaselineJitEnabled() {
-  return IsBaselineInterpreterEnabled() && JitOptions.baselineJit;
+}  // namespace jit
+
+inline bool IsTypeInferenceEnabled() {
+#ifdef NIGHTLY_BUILD
+  return jit::JitOptions.typeInference;
+#else
+  // Always enable TI on non-Nightly for now to avoid performance overhead.
+  return true;
+#endif
 }
 
-inline bool IsIonEnabled() { return IsBaselineJitEnabled() && JitOptions.ion; }
-
-}  // namespace jit
 }  // namespace js
 
 #endif /* jit_JitOptions_h */

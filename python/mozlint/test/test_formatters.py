@@ -2,9 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-from __future__ import absolute_import, unicode_literals
-
 import json
+
+import attr
 
 import mozunit
 import mozpack.path as mozpath
@@ -123,7 +123,7 @@ def test_formatters(result, name):
     opts = EXPECTED[name]
     fmt = formatters.get(name, **opts["kwargs"])
     # encoding to str bypasses a UnicodeEncodeError in pytest
-    assert fmt(result).encode("utf-8") == opts["format"].encode("utf-8")
+    assert fmt(result) == opts["format"]
 
 
 def test_json_formatter(result):
@@ -132,10 +132,10 @@ def test_json_formatter(result):
 
     assert set(formatted.keys()) == set(result.issues.keys())
 
-    slots = Issue.__slots__
+    attrs = attr.fields(Issue)
     for errors in formatted.values():
         for err in errors:
-            assert all(s in err for s in slots)
+            assert all(a.name in err for a in attrs)
 
 
 if __name__ == "__main__":
